@@ -1,9 +1,17 @@
 # Config mặc định CHUNG cho toàn bộ project
-# Các file config yaml khác sẽ inherit thằng này!
+# Các file config yaml khác sẽ inherit thằng này
+# Và ghi đè lại, chỉ ghi đè F1, không ghi đè F0!
 # ----------- ----------- -----------
 
+# Đối với config liên quan đến path, chỉ lưu name của chúng, 
+# và mặc định đường dẫn sẽ dẫn đến theo cấu trúc project
+# Ví dụ đối với data:
+#     name: 'fer-2013'
+# -> path trả về (ví dụ đang ở kaggle): 
+#     '/kaggle/input/'
+
 data:
-  root: "../dataset/fer-2013"
+  name: "fer13-split"
   num_classes: 7  # 1-angry, 2-disgust, 3-fear, 4-happy, 5-neutral, 6-sad, 7-surprise
   image_size: 48  # Q thấy dataset gốc:O 48x48
   batch_size: 64
@@ -26,7 +34,7 @@ training:
 logging:
   use_wandb: true
   project_name: "fer2013-sgu2026"
-  save_dir: "../outputs/"
+  # save_dir_name: "outputs"
   
 env:
-  platform: "local"         # local | kaggle
+  platform: "kaggle"         # local | kaggle

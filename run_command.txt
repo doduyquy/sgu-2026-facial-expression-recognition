@@ -1,22 +1,23 @@
 #--- Train ---
 # Local
-python scripts/train.py --config configs/vgg19.yaml --env local
+python scripts/train.py --config vgg19 --env local
 
 # Kaggle
-python scripts/train.py --config configs/vgg19.yaml --env kaggle
+python scripts/train.py --config vgg19 --env kaggle
 
 
 # --- Run ---
+# Nghĩa là khi run, ta cần truyền tên file config vào,  và truyền môi trường chạy
 
-python scripts/prepare_data.py --config configs/base.yaml --env local
+python scripts/prepare_data.py --config base --env local
 
-python scripts/train.py --config configs/cnn_baseline.yaml --env local
+python scripts/train.py --config cnn_baseline --env local
 # or
-python scripts/train.py --config configs/vgg19.yaml --env local
+python scripts/train.py --config vgg19 --env local
 # or
-python scripts/train.py --config configs/resnet34.yaml --env kaggle
+python scripts/train.py --config resnet34 --env kaggle
 
-python scripts/evaluate.py --config configs/vgg19.yaml --checkpoint outputs/checkpoints/vgg19_best.pth
+python scripts/evaluate.py --config vgg19 --checkpoint outputs/checkpoints/vgg19_best.pth
 
-python scripts/analyze_errors.py --config configs/vgg19.yaml --checkpoint outputs/checkpoints/vgg19_best.pth
+python scripts/analyze_errors.py --config vgg19 --checkpoint outputs/checkpoints/vgg19_best.pth
 
