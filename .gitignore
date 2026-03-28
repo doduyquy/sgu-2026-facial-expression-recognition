@@ -22,3 +22,7 @@ __pycache__/
 
 # Q, misc
 zmisc
+
+
+#data quá lớn không pub
+data/
