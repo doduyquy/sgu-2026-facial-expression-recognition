@@ -1,0 +1,14 @@
+# Kế thừa base & override cho VGG
+_base_: "base.yaml"             # Kế thừa từ base
+
+model:
+  name: "vgg19"
+  pretrained: true              # Fine-tune từ ImageNet
+  
+data:
+  image_size: 224               # VGG cần 224x224
+  batch_size: 32                # Có thể giảm batch
+
+training:
+  lr: 0.0001                    # LR nhỏ hơn khi fine-tune
+  epochs: 30

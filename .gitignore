@@ -1,2 +1,24 @@
 # data dirctory
-data
+dataset
+
+# Data
+*.csv
+
+# Outputs
+outputs/
+*.pth
+*.pt
+
+# WandB
+wandb/
+
+# Python
+__pycache__/
+
+# IDE
+.vscode/
+
+
+
+# Q, misc
+zmisc

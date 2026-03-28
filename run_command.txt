@@ -1,0 +1,22 @@
+#--- Train ---
+# Local
+python scripts/train.py --config configs/vgg19.yaml --env local
+
+# Kaggle
+python scripts/train.py --config configs/vgg19.yaml --env kaggle
+
+
+# --- Run ---
+
+python scripts/prepare_data.py --config configs/base.yaml --env local
+
+python scripts/train.py --config configs/cnn_baseline.yaml --env local
+# or
+python scripts/train.py --config configs/vgg19.yaml --env local
+# or
+python scripts/train.py --config configs/resnet34.yaml --env kaggle
+
+python scripts/evaluate.py --config configs/vgg19.yaml --checkpoint outputs/checkpoints/vgg19_best.pth
+
+python scripts/analyze_errors.py --config configs/vgg19.yaml --checkpoint outputs/checkpoints/vgg19_best.pth
+

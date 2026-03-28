@@ -1,0 +1,32 @@
+# Config mặc định CHUNG cho toàn bộ project
+# Các file config yaml khác sẽ inherit thằng này!
+# ----------- ----------- -----------
+
+data:
+  root: "../dataset/fer-2013"
+  num_classes: 7  # 1-angry, 2-disgust, 3-fear, 4-happy, 5-neutral, 6-sad, 7-surprise
+  image_size: 48  # Q thấy dataset gốc:O 48x48
+  batch_size: 64
+  num_workers: 2  # num_workers is the number of subprocesses to use for data loading. 
+
+seed: 
+  random_seed: 42
+
+model:
+  name: "simple_cnn"       # Tên model (key trong registry)
+  pretrained: False        # Sử dụng pretrain model hông?
+
+training:
+  epochs: 101
+  lr: 0.001
+  optimizer: "adam"
+  scheduler: "reduce_lr_on_plateau"  # step, cosine, reduce_lr_on_plateau
+  weight_decay: 0.0001
+
+logging:
+  use_wandb: true
+  project_name: "fer2013-sgu2026"
+  save_dir: "../outputs/"
+  
+env:
+  platform: "local"         # local | kaggle
