@@ -3,7 +3,7 @@
 
 > Running in Kaggle: https://www.kaggle.com/code/doduyquynii/sgu-2026-fer/edit (Team Private)
 
-> Link dataset: https://www.kaggle.com/datasets/deadskull7/fer2013/data 
+> Link dataset: https://drive.google.com/drive/folders/1VrCqZw4M8f7w5vzXWtYmdyLRKYutH7Oh?usp=sharing
 
 
 ## Yêu cầu: 
