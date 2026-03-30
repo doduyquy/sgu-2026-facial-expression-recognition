@@ -72,3 +72,4 @@ if __name__ == "__main__":
     print("     - Max pixel, expect:  ~1.0 ||", images.max().item())  # Quanh quẩn ~1.0
     print("     - Min pixel, expect: ~-1.0 ||", images.min().item())  # Quanh quẩn ~ -1.0
 
+    print(labels)
