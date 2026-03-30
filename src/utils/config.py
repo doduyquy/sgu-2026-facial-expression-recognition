@@ -23,7 +23,7 @@ def load_config(model='cnn_baseline', env='kaggle') -> dict:
 
     Args:
         model (str): Tên file config (không có .yaml)
-        env (str): Môi trường chạy (local/kaggle)
+        env (str): Môi trường chạy (local/kaggle), tốt nhất: kaggle
 
     Returns:
         dict: config (gồm base) đã ghi đè (nếu có) và các config env tương ứng

@@ -27,7 +27,7 @@ sgu-2026-facial-expression-recognition/
 │   └── env.yaml                 #    Cấu hình môi trường (local / kaggle)
 │
 ├── data/                        #    Dữ liệu (KHÔNG push lên Git)
-│   └── fer-2013/
+│   └── fer13-split/
 │       ├── train.csv              #    Training
 │       ├── val.csv                #    PublicTest
 │       └── test.csv               #    PrivateTest
