@@ -1,3 +1,8 @@
+# For unit test (file test):
+1. Go to root dir (sgu-2026-fer)
+2. Run in module type
+    e.g: python -m src.data.dataloader
+
 #--- Train ---
 # Local
 python scripts/train.py --config vgg19 --env local

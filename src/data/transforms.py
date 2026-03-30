@@ -1,12 +1,15 @@
+from torchvision.transforms import Compose
 from posixpath import split
 import torch 
 from torchvision.transforms import v2
 
-def build_transform(config, split="train"): # train | val | test
+def build_transform(config, split="train") -> Compose: # train | val | test
     """Buid transform (augmentatio) for our data
     Args: 
         config: for image size
         split: train | val | test (transform for train is diff from val and test)
+    Return: 
+        compose: a transform compose
     """
     image_size = config['data']['image_size']
     if split == "train":
