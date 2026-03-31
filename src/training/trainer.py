@@ -38,8 +38,8 @@ class Trainer:
         # format show -> pretty, yeah
         pbar = tqdm(self.train_loader, 
                     desc=f"Epoch {epoch_idx}/{self.epochs}",
-                    bar_format="{desc} {n_fmt}/{total_fmt} [{bar:30}] - {elapsed} - rate: {rate_fmt} - {postfix}",
-                    ncols=140) 
+                    bar_format="{desc} {n_fmt}/{total_fmt} [{bar:30}] - {elapsed} - {rate_fmt}{postfix}",
+                    ncols=140)     
                     
         # for images, labels in tqdm(self.train_loader, desc='Training'):
         for images, labels in pbar:
@@ -59,7 +59,8 @@ class Trainer:
             total += labels.size(0)
 
             pbar.set_postfix_str(f"loss: {running_loss / total:.4f} - accuracy: {(corrects.double() / total).item():.4f}")
-
+        
+        
         epoch_loss = running_loss / total
         epoch_acc = corrects.double() / total # convert Tensor to Float before divide
 
@@ -117,7 +118,9 @@ class Trainer:
             all_train_loss.append(train_loss)
             all_val_loss.append(val_loss)
 
-            pbar.set_postfix_str(f"loss: {train_loss:.4f} - accuracy: {train_acc.item():.4f} - val_loss: {val_loss:.4f} - val_accuracy: {val_acc.item():.4f}")
+            pbar.set_postfix_str(
+                f"loss: {train_loss:.4f} - accuracy: {train_acc.item():.4f} "
+                f"- val_loss: {val_loss:.4f} - val_accuracy: {val_acc.item():.4f}")           
             pbar.refresh() 
             pbar.close() 
 
