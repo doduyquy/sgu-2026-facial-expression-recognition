@@ -1,3 +1,9 @@
 model:
   dropout_block: 0.25 # dropout ratio for conv block after pooling
   dropout_dense: 0.5  # dropout ratio for fully connected layer (dense)
+
+training: 
+  loss: 'cross_entropy'
+  optimizer: "adam"       # adam(*) | sgd 
+  # optimier: 'sgd'
+  # gamma: 0.9

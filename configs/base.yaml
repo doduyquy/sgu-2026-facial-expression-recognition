@@ -10,6 +10,9 @@
 # -> path trả về (ví dụ đang ở kaggle): 
 #     '/kaggle/input/'
 
+path:
+  root: "/kaggle/working/sgu-2026-facial-expression-recognition/"
+
 data:
   name: "fer13-split"
   num_classes: 7  # 1-angry, 2-disgust, 3-fear, 4-happy, 5-neutral, 6-sad, 7-surprise
@@ -26,14 +29,18 @@ model:
 
 training:
   epochs: 101
-  lr: 0.001
-  optimizer: "adam"
-  scheduler: "reduce_lr_on_plateau"  # step, cosine, reduce_lr_on_plateau
+  patience: 10
   weight_decay: 0.0001
+  optimizer: "adam"       # adam(*) | sgd 
+  lr: 0.001
+  scheduler: "reduce_lr_on_plateau"  # step | cosine | reduce_lr_on_plateau (*)
+
 
 logging:
+  # wandb
   use_wandb: true
-  project_name: "fer2013-sgu2026"
+  wandb_entity: "phucga15062005"
+  wandb_project: "FER2013"
   # save_dir_name: "outputs"
   
 env:

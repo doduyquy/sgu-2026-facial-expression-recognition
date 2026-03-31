@@ -4,16 +4,8 @@ import pandas as pd
 import numpy as np
 from torch.utils.data import Dataset
 from PIL import Image
+from src.data.emotions_dict import EMOTION_DICT
 
-EMOTION_DICT = {
-    0: "angry",
-    1: "disgust",
-    2: "fear",
-    3: "happy",
-    4: "sad",
-    5: "surprise",
-    6: "neutral",
-}
 
 class FER2013(Dataset):
     """Load one sample for dataloader"""
