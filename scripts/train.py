@@ -10,6 +10,7 @@ from src.models import get_model # in __init__ gfile
 from src.training.trainer import Trainer
 from src.training.losses import build_loss
 from src.training.optimizer import build_optimizer
+from src.training.optimizer import build_scheduler
 from src.utils.checkpoint import load_checkpoints
 from src.evaluation.evaluator import evaluate_and_show
 
@@ -54,6 +55,7 @@ def main():
     
     loss = build_loss(config=config)
     optimizer = build_optimizer(model=model, config=config)
+    scheduler = build_scheduler(optimizer=optimizer, config=config)
     
     # set path to save ckpt
     path_save_ckpt = os.path.join(root_path, f"outputs/checkpoints/{config['model'].get('name', 'cnn')}/{run_name}_best.pth")
@@ -65,6 +67,7 @@ def main():
         val_loader=val_loader,
         criterion=loss,
         optimizer=optimizer,
+        scheduler=scheduler,
         config=config,
         device=device,
         run_name=run_name,

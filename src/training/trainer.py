@@ -9,13 +9,14 @@ from src.utils.logger_wandb import init_wandb, log_image_to_wandb, log_metrics
 
 class Trainer:
     """Forward -> Compute loss -> zero_grad -> Backward -> Update weights (step)"""
-    def __init__(self, model, train_loader, val_loader, criterion, optimizer, config, device, run_name, save_dir):
+    def __init__(self, model, train_loader, val_loader, criterion, optimizer, scheduler, config, device, run_name, save_dir):
         # push model to deive
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.criterion = criterion
         self.optimizer = optimizer
+        self.scheduler = scheduler
         self.device = device
         self.epochs = config['training'].get('epochs', 100)
         self.patience = config['training'].get('patience', 10)
@@ -26,7 +27,7 @@ class Trainer:
         self.path_save_ckpt = save_dir
 
 
-    def train_one_epoch(self):
+    def train_one_epoch(self, epoch_idx):
         # change model mode to train: 
         self.model.train()
         
@@ -34,7 +35,13 @@ class Trainer:
         corrects = 0
         total = 0
 
-        for images, labels in tqdm(self.train_loader, desc='Training'):
+        # format show -> pretty, yeah
+        pbar = tqdm(self.train_loader, 
+                    desc=f"Epoch {epoch_idx}/{self.epochs}",
+                    bar_format="{desc} {n_fmt}/{total_fmt} [{bar:30}] - {elapsed} - {rate_fmt} - {postfix}")
+
+        # for images, labels in tqdm(self.train_loader, desc='Training'):
+        for images, labels in pbar:
             images, labels = images.to(self.device), labels.to(self.device)
 
             self.optimizer.zero_grad()              # remove old grad
@@ -49,11 +56,16 @@ class Trainer:
 
             corrects += torch.sum(preds == labels.data)
             total += labels.size(0)
-        
+
+            pbar.set_postfix({
+                'loss': f"{running_loss / total:.4f}",
+                'acc': f"{(corrects.double() / total).item():.4f}"
+            })
+
         epoch_loss = running_loss / total
         epoch_acc = corrects.double() / total # convert Tensor to Float before divide
 
-        return epoch_loss, epoch_acc
+        return epoch_loss, epoch_acc, pbar
 
     def validate(self):
 
@@ -63,7 +75,7 @@ class Trainer:
 
         with torch.no_grad():
             self.model.eval() # required! turn off dropout and freeze batchnorm
-            for images, labels in tqdm(self.val_loader, desc="Validating"):
+            for images, labels in self.val_loader:
                 images, labels = images.to(self.device), labels.to(self.device)
 
                 outputs = self.model(images)
@@ -81,9 +93,12 @@ class Trainer:
         return epoch_loss, epoch_acc
 
     def fit(self): # training
-        """Training
-        Return: all_train_loss, all_val_loss
+        """ Fit you model
+        Return: 
+            all_train_loss, all_val_loss
         """
+        print(f'\n--> Train on {len(self.train_loader.dataset)} samples, validate on {len(self.val_loader.dataset)} samples')
+
         # wandb init
         if self.use_wandb:
             init_wandb(config=self.config, run_name=self.run_name)
@@ -97,16 +112,20 @@ class Trainer:
         print(f'\n--> Start training in total {self.epochs} epochs with {self.device} device. Start...\n')
 
         for ep in range(self.epochs):
-            print(f"\n\t--- Epoch {ep+1}/{self.epochs}")
 
-            train_loss, train_acc = self.train_one_epoch()
-            print(f"\t\t + Train loss: {train_loss:.4f} | Train acc: {train_acc:.4f}")
-            all_train_loss.append(train_loss)
-
+            train_loss, train_acc, pbar = self.train_one_epoch(epoch_idx=(ep+1))
             val_loss, val_acc = self.validate()
-            print(f"\t\t + Val loss: {val_loss:.4f} | Val acc: {val_acc:.4f}")
+
+            all_train_loss.append(train_loss)
             all_val_loss.append(val_loss)
 
+            pbar.set_postfix({
+                'loss': f"{train_loss:.4f}",
+                'acc': f"{train_acc.item():.4f}",
+                'val_loss': f"{val_loss:.4f}",
+                'val_acc': f"{val_acc.item():.4f}"
+            })
+            pbar.close() 
 
             # wandb log
             if self.use_wandb:
@@ -119,6 +138,12 @@ class Trainer:
                     "Learning_Rate": self.optimizer.param_groups[0]['lr']
                 }, epoch=ep)
 
+            # lr scheduler
+            if self.scheduler is not None:
+                if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                    self.scheduler.step(val_loss) # need val loss
+                else:
+                    self.scheduler.step()
 
             # check loss and save ckpt
             if val_loss < best_val_loss:
@@ -130,11 +155,11 @@ class Trainer:
                     "optimizer_state_dict": self.optimizer.state_dict(),
                     "epoch": ep
                 }, self.path_save_ckpt)
-                print(f"\n\t--- Save best at {ep} epoch, path: {self.path_save_ckpt}\n")
+                print(f"\n\t--- Save best at {ep+1} epoch, val loss: {val_loss:.4f}, path: {self.path_save_ckpt} ---\n")
 
             else:
                 patience_counter += 1
-                print(f"\t-!- No improvement: {patience_counter}/{self.patience}")
+                print(f"-!- No improvement: {patience_counter}/{self.patience}")
                 if patience_counter >= self.patience:
                     print(f"\t-_- Early stopping at ep={ep}")
                     break
