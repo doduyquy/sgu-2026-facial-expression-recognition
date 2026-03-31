@@ -16,7 +16,7 @@ python scripts/train.py --config vgg19 --env kaggle
 
 python scripts/prepare_data.py --config base --env local
 
-python scripts/train.py --config cnn_baseline --env local
+python scripts/train.py --config simple_cnn --env local
 # or
 python scripts/train.py --config vgg19 --env local
 # or

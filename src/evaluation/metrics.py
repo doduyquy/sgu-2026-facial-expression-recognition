@@ -1,4 +1,3 @@
-from matplotlib.patches import bbox_artist
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
@@ -25,7 +24,5 @@ def plot_confusion_matrix(true_labels, pred_labels, save_path=None):
     # save fig
     if save_path:
         plt.savefig(save_path, bbox_inches='tight')
-
-    plt.show()
 
     return fig

@@ -3,16 +3,6 @@
 # Và ghi đè lại, chỉ ghi đè F1, không ghi đè F0!
 # ----------- ----------- -----------
 
-# Đối với config liên quan đến path, chỉ lưu name của chúng, 
-# và mặc định đường dẫn sẽ dẫn đến theo cấu trúc project
-# Ví dụ đối với data:
-#     name: 'fer-2013'
-# -> path trả về (ví dụ đang ở kaggle): 
-#     '/kaggle/input/'
-
-path:
-  root: "/kaggle/working/sgu-2026-facial-expression-recognition/"
-
 data:
   name: "fer13-split"
   num_classes: 7  # 1-angry, 2-disgust, 3-fear, 4-happy, 5-neutral, 6-sad, 7-surprise
@@ -31,11 +21,13 @@ training:
   epochs: 101
   patience: 10
   weight_decay: 0.0001
+  loss: 'cross_entropy'
   optimizer: "adam"       # adam(*) | sgd 
   lr: 0.001
   scheduler: "reduce_lr_on_plateau"  # step | cosine | reduce_lr_on_plateau (*)
 
 
+# !!! WARNING !!!  
 logging:
   # wandb
   use_wandb: true
@@ -43,5 +35,16 @@ logging:
   wandb_project: "FER2013"
   # save_dir_name: "outputs"
   
+# !!! WARNING !!!  
 env:
   platform: "kaggle"         # local | kaggle
+
+# !!! WARNING !!!  
+kaggle:
+  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split"
+  root_path: "/kaggle/working/sgu-2026-facial-expression-recognition"
+
+local:
+  data_path: '...'
+  root_path: '...'
+  # hi, guy, your path

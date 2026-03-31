@@ -1,6 +1,7 @@
-import torch
 import os
+import pandas as pd
 from tqdm import tqdm
+import torch
 from src.utils.visualization import plot_prediction_grid
 from src.utils.logger_wandb import log_image_to_wandb
 from src.evaluation.metrics import compute_metrics, plot_confusion_matrix
@@ -49,7 +50,7 @@ def evaluate_and_show(model, test_loader, device, save_dir):
     print("Compute metrics and confusion matrix...")
     acc, report = compute_metrics(all_trues, all_preds)
     print(f"--> Accuracy: {acc*100:.2f}%")
-    print(f"--> Report:\n {report}")
+    print(f"--> Report:\n {pd.DataFrame(report).transpose().to_string()}")
 
     # Plot Confusion Matrix
     cm_path = os.path.join(save_dir, "confusion_matrix.png")

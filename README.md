@@ -21,7 +21,7 @@ sgu-2026-facial-expression-recognition/
 │
 ├── configs/                     #    Tất cả config (YAML)
 │   ├── base.yaml                #    Config mặc định chung
-│   ├── cnn_baseline.yaml        #    Config cho CNN cơ bản
+│   ├── simple_cnn.yaml        #    Config cho CNN cơ bản
 │   ├── vgg19.yaml               #    Config cho VGG19
 │   ├── resnet34.yaml            #    Config cho ResNet34
 │   └── env.yaml                 #    Cấu hình môi trường (local / kaggle)

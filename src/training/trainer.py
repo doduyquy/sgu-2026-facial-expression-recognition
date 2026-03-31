@@ -9,7 +9,7 @@ from src.utils.logger_wandb import init_wandb, log_image_to_wandb, log_metrics
 
 class Trainer:
     """Forward -> Compute loss -> zero_grad -> Backward -> Update weights (step)"""
-    def __init__(self, model, train_loader, val_loader, criterion, optimizer, config, device):
+    def __init__(self, model, train_loader, val_loader, criterion, optimizer, config, device, run_name, save_dir):
         # push model to deive
         self.model = model.to(device)
         self.train_loader = train_loader
@@ -19,10 +19,11 @@ class Trainer:
         self.device = device
         self.epochs = config['training'].get('epochs', 100)
         self.patience = config['training'].get('patience', 10)
-        self.path_root = config['path'].get('root', "/kaggle/working/sgu-2026-facial-expression-recognition/")
         self.model_name = config['model'].get('name', 'simple_cnn')
         self.use_wandb = config['logging'].get('use_wandb', True)
+        self.run_name = run_name
         self.config = config
+        self.path_save_ckpt = save_dir
 
 
     def train_one_epoch(self):
@@ -83,14 +84,9 @@ class Trainer:
         """Training
         Return: all_train_loss, all_val_loss
         """
-        # Format DDMMYYYY_HHMM
-        timestamp = datetime.now().strftime("%d%m%Y_%H%M")
-        path_save_ckpt = os.path.join(self.path_root, f"outputs/checkpoints/{self.model_name}/{self.model_name}_{timestamp}_best.pth")
-        os.makedirs(os.path.dirname(path_save_ckpt), exist_ok=True)
-
         # wandb init
         if self.use_wandb:
-            init_wandb(config=self.config, run_name=f"{self.model_name}_{timestamp}")
+            init_wandb(config=self.config, run_name=self.run_name)
 
         best_val_loss = float("inf")
         patience_counter = 0
@@ -133,8 +129,8 @@ class Trainer:
                     "model_state_dict": self.model.state_dict(),
                     "optimizer_state_dict": self.optimizer.state_dict(),
                     "epoch": ep
-                }, path_save_ckpt)
-                print(f"\n\t--- Save best at {ep} epoch, path: {path_save_ckpt}\n")
+                }, self.path_save_ckpt)
+                print(f"\n\t--- Save best at {ep} epoch, path: {self.path_save_ckpt}\n")
 
             else:
                 patience_counter += 1
@@ -142,11 +138,6 @@ class Trainer:
                 if patience_counter >= self.patience:
                     print(f"\t-_- Early stopping at ep={ep}")
                     break
-
-
-        # wandb finish
-        if self.use_wandb:
-            wandb.finish()
 
         return all_train_loss, all_val_loss
 

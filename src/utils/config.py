@@ -16,7 +16,7 @@ def _deep_update(base_dict, update_dict):
             base_dict[key] = value
     return base_dict
 
-def load_config(model='cnn_baseline', env='kaggle') -> dict:
+def load_config(model='simple_cnn', env='kaggle') -> dict:
     """Load file config và cả file base mà nó kế thừa
     Trong config, các path mà nó trả về sẽ là path tương đối,
     tùy vào môi trường chạy (kaggle/kaggle) mà path sẽ khác nhau
