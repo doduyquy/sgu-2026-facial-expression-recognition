@@ -24,7 +24,7 @@ training:
   loss: 'cross_entropy'
   optimizer: "adam"       # adam(*) | sgd 
   lr: 0.001
-  scheduler: "reduce_lr_on_plateau"  # step | cosine | reduce_lr_on_plateau (*)
+  scheduler: "reduce_lr_on_plateau"  # none | step | cosine | reduce_lr_on_plateau (*)
 
 
 # !!! WARNING !!!  

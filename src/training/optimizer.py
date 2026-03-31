@@ -19,7 +19,22 @@ def build_optimizer(model, config):
         raise ValueError(f"Optimizer {opt_name} unsupported!")
 
 
-def build_scheduler():
+def build_scheduler(optimizer, config):
+    """Learning rate scheduler for model plateau | step | cosine"""
+    scheduler_name = config['training'].get('scheduler', 'reduce_lr_on_plateau')
+    if scheduler_name == 'none':
+        return None
+    elif scheduler_name == 'reduce_lr_on_plateau':
+        # reduce when val loss stopping reduce
+
+    elif scheduler_name == 'step':
+
+    elif scheduler_name == 'cosine':
+
+    else:
+        raise ValueError(f"Not supported this {scheduler_name} scheduler!") 
+
+
     pass
 
 
