@@ -39,9 +39,9 @@ class Trainer:
         pbar = tqdm(self.train_loader, 
                     desc=f"Epoch {epoch_idx}/{self.epochs}",
                     bar_format="{desc} {n_fmt}/{total_fmt} [{bar:30}] - {elapsed} - {rate_fmt}{postfix}",
-                    ncols=140)     
+                    ncols=140,
+                    leave=False)  # leave=False: xóa dòng sau khi xong, để fit() in lại đầy đủ
                     
-        # for images, labels in tqdm(self.train_loader, desc='Training'):
         for images, labels in pbar:
             images, labels = images.to(self.device), labels.to(self.device)
 
@@ -60,11 +60,12 @@ class Trainer:
 
             pbar.set_postfix_str(f"loss: {running_loss / total:.4f} - accuracy: {(corrects.double() / total).item():.4f}")
         
-        
+        pbar.close()
+
         epoch_loss = running_loss / total
         epoch_acc = corrects.double() / total # convert Tensor to Float before divide
 
-        return epoch_loss, epoch_acc, pbar
+        return epoch_loss, epoch_acc
 
     def validate(self):
 
@@ -112,17 +113,18 @@ class Trainer:
 
         for ep in range(self.epochs):
 
-            train_loss, train_acc, pbar = self.train_one_epoch(epoch_idx=(ep+1))
+            train_loss, train_acc = self.train_one_epoch(epoch_idx=(ep+1))
             val_loss, val_acc = self.validate()
 
             all_train_loss.append(train_loss)
             all_val_loss.append(val_loss)
 
-            pbar.set_postfix_str(
-                f"loss: {train_loss:.4f} - accuracy: {train_acc.item():.4f} "
-                f"- val_loss: {val_loss:.4f} - val_accuracy: {val_acc.item():.4f}")           
-            pbar.refresh() 
-            pbar.close() 
+            # In dòng log đầy đủ (ghi đè lên dòng trống mà leave=False để lại)
+            tqdm.write(
+                f"Epoch {ep+1}/{self.epochs} - "
+                f"loss: {train_loss:.4f} - accuracy: {train_acc.item():.4f} - "
+                f"val_loss: {val_loss:.4f} - val_accuracy: {val_acc.item():.4f}"
+            )
 
             # wandb log
             if self.use_wandb:
@@ -152,7 +154,7 @@ class Trainer:
                     "optimizer_state_dict": self.optimizer.state_dict(),
                     "epoch": ep
                 }, self.path_save_ckpt)
-                print(f"\n\t--- Save best at {ep+1} epoch, val loss: {val_loss:.4f}, path: {self.path_save_ckpt} ---\n")
+                print(f"\n\t--- Save best at {ep+1} ep, val_loss: {val_loss:.4f}, path: {self.path_save_ckpt} ---\n")
 
             else:
                 patience_counter += 1
@@ -203,26 +205,3 @@ if __name__ == "__main__":
         print("Done!")
     except Exception as e:
         print(f"Error: {e}")
-
-
-
-
-
-        
-
-
-        
-
-
-        
-
-        
-
-
-
-
-
-
-
-
-
