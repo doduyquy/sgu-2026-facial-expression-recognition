@@ -41,7 +41,7 @@ env:
 
 # !!! WARNING !!!  
 kaggle:
-  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split"
+  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split" # double fer13-split
   root_path: "/kaggle/working/sgu-2026-facial-expression-recognition"
 
 local:
