@@ -23,15 +23,6 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  
     print("--- Use device:", device)
 
-    # data path and root path for each platform
-    if config['env']['platform'] == 'kaggle':
-        data_path = config['kaggle'].get('data_path', "/kaggle/input/datasets/doduyquynii/fer13-split")
-        root_path = config['kaggle'].get('root_path', "/kaggle/working/sgu-2026-facial-expression-recognition/")
-    else: 
-        data_path = config['local'].get('data_path', "../dataset")
-        root_path = config['local'].get('root_path', "../")
-        
-
     # get args 
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
@@ -41,6 +32,15 @@ def main():
     # load config
     config = load_config(args.config, args.env)
     set_seed(config['seed'].get('random_seed', 21))
+
+    # data path and root path for each platform
+    if config['env']['platform'] == 'kaggle':
+        data_path = config['kaggle'].get('data_path', "/kaggle/input/datasets/doduyquynii/fer13-split")
+        root_path = config['kaggle'].get('root_path', "/kaggle/working/sgu-2026-facial-expression-recognition/")
+    else: 
+        data_path = config['local'].get('data_path', "../dataset")
+        root_path = config['local'].get('root_path', "../")
+       
 
     timestamp = datetime.now().strftime("%d%m%Y_%H%M")
     run_name = f"{config['model'].get('name', 'cnn')}_{timestamp}"
@@ -80,8 +80,8 @@ def main():
     # Get path of file best  
     load_checkpoints(model, optimizer, path_save_ckpt, device)
     
-    eval_dir_path = (root_path ,"outputs/figures")
-    os.makedirs(os.path.dirname(eval_dir_path), exist_ok=True)
+    eval_dir_path = os.path.join(root_path ,"outputs/figures")
+    os.makedirs(eval_dir_path, exist_ok=True)
     print(f"Evaluatoin save path: {eval_dir_path}")
 
 
