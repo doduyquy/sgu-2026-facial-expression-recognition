@@ -1,4 +1,5 @@
 import os
+import wandb
 import torch
 import argparse
 from src.utils.config import load_config
@@ -13,6 +14,7 @@ from src.training.optimizer import build_optimizer
 from src.training.optimizer import build_scheduler
 from src.utils.checkpoint import load_checkpoints
 from src.evaluation.evaluator import evaluate_and_show
+from src.utils.logger_wandb import save_model_to_wandb
 
 from datetime import datetime
 #-------------------------------------------------------------
@@ -90,6 +92,14 @@ def main():
 
     evaluate_and_show(model, test_loader, device, eval_dir_path)
     
+    # upload best ckpt to wandb
+    if config['logging'].get('use_wandb', True):
+        print("\n\t--> Uploading best ckpt to WandB, please wait...")
+        save_model_to_wandb(path_save_ckpt)
+        
+        # Đóng cửa sổ WandB, tránh bị kẹt quá trình upload trên hệ thống ngầm của Kaggle
+        wandb.finish()
+
     print("\n\t\tDONE!\n")
 
     

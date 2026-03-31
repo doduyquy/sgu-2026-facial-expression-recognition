@@ -11,7 +11,7 @@ def compute_metrics(true_labels, pred_labels):
 
     return acc, report
 
-def plot_confusion_matrix(true_labels, pred_labels, save_path=None):
+def plot_confusion_matrix(true_labels, pred_labels, accuracy, save_path=None):
     
     conf_matrix = confusion_matrix(true_labels, pred_labels)
 
@@ -19,7 +19,7 @@ def plot_confusion_matrix(true_labels, pred_labels, save_path=None):
     sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues', xticklabels=EMOTION_NAMES, yticklabels=EMOTION_NAMES, ax=ax)
     plt.ylabel("True label")
     plt.xlabel('Pred label')
-    plt.title('Confusion matrix on test set')
+    plt.title(f'Confusion matrix on test set, acc: {accuracy*100:.2f}%')
 
     # save fig
     if save_path:

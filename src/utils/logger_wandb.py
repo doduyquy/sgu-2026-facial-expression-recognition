@@ -26,3 +26,18 @@ def log_image_to_wandb(tag, fig):
     if wandb.run is not None:
         wandb.log({tag: wandb.Image(fig)})
 
+def save_model_to_wandb(model_path, model_name="cnn"):
+    """Lưu file pth trực tiếp vào Artifacts"""
+    if wandb.run is not None:
+        try:
+            # Gói file -> Artifacts (Đánh dấu ID để phân biệt các lần chạy khác nhau)
+            artifact = wandb.Artifact(name=f"{model_name}_{wandb.run.id}", type="model")
+            artifact.add_file(model_path) 
+            
+            # Push Server WandB
+            wandb.log_artifact(artifact)
+            print(f"\t--> [WandB] Send File `{os.path.basename(model_path)}` to cloud successfully!")
+        except Exception as e:
+            print(f"\t-!- [WandB] Error when upload Model: {e}")
+
+

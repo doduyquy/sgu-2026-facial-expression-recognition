@@ -54,7 +54,7 @@ def evaluate_and_show(model, test_loader, device, save_dir):
 
     # Plot Confusion Matrix
     cm_path = os.path.join(save_dir, "confusion_matrix.png")
-    fig_cm = plot_confusion_matrix(all_trues, all_preds, save_path=cm_path)
+    fig_cm = plot_confusion_matrix(all_trues, all_preds, acc, save_path=cm_path)
     log_image_to_wandb("Evaluation/Confusion_Matrix", fig_cm)
 
 
