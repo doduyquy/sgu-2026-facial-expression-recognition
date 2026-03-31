@@ -154,7 +154,7 @@ class Trainer:
                     "optimizer_state_dict": self.optimizer.state_dict(),
                     "epoch": ep
                 }, self.path_save_ckpt)
-                print(f"\n\t--- Save best at {ep+1} ep, val_loss: {val_loss:.4f}, path: {self.path_save_ckpt} ---\n")
+                print(f"\n\t--> Save best at {ep+1} ep, val_loss: {val_loss:.4f}, path: {self.path_save_ckpt}\n")
 
             else:
                 patience_counter += 1
