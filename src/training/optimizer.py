@@ -36,7 +36,6 @@ def build_scheduler(optimizer, config):
             mode='min',
             factor=factor,
             patience=patience,
-            verbose=False
         )
     elif scheduler_name == 'step':
         # decay(decrease) every n epochs
