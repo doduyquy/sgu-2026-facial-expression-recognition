@@ -1,6 +1,8 @@
 # Facial expression recognition
 > SGU 2026
 
+> Sheet log expr: https://docs.google.com/spreadsheets/d/1hlldknzRUCH5R8fQb73Kor20QzCaCTrjVwJYldRWUqo/edit?usp=sharing 
+
 > Running in Kaggle: https://www.kaggle.com/code/doduyquynii/sgu-2026-fer/edit (Team Private)
 
 > Link dataset: https://drive.google.com/drive/folders/1VrCqZw4M8f7w5vzXWtYmdyLRKYutH7Oh?usp=sharing
