@@ -3,7 +3,7 @@ _base_: "base.yaml"             # Kế thừa từ base
 
 model:
   name: "vgg19"
-  pretrained: false      # false: train từ đầu
+  pretrained: true      # chuyển sang dùng pretrained
   dropout_block: 0.3    # Tỉ lệ dropout trong các Conv Blocks (giúp giảm overfitting)
   dropout_dense: 0.5    # Tỉ lệ dropout trong lớp Fully Connected cuối cùng
 
@@ -13,5 +13,5 @@ data:
   batch_size: 32        # Tùy vào GPU (VRAM), nếu bị lỗi Out of Memory thì giảm xuống 16 hoặc 8.
 
 training:
-  lr: 0.001             # Tăng lr khi train từ đầu
+  lr: 0.0001             # Giảm LR xuống 10 lần cho fine-tuning
   epochs: 30            # Số vòng lặp tập huấn.
