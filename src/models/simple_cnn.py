@@ -11,7 +11,7 @@ import torch.nn as nn
     + P: padding (0, 1,...)
     + S: stride (1, 2, 3,...)
 
-- NOTE: add relu after conv and dense
+- NOTE: all kernel size is used: 3x3, add relu after conv and dense
 ===============================================================================
 Block name      Layer,              Params,                    Output Shape
 ===============================================================================
