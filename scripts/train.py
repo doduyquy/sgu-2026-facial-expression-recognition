@@ -38,7 +38,7 @@ def main():
 
     # data path and root path for each platform
     if config['env']['platform'] == 'kaggle':
-        data_path = config['kaggle'].get('data_path', "/kaggle/input/datasets/doduyquynii/fer13-split")
+        data_path = config['kaggle'].get('data_path', "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split")
         root_path = config['kaggle'].get('root_path', "/kaggle/working/sgu-2026-facial-expression-recognition/")
     else: 
         data_path = config['local'].get('data_path', "../dataset")
@@ -90,7 +90,9 @@ def main():
     print(f"Evaluatoin save path: {eval_dir_path}")
 
 
-    evaluate_and_show(model, test_loader, device, eval_dir_path)
+    # test data path
+    testset_path = os.path.join(data_path, "test.csv")
+    evaluate_and_show(model, test_loader, testset_path, device, eval_dir_path)
     
     # upload best ckpt to wandb
     if config['logging'].get('use_wandb', True):
