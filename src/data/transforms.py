@@ -12,31 +12,40 @@ def build_transform(config, split="train") -> Compose: # train | val | test
         compose: a transform compose
     """
     image_size = config['data']['image_size']
+    channels = config['data'].get('channels', 1)
+    
+    # Chuẩn hóa (mean, std) theo số kênh
+    mean = [0.5] * channels
+    std = [0.5] * channels
+
     if split == "train":
-        trans = v2.Compose([
-            # v2.Grayscale(num_output_channels=1),
+        transform_ops = [
+            # Nếu channels=3, convert ảnh xám sang RGB (3 kênh giống nhau)
+            v2.Lambda(lambda x: x.convert('RGB')) if channels == 3 else v2.Lambda(lambda x: x),
             
-            # Augmentation
             v2.Resize(size=(image_size, image_size)),
             v2.RandomHorizontalFlip(p=0.5),
             v2.RandomRotation(21),
-            # crop image with output shape: (image_size, image_size), small zoom 
             v2.RandomResizedCrop(size=(image_size), scale=(0.8, 1)),
 
             v2.ToImage(),
-            v2.ToDtype(torch.float32, scale=True), # scale=True: / 255
-            v2.Normalize(mean=[0.5], std=[0.5])
-        ])
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Normalize(mean=mean, std=std)
+        ]
     else:
-        trans = v2.Compose([
-            # v2.Grayscale(num_output_channels=1),
+        transform_ops = [
+            v2.Lambda(lambda x: x.convert('RGB')) if channels == 3 else v2.Lambda(lambda x: x),
             v2.Resize(size=(image_size, image_size)),
             v2.ToImage(),
             v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize(mean=[0.5], std=[0.5])
-        ])
+            v2.Normalize(mean=mean, std=std)
+        ]
 
-    return trans
+    # Loại bỏ Lambda(identity) nếu channels=1 để tối ưu
+    if channels == 1:
+        transform_ops = [op for op in transform_ops if not isinstance(op, v2.Lambda)]
+
+    return v2.Compose(transform_ops)
 
 
 # With transfer learning: VGG hay ResNet:
@@ -48,27 +57,28 @@ if __name__ == "__main__":
 
     # create random array
     dummy_pixels = np.random.randint(0, 256, (48, 48), dtype=np.uint8)
-
-    # convert uint8 array to PIL image grayscale ('L' mode)
     dummy_image = Image.fromarray(dummy_pixels)
     
-    # expect: L (48, 48) --> ok
-    print("Before transform: ", dummy_image.mode, dummy_image.size)
+    print(f"Original image: {dummy_image.mode} {dummy_image.size}")
 
-    # create a mock config
-    mock_config = {
-        'data':{
-            'image_size': 48 # change to 224 if using VGG, Q use 48 for basic CNN
+    for ch in [1, 3]:
+        print(f"\n--- Testing Scenario: {ch} Channel(s) ---")
+        mock_config = {
+            'data': {
+                'image_size': 224,
+                'channels': ch
+            }
         }
-    }
 
-    train_trans = build_transform(mock_config, split="train")
-    out_tensor = train_trans(dummy_image)
+        trans = build_transform(mock_config, split="train")
+        out_tensor = trans(dummy_image)
 
-    # 6. Kiểm tra kết quả
-    print("Tensor after Transform:")
-    print("   - shape = ", out_tensor.shape)       # Kỳ vọng: [1, 48, 48]
-    print("   - float32? .dtype = ", out_tensor.dtype)     # Kỳ vọng: torch.float32
-    print(f"   - Max (scale & normalize) = {out_tensor.max().item():.3f}")  # Kỳ vọng xoay quanh ~ 1.0
-    print(f"   - Min (scale & normalize) = {out_tensor.min().item():.3f}")  # Kỳ vọng xoay quanh ~ -1.0
+        print(f"   - Channels config: {ch}")
+        print(f"   - Tensor shape: {out_tensor.shape}")
+        print(f"   - Standard deviation: {out_tensor.std().item():.3f}")
+        
+        # Verify shape
+        assert out_tensor.shape == (ch, 224, 224), f"Shape mismatch! Expected ({ch}, 224, 224), got {out_tensor.shape}"
+
+    print("\n[SUCCESS] Transforms test passed for both scenarios!")
 

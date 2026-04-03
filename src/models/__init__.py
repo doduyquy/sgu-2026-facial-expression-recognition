@@ -1,5 +1,5 @@
 from .simple_cnn import SimpleCNN
-# from .vgg import VGG
+from .vgg import VGG19
 # from .resnet import ResNet
 # from .resmaskingnet import ResMaskingNet
 
@@ -13,7 +13,7 @@ from .simple_cnn import SimpleCNN
 MODEL_REGISTRY = {
     "simple_cnn": SimpleCNN,
     # "vgg11": lambda **kw: VGG(variant="vgg11", **kw),
-    # "vgg19": lambda **kw: VGG(variant="vgg19", **kw),
+    "vgg19": lambda **kw: VGG19(config=kw['config'], channels=kw['config']['data']['channels']),
     # "resnet18": lambda **kw: ResNet(variant="resnet18", **kw),
     # "resnet34": lambda **kw: ResNet(variant="resnet34", **kw),
     # "resnet50": lambda **kw: ResNet(variant="resnet50", **kw),
