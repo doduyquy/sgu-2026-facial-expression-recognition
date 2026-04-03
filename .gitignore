@@ -5,7 +5,6 @@ dataset
 *.csv
 
 # Outputs
-outputs/
 *.pth
 *.pt
 

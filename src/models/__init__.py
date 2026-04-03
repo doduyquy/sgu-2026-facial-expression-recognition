@@ -1,7 +1,7 @@
 from .simple_cnn import SimpleCNN
-from .vgg import VGG
-from .resnet import ResNet
-from .resmaskingnet import ResMaskingNet
+# from .vgg import VGG
+# from .resnet import ResNet
+# from .resmaskingnet import ResMaskingNet
 
 
 """Hi, guy, tạo model mới thì:
@@ -12,12 +12,12 @@ from .resmaskingnet import ResMaskingNet
 
 MODEL_REGISTRY = {
     "simple_cnn": SimpleCNN,
-    "vgg11": lambda **kw: VGG(variant="vgg11", **kw),
-    "vgg19": lambda **kw: VGG(variant="vgg19", **kw),
-    "resnet18": lambda **kw: ResNet(variant="resnet18", **kw),
-    "resnet34": lambda **kw: ResNet(variant="resnet34", **kw),
-    "resnet50": lambda **kw: ResNet(variant="resnet50", **kw),
-    "resmaskingnet": ResMaskingNet,
+    # "vgg11": lambda **kw: VGG(variant="vgg11", **kw),
+    # "vgg19": lambda **kw: VGG(variant="vgg19", **kw),
+    # "resnet18": lambda **kw: ResNet(variant="resnet18", **kw),
+    # "resnet34": lambda **kw: ResNet(variant="resnet34", **kw),
+    # "resnet50": lambda **kw: ResNet(variant="resnet50", **kw),
+    # "resmaskingnet": ResMaskingNet,
 }
 
 def get_model(name: str, **kwargs):

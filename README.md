@@ -1,6 +1,8 @@
 # Facial expression recognition
 > SGU 2026
 
+> Sheet log expr: https://docs.google.com/spreadsheets/d/1hlldknzRUCH5R8fQb73Kor20QzCaCTrjVwJYldRWUqo/edit?usp=sharing 
+
 > Running in Kaggle: https://www.kaggle.com/code/doduyquynii/sgu-2026-fer/edit (Team Private)
 
 > Link dataset: https://drive.google.com/drive/folders/1VrCqZw4M8f7w5vzXWtYmdyLRKYutH7Oh?usp=sharing
@@ -21,13 +23,13 @@ sgu-2026-facial-expression-recognition/
 │
 ├── configs/                     #    Tất cả config (YAML)
 │   ├── base.yaml                #    Config mặc định chung
-│   ├── cnn_baseline.yaml        #    Config cho CNN cơ bản
+│   ├── simple_cnn.yaml        #    Config cho CNN cơ bản
 │   ├── vgg19.yaml               #    Config cho VGG19
 │   ├── resnet34.yaml            #    Config cho ResNet34
 │   └── env.yaml                 #    Cấu hình môi trường (local / kaggle)
 │
 ├── data/                        #    Dữ liệu (KHÔNG push lên Git)
-│   └── fer-2013/
+│   └── fer13-split/
 │       ├── train.csv              #    Training
 │       ├── val.csv                #    PublicTest
 │       └── test.csv               #    PrivateTest

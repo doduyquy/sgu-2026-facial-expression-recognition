@@ -1,22 +1,30 @@
+# For unit test (file test):
+1. Go to root dir (sgu-2026-fer)
+2. Run in module type
+    e.g: python -m src.data.dataloader
+
 #--- Train ---
 # Local
-python scripts/train.py --config configs/vgg19.yaml --env local
+python scripts/train.py --config vgg19 --env local
 
 # Kaggle
-python scripts/train.py --config configs/vgg19.yaml --env kaggle
+!python -m scripts/train.py --config vgg19 --env kaggle
 
 
 # --- Run ---
+# Nghĩa là khi run, ta cần truyền tên file config vào, và truyền môi trường chạy
+# và chạy ở dạng module (-m)
+# NOTE: Dứng ở dir gốc: sgu-2026-facial-expression-recognition/
 
-python scripts/prepare_data.py --config configs/base.yaml --env local
+python -m scripts/prepare_data.py --config base --env local
 
-python scripts/train.py --config configs/cnn_baseline.yaml --env local
+python -m scripts/train.py --config simple_cnn --env local
 # or
-python scripts/train.py --config configs/vgg19.yaml --env local
+python -m scripts/train.py --config vgg19 --env local
 # or
-python scripts/train.py --config configs/resnet34.yaml --env kaggle
+python -m scripts/train.py --config resnet34 --env kaggle
 
-python scripts/evaluate.py --config configs/vgg19.yaml --checkpoint outputs/checkpoints/vgg19_best.pth
+python -m scripts/evaluate.py --config vgg19 --checkpoint outputs/checkpoints/vgg19_best.pth
 
-python scripts/analyze_errors.py --config configs/vgg19.yaml --checkpoint outputs/checkpoints/vgg19_best.pth
+python -m scripts/analyze_errors.py --config vgg19 --checkpoint outputs/checkpoints/vgg19_best.pth
 

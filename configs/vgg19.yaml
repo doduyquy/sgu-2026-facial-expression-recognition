@@ -6,7 +6,7 @@ model:
   pretrained: true              # Fine-tune từ ImageNet
   
 data:
-  image_size: 224               # VGG cần 224x224
+  # image_size: 224               # VGG cần 224x224
   batch_size: 32                # Có thể giảm batch
 
 training:
