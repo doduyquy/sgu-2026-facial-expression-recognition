@@ -37,10 +37,14 @@ if __name__ == "__main__":
     from os.path import join
     cwd = Path.cwd().resolve()
     train_path = join(cwd, "dataset/fer13-split/train.csv")
+    test_path = join(cwd, "dataset/fer13-split/test.csv")
 
     train_class_counts = get_class_distribution(train_path)
+    test_class_counts = get_class_distribution(test_path)
 
-    print(train_class_counts[0])
-    print(type(train_class_counts))
+    print("Train:", train_class_counts)
+    print("Test:", test_class_counts)
+    # print("1:disgust:",train_class_counts[1])
+    # print(type(train_class_counts))
 
 

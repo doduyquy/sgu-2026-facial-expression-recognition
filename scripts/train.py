@@ -15,6 +15,7 @@ from src.training.optimizer import build_scheduler
 from src.utils.checkpoint import load_checkpoints
 from src.evaluation.evaluator import evaluate_and_show
 from src.utils.logger_wandb import save_model_to_wandb
+from src.utils.data_stats import get_class_distribution # testing: class weight
 
 from datetime import datetime
 #-------------------------------------------------------------
@@ -55,7 +56,16 @@ def main():
         name=config['model']['name'],
         config=config)
     
-    loss = build_loss(config=config)
+
+    # get class_distribution for class_weights (for testing)
+    trainset_path = os.path.join(data_path, "train.csv")
+    train_class_distribution = get_class_distribution(trainset_path)
+    train_class_distribution_np = train_class_distribution.values
+    class_weights = 1.0 / torch.tensor(train_class_distribution_np, dtype=torch.float)
+    class_weights = class_weights / class_weights.sum()
+
+
+    loss = build_loss(config=config, class_weights=class_weights)
     optimizer = build_optimizer(model=model, config=config)
     scheduler = build_scheduler(optimizer=optimizer, config=config)
     

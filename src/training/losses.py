@@ -1,11 +1,19 @@
 import torch.nn as nn 
 
-def build_loss(config):
-    # Define loss for traning, cross_entropy: default
+def build_loss(config, class_weights=None):
+    """ Define loss for traning, cross_entropy: default
+        Args:
+            config: all config load from yaml
+            class_weight=None: apply class weight or not?
+    """
     loss_name = config['training'].get('loss', 'cross_entropy')
 
     if loss_name == 'cross_entropy':
-        loss = nn.CrossEntropyLoss()
+        if class_weights is not None:
+            loss = nn.CrossEntropyLoss(weight=class_weights)
+        else:
+            loss = nn.CrossEntropyLoss()
+    
     else: 
         raise ValueError(f"\n[!!!] Not support {loss_name} loss!\n")
 

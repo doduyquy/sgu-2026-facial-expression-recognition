@@ -9,3 +9,10 @@ scikit-learn
 wandb
 PyYAML
 tqdm
+
+# Jupyter Notebook & UI
+jupyter
+ipywidgets
+
+# Testing
+pytest
