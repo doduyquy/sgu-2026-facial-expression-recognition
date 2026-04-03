@@ -16,7 +16,10 @@ MODEL_REGISTRY = {
     # "vgg19": lambda **kw: VGG(variant="vgg19", **kw),
     # "resnet18": lambda **kw: ResNet(variant="resnet18", **kw),
     # "resnet34": lambda **kw: ResNet(variant="resnet34", **kw),
-    "resnet": ResNet50,
+    "resnet": lambda config, **kw: ResNet50(
+        num_classes=config['data'].get('num_classes', 7),
+        in_channels=config['data'].get('in_channels', 1)
+    ),
     # "resmaskingnet": ResMaskingNet,
 }
 
