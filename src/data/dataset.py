@@ -48,12 +48,15 @@ class FER2013(Dataset):
     
 if __name__ == "__main__":
     import os
-    from pathlib import Path
-    root_dir = Path.cwd().resolve().parent.parent
-    print(root_dir)
 
-    data_path = os.path.join(root_dir, "dataset/fer13-split")
-    data_train = FER2013(data_path=data_path, split='train')
+    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    print("Root dir:", root_dir)
+
+    data_path = os.path.join(root_dir, "dataset", "fer13-split")
+    print("Data path:", data_path)
+
+    data_train = FER2013(data_path=data_path, split="train")
+    print("Train samples:", len(data_train))
     
 
     print("Emotion for label 3:", data_train.label_to_emotion(3))
