@@ -16,7 +16,7 @@ MODEL_REGISTRY = {
     # "vgg19": lambda **kw: VGG(variant="vgg19", **kw),
     # "resnet18": lambda **kw: ResNet(variant="resnet18", **kw),
     # "resnet34": lambda **kw: ResNet(variant="resnet34", **kw),
-    "resnet50": ResNet50,
+    "resnet": ResNet50,
     # "resmaskingnet": ResMaskingNet,
 }
 
