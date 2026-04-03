@@ -1,3 +1,4 @@
+
 # Kế thừa base & override cho VGG
 _base_: "base.yaml"             # Kế thừa từ base
 
@@ -9,7 +10,7 @@ model:
 
 data:
   image_size: 224        # FER2013 gốc là 48x48. Nếu bạn muốn resize lên 224 thì chỉnh ở đây.
-  channels: 1            # 1: kịch bản 1 kênh, 3: kịch bản 3 kênh
+  channels: 3            # 1: kịch bản 1 kênh, 3: kịch bản 3 kênh
   batch_size: 32        # Tùy vào GPU (VRAM), nếu bị lỗi Out of Memory thì giảm xuống 16 hoặc 8.
 
 training:
