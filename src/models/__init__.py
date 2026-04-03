@@ -11,7 +11,7 @@ from .vgg import VGG19
 """
 
 MODEL_REGISTRY = {
-    # "simple_cnn": SimpleCNN,
+    "simple_cnn": SimpleCNN,
     # "vgg11": lambda **kw: VGG(variant="vgg11", **kw),
     "vgg19": lambda **kw: VGG19(config=kw['config'], channels=kw['config']['data']['channels']),
     # "resnet18": lambda **kw: ResNet(variant="resnet18", **kw),
