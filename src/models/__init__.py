@@ -2,7 +2,7 @@ from .simple_cnn import SimpleCNN
 # from .vgg import VGG
 # from .resnet import ResNet
 # from .resmaskingnet import ResMaskingNet
-
+from .resnet import ResNet50
 
 """Hi, guy, tạo model mới thì:
     1. Tạo file src/models/model_name.py
@@ -16,7 +16,7 @@ MODEL_REGISTRY = {
     # "vgg19": lambda **kw: VGG(variant="vgg19", **kw),
     # "resnet18": lambda **kw: ResNet(variant="resnet18", **kw),
     # "resnet34": lambda **kw: ResNet(variant="resnet34", **kw),
-    # "resnet50": lambda **kw: ResNet(variant="resnet50", **kw),
+    "resnet50": ResNet50,
     # "resmaskingnet": ResMaskingNet,
 }
 

@@ -1,0 +1,23 @@
+_base_: "base.yaml"
+
+model:
+  name: "resnet50"
+  pretrained: false
+
+data:
+  image_size: 48
+  batch_size: 64
+  num_workers: 2
+  num_classes: 7
+
+training:
+  epochs: 60
+  patience: 10
+  loss: "cross_entropy"
+  optimizer: "adam"
+  lr: 0.0003
+  weight_decay: 0.0001
+
+  scheduler: "reduce_lr_on_plateau"
+  lr_factor: 0.5
+  lr_patience: 3
