@@ -1,9 +1,11 @@
 # mypy: allow-untyped-defs
-import torch
+from collections.abc import Callable
+from typing_extensions import deprecated
 
 from torch import Tensor
 from torch.nn import _reduction as _Reduction, functional as F
 
+from torch import Module
 
 
 __all__ = [
