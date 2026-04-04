@@ -17,7 +17,7 @@ class Trainer:
         self.scheduler = scheduler
         self.device = device
         self.epochs = config['training'].get('epochs', 100)
-        self.patience = config['training'].get('patience', 10)
+        self.patience = config['training'].get('patience', 20)
         self.model_name = config['model'].get('name', 'simple_cnn')
         self.use_wandb = config['logging'].get('use_wandb', True)
         self.run_name = run_name
