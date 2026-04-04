@@ -1,0 +1,19 @@
+# VGG Fusion (Multi-Scale) for 48x48 grayscale input
+_base_: "base.yaml"
+
+model:
+  name: "vgg_fusion"
+  use_aux: true # Bật nhánh phụ (auxiliary branch) để ổn định training
+  dropout_block: 0.3
+  dropout_dense: 0.5
+
+data:
+  image_size: 48
+  channels: 1 
+  batch_size: 64
+
+training:
+  lr: 0.001 
+  epochs: 100
+  patience: 30
+  loss: "cross_entropy" # Trainer sẽ tự dùng inception_loss nếu model trả về tuple
