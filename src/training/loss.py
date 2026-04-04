@@ -1,4 +1,4 @@
-# mypy: allow-untyped-defs
+import torch
 from collections.abc import Callable
 from typing_extensions import deprecated
 
