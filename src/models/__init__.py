@@ -1,6 +1,6 @@
 from .inception import Inception
 from .simple_cnn import SimpleCNN
-from .vgg import VGG19
+from .vgg import VGG19, VGGFusion
 from .efficientnet import EfficientNetForFER2013
 # from .resnet import ResNet
 # from .resmaskingnet import ResMaskingNet
