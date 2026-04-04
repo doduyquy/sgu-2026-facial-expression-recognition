@@ -1,7 +1,29 @@
 import os
-from torch.utils.data import DataLoader
+import numpy as np
+import torch
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from .dataset import FER2013
 from .transforms import build_transform
+
+
+def _build_weighted_sampler(data_train, num_classes, mode="inverse"):
+    labels = data_train.data.iloc[:, 0].astype(int).values
+    class_counts = np.bincount(labels, minlength=num_classes).astype(np.float32)
+
+    class_counts[class_counts == 0] = 1.0
+    class_counts_tensor = torch.tensor(class_counts, dtype=torch.float)
+
+    if mode == "sqrt_inverse":
+        class_weights = 1.0 / torch.sqrt(class_counts_tensor)
+    else:
+        class_weights = 1.0 / class_counts_tensor
+
+    sample_weights = class_weights[torch.tensor(labels, dtype=torch.long)]
+    return WeightedRandomSampler(
+        weights=sample_weights,
+        num_samples=len(sample_weights),
+        replacement=True,
+    )
 
 def build_dataloader(config, data_path):
     """ Dataloader: Group dataset into batch (mini-batch) 
@@ -21,13 +43,26 @@ def build_dataloader(config, data_path):
     data_val = FER2013(data_path=data_path, split="val", transforms=trans_val)
     data_test = FER2013(data_path=data_path, split="test", transforms=trans_test)
 
+    use_weighted_sampler = config['training'].get('use_weighted_sampler', False)
+    sampler_weight_mode = config['training'].get('sampler_weight_mode', 'inverse')
+    train_sampler = None
+
+    if use_weighted_sampler:
+        train_sampler = _build_weighted_sampler(
+            data_train=data_train,
+            num_classes=config['data'].get('num_classes', 7),
+            mode=sampler_weight_mode,
+        )
+        print(f"--- Train sampler: weighted ({sampler_weight_mode})")
+
     # batch the dataset
     train_loader = DataLoader(
         data_train, 
         batch_size=config['data']['batch_size'],
         num_workers=config['data'].get('num_workers', 2),
         pin_memory=True, # push data to cache (-> send to GPU)
-        shuffle=True)
+        shuffle=(train_sampler is None),
+        sampler=train_sampler)
     val_loader = DataLoader(
         data_val, 
         batch_size=config['data']['batch_size'], 
