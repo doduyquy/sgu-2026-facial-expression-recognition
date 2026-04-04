@@ -10,9 +10,11 @@ training:
   epochs: 200
   patience: 10
   loss: "cross_entropy"
+  use_class_weights: true
+  class_weight_mode: "sqrt_inverse"
   optimizer: "adam"
   lr: 0.0003
   weight_decay: 0.0001
   scheduler: "reduce_lr_on_plateau"
   lr_factor: 0.5
-  lr_patience: 3
+  lr_patience: 23

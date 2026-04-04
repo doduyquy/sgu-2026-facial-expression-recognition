@@ -6,8 +6,9 @@ import torch.nn as nn
 # pool:  2x2, stride=2                  -> (B, 64, 24, 24)
 # layer2: ConvBlock(s=1) + 2 IDs        -> (B, 256, 24, 24)
 # layer3: ConvBlock(s=2) + 3 IDs        -> (B, 512, 12, 12)
-# avgpool: AdaptiveAvgPool2d((1,1))     -> (B, 512, 1, 1)
-# flatten                               -> (B, 512)
+# layer4: ConvBlock(s=2) + 3 IDs        -> (B, 1024, 6, 6)
+# avgpool: AdaptiveAvgPool2d((1,1))     -> (B, 1024, 1, 1)
+# flatten                               -> (B, 1024)
 # fc                                    -> (B, num_classes)
 #Hout = ((Hin + 2*pad - kernel_size) // stride) + 1
 
@@ -94,9 +95,16 @@ class ResNet50(nn.Module):
             IdentityBlock(512, [128,128,512]),
             IdentityBlock(512, [128,128,512])
         )
+        # Stage 4
+        self.layer4 = nn.Sequential(
+            ConvBlock(512, [256,256,1024]),
+            IdentityBlock(1024, [256,256,1024]),    
+            IdentityBlock(1024, [256,256,1024]),
+            IdentityBlock(1024, [256,256,1024])
+        )
         # Head
         self.avgpool = nn.AdaptiveAvgPool2d((1,1))
-        self.fc = nn.Linear(512, num_classes)
+        self.fc = nn.Linear(1024, num_classes)
 
     def forward(self, x):
         x = self.relu(self.bn1(self.conv1(x)))
@@ -104,6 +112,7 @@ class ResNet50(nn.Module):
 
         x = self.layer2(x)
         x = self.layer3(x)
+        x = self.layer4(x)
 
         x = self.avgpool(x)
         x = torch.flatten(x, 1)

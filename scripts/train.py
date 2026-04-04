@@ -61,9 +61,25 @@ def main():
     trainset_path = os.path.join(data_path, "train.csv")
     train_class_distribution = get_class_distribution(trainset_path)
     train_class_distribution_np = train_class_distribution.values
-    class_weights = 1.0 / torch.tensor(train_class_distribution_np, dtype=torch.float)
-    class_weights = class_weights / class_weights.sum()
-    class_weights = class_weights.to(device)
+    class_counts = torch.tensor(train_class_distribution_np, dtype=torch.float)
+
+    class_weight_mode = config['training'].get('class_weight_mode', 'inverse')
+    use_class_weights = config['training'].get('use_class_weights', True)
+
+    class_weights = None
+    if use_class_weights:
+        if class_weight_mode == 'sqrt_inverse':
+            class_weights = 1.0 / torch.sqrt(class_counts)
+        elif class_weight_mode == 'inverse':
+            class_weights = 1.0 / class_counts
+        else:
+            raise ValueError(f"Unsupported class_weight_mode: {class_weight_mode}")
+
+        class_weights = class_weights / class_weights.sum()
+        class_weights = class_weights.to(device)
+        print(f"--- Class weight mode: {class_weight_mode}")
+    else:
+        print("--- Class weights disabled")
 
 
     loss = build_loss(config=config, class_weights=class_weights)
