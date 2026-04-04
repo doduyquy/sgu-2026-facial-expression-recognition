@@ -1,0 +1,27 @@
+_base_: "base.yaml"
+
+model:
+  name: "efficientnet_fer2013"
+  pretrained: false
+
+  stem_channels: 32
+  head_channels: 128
+
+  classifier_dropout_rate: 0.4
+  block_dropout_rate: 0.1
+
+data:
+  image_size: 48
+  channels: 1
+  batch_size: 64
+
+training:
+  epochs: 50
+  optimizer: "adam"
+  lr: 0.001
+  weight_decay: 0.0001
+  scheduler: "reduce_lr_on_plateau"
+
+logging:
+  run_name: "efficientnet_fer2013_v1_baseline"
+  tags: ["efficientnet", "fer2013", "baseline", "v1"]

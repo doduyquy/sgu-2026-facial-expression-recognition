@@ -1,5 +1,6 @@
 from .simple_cnn import SimpleCNN
 from .vgg import VGG19
+from .efficientnet import EfficientNetForFER2013
 # from .resnet import ResNet
 # from .resmaskingnet import ResMaskingNet
 
@@ -18,6 +19,7 @@ MODEL_REGISTRY = {
     # "resnet34": lambda **kw: ResNet(variant="resnet34", **kw),
     # "resnet50": lambda **kw: ResNet(variant="resnet50", **kw),
     # "resmaskingnet": ResMaskingNet,
+    "efficientnet_fer2013": EfficientNetForFER2013,
 }
 
 def get_model(name: str, **kwargs):
