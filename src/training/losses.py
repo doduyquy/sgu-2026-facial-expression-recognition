@@ -1,21 +1,52 @@
 import torch.nn as nn 
 
 def build_loss(config, class_weights=None):
-    """ Define loss for traning, cross_entropy: default
-        Args:
-            config: all config load from yaml
-            class_weight=None: apply class weight or not?
-    """
-    loss_name = config['training'].get('loss', 'cross_entropy')
+    """ Define loss for training.
 
+    Supported losses:
+        - cross_entropy (default)
+        - focal_loss
+
+    Args:
+        config: dict config loaded from yaml
+        class_weights (Tensor, optional): class weights tensor
+
+    Returns:
+        loss function (nn.Module)
+    """
+
+    loss_name = config['training'].get('loss', 'cross_entropy').lower()
+
+    # =========================
+    # Cross Entropy Loss
+    # =========================
     if loss_name == 'cross_entropy':
-        if class_weights is not None:
-            loss = nn.CrossEntropyLoss(weight=class_weights)
-        else:
-            loss = nn.CrossEntropyLoss()
-    
-    else: 
+        loss = nn.CrossEntropyLoss(weight=class_weights)
+
+    # =========================
+    # Focal Loss
+    # =========================
+    elif loss_name == 'focal_loss':
+        gamma = config['training'].get('gamma', 2.0)
+        reduction = config['training'].get('reduction', 'mean')
+
+        loss = FocalLoss(
+            weight=class_weights,
+            gamma=gamma,
+            reduction=reduction
+        )
+
+    # =========================
+    # Not supported
+    # =========================
+    else:
         raise ValueError(f"\n[!!!] Not support {loss_name} loss!\n")
+
+    print(f"[Loss] Using loss: {loss_name}")
+    if loss_name == "focal_loss":
+        print(f"[Loss] gamma = {gamma}, reduction = {reduction}")
+    if class_weights is not None:
+        print(f"[Loss] class_weights = {class_weights}")
 
     return loss
 
