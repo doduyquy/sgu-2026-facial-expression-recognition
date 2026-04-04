@@ -1,0 +1,17 @@
+# VGG Scratch (4 blocks) for 48x48 3-channels input
+_base_: "base.yaml"
+
+model:
+  name: "vgg19" 
+  pretrained: false
+  dropout_block: 0.3
+  dropout_dense: 0.5
+
+data:
+  image_size: 48
+  channels: 3 # Using 3 channel for RGB
+  batch_size: 64
+
+training:
+  lr: 0.001 
+  epochs: 100
