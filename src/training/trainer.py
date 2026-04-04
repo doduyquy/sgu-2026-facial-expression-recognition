@@ -4,7 +4,7 @@ import os
 import numpy as np 
 from datetime import datetime
 from src.utils.logger_wandb import init_wandb, log_image_to_wandb, log_metrics
-
+from src.training.losses import inception_loss
 
 class Trainer:
     """Forward -> Compute loss -> zero_grad -> Backward -> Update weights (step)"""
@@ -37,7 +37,18 @@ class Trainer:
 
             self.optimizer.zero_grad()
             outputs = self.model(images)
-            loss = self.criterion(outputs, labels)
+            
+            # -------------
+            # [Inception]Vì incpetion trả về tuple của trong lúc training
+            if isinstance(outputs, tuple):
+                main_out, aux_out = outputs
+                loss = inception_loss(main_out, aux_out, labels, criterion=self.criterion)
+                outputs = main_out # Đặt lại outputs -> tinhs accuracy ở dưới
+            else:
+                loss = self.criterion(outputs, labels)
+            # -------------
+
+
             loss.backward()
             self.optimizer.step()
 

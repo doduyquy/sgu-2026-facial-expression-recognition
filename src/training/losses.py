@@ -1,5 +1,16 @@
 import torch.nn as nn 
 
+# Loss -> auxiliary (training)
+def inception_loss(main_out, aux_out, targets,
+                   criterion=nn.CrossEntropyLoss(),
+                   aux_weight: float = 0.3):
+    """Tính loss có auxiliary.
+    total_loss = main_loss + aux_weight * aux_loss
+    """
+    main_loss = criterion(main_out, targets)
+    aux_loss  = criterion(aux_out,  targets)
+    return main_loss + aux_weight * aux_loss
+ 
 def build_loss(config, class_weights=None):
     """ Define loss for traning, cross_entropy: default
         Args:
@@ -7,6 +18,7 @@ def build_loss(config, class_weights=None):
             class_weight=None: apply class weight or not?
     """
     loss_name = config['training'].get('loss', 'cross_entropy')
+    loss_inception_use_aux = config['model'].get('use_aux', None)
 
     if loss_name == 'cross_entropy':
         if class_weights is not None:

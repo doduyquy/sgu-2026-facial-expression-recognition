@@ -250,17 +250,6 @@ class Inception(nn.Module):
         return main_out
 
  
-# Loss -> auxiliary (training)
-def inception_loss(main_out, aux_out, targets,
-                   criterion=nn.CrossEntropyLoss(),
-                   aux_weight: float = 0.3):
-    """Tính loss có auxiliary.
-    total_loss = main_loss + aux_weight * aux_loss
-    """
-    main_loss = criterion(main_out, targets)
-    aux_loss  = criterion(aux_out,  targets)
-    return main_loss + aux_weight * aux_loss
- 
 
 if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
