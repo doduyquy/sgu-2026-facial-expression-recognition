@@ -1,4 +1,5 @@
 import torch.nn as nn 
+from .loss import FocalLoss
 
 def build_loss(config, class_weights=None):
     """ Define loss for training.
