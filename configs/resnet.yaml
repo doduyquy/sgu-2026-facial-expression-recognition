@@ -11,7 +11,7 @@ training:
   patience: 10
   loss: "cross_entropy"
   use_class_weights: true
-  class_weight_mode: "inverse"
+  class_weight_mode: "sqrt_inverse"
   optimizer: "adam"
   lr: 0.0003
   weight_decay: 0.0001
