@@ -8,7 +8,7 @@ model:
   head_channels: 128
 
   classifier_dropout_rate: 0.4
-  block_dropout_rate: 0.1
+  block_dropout_rate: 0.0
 
 data:
   image_size: 48
@@ -17,6 +17,7 @@ data:
 
 training:
   epochs: 50
+  loss: 'cross_entropy'
   optimizer: "adam"
   lr: 0.001
   weight_decay: 0.0001

@@ -64,7 +64,8 @@ def main():
     class_weights = 1.0 / torch.tensor(train_class_distribution_np, dtype=torch.float)
     class_weights = class_weights / class_weights.sum()
     class_weights = class_weights.to(device)
-
+    print(train_class_distribution)
+    print(class_weights)
 
     loss = build_loss(config=config, class_weights=class_weights)
     optimizer = build_optimizer(model=model, config=config)
@@ -119,3 +120,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
