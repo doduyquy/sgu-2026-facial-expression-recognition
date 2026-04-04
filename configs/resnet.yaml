@@ -4,12 +4,11 @@ model:
   name: "resnet"
   pretrained: false
 
-
-
 training:
   epochs: 200
-  patience: 30
-  loss: "cross_entropy"
+  patience: 10
+  loss: "focal_loss"
+  focal_gamma: 2.0
   optimizer: "adam"
   lr: 0.0003
   weight_decay: 0.0001

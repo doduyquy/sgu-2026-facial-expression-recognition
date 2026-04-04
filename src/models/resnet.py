@@ -2,14 +2,13 @@ import torch
 import torch.nn as nn
 
 # Input:  (B, 1, 48, 48)
-# conv1: 7x7, stride=2, pad=3           -> (B, 64, 24, 24)
-# pool:  3x3, stride=2, pad=1           -> (B, 64, 12, 12)
-# layer2: ConvBlock(s=1) + 2 IDs        -> (B, 256, 12, 12)
-# layer3: ConvBlock(s=2) + 3 IDs        -> (B, 512, 6, 6)
-# layer4: ConvBlock(s=2) + 5 IDs        -> (B, 1024, 3, 3)
-# layer5: ConvBlock(s=2) + 2 IDs        -> (B, 2048, 2, 2)
-# avgpool: AdaptiveAvgPool2d((1,1))     -> (B, 2048, 1, 1)
-# flatten                               -> (B, 2048)
+# conv1: 3x3, stride=1, pad=1           -> (B, 64, 48, 48)
+# pool:  2x2, stride=2                  -> (B, 64, 24, 24)
+# layer2: ConvBlock(s=1) + 2 IDs        -> (B, 256, 24, 24)
+# layer3: ConvBlock(s=2) + 3 IDs        -> (B, 512, 12, 12)
+# layer4: ConvBlock(s=2) + 3 IDs        -> (B, 1024, 6, 6)
+# avgpool: AdaptiveAvgPool2d((1,1))     -> (B, 1024, 1, 1)
+# flatten                               -> (B, 1024)
 # fc                                    -> (B, num_classes)
 #Hout = ((Hin + 2*pad - kernel_size) // stride) + 1
 
@@ -77,10 +76,10 @@ class ResNet50(nn.Module):
     def __init__(self, num_classes=7, in_channels=1):
         super().__init__()
 
-        self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3)
+        self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, stride=1, padding=1)
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU()
-        self.pool = nn.MaxPool2d(3, stride=2, padding=1)
+        self.pool = nn.MaxPool2d(2, stride=2)
 
         # Stage 2
         self.layer2 = nn.Sequential(
@@ -101,18 +100,11 @@ class ResNet50(nn.Module):
             ConvBlock(512, [256,256,1024]),
             IdentityBlock(1024, [256,256,1024]),    
             IdentityBlock(1024, [256,256,1024]),
-            IdentityBlock(1024, [256,256,1024]),
-            IdentityBlock(1024, [256,256,1024]),
             IdentityBlock(1024, [256,256,1024])
-        )
-        self.layer5 = nn.Sequential(
-            ConvBlock(1024, [512,512,2048]),
-            IdentityBlock(2048, [512,512,2048]),
-            IdentityBlock(2048, [512,512,2048])
         )
         # Head
         self.avgpool = nn.AdaptiveAvgPool2d((1,1))
-        self.fc = nn.Linear(2048, num_classes)
+        self.fc = nn.Linear(1024, num_classes)
 
     def forward(self, x):
         x = self.relu(self.bn1(self.conv1(x)))
@@ -120,8 +112,7 @@ class ResNet50(nn.Module):
 
         x = self.layer2(x)
         x = self.layer3(x)
-        x= self.layer4(x)
-        x = self.layer5(x)
+        x = self.layer4(x)
 
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
