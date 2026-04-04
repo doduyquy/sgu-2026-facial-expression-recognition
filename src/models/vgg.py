@@ -31,92 +31,94 @@ class VGG19(nn.Module):
         # config
         self.num_classes = config['data']['num_classes']
         self.dropout_dense = config['model']['dropout_dense']
-        self.dropout_block=config['model']['dropout_block']
-        # self.input_size=input_size
-        #block1 
-        self.b1_conv1=nn.Conv2d(channels,out_channels=64,kernel_size=3, padding=1) #[channel,224,224] -> [64,224,224]
-        self.b1_relu=nn.ReLU()
-        self.b1_conv2=nn.Conv2d(in_channels=64,out_channels=64,kernel_size=3, padding=1) #[64,224,224] -> [64,224,224]
-        self.b1_maxpool=nn.MaxPool2d(kernel_size=2,stride=2) #[64,224,224] -> [64,112,112]
-        self.b1_dropout = nn.Dropout(self.dropout_block)
+        self.dropout_block = config['model']['dropout_block']
 
-        #block2
-        self.b2_conv1=nn.Conv2d(in_channels=64,out_channels=128,kernel_size=3,padding=1) #[channel,112,112] -> [128,112,112]
-        self.b2_relu=nn.ReLU()
-        self.b2_conv2=nn.Conv2d(in_channels=128,out_channels=128,kernel_size=3,padding=1) #[128,112,112] -> [128,112,112]
-        self.b2_relu=nn.ReLU()
-        self.b2_maxpool=nn.MaxPool2d(kernel_size=2,stride=2) #[128,112,112] -> [128,56,56]
-        self.b2_dropout=nn.Dropout(self.dropout_block)
+        # Block 1: 48x48 -> 24x24
+        self.b1 = nn.Sequential(
+            nn.Conv2d(channels, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Dropout(self.dropout_block)
+        )
 
-        #block3
-        self.b3_conv1=nn.Conv2d(in_channels=128,out_channels=256,kernel_size=3,padding=1) #[128,56,56] -> [256,56,56]
-        self.b3_relu=nn.ReLU()
-        self.b3_conv2=nn.Conv2d(in_channels=256,out_channels=256,kernel_size=3,padding=1) #[256,56,56] -> [256,56,56]
-        self.b3_relu=nn.ReLU()
-        self.b3_maxpool=nn.MaxPool2d(kernel_size=2,stride=2) #[256,56,56] -> [256,28,28]
-        self.b3_dropout=nn.Dropout(self.dropout_block)
+        # Block 2: 24x24 -> 12x12
+        self.b2 = nn.Sequential(
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Dropout(self.dropout_block)
+        )
 
-        #block4
-        self.b4_conv1=nn.Conv2d(in_channels=256,out_channels=512,kernel_size=3,padding=1) #[256,28,28] -> [512,28,28]
-        self.b4_relu=nn.ReLU()
-        self.b4_conv2=nn.Conv2d(in_channels=512,out_channels=512,kernel_size=3,padding=1) #[512,28,28] -> [512,28,28]
-        self.b4_relu=nn.ReLU()
-        self.b4_maxpool=nn.MaxPool2d(kernel_size=2,stride=2) #[512,28,28] -> [512,14,14]
-        self.b4_dropout=nn.Dropout(self.dropout_block)
+        # Block 3: 12x12 -> 6x6
+        self.b3 = nn.Sequential(
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Dropout(self.dropout_block)
+        )
 
-        # Removed Block 5 because 48/2^5 = 1.5. Stay at 3x3.
+        # Block 4: 6x6 -> 3x3
+        self.b4 = nn.Sequential(
+            nn.Conv2d(256, 512, kernel_size=3, padding=1),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(512, 512, kernel_size=3, padding=1),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Dropout(self.dropout_block)
+        )
+
         self.avgpool = nn.AdaptiveAvgPool2d((3, 3))
         self.flatten = nn.Flatten()
 
-        # Dense
-        self.fc = nn.Linear(512 * 3 * 3, 512)
-        self.fc_relu = nn.ReLU()
-        self.fc_dropout = nn.Dropout(self.dropout_dense)
+        self.classifier = nn.Sequential(
+            nn.Linear(512 * 3 * 3, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(self.dropout_dense),
+            nn.Linear(512, self.num_classes)
+        )
 
-        # Output
-        self.out = nn.Linear(512, self.num_classes)
+        # Kaiming init (Cực kỳ quan trọng để train từ đầu)
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d) or isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
-        #block1
-        out=self.b1_conv1(x)
-        out=self.b1_relu(out)
-        out=self.b1_conv2(out)
-        out=self.b1_relu(out)
-        out=self.b1_maxpool(out)
-        out=self.b1_dropout(out)
+        x = self.b1(x)
+        x = self.b2(x)
+        x = self.b3(x)
+        x = self.b4(x)
+        
+        x = self.avgpool(x)
+        x = self.flatten(x)
+        x = self.classifier(x)
+        return x
 
-        #block2
-        out=self.b2_conv1(out)
-        out=self.b2_relu(out)
-        out=self.b2_conv2(out)
-        out=self.b2_relu(out)
-        out=self.b2_maxpool(out)
-        out=self.b2_dropout(out)
-
-        #block3
-        out=self.b3_conv1(out)
-        out=self.b3_relu(out)
-        out=self.b3_conv2(out)
-        out=self.b3_relu(out)
-        out=self.b3_maxpool(out)
-        out=self.b3_dropout(out)
-
-        # block 4
-        out = self.b4_relu(self.b4_conv1(out))
-        out = self.b4_maxpool(self.b4_relu(self.b4_conv2(out)))
-        out = self.b4_dropout(out)
-
-        # avgpool
-        out = self.avgpool(out)
-        out = self.flatten(out)
-
-        # FC
-        out = self.fc_relu(self.fc(out))
-        out = self.fc_dropout(out)
-
-        # output
-        out = self.out(out)
-        return out
 
 
 
