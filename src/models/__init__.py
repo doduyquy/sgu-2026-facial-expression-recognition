@@ -1,3 +1,4 @@
+from .inception import Inception
 from .simple_cnn import SimpleCNN
 from .vgg import VGG19
 from .efficientnet import EfficientNetForFER2013
@@ -13,6 +14,7 @@ from .efficientnet import EfficientNetForFER2013
 
 MODEL_REGISTRY = {
     "simple_cnn": SimpleCNN,
+    "inception": Inception,
     # "vgg11": lambda **kw: VGG(variant="vgg11", **kw),
     "vgg19": lambda **kw: VGG19(config=kw['config'], channels=kw['config']['data']['channels']),
     # "resnet18": lambda **kw: ResNet(variant="resnet18", **kw),
