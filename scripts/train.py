@@ -1,12 +1,16 @@
 import os
+import copy
 import wandb
 import torch
 import argparse
+from torch.utils.data import DataLoader, Subset
 from src.utils.config import load_config
 from src.utils.seed import set_seed
 from src.utils.logger_wandb import init_wandb
 
 from src.data.dataloader import build_dataloader
+from src.data.dataset import FER2013
+from src.data.transforms import build_transform
 from src.models import get_model # in __init__ gfile
 from src.training.trainer import Trainer
 from src.training.losses import build_loss
@@ -19,6 +23,54 @@ from src.utils.data_stats import get_class_distribution # testing: class weight
 
 from datetime import datetime
 #-------------------------------------------------------------
+
+
+def _collect_misclassified_indices(model, data_path, config, device):
+    eval_trans = build_transform(config, split="val")
+    eval_dataset = FER2013(data_path=data_path, split="train", transforms=eval_trans)
+    eval_loader = DataLoader(
+        eval_dataset,
+        batch_size=config['data']['batch_size'],
+        num_workers=config['data'].get('num_workers', 2),
+        shuffle=False,
+        pin_memory=True,
+    )
+
+    model.eval()
+    wrong_indices = []
+    base_idx = 0
+
+    with torch.no_grad():
+        for images, labels in eval_loader:
+            images, labels = images.to(device), labels.to(device)
+            logits = model(images)
+            preds = torch.argmax(logits, dim=1)
+            wrong_mask = preds != labels
+
+            local_wrong = torch.nonzero(wrong_mask, as_tuple=False).squeeze(1).tolist()
+            if isinstance(local_wrong, int):
+                local_wrong = [local_wrong]
+
+            wrong_indices.extend([base_idx + i for i in local_wrong])
+            base_idx += labels.size(0)
+
+    return wrong_indices
+
+
+def _build_hard_train_loader(data_path, config, hard_indices):
+    train_trans = build_transform(config, split="train")
+    full_train_dataset = FER2013(data_path=data_path, split="train", transforms=train_trans)
+    hard_dataset = Subset(full_train_dataset, hard_indices)
+    hard_batch_size = config['training'].get('hard_mining_batch_size', config['data']['batch_size'])
+
+    hard_loader = DataLoader(
+        hard_dataset,
+        batch_size=hard_batch_size,
+        num_workers=config['data'].get('num_workers', 2),
+        shuffle=True,
+        pin_memory=True,
+    )
+    return hard_loader
 
 def main():
     print("\t\t--> In main <--\t\t")
@@ -103,6 +155,51 @@ def main():
         save_dir=path_save_ckpt
     )
     train_losses, val_losses = trainer.fit()
+    final_optimizer = optimizer
+
+    # optional phase-2 hard example mining (misclassification replay)
+    hard_cfg_enabled = config['training'].get('hard_mining_enabled', False)
+    if hard_cfg_enabled:
+        print("\n" + "="*51)
+        print("Hard Mining Phase (phase-2)")
+        print("="*51)
+
+        load_checkpoints(model, optimizer, path_save_ckpt, device)
+        wrong_indices = _collect_misclassified_indices(model, data_path, config, device)
+
+        max_samples = config['training'].get('hard_mining_max_samples', 0)
+        if max_samples and len(wrong_indices) > max_samples:
+            wrong_indices = wrong_indices[:max_samples]
+
+        print(f"--- Hard samples found: {len(wrong_indices)}")
+
+        if len(wrong_indices) > 0:
+            hard_loader = _build_hard_train_loader(data_path, config, wrong_indices)
+
+            phase2_config = copy.deepcopy(config)
+            phase2_config['training']['epochs'] = config['training'].get('hard_mining_epochs', 8)
+            phase2_config['training']['patience'] = config['training'].get('hard_mining_patience', 3)
+            phase2_config['training']['lr'] = config['training']['lr'] * config['training'].get('hard_mining_lr_scale', 0.2)
+            phase2_config['logging']['use_wandb'] = False
+
+            phase2_optimizer = build_optimizer(model=model, config=phase2_config)
+            phase2_scheduler = build_scheduler(optimizer=phase2_optimizer, config=phase2_config)
+
+            phase2_trainer = Trainer(
+                model=model,
+                train_loader=hard_loader,
+                val_loader=val_loader,
+                criterion=loss,
+                optimizer=phase2_optimizer,
+                scheduler=phase2_scheduler,
+                config=phase2_config,
+                device=device,
+                run_name=f"{run_name}_hardmining",
+                save_dir=path_save_ckpt,
+            )
+            phase2_trainer.fit()
+            load_checkpoints(model, phase2_optimizer, path_save_ckpt, device)
+            final_optimizer = phase2_optimizer
 
     # evaluate
     print("\n" + "="*51)
@@ -110,7 +207,7 @@ def main():
     print("="*51)
     
     # Get path of file best  
-    load_checkpoints(model, optimizer, path_save_ckpt, device)
+    load_checkpoints(model, final_optimizer, path_save_ckpt, device)
     
     eval_dir_path = os.path.join(root_path ,"outputs/figures")
     os.makedirs(eval_dir_path, exist_ok=True)
