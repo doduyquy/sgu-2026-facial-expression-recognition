@@ -18,7 +18,13 @@ MODEL_REGISTRY = {
     # "resnet34": lambda **kw: ResNet(variant="resnet34", **kw),
     "resnet": lambda config, **kw: ResNet50(
         num_classes=config['data'].get('num_classes', 7),
-        in_channels=config['data'].get('in_channels', 1)
+        in_channels=config['data'].get('in_channels', 1),
+        use_eca_stage34=config['model'].get('use_eca_stage34', config['model'].get('use_cbam_stage34', True)),
+        eca_kernel_size=config['model'].get('eca_kernel_size', config['model'].get('cbam_kernel_size', 3)),
+        use_arcface=config['model'].get('use_arcface', False),
+        arcface_s=config['model'].get('arcface_s', 30.0),
+        arcface_m=config['model'].get('arcface_m', 0.5),
+        arcface_easy_margin=config['model'].get('arcface_easy_margin', False),
     ),
     # "resmaskingnet": ResMaskingNet,
 }

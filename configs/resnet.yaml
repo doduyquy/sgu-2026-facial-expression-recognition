@@ -3,6 +3,12 @@ _base_: "base.yaml"
 model:
   name: "resnet"
   pretrained: false
+  use_eca_stage34: true
+  eca_kernel_size: 3
+  use_arcface: true
+  arcface_s: 30.0
+  arcface_m: 0.35
+  arcface_easy_margin: false
 
 training:
   epochs: 200
@@ -10,7 +16,7 @@ training:
   loss: "cross_entropy"
   use_class_weights: False
   class_weight_mode: "sqrt_inverse"
-  use_logit_adjustment: true
+  use_logit_adjustment: False
   logit_adjustment_tau: 0.2
   logit_adjustment_temperature: 1.0
   logit_adjustment_dynamic_tau: true

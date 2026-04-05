@@ -24,6 +24,15 @@ class Trainer:
         self.config = config
         self.path_save_ckpt = save_dir
 
+    def _forward_model(self, images, labels=None):
+        # ArcFace models may require labels in training forward, while others ignore this.
+        if labels is not None:
+            try:
+                return self.model(images, labels)
+            except TypeError:
+                return self.model(images)
+        return self.model(images)
+
 
     def train_one_epoch(self):
         self.model.train()
@@ -36,7 +45,7 @@ class Trainer:
             images, labels = images.to(self.device), labels.to(self.device)
 
             self.optimizer.zero_grad()
-            outputs = self.model(images)
+            outputs = self._forward_model(images, labels)
             loss = self.criterion(outputs, labels)
             loss.backward()
             self.optimizer.step()
@@ -63,7 +72,7 @@ class Trainer:
             for images, labels in self.val_loader:
                 images, labels = images.to(self.device), labels.to(self.device)
 
-                outputs = self.model(images)
+                outputs = self._forward_model(images, None)
                 loss = self.criterion(outputs, labels)
                 running_loss += loss.item() * images.size(0)
 
