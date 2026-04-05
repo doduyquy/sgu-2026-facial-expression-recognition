@@ -4,6 +4,7 @@ _base_: "base.yaml"
 model:
   name: "vgg_fusion"
   use_aux: true # Bật nhánh phụ (auxiliary branch) để ổn định training
+  use_attention: true # Bật cơ chế Spatial Attention
   dropout_block: 0.3
   dropout_dense: 0.5
 

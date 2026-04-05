@@ -118,7 +118,22 @@ class VGG19(nn.Module):
         x = self.avgpool(x)
         x = self.flatten(x)
         x = self.classifier(x)
-        return x
+
+class SpatialAttention(nn.Module):
+    def __init__(self, kernel_size=7):
+        super(SpatialAttention, self).__init__()
+        assert kernel_size in [3, 7], 'kernel size must be 3 or 7'
+        padding = 3 if kernel_size == 7 else 1
+        self.conv = nn.Conv2d(2, 1, kernel_size, padding=padding, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        # x: [B, C, H, W]
+        avg_out = torch.mean(x, dim=1, keepdim=True)
+        max_out, _ = torch.max(x, dim=1, keepdim=True)
+        x_in = torch.cat([avg_out, max_out], dim=1) # [B, 2, H, W]
+        attn = self.sigmoid(self.conv(x_in)) # [B, 1, H, W]
+        return x * attn
 
 class VGGFusion(nn.Module):
     def __init__(self, config, channels):
@@ -128,6 +143,7 @@ class VGGFusion(nn.Module):
         self.dropout_dense = config['model']['dropout_dense']
         self.dropout_block = config['model']['dropout_block']
         self.use_aux = config['model'].get('use_aux', False)
+        self.use_attention = config['model'].get('use_attention', False)
 
         # Block 1: 48x48 -> 24x24
         self.b1 = nn.Sequential(
@@ -177,6 +193,11 @@ class VGGFusion(nn.Module):
             nn.Dropout(self.dropout_block)
         )
 
+        if self.use_attention:
+            print("--> Using Spatial Attention in VGGFusion")
+            self.sa3 = SpatialAttention(kernel_size=7)
+            self.sa4 = SpatialAttention(kernel_size=3) # Dùng kernel nhỏ hơn cho 3x3 scale
+
         # Auxiliary classifier from Block 3
         if self.use_aux:
             self.aux_classifier = nn.Sequential(
@@ -221,6 +242,11 @@ class VGGFusion(nn.Module):
         feat_b3 = self.b3(x)
         feat_b4 = self.b4(feat_b3)
         
+        # Apply Attention if enabled
+        if self.use_attention:
+            feat_b3 = self.sa3(feat_b3)
+            feat_b4 = self.sa4(feat_b4)
+        
         # 1. Auxiliary branch (chỉ lấy khi train và bật use_aux)
         aux_out = None
         if self.training and self.use_aux:
@@ -236,8 +262,40 @@ class VGGFusion(nn.Module):
         
         if self.training and self.use_aux:
             return out, aux_out
-        
+            
         return out
+
+if __name__ == "__main__":
+    # Test VGGFusion
+    print("Testing VGGFusion with Attention...")
+    mock_config = {
+        'data': {'num_classes': 7},
+        'model': {
+            'dropout_dense': 0.5,
+            'dropout_block': 0.3,
+            'use_aux': True,
+            'use_attention': True
+        }
+    }
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = VGGFusion(mock_config, channels=1).to(device)
+    model.train() # To test aux branch
+    
+    dummy_input = torch.randn(2, 1, 48, 48).to(device)
+    out, aux = model(dummy_input)
+    
+    print(f"Main output shape: {out.shape}")
+    print(f"Aux output shape: {aux.shape}")
+    
+    model.eval()
+    out_eval = model(dummy_input)
+    print(f"Eval output shape: {out_eval.shape}")
+    
+    assert out.shape == (2, 7)
+    assert aux.shape == (2, 7)
+    assert out_eval.shape == (2, 7)
+    print("VGGFusion Test Passed!")
 
 
 
