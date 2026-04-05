@@ -57,14 +57,18 @@ def main():
         config=config)
     
 
-    # get class_distribution for class_weights (for testing)
-    trainset_path = os.path.join(data_path, "train.csv")
-    train_class_distribution = get_class_distribution(trainset_path)
-    train_class_distribution_np = train_class_distribution.values
-    class_weights = 1.0 / torch.tensor(train_class_distribution_np, dtype=torch.float)
-    class_weights = class_weights / class_weights.sum()
-    class_weights = class_weights.to(device)
-
+    # get class_distribution for class_weights (optional)
+    use_class_weights = config['training'].get('use_class_weights', False)
+    class_weights = None
+    
+    if use_class_weights:
+        print("--> Using Class Weights to handle imbalance...")
+        trainset_path = os.path.join(data_path, "train.csv")
+        train_class_distribution = get_class_distribution(trainset_path)
+        train_class_distribution_np = train_class_distribution.values
+        class_weights = 1.0 / torch.tensor(train_class_distribution_np, dtype=torch.float)
+        class_weights = class_weights / class_weights.sum()
+        class_weights = class_weights.to(device)
 
     loss = build_loss(config=config, class_weights=class_weights)
     optimizer = build_optimizer(model=model, config=config)

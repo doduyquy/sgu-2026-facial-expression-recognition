@@ -54,7 +54,11 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> Non
     print(f"--> Report:\n {pd.DataFrame(report).transpose().to_string()}")
 
     # Plot Confusion Matrix
-    class_distribution = get_class_distribution(testset_path)
+    csv_path = testset_path
+    if os.path.isdir(csv_path):
+        csv_path = os.path.join(csv_path, "test.csv")
+        
+    class_distribution = get_class_distribution(csv_path)
     cm_path = os.path.join(save_dir, "confusion_matrix.png")
     fig_cm = plot_confusion_matrix(all_trues, all_preds, class_distribution, acc, save_path=cm_path)
     log_image_to_wandb("Evaluation/Confusion_Matrix", fig_cm)
