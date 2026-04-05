@@ -95,9 +95,9 @@ class ResNet50(nn.Module):
 
         # Stage 2
         self.layer2 = nn.Sequential(
-            ConvBlock(64, [64,64,256], stride=1),
-            IdentityBlock(256, [64,64,256]),
-            IdentityBlock(256, [64,64,256])
+            ConvBlock(64, [64,64,256], stride=1, use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size),
+            IdentityBlock(256, [64,64,256], use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size),
+            IdentityBlock(256, [64,64,256], use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size)
         )
 
         # Stage 3
