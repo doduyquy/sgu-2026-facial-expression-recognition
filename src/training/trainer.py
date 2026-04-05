@@ -95,6 +95,8 @@ class Trainer:
         print(f'\n--> Start training in total {self.epochs} epochs with {self.device} device. Start...\n')
 
         for ep in range(self.epochs):
+            if hasattr(self.criterion, "set_epoch"):
+                self.criterion.set_epoch(ep + 1)
 
             train_loss, train_acc = self.train_one_epoch()
             val_loss, val_acc = self.validate()
@@ -110,14 +112,17 @@ class Trainer:
 
             # wandb log
             if self.use_wandb:
-                log_metrics({
+                metrics_payload = {
                     "Epoch": ep + 1,
                     "Train/Loss": train_loss,
                     "Train/Accuracy": train_acc,
                     "Val/Loss": val_loss,
                     "Val/Accuracy": val_acc,
                     "Learning_Rate": self.optimizer.param_groups[0]['lr']
-                }, epoch=ep)
+                }
+                if hasattr(self.criterion, "current_tau"):
+                    metrics_payload["Train/LogitAdjustTau"] = float(self.criterion.current_tau)
+                log_metrics(metrics_payload, epoch=ep)
 
             # lr scheduler
             if self.scheduler is not None:

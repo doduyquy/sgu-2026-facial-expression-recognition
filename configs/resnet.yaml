@@ -10,12 +10,12 @@ training:
   loss: "cross_entropy"
   use_class_weights: False
   class_weight_mode: "sqrt_inverse"
-  hard_mining_enabled: true
-  hard_mining_epochs: 20
-  hard_mining_patience: 3
-  hard_mining_lr_scale: 0.2
-  hard_mining_max_samples: 12000
-  hard_mining_batch_size: 64
+  use_logit_adjustment: true
+  logit_adjustment_tau: 0.2
+  logit_adjustment_temperature: 1.0
+  logit_adjustment_dynamic_tau: true
+  logit_adjustment_dynamic_k: 0.6
+  logit_adjustment_dynamic_tau_min: 0.1
   optimizer: "adam"
   lr: 0.0003
   weight_decay: 0.0001
