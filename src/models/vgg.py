@@ -194,9 +194,8 @@ class VGGFusion(nn.Module):
         )
 
         if self.use_attention:
-            print("--> Using Spatial Attention in VGGFusion")
-            self.sa3 = SpatialAttention(kernel_size=7)
-            self.sa4 = SpatialAttention(kernel_size=3) # Dùng kernel nhỏ hơn cho 3x3 scale
+            print("--> Using Spatial Attention AFTER Fusion in VGGFusion")
+            self.sa_fusion = SpatialAttention(kernel_size=3) # Dùng kernel 3 cho scale 3x3 sau fusion
 
         # Auxiliary classifier from Block 3
         if self.use_aux:
@@ -242,10 +241,6 @@ class VGGFusion(nn.Module):
         feat_b3 = self.b3(x)
         feat_b4 = self.b4(feat_b3)
         
-        # Apply Attention if enabled
-        if self.use_attention:
-            feat_b3 = self.sa3(feat_b3)
-            feat_b4 = self.sa4(feat_b4)
         
         # 1. Auxiliary branch (chỉ lấy khi train và bật use_aux)
         aux_out = None
@@ -256,6 +251,10 @@ class VGGFusion(nn.Module):
         # Resize feat_b3 (6x6) về (3x3) để nối với feat_b4
         feat_b3_resized = self.fusion_pool(feat_b3)
         combined = torch.cat([feat_b4, feat_b3_resized], dim=1) # (512+256) = 768 channels
+
+        # Apply Attention AFTER Fusion
+        if self.use_attention:
+            combined = self.sa_fusion(combined)
         
         out = torch.flatten(combined, 1)
         out = self.classifier(out)
