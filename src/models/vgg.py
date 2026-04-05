@@ -135,6 +135,36 @@ class SpatialAttention(nn.Module):
         attn = self.sigmoid(self.conv(x_in)) # [B, 1, H, W]
         return x * attn
 
+class ChannelAttention(nn.Module):
+    def __init__(self, in_planes, ratio=16):
+        super(ChannelAttention, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+           
+        self.fc = nn.Sequential(
+            nn.Conv2d(in_planes, in_planes // ratio, 1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_planes // ratio, in_planes, 1, bias=False)
+        )
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg_out = self.fc(self.avg_pool(x))
+        max_out = self.fc(self.max_pool(x))
+        out = avg_out + max_out
+        return x * self.sigmoid(out)
+
+class CBAM(nn.Module):
+    def __init__(self, in_planes, ratio=16, kernel_size=7):
+        super(CBAM, self).__init__()
+        self.ca = ChannelAttention(in_planes, ratio)
+        self.sa = SpatialAttention(kernel_size)
+
+    def forward(self, x):
+        x = self.ca(x)
+        x = self.sa(x)
+        return x
+
 class VGGFusion(nn.Module):
     def __init__(self, config, channels):
         super().__init__()
@@ -194,8 +224,9 @@ class VGGFusion(nn.Module):
         )
 
         if self.use_attention:
-            print("--> Using Spatial Attention AFTER Fusion in VGGFusion")
-            self.sa_fusion = SpatialAttention(kernel_size=3) # Dùng kernel 3 cho scale 3x3 sau fusion
+            print("--> Using CBAM (Channel + Spatial Attention) in VGGFusion")
+            self.cbam3 = CBAM(256, ratio=16, kernel_size=7)
+            self.cbam4 = CBAM(512, ratio=16, kernel_size=3)
 
         # Auxiliary classifier from Block 3
         if self.use_aux:
@@ -242,6 +273,11 @@ class VGGFusion(nn.Module):
         feat_b4 = self.b4(feat_b3)
         
         
+        # Apply Attention BEFORE Fusion (giữ flow của bản 69.3%)
+        if self.use_attention:
+            feat_b3 = self.cbam3(feat_b3)
+            feat_b4 = self.cbam4(feat_b4)
+            
         # 1. Auxiliary branch (chỉ lấy khi train và bật use_aux)
         aux_out = None
         if self.training and self.use_aux:
@@ -251,10 +287,6 @@ class VGGFusion(nn.Module):
         # Resize feat_b3 (6x6) về (3x3) để nối với feat_b4
         feat_b3_resized = self.fusion_pool(feat_b3)
         combined = torch.cat([feat_b4, feat_b3_resized], dim=1) # (512+256) = 768 channels
-
-        # Apply Attention AFTER Fusion
-        if self.use_attention:
-            combined = self.sa_fusion(combined)
         
         out = torch.flatten(combined, 1)
         out = self.classifier(out)
