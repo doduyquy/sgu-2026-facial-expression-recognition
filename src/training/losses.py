@@ -10,13 +10,12 @@ def build_loss(config, class_weights=None):
             class_weight=None: apply class weight or not?
     """
     loss_name = config['training'].get('loss', 'cross_entropy')
-    label_smoothing = config['training'].get('label_smoothing', 0.0)
 
     if loss_name == 'cross_entropy':
         if class_weights is not None:
-            loss = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
+            loss = nn.CrossEntropyLoss(weight=class_weights)
         else:
-            loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+            loss = nn.CrossEntropyLoss()
     
     else: 
         raise ValueError(f"\n[!!!] Not support {loss_name} loss!\n")

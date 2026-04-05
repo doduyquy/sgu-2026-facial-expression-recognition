@@ -8,11 +8,8 @@ training:
   epochs: 200
   patience: 10
   loss: "cross_entropy"
-  label_smoothing: 0.05
-  use_class_weights: true
+  use_class_weights: False
   class_weight_mode: "sqrt_inverse"
-  use_weighted_sampler: true
-  sampler_weight_mode: "sqrt_inverse"
   optimizer: "adam"
   lr: 0.0003
   weight_decay: 0.0001
