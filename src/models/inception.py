@@ -97,12 +97,12 @@ class AuxiliaryClassifier(nn.Module):
     def __init__(self, in_channels: int, num_classes: int, dropout_p: float = 0.3):
         super().__init__()
         
-        self.pool       = nn.AdaptiveAvgPool2d((16, 16))              # 16x16xin_channels (224)
+        self.pool       = nn.AdaptiveAvgPool2d((4, 4))              # 16x16xin_channels (224)
         self.conv       = ConvBlock(in_channels=in_channels, out_channels=128,
                                     kernel_size=1, stride=1, padding=0)
         self.flatten    = nn.Flatten()
         self.dropout    = nn.Dropout(p=dropout_p)
-        self.fc         = nn.Linear(128 * 16 * 16, num_classes)
+        self.fc         = nn.Linear(128 * 4 * 4, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.pool(x)
