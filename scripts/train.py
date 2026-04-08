@@ -76,6 +76,8 @@ def main():
     class_weights = (1.0 - beta) / (1.0 - beta ** class_counts)
     class_weights = class_weights / class_weights.sum() * len(class_weights)
     class_weights = class_weights.to(device)
+    print(train_class_distribution)
+    print(class_weights)
 
     loss = build_loss(config=config, class_weights=class_weights)
     optimizer = build_optimizer(model=model, config=config)

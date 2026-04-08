@@ -1,0 +1,132 @@
+
+--> Start training in total 50 epochs with cuda device. Start...
+
+Epoch 1/50 - loss: 0.9884 - accuracy: 0.3189 - val_loss: 0.9138 - val_accuracy: 0.3934
+	--- Save best at ep 1, val_loss: 0.9138, path: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/checkpoints/efficientnet_fer2013/efficientnet_fer2013_04042026_1657_best.pth ---
+Epoch 2/50 - loss: 0.8014 - accuracy: 0.4415 - val_loss: 0.7686 - val_accuracy: 0.4539
+	--- Save best at ep 2, val_loss: 0.7686, path: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/checkpoints/efficientnet_fer2013/efficientnet_fer2013_04042026_1657_best.pth ---
+Epoch 3/50 - loss: 0.7175 - accuracy: 0.4875 - val_loss: 0.7086 - val_accuracy: 0.4857
+	--- Save best at ep 3, val_loss: 0.7086, path: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/checkpoints/efficientnet_fer2013/efficientnet_fer2013_04042026_1657_best.pth ---
+Epoch 4/50 - loss: 0.6663 - accuracy: 0.5163 - val_loss: 0.6378 - val_accuracy: 0.5325
+	--- Save best at ep 4, val_loss: 0.6378, path: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/checkpoints/efficientnet_fer2013/efficientnet_fer2013_04042026_1657_best.pth ---
+Epoch 5/50 - loss: 0.6397 - accuracy: 0.5283 - val_loss: 0.6385 - val_accuracy: 0.5339
+	-!- No improvement: 1/10
+Epoch 6/50 - loss: 0.6206 - accuracy: 0.5387 - val_loss: 0.5976 - val_accuracy: 0.5442
+	--- Save best at ep 6, val_loss: 0.5976, path: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/checkpoints/efficientnet_fer2013/efficientnet_fer2013_04042026_1657_best.pth ---
+Epoch 7/50 - loss: 0.6020 - accuracy: 0.5494 - val_loss: 0.6283 - val_accuracy: 0.5497
+	-!- No improvement: 1/10
+Epoch 8/50 - loss: 0.5851 - accuracy: 0.5575 - val_loss: 0.5717 - val_accuracy: 0.5754
+	--- Save best at ep 8, val_loss: 0.5717, path: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/checkpoints/efficientnet_fer2013/efficientnet_fer2013_04042026_1657_best.pth ---
+Epoch 9/50 - loss: 0.5759 - accuracy: 0.5627 - val_loss: 0.5615 - val_accuracy: 0.5751
+	--- Save best at ep 9, val_loss: 0.5615, path: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/checkpoints/efficientnet_fer2013/efficientnet_fer2013_04042026_1657_best.pth ---
+Epoch 10/50 - loss: 0.5589 - accuracy: 0.5715 - val_loss: 0.5536 - val_accuracy: 0.5801
+	--- Save best at ep 10, val_loss: 0.5536, path: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/checkpoints/efficientnet_fer2013/efficientnet_fer2013_04042026_1657_best.pth ---
+Epoch 11/50 - loss: 0.5509 - accuracy: 0.5750 - val_loss: 0.5480 - val_accuracy: 0.5871
+	--- Save best at ep 11, val_loss: 0.5480, path: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/checkpoints/efficientnet_fer2013/efficientnet_fer2013_04042026_1657_best.pth ---
+Epoch 12/50 - loss: 0.5453 - accuracy: 0.5783 - val_loss: 0.5529 - val_accuracy: 0.5782
+	-!- No improvement: 1/10
+Epoch 13/50 - loss: 0.5401 - accuracy: 0.5831 - val_loss: 0.5484 - val_accuracy: 0.5929
+	-!- No improvement: 2/10
+Epoch 14/50 - loss: 0.5365 - accuracy: 0.5836 - val_loss: 0.5460 - val_accuracy: 0.5910
+	--- Save best at ep 14, val_loss: 0.5460, path: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/checkpoints/efficientnet_fer2013/efficientnet_fer2013_04042026_1657_best.pth ---
+Epoch 15/50 - loss: 0.5307 - accuracy: 0.5869 - val_loss: 0.5380 - val_accuracy: 0.5960
+	--- Save best at ep 15, val_loss: 0.5380, path: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/checkpoints/efficientnet_fer2013/efficientnet_fer2013_04042026_1657_best.pth ---
+Epoch 16/50 - loss: 0.5207 - accuracy: 0.5929 - val_loss: 0.5341 - val_accuracy: 0.5968
+	--- Save best at ep 16, val_loss: 0.5341, path: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/checkpoints/efficientnet_fer2013/efficientnet_fer2013_04042026_1657_best.pth ---
+Epoch 17/50 - loss: 0.5162 - accuracy: 0.5957 - val_loss: 0.5501 - val_accuracy: 0.5823
+	-!- No improvement: 1/10
+Epoch 18/50 - loss: 0.5119 - accuracy: 0.5964 - val_loss: 0.5310 - val_accuracy: 0.5988
+	--- Save best at ep 18, val_loss: 0.5310, path: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/checkpoints/efficientnet_fer2013/efficientnet_fer2013_04042026_1657_best.pth ---
+Epoch 19/50 - loss: 0.5068 - accuracy: 0.5972 - val_loss: 0.5424 - val_accuracy: 0.5952
+	-!- No improvement: 1/10
+Epoch 20/50 - loss: 0.5024 - accuracy: 0.6027 - val_loss: 0.5185 - val_accuracy: 0.6080
+	--- Save best at ep 20, val_loss: 0.5185, path: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/checkpoints/efficientnet_fer2013/efficientnet_fer2013_04042026_1657_best.pth ---
+Epoch 21/50 - loss: 0.5000 - accuracy: 0.6039 - val_loss: 0.5247 - val_accuracy: 0.6007
+	-!- No improvement: 1/10
+Epoch 22/50 - loss: 0.4972 - accuracy: 0.6048 - val_loss: 0.5235 - val_accuracy: 0.5985
+	-!- No improvement: 2/10
+Epoch 23/50 - loss: 0.4929 - accuracy: 0.6055 - val_loss: 0.5213 - val_accuracy: 0.6147
+	-!- No improvement: 3/10
+Epoch 24/50 - loss: 0.4923 - accuracy: 0.6083 - val_loss: 0.5506 - val_accuracy: 0.5938
+	-!- No improvement: 4/10
+Epoch 25/50 - loss: 0.4618 - accuracy: 0.6226 - val_loss: 0.4969 - val_accuracy: 0.6325
+	--- Save best at ep 25, val_loss: 0.4969, path: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/checkpoints/efficientnet_fer2013/efficientnet_fer2013_04042026_1657_best.pth ---
+Epoch 26/50 - loss: 0.4491 - accuracy: 0.6310 - val_loss: 0.4859 - val_accuracy: 0.6317
+	--- Save best at ep 26, val_loss: 0.4859, path: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/checkpoints/efficientnet_fer2013/efficientnet_fer2013_04042026_1657_best.pth ---
+Epoch 27/50 - loss: 0.4471 - accuracy: 0.6359 - val_loss: 0.4876 - val_accuracy: 0.6291
+	-!- No improvement: 1/10
+Epoch 28/50 - loss: 0.4435 - accuracy: 0.6370 - val_loss: 0.4836 - val_accuracy: 0.6342
+	--- Save best at ep 28, val_loss: 0.4836, path: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/checkpoints/efficientnet_fer2013/efficientnet_fer2013_04042026_1657_best.pth ---
+Epoch 29/50 - loss: 0.4424 - accuracy: 0.6348 - val_loss: 0.4881 - val_accuracy: 0.6211
+	-!- No improvement: 1/10
+Epoch 30/50 - loss: 0.4379 - accuracy: 0.6391 - val_loss: 0.4738 - val_accuracy: 0.6317
+	--- Save best at ep 30, val_loss: 0.4738, path: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/checkpoints/efficientnet_fer2013/efficientnet_fer2013_04042026_1657_best.pth ---
+Epoch 31/50 - loss: 0.4337 - accuracy: 0.6378 - val_loss: 0.4770 - val_accuracy: 0.6328
+	-!- No improvement: 1/10
+Epoch 32/50 - loss: 0.4291 - accuracy: 0.6411 - val_loss: 0.4879 - val_accuracy: 0.6305
+	-!- No improvement: 2/10
+Epoch 33/50 - loss: 0.4319 - accuracy: 0.6391 - val_loss: 0.4656 - val_accuracy: 0.6272
+	--- Save best at ep 33, val_loss: 0.4656, path: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/checkpoints/efficientnet_fer2013/efficientnet_fer2013_04042026_1657_best.pth ---
+Epoch 34/50 - loss: 0.4285 - accuracy: 0.6411 - val_loss: 0.4905 - val_accuracy: 0.6138
+	-!- No improvement: 1/10
+Epoch 35/50 - loss: 0.4290 - accuracy: 0.6421 - val_loss: 0.4772 - val_accuracy: 0.6294
+	-!- No improvement: 2/10
+Epoch 36/50 - loss: 0.4206 - accuracy: 0.6477 - val_loss: 0.4799 - val_accuracy: 0.6325
+	-!- No improvement: 3/10
+Epoch 37/50 - loss: 0.4233 - accuracy: 0.6455 - val_loss: 0.4816 - val_accuracy: 0.6344
+	-!- No improvement: 4/10
+Epoch 38/50 - loss: 0.4018 - accuracy: 0.6578 - val_loss: 0.4691 - val_accuracy: 0.6378
+	-!- No improvement: 5/10
+Epoch 39/50 - loss: 0.3945 - accuracy: 0.6610 - val_loss: 0.4682 - val_accuracy: 0.6395
+	-!- No improvement: 6/10
+Epoch 40/50 - loss: 0.3911 - accuracy: 0.6643 - val_loss: 0.4737 - val_accuracy: 0.6328
+	-!- No improvement: 7/10
+Epoch 41/50 - loss: 0.3912 - accuracy: 0.6634 - val_loss: 0.4754 - val_accuracy: 0.6375
+	-!- No improvement: 8/10
+Epoch 42/50 - loss: 0.3782 - accuracy: 0.6734 - val_loss: 0.4640 - val_accuracy: 0.6378
+	--- Save best at ep 42, val_loss: 0.4640, path: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/checkpoints/efficientnet_fer2013/efficientnet_fer2013_04042026_1657_best.pth ---
+Epoch 43/50 - loss: 0.3787 - accuracy: 0.6728 - val_loss: 0.4644 - val_accuracy: 0.6411
+	-!- No improvement: 1/10
+Epoch 44/50 - loss: 0.3743 - accuracy: 0.6738 - val_loss: 0.4700 - val_accuracy: 0.6358
+	-!- No improvement: 2/10
+Epoch 45/50 - loss: 0.3698 - accuracy: 0.6774 - val_loss: 0.4602 - val_accuracy: 0.6395
+	--- Save best at ep 45, val_loss: 0.4602, path: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/checkpoints/efficientnet_fer2013/efficientnet_fer2013_04042026_1657_best.pth ---
+Epoch 46/50 - loss: 0.3696 - accuracy: 0.6780 - val_loss: 0.4683 - val_accuracy: 0.6397
+	-!- No improvement: 1/10
+Epoch 47/50 - loss: 0.3700 - accuracy: 0.6778 - val_loss: 0.4790 - val_accuracy: 0.6425
+	-!- No improvement: 2/10
+Epoch 48/50 - loss: 0.3674 - accuracy: 0.6800 - val_loss: 0.4667 - val_accuracy: 0.6431
+	-!- No improvement: 3/10
+Epoch 49/50 - loss: 0.3674 - accuracy: 0.6781 - val_loss: 0.4701 - val_accuracy: 0.6461
+	-!- No improvement: 4/10
+Epoch 50/50 - loss: 0.3642 - accuracy: 0.6792 - val_loss: 0.4675 - val_accuracy: 0.6450
+	-!- No improvement: 5/10
+
+===================================================
+Evaluate in test set
+===================================================
+--> Loading ckpt from /kaggle/working/sgu-2026-facial-expression-recognition/outputs/checkpoints/efficientnet_fer2013/efficientnet_fer2013_04042026_1657_best.pth
+Evaluatoin save path: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/figures
+Evaluate test set...: 100%|█████████████████████| 57/57 [00:01<00:00, 42.31it/s]
+
+Pushing to WandB & Dashboard...
+Compute metrics and confusion matrix...
+--> Accuracy: 65.90%
+--> Report:
+               precision    recall  f1-score      support
+angry          0.578641  0.606925  0.592445   491.000000
+disgust        0.493333  0.672727  0.569231    55.000000
+fear           0.532033  0.361742  0.430665   528.000000
+happy          0.878161  0.869170  0.873642   879.000000
+sad            0.511290  0.533670  0.522241   594.000000
+surprise       0.751825  0.742788  0.747279   416.000000
+neutral        0.607578  0.717252  0.657875   626.000000
+accuracy       0.658958  0.658958  0.658958     0.658958
+macro avg      0.621837  0.643468  0.627626  3589.000000
+weighted avg   0.657808  0.658958  0.654898  3589.000000
+--> Saved prediction grid to /kaggle/working/sgu-2026-facial-expression-recognition/outputs/figures/correct_preds.png
+--> Saved prediction grid to /kaggle/working/sgu-2026-facial-expression-recognition/outputs/figures/wrong_preds.png
+Done! Save file at: /kaggle/working/sgu-2026-facial-expression-recognition/outputs/figures
+
+	--> Uploading best ckpt to WandB, please wait...
+	--> [WandB] Send File `efficientnet_fer2013_04042026_1657_best.pth` to cloud successfully!
