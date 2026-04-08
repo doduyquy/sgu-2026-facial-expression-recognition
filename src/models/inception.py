@@ -194,7 +194,7 @@ class Inception(nn.Module):
         # --- Softmax2 - main ouput ---
         self.adap_avg_pool  = nn.AdaptiveAvgPool2d((1, 1)) 
         self.flatten        = nn.Flatten()      # -> 512
-        self.dropout        = nn.Dropout2d(p=dropout_main)
+        self.dropout        = nn.Dropout(p=dropout_main)
         self.fc             = nn.Linear(512, num_classes)
 
         
