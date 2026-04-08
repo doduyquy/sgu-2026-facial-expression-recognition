@@ -57,27 +57,30 @@ def main():
         config=config)
     
 
-    # # get class_distribution for class_weights (for testing)
-    # trainset_path = os.path.join(data_path, "train.csv")
-    # train_class_distribution = get_class_distribution(trainset_path)
-    # train_class_distribution_np = train_class_distribution.values
-    # class_weights = 1.0 / torch.tensor(train_class_distribution_np, dtype=torch.float)
-    # class_weights = class_weights / class_weights.sum()
-    # class_weights = class_weights.to(device)
-    # print(train_class_distribution)
-    # print(class_weights)
+    # get class_distribution for class_weights (optional)
+    use_class_weights = config['training'].get('use_class_weights', False)
+    class_weights = None
+    
+    if use_class_weights:
+        print("--> Using Class Weights to handle imbalance...")
+        trainset_path = os.path.join(data_path, "train.csv")
+        train_class_distribution = get_class_distribution(trainset_path)
+        train_class_distribution_np = train_class_distribution.values
+        class_weights = 1.0 / torch.tensor(train_class_distribution_np, dtype=torch.float)
+        class_weights = class_weights / class_weights.sum()
+        class_weights = class_weights.to(device)
+        
+     #     trainset_path = os.path.join(data_path, "train.csv")
+      #     train_class_distribution = get_class_distribution(trainset_path)
+      #     train_class_distribution_np = train_class_distribution.values
 
-    trainset_path = os.path.join(data_path, "train.csv")
-    train_class_distribution = get_class_distribution(trainset_path)
-    train_class_distribution_np = train_class_distribution.values
-
-    beta = 0.999
-    class_counts = torch.tensor(train_class_distribution_np, dtype=torch.float)
-    class_weights = (1.0 - beta) / (1.0 - beta ** class_counts)
-    class_weights = class_weights / class_weights.sum() * len(class_weights)
-    class_weights = class_weights.to(device)
-    print(train_class_distribution)
-    print(class_weights)
+      # #     beta = 0.999
+      # #     class_counts = torch.tensor(train_class_distribution_np, dtype=torch.float)
+      # #     class_weights = (1.0 - beta) / (1.0 - beta ** class_counts)
+      # #     class_weights = class_weights / class_weights.sum() * len(class_weights)
+      # #     class_weights = class_weights.to(device)
+      # #     print(train_class_distribution)
+      # #     print(class_weights)  
 
     loss = build_loss(config=config, class_weights=class_weights)
     optimizer = build_optimizer(model=model, config=config)

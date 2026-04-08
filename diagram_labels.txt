@@ -1,0 +1,114 @@
+<font style=
+<span style=
+<span><font style=
+Filter<br>concatenation
+Previous&nbsp;<br>layer
+1x1 <br>convolutions
+3x3<br>convolutions
+1x1<br>convolutions
+3x3<br>max pooling
+<div><span style=
+<h1 style=
+DepthConcat
+<div><font style=
+<div style=
+<b><font style=
+<b style=
+Dropout
+Included:<div>1. Conv</div><div>2. BatchNorm</div><div>3. ReLU</div>
+5x5<br>convolutions
+HƠI SÂU và&nbsp;<div>chưa tối ưu</div>
+Head Block
+Stage 4
+Stage 3
+Stage 2
+Stage 1
+Stem Block
+Input Image
+(B, 1, 48, 48)
+Stem Convolution
+Conv2D 3x3, stride=1, padding=1
+1 → 32 channels
+Output: (B, 32, 48, 48)
+Stem Batch Normalization
+Output: (B, 32, 48, 48)
+Stem SiLU Activation
+Output: (B, 32, 48, 48)
+MBConv Block
+in=32, out=16
+expansion=1, kernel=3, stride=1
+SE reduction=4
+Output: (B, 16, 48, 48)
+MBConv Block 4.1
+in=40, out=80
+expansion=6, kernel=3, stride=2
+SE reduction=4
+Output: (B, 80, 6, 6)
+Head Convolution
+Conv2D 1x1
+80 → 128 channels
+Output: (B, 128, 6, 6)
+Head Batch Normalization
+Output: (B, 128, 6, 6)
+Head SiLU Activation
+Output: (B, 128, 6, 6)
+Global Average Pooling
+AdaptiveAvgPool2D(1)
+Output: (B, 128, 1, 1)
+Flatten
+Output: (B, 128)
+Classifier Dropout
+p = classifier_dropout_rate
+Output: (B, 128)
+Fully Connected Output Layer
+Linear 128 → 7
+Output: (B, 7)
+Final Logits
+(B, 7)
+Squeeze-and-Excitation Block
+Block Input
+(B, C_in, H, W)
+Expansion Ratio = 1 ?
+Skip Expansion
+Expanded Channels = C_in
+Expansion Convolution
+Conv2D 1x1
+C_in → C_in × expansion_ratio
+Expansion BatchNorm
+Expansion SiLU
+Expanded Feature Map
+(B, C_exp, H, W)
+Depthwise BatchNorm
+Output: (B, C_exp, H_out, W_out)
+Depthwise SiLU
+Output: (B, C_exp, H_out, W_out)
+Global Average Pooling
+AdaptiveAvgPool2D(1)
+Output: (B, C_exp, 1, 1)
+Reduce Convolution
+Conv2D 1x1
+C_exp → C_exp / reduction_ratio
+SiLU Activation
+Expand Convolution
+Conv2D 1x1
+C_exp / reduction_ratio → C_exp
+Sigmoid Gate
+Output: Channel Weights
+Channel-wise Reweighting
+Feature × Gate
+Output: (B, C_exp, H_out, W_out)
+Projection Convolution
+Conv2D 1x1
+C_exp → C_out
+Projection BatchNorm
+Output: (B, C_out, H_out, W_out)
+Residual Condition?
+stride = 1 and C_in = C_out
+Residual Dropout / Dropout2D
+Element-wise Addition
+Projected Output + Identity
+Block Output
+(B, C_out, H_out, W_out)
+Yes
+No
+Identity

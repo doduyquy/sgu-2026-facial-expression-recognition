@@ -1,6 +1,17 @@
 import torch.nn as nn 
 from .loss import FocalLoss
 
+# Loss -> auxiliary (training)
+def inception_loss(main_out, aux_out, targets,
+                   criterion=nn.CrossEntropyLoss(),
+                   aux_weight: float = 0.3):
+    """Tính loss có auxiliary.
+    total_loss = main_loss + aux_weight * aux_loss
+    """
+    main_loss = criterion(main_out, targets)
+    aux_loss  = criterion(aux_out,  targets)
+    return main_loss + aux_weight * aux_loss
+ 
 def build_loss(config, class_weights=None):
     """ Define loss for training.
 
@@ -15,6 +26,8 @@ def build_loss(config, class_weights=None):
     Returns:
         loss function (nn.Module)
     """
+    loss_name = config['training'].get('loss', 'cross_entropy')
+    label_smoothing = config['training'].get('label_smoothing', 0.0)
 
     loss_name = config['training'].get('loss', 'cross_entropy').lower()
 
@@ -22,25 +35,25 @@ def build_loss(config, class_weights=None):
     # Cross Entropy Loss
     # =========================
     if loss_name == 'cross_entropy':
-        loss = nn.CrossEntropyLoss(weight=class_weights)
+        if class_weights is not None:
+            loss = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
+        else:
+            loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+        
+        # =========================
+        # Focal Loss
+        # =========================
+        elif loss_name == 'focal_loss':
+            gamma = config['training'].get('gamma', 2.0)
+            reduction = config['training'].get('reduction', 'mean')
 
-    # =========================
-    # Focal Loss
-    # =========================
-    elif loss_name == 'focal_loss':
-        gamma = config['training'].get('gamma', 2.0)
-        reduction = config['training'].get('reduction', 'mean')
+            loss = FocalLoss(
+                weight=class_weights,
+                gamma=gamma,
+                reduction=reduction
+            )
 
-        loss = FocalLoss(
-            weight=class_weights,
-            gamma=gamma,
-            reduction=reduction
-        )
-
-    # =========================
-    # Not supported
-    # =========================
-    else:
+    else: 
         raise ValueError(f"\n[!!!] Not support {loss_name} loss!\n")
 
     print(f"[Loss] Using loss: {loss_name}")

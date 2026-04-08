@@ -1,0 +1,17 @@
+# VGG Scratch (4 blocks) for 48x48 grayscale input
+_base_: "base.yaml"
+
+model:
+  name: "vgg19" # mapping in __init__.py still points to VGG19 class
+  pretrained: false
+  dropout_block: 0.3
+  dropout_dense: 0.5
+
+data:
+  image_size: 48
+  channels: 1 # Using 1 channel for grayscale
+  batch_size: 64
+
+training:
+  lr: 0.001 # Higher LR for scratch training
+  epochs: 100

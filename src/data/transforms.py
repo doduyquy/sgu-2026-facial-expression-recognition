@@ -14,9 +14,13 @@ def build_transform(config, split="train") -> Compose: # train | val | test
     image_size = config['data']['image_size']
     channels = config['data'].get('channels', 1)
     
-    # Chuẩn hóa (mean, std) theo số kênh
-    mean = [0.5] * channels
-    std = [0.5] * channels
+    # Chuẩn hóa (mean, std) theo chuẩn ImageNet (tối ưu cho Pretrained model)
+    if channels == 3:
+        mean = [0.485, 0.456, 0.406]
+        std = [0.229, 0.224, 0.225]
+    else: # channels == 1
+        mean = [0.485]  # Lấy giá trị đầu tiên của ImageNet làm xấp xỉ
+        std = [0.229]
 
     if split == "train":
         transform_ops = [
@@ -26,7 +30,7 @@ def build_transform(config, split="train") -> Compose: # train | val | test
             v2.Resize(size=(image_size, image_size)),
             v2.RandomHorizontalFlip(p=0.5),
             v2.RandomRotation(21),
-            v2.RandomResizedCrop(size=(image_size), scale=(0.8, 1)),
+            v2.RandomResizedCrop(size=(image_size, image_size), scale=(0.8, 1.0)), 
 
             v2.ToImage(),
             v2.ToDtype(torch.float32, scale=True),
