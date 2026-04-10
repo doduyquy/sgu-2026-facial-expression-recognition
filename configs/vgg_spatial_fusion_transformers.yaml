@@ -5,7 +5,8 @@ model:
   name: "vgg_transformer"
   embed_dim: 512
   num_heads: 8
-  num_layers: 4
+  num_layers: 2
+  transformer_dropout: 0.1
   use_aux: true       # Nhánh phụ từ VGG (optional)
   dropout_block: 0.3
   dropout_dense: 0.5

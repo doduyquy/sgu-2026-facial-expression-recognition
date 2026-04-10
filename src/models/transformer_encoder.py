@@ -3,26 +3,28 @@ import torch.nn as nn
 import math
 from .vgg import VGGFusionSpatialCNN
 class EncoderBlock(nn.Module):
-    def __init__(self, embed_dim=512, num_heads=8, ff_dim=2048):
+    def __init__(self, embed_dim=512, num_heads=8, ff_dim=2048, dropout=0.1):
         super().__init__()
         self.norm1 = nn.LayerNorm(embed_dim)
         self.norm2 = nn.LayerNorm(embed_dim)
 
-        self.attn = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
+        self.attn = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True, dropout=dropout)
 
         self.ff = nn.Sequential(
             nn.Linear(embed_dim, ff_dim),
             nn.ReLU(),
+            nn.Dropout(dropout),
             nn.Linear(ff_dim, embed_dim)
         )
-
+        self.drop1 = nn.Dropout(dropout)
+        self.drop2 = nn.Dropout(dropout)
     def forward(self, x):
         norm_x = self.norm1(x)
         attn_out, _ = self.attn(norm_x, norm_x, norm_x)
-        x = x + attn_out
+        x = x + self.drop1(attn_out)
 
         ff_out = self.ff(self.norm2(x))
-        x = x + ff_out
+        x = x + self.drop2(ff_out)       
         return x
 
 
@@ -42,11 +44,11 @@ class SinusoidalPositionalEncoding(nn.Module):
         return x + self.pe[:, :T, :]
 
 class TransformerEncoder(nn.Module):
-    def __init__(self, embed_dim=512, num_heads=8, num_layers=4, max_len=10):
+    def __init__(self, embed_dim=512, num_heads=8, num_layers=4, max_len=10, dropout=0.1):
         super().__init__()
         self.position_encoding = SinusoidalPositionalEncoding(embed_dim, max_len)
         self.layers = nn.ModuleList([
-            EncoderBlock(embed_dim, num_heads) 
+            EncoderBlock(embed_dim, num_heads, dropout=dropout) 
             for _ in range(num_layers) #chayj 4 layer encoder nay
         ])
 
@@ -63,13 +65,15 @@ class VGGFusionTransformer(nn.Module):
         self.embed_dim = config['model'].get('embed_dim', 512)
         self.num_heads = config['model'].get('num_heads', 8)
         self.num_layers = config['model'].get('num_layers', 4)
+        self.dropout = config['model'].get('transformer_dropout', 0.1)
         
         self.vgg = VGGFusionSpatialCNN(config, channels)
         self.transformer = TransformerEncoder(
             embed_dim=self.embed_dim, 
             num_heads=self.num_heads, 
             num_layers=self.num_layers, 
-            max_len=10
+            max_len=10,
+            dropout=self.dropout
         )
         self.fc = nn.Linear(self.embed_dim, config['data']['num_classes'])
 
