@@ -14,7 +14,7 @@ data:
   batch_size: 64
 training:
   use_class_weights: true # Bật tính năng Class Weights
-  lr: 0.0001 # Giảm LR xuống một nửa để học mịn hơn (5e-4)
+  lr: 0.0005 # Giảm LR xuống một nửa để học mịn hơn (5e-4)
   epochs: 100
   patience: 20 # Giảm patience xuống 20 (vì sau đó thường đã overfit)
   label_smoothing: 0.1 # Thêm Label Smoothing để model bền vững với nhiễu
