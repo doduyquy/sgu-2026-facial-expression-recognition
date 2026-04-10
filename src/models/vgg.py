@@ -85,6 +85,7 @@ class VGGFusionBase(nn.Module):
         self.dropout_dense = config['model'].get('dropout_dense', 0.5)
         self.dropout_block = config['model'].get('dropout_block', 0.3)
         self.use_aux = config['model'].get('use_aux', False)
+        self.high_res = config['model'].get('high_res', False)
 
         # Block 1: 48x48 -> 24x24
         self.b1 = nn.Sequential(
@@ -122,7 +123,10 @@ class VGGFusionBase(nn.Module):
             nn.Dropout(self.dropout_block)
         )
 
-        # Block 4: 6x6 -> 3x3
+        # Block 4: 6x6 -> 3x3 (default) or stays 6x6 (high_res)
+        b4_pool_stride = 1 if self.high_res else 2
+        b4_pool_kernel = 1 if self.high_res else 2
+        
         self.b4 = nn.Sequential(
             nn.Conv2d(256, 512, kernel_size=3, padding=1),
             nn.BatchNorm2d(512),
@@ -130,16 +134,19 @@ class VGGFusionBase(nn.Module):
             nn.Conv2d(512, 512, kernel_size=3, padding=1),
             nn.BatchNorm2d(512),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.MaxPool2d(kernel_size=b4_pool_kernel, stride=b4_pool_stride),
             nn.Dropout(self.dropout_block)
         )
 
-        # resize b3 về 3x3 để fusion với b4
-        self.fusion_pool = nn.AdaptiveAvgPool2d((3, 3))
+        # Grid size after fusion
+        self.grid_size = 6 if self.high_res else 3
+        
+        # resize b3 về grid_size để fusion với b4
+        self.fusion_pool = nn.AdaptiveAvgPool2d((self.grid_size, self.grid_size))
 
         # classifier: KHÔNG dùng global pooling
         self.classifier = nn.Sequential(
-            nn.Linear((512 + 256) * 3 * 3, 512),
+            nn.Linear((512 + 256) * self.grid_size * self.grid_size, 512),
             nn.BatchNorm1d(512),
             nn.ReLU(inplace=True),
             nn.Dropout(self.dropout_dense),
@@ -149,9 +156,9 @@ class VGGFusionBase(nn.Module):
         # auxiliary branch
         if self.use_aux:
             self.aux_classifier = nn.Sequential(
-                nn.AdaptiveAvgPool2d((3, 3)),
+                nn.AdaptiveAvgPool2d((self.grid_size, self.grid_size)),
                 nn.Flatten(),
-                nn.Linear(256 * 3 * 3, 256),
+                nn.Linear(256 * self.grid_size * self.grid_size, 256),
                 nn.ReLU(inplace=True),
                 nn.Dropout(self.dropout_dense),
                 nn.Linear(256, self.num_classes)
@@ -180,10 +187,12 @@ class VGGFusionSpatial(VGGFusionBase):
     def __init__(self, config, channels=1):
         super().__init__(config, channels)
 
-        print("--> Using Spatial Attention + Fusion")
+        print(f"--> Using Spatial Attention + Fusion (Grid: {self.grid_size}x{self.grid_size})")
 
-        self.sa3 = SpatialAttention(kernel_size=7)   # cho feature 6x6
-        self.sa4 = SpatialAttention(kernel_size=3)   # cho feature 3x3
+        # Điều chỉnh kernel attention dựa trên grid size
+        sa_kernel = 7 if self.high_res else 3
+        self.sa3 = SpatialAttention(kernel_size=7)    # cho feature 6x6
+        self.sa4 = SpatialAttention(kernel_size=sa_kernel) # cho feature 3x3 hoặc 6x6
 
     def forward(self, x):
         x = self.b1(x)
@@ -200,10 +209,10 @@ class VGGFusionSpatial(VGGFusionBase):
         if self.training and self.use_aux:
             aux_out = self.aux_classifier(feat_b3)
 
-        feat_b3_resized = self.fusion_pool(feat_b3)              # [B,256,3,3]
-        combined = torch.cat([feat_b4, feat_b3_resized], dim=1)  # [B,768,3,3]
+        feat_b3_resized = self.fusion_pool(feat_b3)              # [B,256,grid,grid]
+        combined = torch.cat([feat_b4, feat_b3_resized], dim=1)  # [B,768,grid,grid]
 
-        out = torch.flatten(combined, 1)                         # [B, 768*3*3]
+        out = torch.flatten(combined, 1)                         # [B, 768*grid*grid]
         out = self.classifier(out)
 
         if self.training and self.use_aux:
@@ -224,22 +233,18 @@ class VGGFusionSpatialCNN(VGGFusionBase):
         x = self.b1(x)
         x = self.b2(x)
 
-        feat_b3 = self.b3(x)         # [B,256,6,6]
-        feat_b4 = self.b4(feat_b3)   # [B,512,3,3]
+        feat_b3 = self.b3(x)         
+        feat_b4 = self.b4(feat_b3)   
 
         # attention trước fusion
         feat_b3 = self.sa3(feat_b3)
         feat_b4 = self.sa4(feat_b4)
 
-        # aux_out = None
-        # if self.training and self.use_aux:
-        #     aux_out = self.aux_classifier(feat_b3)
-
-        feat_b3_resized = self.fusion_pool(feat_b3)              # [B,256,3,3]
-        combined = torch.cat([feat_b4, feat_b3_resized], dim=1)  # [B,768,3,3]
-        combined = self.conv_proj(combined)                             # [B, embed_dim, 3, 3]
-        combined=combined.flatten(2) # trả phẳng
-        combined=combined.permute(0,2,1) # [B, 9, embed_dim]
+        feat_b3_resized = self.fusion_pool(feat_b3)              
+        combined = torch.cat([feat_b4, feat_b3_resized], dim=1)  
+        combined = self.conv_proj(combined)                             # [B, embed_dim, grid, grid]
+        combined = combined.flatten(2)                                  # [B, embed_dim, grid*grid]
+        combined = combined.permute(0, 2, 1)                            # [B, grid*grid, embed_dim]
         return combined
 
         # out = torch.flatten(combined, 1)                         # [B, 768*3*3]
@@ -298,25 +303,41 @@ class VGGFusionCBAM(VGGFusionBase):
         return out
 
 if __name__ == "__main__":
-    config = {
-        'data': {
-            'num_classes': 7
-        },
+    config_3x3 = {
+        'data': {'num_classes': 7},
         'model': {
-            'pretrained': True,
+            'high_res': False,
             'dropout_dense': 0.5,
             'dropout_block': 0.3,
             'use_aux': True
         }
     }
+    config_6x6 = {
+        'data': {'num_classes': 7},
+        'model': {
+            'high_res': True,
+            'dropout_dense': 0.5,
+            'dropout_block': 0.3,
+            'use_aux': True
+        }
+    }
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     x = torch.randn(2, 1, 48, 48).to(device)
-    print("\n=== Test Spatial + Fusion ===")
-    model_spatial = VGGFusionSpatialCNN(config, channels=1).to(device)
-    model_spatial.train()
-    out = model_spatial(x)
-    print("Spatial main:", out.shape)
-    # print("Spatial aux :", aux.shape)
+
+    print("\n--- Test Spatial + Fusion (3x3) ---")
+    model_3x3 = VGGFusionSpatial(config_3x3, channels=1).to(device)
+    out_3x3, aux_3x3 = model_3x3(x)
+    print(f"3x3 Output: {out_3x3.shape}, Aux: {aux_3x3.shape}")
+
+    print("\n--- Test Spatial + Fusion (6x6) ---")
+    model_6x6 = VGGFusionSpatial(config_6x6, channels=1).to(device)
+    out_6x6, aux_6x6 = model_6x6(x)
+    print(f"6x6 Output: {out_6x6.shape}, Aux: {aux_6x6.shape}")
+
+    assert out_3x3.shape == (2, 7)
+    assert out_6x6.shape == (2, 7)
+    print("\nAll Tests Passed!")
 
   
     # x = torch.randn(2, 1, 48, 48).to(device)
