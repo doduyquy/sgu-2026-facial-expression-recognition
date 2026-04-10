@@ -13,14 +13,16 @@ def build_transform(config, split="train") -> Compose: # train | val | test
     """
     image_size = config['data'].get('image_size', 224)
     channels = config['data'].get('channels', 3)
-    
-    # Chuẩn hóa (mean, std) theo chuẩn ImageNet (tối ưu cho Pretrained model)
-    if channels == 3:
-        mean = [0.485, 0.456, 0.406]
-        std = [0.229, 0.224, 0.225]
-    else: # channels == 1
-        mean = [0.485] # Xấp xỉ cho ảnh xám nếu không dùng ImageNet
-        std = [0.229]
+    mean = config['data'].get('mean', None)
+    std = config['data'].get('std', None)
+
+    if mean is None or std is None:
+        if channels == 3:
+            mean = [0.485, 0.456, 0.406]
+            std = [0.229, 0.224, 0.225]
+        else:
+            mean = [0.5]
+            std = [0.5]
 
     if split == "train":
         transform_ops = [
