@@ -9,6 +9,9 @@ data:
   image_size: 48  # Q thấy dataset gốc:O 48x48
   batch_size: 64
   num_workers: 2  # num_workers is the number of subprocesses to use for data loading. 
+  channels: 1
+  mean: [0.5]
+  std: [0.5]
 
 seed: 
   random_seed: 42
