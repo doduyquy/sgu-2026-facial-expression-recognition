@@ -88,46 +88,6 @@ class InceptionBlock(nn.Module):
         # depth concat
         return torch.cat([b1, b2, b3, b4], dim=1)
     
-class ResidualInceptionBlock(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        out_1x1: int,
-        out_3x3_reduced: int,
-        out_3x3: int,
-        out_2_3x3_reduced: int,
-        out_2_3x3: int,
-        out_pool: int,
-    ):
-        super().__init__()
-
-        self.block = InceptionBlock(
-            in_channels=in_channels,
-            out_1x1=out_1x1,
-            out_3x3_reduced=out_3x3_reduced,
-            out_3x3=out_3x3,
-            out_2_3x3_reduced=out_2_3x3_reduced,
-            out_2_3x3=out_2_3x3,
-            out_pool=out_pool,
-        )
-
-        out_channels = out_1x1 + out_3x3 + out_2_3x3 + out_pool
-
-        if in_channels == out_channels:
-            self.shortcut = nn.Identity()
-        else:
-            self.shortcut = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, padding=0, bias=False),
-                nn.BatchNorm2d(out_channels)
-            )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        identity = self.shortcut(x)
-        out = self.block(x)
-        out = out + identity
-        return out
-
-
 class AuxiliaryClassifier(nn.Module):
     """That is sub softmax after Block 3 (224 channels, 48x48)
     Flow:
@@ -137,12 +97,12 @@ class AuxiliaryClassifier(nn.Module):
     def __init__(self, in_channels: int, num_classes: int, dropout_p: float = 0.3):
         super().__init__()
         
-        self.pool       = nn.AdaptiveAvgPool2d((16, 16))              # 16x16xin_channels (224)
+        self.pool       = nn.AdaptiveAvgPool2d((4, 4))              # 16x16xin_channels (224)
         self.conv       = ConvBlock(in_channels=in_channels, out_channels=128,
                                     kernel_size=1, stride=1, padding=0)
         self.flatten    = nn.Flatten()
         self.dropout    = nn.Dropout(p=dropout_p)
-        self.fc         = nn.Linear(128 * 16 * 16, num_classes)
+        self.fc         = nn.Linear(128 * 4 * 4, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.pool(x)
@@ -183,26 +143,21 @@ class Inception(nn.Module):
 
         # Tranditional CNN or Stem (Stem?)
         # Bx1x48x48 --> Bx32x48x48
-        # self.stem_conv = ConvBlock(in_channels=1, out_channels=32, kernel_size=3, stride=1, padding=1)
-        # self.stem_maxpool = nn.MaxPool2d(kernel_size=3, stride=1, padding=1)
-
-        self.stem = nn.Sequential(
-            ConvBlock(in_channels=1, out_channels=32, kernel_size=3, stride=1, padding=1),
-            ConvBlock(in_channels=32, out_channels=32, kernel_size=3, stride=1, padding=1),
-            ConvBlock(in_channels=32, out_channels=32, kernel_size=3, stride=1, padding=1),
-        )
+        self.stem_conv = ConvBlock(in_channels=1, out_channels=32, kernel_size=3, stride=1, padding=1)
+        
+        self.stem_maxpool = nn.MaxPool2d(kernel_size=3, stride=1, padding=1)
 
         # --- Inception block 1-4 (keep 48x48) ---
         # Block1: in:32 --> out: 8 + 24 + 16 + 16 = 64
-        self.block1 = ResidualInceptionBlock(32,  out_1x1=8,  out_3x3_reduced=16, out_3x3=24,
+        self.block1 = InceptionBlock(32,  out_1x1=8,  out_3x3_reduced=16, out_3x3=24,
                                           out_2_3x3_reduced=8,  out_2_3x3=16, out_pool=16)
  
         # Block2: in=64,  out=32+48+24+24 = 128
-        self.block2 = ResidualInceptionBlock(64,  out_1x1=32, out_3x3_reduced=24, out_3x3=48,
+        self.block2 = InceptionBlock(64,  out_1x1=32, out_3x3_reduced=24, out_3x3=48,
                                           out_2_3x3_reduced=16, out_2_3x3=24, out_pool=24)
  
         # Block3: in=128, out=64+96+32+32 = 224
-        self.block3 = ResidualInceptionBlock(128, out_1x1=64, out_3x3_reduced=48, out_3x3=96,
+        self.block3 = InceptionBlock(128, out_1x1=64, out_3x3_reduced=48, out_3x3=96,
                                           out_2_3x3_reduced=24, out_2_3x3=32, out_pool=32)
  
         # --- Auxiliary Classifier (softmax1) which input from block3 output 
@@ -212,7 +167,7 @@ class Inception(nn.Module):
                                                   dropout_p=dropout_aux)
  
         # Block4: in=224, out=96+128+64+32 = 320
-        self.block4 = ResidualInceptionBlock(224, out_1x1=96, out_3x3_reduced=64,  out_3x3=128,
+        self.block4 = InceptionBlock(224, out_1x1=96, out_3x3_reduced=64,  out_3x3=128,
                                           out_2_3x3_reduced=32, out_2_3x3=64,  out_pool=32)
 
         # Giảm spatial lần 1: 48x48 --> 24x24 
@@ -220,11 +175,11 @@ class Inception(nn.Module):
 
         # --- Inception block 5-6 (keep 24x24) ---
         # Block5: in=320, out=128+192+32+32 = 384
-        self.block5 = ResidualInceptionBlock(320, out_1x1=128, out_3x3_reduced=96,  out_3x3=192,
+        self.block5 = InceptionBlock(320, out_1x1=128, out_3x3_reduced=96,  out_3x3=192,
                                           out_2_3x3_reduced=24, out_2_3x3=32,  out_pool=32)
  
         # Block6: in=384, out=160+224+32+32 = 448
-        self.block6 = ResidualInceptionBlock(384, out_1x1=160, out_3x3_reduced=112, out_3x3=224,
+        self.block6 = InceptionBlock(384, out_1x1=160, out_3x3_reduced=112, out_3x3=224,
                                           out_2_3x3_reduced=24, out_2_3x3=32,  out_pool=32)
  
         # Giảm spatial lần 2: 24×24 -> 12×12
@@ -232,7 +187,7 @@ class Inception(nn.Module):
  
         # --- Inception Block 7  (with 12×12) ---
         # Block7: in=448, out=192+256+32+32 = 512   # Q choose this number before FC
-        self.block7 = ResidualInceptionBlock(448, out_1x1=192, out_3x3_reduced=144, out_3x3=256,
+        self.block7 = InceptionBlock(448, out_1x1=192, out_3x3_reduced=144, out_3x3=256,
                                           out_2_3x3_reduced=24, out_2_3x3=32,  out_pool=32)
  
 
@@ -254,9 +209,8 @@ class Inception(nn.Module):
         """
 
         # Stem
-        out = self.stem(x)    # B×32×48×48
-        # out = self.stem_conv(x)         # B×32×48×48
-        # out = self.stem_maxpool(out)    # B×32×48×48  (stride=1, không giảm)
+        out = self.stem_conv(x)         # B×32×48×48
+        out = self.stem_maxpool(out)    # B×32×48×48  (stride=1, không giảm)
  
         # Blocks 1->3
         out = self.block1(out)          # B×64×48×48
@@ -295,6 +249,7 @@ class Inception(nn.Module):
  
         return main_out
 
+ 
 
 if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
