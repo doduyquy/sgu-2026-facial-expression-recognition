@@ -143,14 +143,9 @@ class Inception(nn.Module):
 
         # Tranditional CNN or Stem (Stem?)
         # Bx1x48x48 --> Bx32x48x48
-        # self.stem_conv = ConvBlock(in_channels=1, out_channels=32, kernel_size=3, stride=1, padding=1)
-        # self.stem_maxpool = nn.MaxPool2d(kernel_size=3, stride=1, padding=1)
-
-        self.stem = nn.Sequential(
-            ConvBlock(in_channels=1, out_channels=32, kernel_size=3, stride=1, padding=1),
-            ConvBlock(in_channels=32, out_channels=32, kernel_size=3, stride=1, padding=1),
-            ConvBlock(in_channels=32, out_channels=32, kernel_size=3, stride=1, padding=1),
-        )
+        self.stem_conv = ConvBlock(in_channels=1, out_channels=32, kernel_size=3, stride=1, padding=1)
+        
+        self.stem_maxpool = nn.MaxPool2d(kernel_size=3, stride=1, padding=1)
 
         # --- Inception block 1-4 (keep 48x48) ---
         # Block1: in:32 --> out: 8 + 24 + 16 + 16 = 64
@@ -214,9 +209,8 @@ class Inception(nn.Module):
         """
 
         # Stem
-        out = self.stem(x)    # B×32×48×48
-        # out = self.stem_conv(x)         # B×32×48×48
-        # out = self.stem_maxpool(out)    # B×32×48×48  (stride=1, không giảm)
+        out = self.stem_conv(x)         # B×32×48×48
+        out = self.stem_maxpool(out)    # B×32×48×48  (stride=1, không giảm)
  
         # Blocks 1->3
         out = self.block1(out)          # B×64×48×48
