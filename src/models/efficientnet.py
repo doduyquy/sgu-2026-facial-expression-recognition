@@ -123,7 +123,7 @@ class MBConvBlock(nn.Module):
         )
         self.projection_batch_normalization = nn.BatchNorm2d(out_channels)
 
-        self.residual_dropout = nn.Dropout2d(dropout_rate) if dropout_rate > 0 else nn.Identity()
+        self.residual_dropout = nn.Dropout(dropout_rate) if dropout_rate > 0 else nn.Identity()
 
     def forward(self, x):
         identity = x
