@@ -5,7 +5,7 @@ model:
   name: "vgg_cbam"
   use_aux: true # Bật nhánh phụ (auxiliary branch) để ổn định training
   use_attention: true # Bật cơ chế Spatial Attention
-  dropout_block: 0.2
+  dropout_block: 0.3 #có gì tăng này lên 0.3 nhe
   dropout_dense: 0.5
 
 data:
