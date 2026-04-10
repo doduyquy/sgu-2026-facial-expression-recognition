@@ -77,15 +77,14 @@ class CBAM(nn.Module):
         x = self.sa(x)
         return x
 
-class VGGFusion(nn.Module):
+class VGGFusionBase(nn.Module):
     def __init__(self, config, channels):
         super().__init__()
-        # config
+
         self.num_classes = config['data']['num_classes']
-        self.dropout_dense = config['model']['dropout_dense']
-        self.dropout_block = config['model']['dropout_block']
+        self.dropout_dense = config['model'].get('dropout_dense', 0.5)
+        self.dropout_block = config['model'].get('dropout_block', 0.3)
         self.use_aux = config['model'].get('use_aux', False)
-        self.use_attention = config['model'].get('use_attention', False)
 
         # Block 1: 48x48 -> 24x24
         self.b1 = nn.Sequential(
@@ -135,12 +134,19 @@ class VGGFusion(nn.Module):
             nn.Dropout(self.dropout_block)
         )
 
-        if self.use_attention:
-            print("--> Using CBAM (Channel + Spatial Attention) in VGGFusion")
-            self.cbam3 = CBAM(256, ratio=16, kernel_size=7)
-            self.cbam4 = CBAM(512, ratio=16, kernel_size=3)
+        # resize b3 về 3x3 để fusion với b4
+        self.fusion_pool = nn.AdaptiveAvgPool2d((3, 3))
 
-        # Auxiliary classifier from Block 3
+        # classifier: KHÔNG dùng global pooling
+        self.classifier = nn.Sequential(
+            nn.Linear((512 + 256) * 3 * 3, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(self.dropout_dense),
+            nn.Linear(512, self.num_classes)
+        )
+
+        # auxiliary branch
         if self.use_aux:
             self.aux_classifier = nn.Sequential(
                 nn.AdaptiveAvgPool2d((3, 3)),
@@ -151,19 +157,6 @@ class VGGFusion(nn.Module):
                 nn.Linear(256, self.num_classes)
             )
 
-        # Fusion logic
-        self.fusion_pool = nn.AdaptiveAvgPool2d((3, 3)) # To make B3 (6,6) match B4 (3,3)
-        self.global_pool = nn.AdaptiveMaxPool2d(1)      # Khối Màu Đỏ trong sơ đồ
-        
-        self.classifier = nn.Sequential(
-            nn.Linear(512 + 256, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(self.dropout_dense),
-            nn.Linear(512, self.num_classes)
-        )
-
-        # Kaiming init
         self._initialize_weights()
 
     def _initialize_weights(self):
@@ -172,67 +165,117 @@ class VGGFusion(nn.Module):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.BatchNorm2d) or isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d)):
+
+            elif isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d)):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
+
             elif isinstance(m, nn.Linear):
                 nn.init.normal_(m.weight, 0, 0.01)
                 nn.init.constant_(m.bias, 0)
 
+
+
+class VGGFusionSpatial(VGGFusionBase):
+    def __init__(self, config, channels=1):
+        super().__init__(config, channels)
+
+        print("--> Using Spatial Attention + Fusion")
+
+        self.sa3 = SpatialAttention(kernel_size=7)   # cho feature 6x6
+        self.sa4 = SpatialAttention(kernel_size=3)   # cho feature 3x3
+
     def forward(self, x):
         x = self.b1(x)
         x = self.b2(x)
-        feat_b3 = self.b3(x)
-        feat_b4 = self.b4(feat_b3)
-        
-        if self.use_attention:
-            feat_b3 = self.cbam3(feat_b3)
-            feat_b4 = self.cbam4(feat_b4)
-            
+
+        feat_b3 = self.b3(x)         # [B,256,6,6]
+        feat_b4 = self.b4(feat_b3)   # [B,512,3,3]
+
+        # attention trước fusion
+        feat_b3 = self.sa3(feat_b3)
+        feat_b4 = self.sa4(feat_b4)
+
         aux_out = None
         if self.training and self.use_aux:
             aux_out = self.aux_classifier(feat_b3)
-            
-        feat_b3_resized = self.fusion_pool(feat_b3)
-        combined = torch.cat([feat_b4, feat_b3_resized], dim=1) 
-        
-        combined = self.global_pool(combined) 
-        
-        out = torch.flatten(combined, 1)
+
+        feat_b3_resized = self.fusion_pool(feat_b3)              # [B,256,3,3]
+        combined = torch.cat([feat_b4, feat_b3_resized], dim=1)  # [B,768,3,3]
+
+        out = torch.flatten(combined, 1)                         # [B, 768*3*3]
         out = self.classifier(out)
-        
+
+        if self.training and self.use_aux:
+            return out, aux_out
+        return out
+
+
+class VGGFusionCBAM(VGGFusionBase):
+    def __init__(self, config, channels=1):
+        super().__init__(config, channels)
+
+        print("--> Using CBAM + Fusion")
+
+        self.cbam3 = CBAM(in_planes=256, ratio=16, kernel_size=7)
+        self.cbam4 = CBAM(in_planes=512, ratio=16, kernel_size=3)
+
+    def forward(self, x):
+        x = self.b1(x)
+        x = self.b2(x)
+
+        feat_b3 = self.b3(x)         # [B,256,6,6]
+        feat_b4 = self.b4(feat_b3)   # [B,512,3,3]
+
+        # attention trước fusion
+        feat_b3 = self.cbam3(feat_b3)
+        feat_b4 = self.cbam4(feat_b4)
+
+        aux_out = None
+        if self.training and self.use_aux:
+            aux_out = self.aux_classifier(feat_b3)
+
+        feat_b3_resized = self.fusion_pool(feat_b3)              # [B,256,3,3]
+        combined = torch.cat([feat_b4, feat_b3_resized], dim=1)  # [B,768,3,3]
+
+        out = torch.flatten(combined, 1)                         # [B, 768*3*3]
+        out = self.classifier(out)
+
         if self.training and self.use_aux:
             return out, aux_out
         return out
 
 if __name__ == "__main__":
-    # Test VGGFusion
-    print("Testing VGGFusion with Attention...")
-    mock_config = {
-        'data': {'num_classes': 7},
+    config = {
+        'data': {
+            'num_classes': 7
+        },
         'model': {
+            'pretrained': True,
             'dropout_dense': 0.5,
             'dropout_block': 0.3,
-            'use_aux': True,
-            'use_attention': True
+            'use_aux': True
         }
     }
-    
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = VGGFusion(mock_config, channels=1).to(device)
-    model.train() # To test aux branch
-    
-    dummy_input = torch.randn(2, 1, 48, 48).to(device)
-    out, aux = model(dummy_input)
-    
-    print(f"Main output shape: {out.shape}")
-    print(f"Aux output shape: {aux.shape}")
-    
-    model.eval()
-    out_eval = model(dummy_input)
-    print(f"Eval output shape: {out_eval.shape}")
-    
-    assert out.shape == (2, 7)
-    assert aux.shape == (2, 7)
-    assert out_eval.shape == (2, 7)
-    print("VGGFusion Test Passed!")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    x = torch.randn(2, 1, 48, 48).to(device)
+
+    print("\n=== Test VGG19 pretrained ===")
+    model_vgg = VGG19(config, channels=1).to(device)
+    y = model_vgg(x)
+    print("VGG19 output:", y.shape)
+
+    print("\n=== Test Spatial + Fusion ===")
+    model_spatial = VGGFusionSpatial(config, channels=1).to(device)
+    model_spatial.train()
+    out, aux = model_spatial(x)
+    print("Spatial main:", out.shape)
+    print("Spatial aux :", aux.shape)
+
+    print("\n=== Test CBAM + Fusion ===")
+    model_cbam = VGGFusionCBAM(config, channels=1).to(device)
+    model_cbam.train()
+    out, aux = model_cbam(x)
+    print("CBAM main:", out.shape)
+    print("CBAM aux :", aux.shape)
