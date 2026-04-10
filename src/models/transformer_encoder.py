@@ -46,14 +46,14 @@ class SinusoidalPositionalEncoding(nn.Module):
 class TransformerEncoder(nn.Module):
     def __init__(self, embed_dim=512, num_heads=8, num_layers=4, max_len=10, dropout=0.1):
         super().__init__()
-        self.position_encoding = SinusoidalPositionalEncoding(embed_dim, max_len)
+        # self.position_encoding = SinusoidalPositionalEncoding(embed_dim, max_len) # V1 style
         self.layers = nn.ModuleList([
             EncoderBlock(embed_dim, num_heads, dropout=dropout) 
-            for _ in range(num_layers) #chayj 4 layer encoder nay
+            for _ in range(num_layers) 
         ])
 
     def forward(self, x):
-        x = self.position_encoding(x)
+        # x = self.position_encoding(x) # Chuyển việc quản lý PE ra ngoài để V2 dùng Learned PE
         for layer in self.layers:
             x = layer(x)
         return x
@@ -79,6 +79,13 @@ class VGGFusionTransformer(nn.Module):
 
     def forward(self, x):
         x = self.vgg(x)          # [B, 9, 512]
+        
+        # Thêm Positional Encoding Sinusoidal (bản cũ)
+        # Giả sử ta vẫn dùng Sinusoidal cho V1, ta khởi tạo PE trong __init__ và cộng ở đây
+        if not hasattr(self, 'pe_layer'):
+            self.pe_layer = SinusoidalPositionalEncoding(self.embed_dim, max_len=10).to(x.device)
+        
+        x = self.pe_layer(x)
         x = self.transformer(x)  # [B, 9, 512]
         
         # Pooling: Lấy trung bình cộng của 9 tokens để về 1 vector đặc trưng 512 chiều
@@ -87,8 +94,67 @@ class VGGFusionTransformer(nn.Module):
         x = self.fc(x)           # [B, num_classes]
         return x
 
+class LearnedPositionalEncoding(nn.Module):
+    def __init__(self, embed_dim, max_len=10):
+        super().__init__()
+        # Ma trận PE có thể học được
+        self.pe = nn.Parameter(torch.randn(1, max_len, embed_dim))
+
+    def forward(self, x):
+        # x: [B, T, D]
+        return x + self.pe[:, :x.size(1), :]
+
+class VGGFusionTransformerV2(nn.Module):
+    """
+    Bản V2: dùng CLS Token + Learned Positional Embedding (Kiến trúc ViT chuẩn)
+    """
+    def __init__(self, config, channels=1):
+        super().__init__()
+        self.embed_dim = config['model'].get('embed_dim', 512)
+        self.num_heads = config['model'].get('num_heads', 8)
+        self.num_layers = config['model'].get('num_layers', 2)
+        self.dropout = config['model'].get('transformer_dropout', 0.1)
+        
+        self.vgg = VGGFusionSpatialCNN(config, channels)
+        
+        # Token đại diện [CLS]
+        self.cls_token = nn.Parameter(torch.randn(1, 1, self.embed_dim))
+        
+        # Learned PE cho 1 (CLS) + 9 (Patches) = 10 tokens
+        self.pos_embed = LearnedPositionalEncoding(self.embed_dim, max_len=10)
+        
+        self.transformer = TransformerEncoder(
+            embed_dim=self.embed_dim, 
+            num_heads=self.num_heads, 
+            num_layers=self.num_layers, 
+            max_len=10,
+            dropout=self.dropout
+        )
+        
+        self.fc = nn.Linear(self.embed_dim, config['data']['num_classes'])
+
+    def forward(self, x):
+        x = self.vgg(x)          # [B, 9, 512]
+        B = x.shape[0]
+        
+        # 1. Thêm CLS Token vào đầu chuỗi
+        cls_tokens = self.cls_token.expand(B, -1, -1) # [B, 1, 512]
+        x = torch.cat((cls_tokens, x), dim=1)        # [B, 10, 512]
+        
+        # 2. Cộng Learned Positional Encoding
+        x = self.pos_embed(x)                        # [B, 10, 512]
+        
+        # 3. Qua Transformer
+        x = self.transformer(x)                      # [B, 10, 512]
+        
+        # 4. Chỉ lấy output của CLS Token (vị trí index 0) để phân loại
+        x = x[:, 0]                                  # [B, 512]
+        
+        x = self.fc(x)                               # [B, num_classes]
+        return x
+
 if __name__ == "__main__":
-    print("=== Testing VGGFusionTransformer ===")
+    print("=== Testing VGGFusionTransformer V1 & V2 ===")
     config = {
         'data': {
             'num_classes': 7,
@@ -99,20 +165,27 @@ if __name__ == "__main__":
             'embed_dim': 512,
             'dropout_dense': 0.5,
             'dropout_block': 0.3,
-            'use_aux': False
+            'use_aux': False,
+            'transformer_dropout': 0.1,
+            'num_layers': 2
         }
     }
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = VGGFusionTransformer(config, channels=1).to(device)
     
-    # Giả lập 1 batch ảnh 48x48
     dummy_input = torch.randn(2, 1, 48, 48).to(device)
-    output = model(dummy_input)
+
+    print("\n--- Testing V1 (Global Average Pooling) ---")
+    model_v1 = VGGFusionTransformer(config, channels=1).to(device)
+    output_v1 = model_v1(dummy_input)
+    print(f"V1 Output shape: {output_v1.shape}")
     
-    print(f"Input shape: {dummy_input.shape}")
-    print(f"Output shape: {output.shape}")
+    print("\n--- Testing V2 (CLS Token + Learned PE) ---")
+    model_v2 = VGGFusionTransformerV2(config, channels=1).to(device)
+    output_v2 = model_v2(dummy_input)
+    print(f"V2 Output shape: {output_v2.shape}")
     
-    assert output.shape == (2, 7)
-    print("VGGFusionTransformer Test Passed!")
+    assert output_v1.shape == (2, 7)
+    assert output_v2.shape == (2, 7)
+    print("\nAll Tests Passed!")
 
