@@ -12,8 +12,8 @@ data:
   image_size: 48
   channels: 1 
   batch_size: 64
-  mean: [0.5077]
-  std: [0.2550]
+  # mean: [0.5077]
+  # std: [0.2550]
 training:
   use_class_weights: true # Bật tính năng Class Weights
   lr: 0.0005 # Giảm LR xuống một nửa để học mịn hơn (5e-4)
