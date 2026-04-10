@@ -210,6 +210,58 @@ class VGGFusionSpatial(VGGFusionBase):
             return out, aux_out
         return out
 
+class VGGFusionSpatialCNN(VGGFusionBase):
+    def __init__(self, config, channels=1):
+        super().__init__(config, channels)
+
+        print("--> Using Spatial Attention + Fusion")
+        self.embed_dim = config['model'].get('embed_dim', 512) # tao tham so để đưa về transformer
+
+        self.sa3 = SpatialAttention(kernel_size=7)   # cho feature 6x6
+        self.sa4 = SpatialAttention(kernel_size=3)   # cho feature 3x3
+        self.conv_proj = nn.Conv2d(768, self.embed_dim, kernel_size=1)
+    def forward(self, x):
+        x = self.b1(x)
+        x = self.b2(x)
+
+        feat_b3 = self.b3(x)         # [B,256,6,6]
+        feat_b4 = self.b4(feat_b3)   # [B,512,3,3]
+
+        # attention trước fusion
+        feat_b3 = self.sa3(feat_b3)
+        feat_b4 = self.sa4(feat_b4)
+
+        # aux_out = None
+        # if self.training and self.use_aux:
+        #     aux_out = self.aux_classifier(feat_b3)
+
+        feat_b3_resized = self.fusion_pool(feat_b3)              # [B,256,3,3]
+        combined = torch.cat([feat_b4, feat_b3_resized], dim=1)  # [B,768,3,3]
+        combined = self.conv_proj(combined)                             # [B, embed_dim, 3, 3]
+        combined=combined.flatten(2) # trả phẳng
+        combined=combined.permute(0,2,1) # [B, 9, embed_dim]
+        return combined
+
+        # out = torch.flatten(combined, 1)                         # [B, 768*3*3]
+        # out = self.classifier(out)
+        
+        # if self.training and self.use_aux:
+        #     return out, aux_out
+        # return out
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 class VGGFusionCBAM(VGGFusionBase):
     def __init__(self, config, channels=1):
@@ -257,25 +309,33 @@ if __name__ == "__main__":
             'use_aux': True
         }
     }
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     x = torch.randn(2, 1, 48, 48).to(device)
-
-    print("\n=== Test VGG19 pretrained ===")
-    model_vgg = VGG19(config, channels=1).to(device)
-    y = model_vgg(x)
-    print("VGG19 output:", y.shape)
-
     print("\n=== Test Spatial + Fusion ===")
-    model_spatial = VGGFusionSpatial(config, channels=1).to(device)
+    model_spatial = VGGFusionSpatialCNN(config, channels=1).to(device)
     model_spatial.train()
-    out, aux = model_spatial(x)
+    out = model_spatial(x)
     print("Spatial main:", out.shape)
-    print("Spatial aux :", aux.shape)
+    # print("Spatial aux :", aux.shape)
 
-    print("\n=== Test CBAM + Fusion ===")
-    model_cbam = VGGFusionCBAM(config, channels=1).to(device)
-    model_cbam.train()
-    out, aux = model_cbam(x)
-    print("CBAM main:", out.shape)
-    print("CBAM aux :", aux.shape)
+  
+    # x = torch.randn(2, 1, 48, 48).to(device)
+
+    # print("\n=== Test VGG19 pretrained ===")
+    # model_vgg = VGG19(config, channels=1).to(device)
+    # y = model_vgg(x)
+    # print("VGG19 output:", y.shape)
+
+    # print("\n=== Test Spatial + Fusion ===")
+    # model_spatial = VGGFusionSpatial(config, channels=1).to(device)
+    # model_spatial.train()
+    # out, aux = model_spatial(x)
+    # print("Spatial main:", out.shape)
+    # print("Spatial aux :", aux.shape)
+
+    # print("\n=== Test CBAM + Fusion ===")
+    # model_cbam = VGGFusionCBAM(config, channels=1).to(device)
+    # model_cbam.train()
+    # out, aux = model_cbam(x)
+    # print("CBAM main:", out.shape)
+    # print("CBAM aux :", aux.shape)

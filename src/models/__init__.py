@@ -1,6 +1,7 @@
 from .inception import Inception
 from .simple_cnn import SimpleCNN
-from .vgg import VGG19, VGGFusionSpatial, VGGFusionCBAM
+from .vgg import VGG19, VGGFusionSpatial, VGGFusionCBAM, VGGFusionSpatialCNN
+from .transformer_encoder import VGGFusionTransformer
 from .efficientnet import EfficientNetForFER2013
 # from .resnet import ResNet
 # from .resmaskingnet import ResMaskingNet
@@ -19,6 +20,8 @@ MODEL_REGISTRY = {
     "vgg19": lambda **kw: VGG19(config=kw['config'], channels=kw['config']['data']['channels']),
     "vgg_spatial": lambda **kw: VGGFusionSpatial(config=kw['config'], channels=kw['config']['data']['channels']),
     "vgg_cbam": lambda **kw: VGGFusionCBAM(config=kw['config'], channels=kw['config']['data']['channels']),
+    "vgg_spatial_cnn": lambda **kw: VGGFusionSpatialCNN(config=kw['config'], channels=kw['config']['data']['channels']),
+    "vgg_transformer": lambda **kw: VGGFusionTransformer(config=kw['config'], channels=kw['config']['data']['channels']),
     # "resnet18": lambda **kw: ResNet(variant="resnet18", **kw),
     # "resnet34": lambda **kw: ResNet(variant="resnet34", **kw),
     # "resnet50": lambda **kw: ResNet(variant="resnet50", **kw),
