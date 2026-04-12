@@ -7,6 +7,15 @@ model:
   name: "resnet"
   pretrained: false
   use_landmark_cross_fusion: true
+  use_pyramid_multi_scale: true
+  use_geometry_encoding: true
+  use_geometry_angle: false
+  use_sinusoidal_pos: true
+  img_topk_tokens: 128
+  token_selection_mode: "topk_softmax"  # sigmoid | softmax | topk | topk_softmax
+  use_relative_pos_bias: true
+  align_spread: 0.03
+  pyramid_dropout_rate: 0.1
   cross_attn_dim: 256
   cross_attn_heads: 8
 

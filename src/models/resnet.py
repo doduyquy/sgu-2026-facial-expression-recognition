@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from .CBAM import CBAM
+from .cross_fusion_pyramid import PyramidCrossFusionTransformer
 
 # Input:  (B, 1, 48, 48)
 # conv1: 3x3, stride=1, pad=1           -> (B, 64, 48, 48)
@@ -76,7 +77,8 @@ class ConvBlock(nn.Module): #thay đổi kích thước/ số kênh đặc trưn
         x = self.relu(x)
 
         return x
-    
+
+
 class ResNet50(nn.Module):
     def __init__(
         self,
@@ -89,9 +91,19 @@ class ResNet50(nn.Module):
         landmark_num_points=12,
         cross_attn_dim=256,
         cross_attn_heads=8,
+        use_pyramid_multi_scale=True,
+        img_topk_tokens=128,
+        token_selection_mode="topk_softmax",
+        use_sinusoidal_pos=True,
+        use_geometry_encoding=True,
+        use_geometry_angle=False,
+        use_relative_pos_bias=True,
+        align_spread=0.03,
+        pyramid_dropout_rate=0.1,
     ):
         super().__init__()
         self.use_landmark_cross_fusion = use_landmark_cross_fusion
+        self.use_pyramid_multi_scale = use_pyramid_multi_scale
         self.landmark_num_points = landmark_num_points
         self.cross_attn_dim = cross_attn_dim
 
@@ -123,32 +135,47 @@ class ResNet50(nn.Module):
         )
         # Head
         self.avgpool = nn.AdaptiveAvgPool2d((1,1))
-        self.img_token_proj = nn.Conv2d(1024, cross_attn_dim, kernel_size=1)
+        self.base_lm_dim = 128
 
         self.lm_point_cnn = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=1),
+            nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
-            nn.Conv2d(64, cross_attn_dim, kernel_size=3, stride=2, padding=1),
+            nn.Conv2d(64, self.base_lm_dim, kernel_size=3, stride=2, padding=1),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d((1, 1)),
         )
-        self.lm_coord_proj = nn.Linear(2, cross_attn_dim)
-        self.landmark_index_embed = nn.Embedding(landmark_num_points, cross_attn_dim)
+        self.lm_spatial_pool = nn.AdaptiveAvgPool2d((8, 8))
+        self.lm_spatial_proj = nn.Linear(self.base_lm_dim * 8 * 8, self.base_lm_dim)
+        self.lm_coord_proj = nn.Linear(2, self.base_lm_dim)
+        self.landmark_index_embed = nn.Embedding(landmark_num_points, self.base_lm_dim)
 
-        self.cross_lm_to_img = nn.MultiheadAttention(
-            embed_dim=cross_attn_dim,
-            num_heads=cross_attn_heads,
+        self.pyramid_cross_fusion = PyramidCrossFusionTransformer(
+            lm_base_dim=self.base_lm_dim,
+            topk_tokens=img_topk_tokens,
+            token_selection_mode=token_selection_mode,
+            use_sinusoidal_pos=use_sinusoidal_pos,
+            use_geometry_encoding=use_geometry_encoding,
+            use_geometry_angle=use_geometry_angle,
+            use_relative_pos_bias=use_relative_pos_bias,
+            align_spread=align_spread,
+            dropout_rate=pyramid_dropout_rate,
+        )
+
+        self.base_feat_proj = nn.Linear(1536, 256)
+        self.final_global_fusion_attn = nn.MultiheadAttention(
+            embed_dim=256,
+            num_heads=8,
             batch_first=True,
         )
-        self.cross_img_to_lm = nn.MultiheadAttention(
-            embed_dim=cross_attn_dim,
-            num_heads=cross_attn_heads,
-            batch_first=True,
+        self.final_global_norm = nn.LayerNorm(256)
+        self.final_scale_gate = nn.Sequential(
+            nn.Linear(256, 256),
+            nn.Sigmoid(),
         )
+        self.final_scale_score = nn.Linear(256, 1)
 
-        fusion_dim = 1536 + (2 * cross_attn_dim if use_landmark_cross_fusion else 0)
+        fusion_dim = 1536
         self.fusion_fc = nn.Sequential(
             nn.Linear(fusion_dim, 512),
             nn.ReLU(),
@@ -156,7 +183,14 @@ class ResNet50(nn.Module):
             nn.Linear(512, num_classes)
         )
 
-    def _encode_landmarks(self, landmarks):
+        self.poster_mlp_head = nn.Sequential(
+            nn.Linear(256, 512),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(512, num_classes)
+        )
+
+    def _encode_landmarks_base(self, landmarks):
         if landmarks is None:
             return None
 
@@ -165,11 +199,13 @@ class ResNet50(nn.Module):
             b, p, h, w = landmarks.shape
             lm = landmarks.view(b * p, 1, h, w)
             tokens = self.lm_point_cnn(lm)
-            tokens = tokens.flatten(1).view(b, p, self.cross_attn_dim)
+            tokens = self.lm_spatial_pool(tokens)
+            tokens = tokens.flatten(1)
+            tokens = self.lm_spatial_proj(tokens)
+            tokens = tokens.view(b, p, self.base_lm_dim)
         elif landmarks.dim() == 3 and landmarks.size(-1) == 2:
             # Coordinate representation: (B, P, 2) -> (B, P, D)
             tokens = self.lm_coord_proj(landmarks)
-            b, p, _ = tokens.shape
         elif landmarks.dim() == 2:
             # Flattened coordinates: (B, 2P) -> (B, P, D)
             b, c = landmarks.shape
@@ -186,76 +222,77 @@ class ResNet50(nn.Module):
         tokens[:, :emb_len, :] = tokens[:, :emb_len, :] + emb
         return tokens
 
-    @staticmethod
-    def _masked_mean(tokens, mask):
-        if mask is None:
-            return tokens.mean(dim=1)
+    def _extract_landmark_points(self, landmarks):
+        if landmarks is None:
+            return None
 
-        valid_mask = (mask > 0.5).float().unsqueeze(-1)
-        denom = valid_mask.sum(dim=1).clamp(min=1.0)
-        return (tokens * valid_mask).sum(dim=1) / denom
+        if landmarks.dim() == 3 and landmarks.size(-1) == 2:
+            return landmarks
 
-    @staticmethod
-    def _build_key_padding_mask(mask, token_count):
-        if mask is None:
-            return None, None
+        if landmarks.dim() == 2:
+            b, c = landmarks.shape
+            p = c // 2
+            return landmarks.view(b, p, 2)
 
-        m = mask[:, :token_count] <= 0.5
-        # MultiheadAttention cannot handle rows where all keys are masked.
-        all_masked = m.all(dim=1)
-        if all_masked.any():
-            m[all_masked, 0] = False
-        return m, all_masked
+        if landmarks.dim() == 4:
+            # Heatmaps: (B, P, H, W) -> argmax points (B, P, 2) normalized to [0,1].
+            b, p, h, w = landmarks.shape
+            flat = landmarks.view(b, p, -1)
+            idx = torch.argmax(flat, dim=-1)
+            py = idx // w
+            px = idx % w
+            px = px.float() / max(w - 1, 1)
+            py = py.float() / max(h - 1, 1)
+            return torch.stack([px, py], dim=-1)
+
+        return None
 
     def forward(self, x, landmarks=None, landmark_mask=None):
         x = self.relu(self.bn1(self.conv1(x)))
         x = self.pool(x)
 
         x = self.layer2(x)
+        x2 = x
 
         x = self.layer3(x)
+        x3 = x
         feat3 = self.avgpool(x)
         feat3 = torch.flatten(feat3, 1)   # (B, 512)
 
         x = self.layer4(x)
-        x_map = x
+        x4 = x
         feat4 = self.avgpool(x)
         feat4 = torch.flatten(feat4, 1)   # (B, 1024)
 
         # Base concat from multi-scale image features.
-        feat = torch.cat([feat3, feat4], dim=1)  # (B, 1536)
+        base_feat = torch.cat([feat3, feat4], dim=1)  # (B, 1536)
 
-        if self.use_landmark_cross_fusion and landmarks is not None:
-            lm_tokens = self._encode_landmarks(landmarks)
-            if lm_tokens is not None:
-                img_tokens = self.img_token_proj(x_map)  # (B, D, 6, 6)
-                img_tokens = img_tokens.flatten(2).transpose(1, 2)  # (B, 36, D)
-
-                token_count = lm_tokens.size(1)
-                lm_kpm, all_missing = self._build_key_padding_mask(landmark_mask, token_count)
-
-                # Q from landmarks, K/V from image.
-                lm_query_img_ctx, _ = self.cross_lm_to_img(
-                    query=lm_tokens,
-                    key=img_tokens,
-                    value=img_tokens,
+        if self.use_landmark_cross_fusion and self.use_pyramid_multi_scale and landmarks is not None:
+            lm_base = self._encode_landmarks_base(landmarks)
+            lm_points = self._extract_landmark_points(landmarks)
+            if lm_base is not None:
+                x_fuse_small, x_fuse_medium, x_fuse_large = self.pyramid_cross_fusion(
+                    x2,
+                    x3,
+                    x4,
+                    lm_base,
+                    landmark_mask,
+                    lm_points,
                 )
 
-                # Q from image, K/V from landmarks.
-                img_query_lm_ctx, _ = self.cross_img_to_lm(
-                    query=img_tokens,
-                    key=lm_tokens,
-                    value=lm_tokens,
-                    key_padding_mask=lm_kpm,
+                base_token = self.base_feat_proj(base_feat)
+                final_tokens = torch.stack([base_token, x_fuse_small, x_fuse_medium, x_fuse_large], dim=1)
+                final_tokens_attn, _ = self.final_global_fusion_attn(
+                    query=final_tokens,
+                    key=final_tokens,
+                    value=final_tokens,
                 )
+                final_tokens = self.final_global_norm(final_tokens + final_tokens_attn)
+                final_tokens = final_tokens * self.final_scale_gate(final_tokens)
+                scale_weights = torch.softmax(self.final_scale_score(final_tokens).squeeze(-1), dim=1)
+                poster_feat = (final_tokens * scale_weights.unsqueeze(-1)).sum(dim=1)
+                return self.poster_mlp_head(poster_feat)
 
-                lm_ctx = self._masked_mean(lm_query_img_ctx, landmark_mask[:, :token_count] if landmark_mask is not None else None)
-                img_ctx = img_query_lm_ctx.mean(dim=1)
-                if all_missing is not None and all_missing.any():
-                    img_ctx[all_missing] = 0.0
-                cross_feat = torch.cat([lm_ctx, img_ctx], dim=1)
-                feat = torch.cat([feat, cross_feat], dim=1)
-
-        out = self.fusion_fc(feat)
+        out = self.fusion_fc(base_feat)
 
         return out
