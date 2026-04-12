@@ -19,33 +19,55 @@ class ConvBlock(nn.Module):
 
         return x
 
-class SEBlock(nn.Module):
-    """
-    Squeeze-and-Excitation (SE) Block:
-        Flow:
-            Squeeze: Global Average Pooling -> BxCx1x1
-            Excitation: FC -> ReLU -> FC -> Sigmoid -> BxCx1x1 (scale)
-            Scale: input * scale (broadcast)
-        Args:
-        channels: số channel của input
-        reduction: tỉ lệ giảm channel trong FC đầu tiên (bottleneck), default=16
-    """
+
+class ChannelAttention(nn.Module):
     def __init__(self, channels: int, reduction: int = 16):
         super().__init__()
-        hidden_channels = max(channels // reduction, 4)
+        hidden = max(channels // reduction, 4)
 
-        self.pool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Sequential(
-            nn.Conv2d(channels, hidden_channels, kernel_size=1, bias=True),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(hidden_channels, channels, kernel_size=1, bias=True),
-            nn.Sigmoid()
+        self.mlp = nn.Sequential(
+            nn.Conv2d(channels, hidden, 1, bias=False),
+            nn.ReLU(),
+            nn.Conv2d(hidden, channels, 1, bias=False)
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        scale = self.pool(x)
-        scale = self.fc(scale)
-        return x * scale
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg = self.mlp(self.avg_pool(x))
+        max_ = self.mlp(self.max_pool(x))
+        return self.sigmoid(avg + max_)
+    
+class SpatialAttention(nn.Module):
+    def __init__(self, kernel_size=7):
+        super().__init__()
+
+        self.conv = nn.Conv2d(
+            2, 1, kernel_size=kernel_size,
+            padding=kernel_size // 2,
+            bias=False
+        )
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg = torch.mean(x, dim=1, keepdim=True)
+        max_, _ = torch.max(x, dim=1, keepdim=True)
+        x = torch.cat([avg, max_], dim=1)
+        return self.sigmoid(self.conv(x))
+
+
+class CBAM(nn.Module):
+    def __init__(self, channels: int, reduction: int = 16):
+        super().__init__()
+        self.ca = ChannelAttention(channels, reduction)
+        self.sa = SpatialAttention()
+
+    def forward(self, x):
+        x = x * self.ca(x)
+        x = x * self.sa(x)
+        return x
 
 
 class InceptionBlock(nn.Module):
@@ -126,8 +148,6 @@ class ResidualInceptionBlock(nn.Module):
         out_2_3x3_reduced: int,
         out_2_3x3: int,
         out_pool: int,
-        use_se: bool = False,
-        se_reduction: int = 16,
     ):
         super().__init__()
 
@@ -150,16 +170,13 @@ class ResidualInceptionBlock(nn.Module):
                 nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, padding=0, bias=False),
                 nn.BatchNorm2d(out_channels)
             )
-
-        if use_se:
-            self.se = SEBlock(out_channels, reduction=se_reduction)
-        else:
-            self.se = nn.Identity()
+        
+        self.cbam = CBAM(out_channels, reduction=16)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         identity = self.shortcut(x)
         out = self.block(x)
-        out = self.se(out)
+        out = self.cbam(out)
         out = out + identity
         return out
 
@@ -216,8 +233,6 @@ class Inception(nn.Module):
         dropout_aux  = config['model'].get('dropout_aux',  0.3)
         self.use_aux = config['model'].get('use_aux', True)
 
-        use_se = config['model'].get('use_se', False)
-        se_reduction = config['model'].get('se_reduction', 16)
 
         # Tranditional CNN or Stem (Stem?)
         # Bx1x48x48 --> Bx32x48x48
@@ -233,15 +248,15 @@ class Inception(nn.Module):
         # --- Inception block 1-4 (keep 48x48) ---
         # Block1: in:32 --> out: 8 + 24 + 16 + 16 = 64
         self.block1 = ResidualInceptionBlock(32,  out_1x1=8,  out_3x3_reduced=16, out_3x3=24,
-                                          out_2_3x3_reduced=8,  out_2_3x3=16, out_pool=16, use_se=use_se, se_reduction=se_reduction)
+                                          out_2_3x3_reduced=8,  out_2_3x3=16, out_pool=16)
  
         # Block2: in=64,  out=32+48+24+24 = 128
         self.block2 = ResidualInceptionBlock(64,  out_1x1=32, out_3x3_reduced=24, out_3x3=48,
-                                          out_2_3x3_reduced=16, out_2_3x3=24, out_pool=24, use_se=use_se, se_reduction=se_reduction)
+                                          out_2_3x3_reduced=16, out_2_3x3=24, out_pool=24)
  
         # Block3: in=128, out=64+96+32+32 = 224
         self.block3 = ResidualInceptionBlock(128, out_1x1=64, out_3x3_reduced=48, out_3x3=96,
-                                          out_2_3x3_reduced=24, out_2_3x3=32, out_pool=32, use_se=use_se, se_reduction=se_reduction)
+                                          out_2_3x3_reduced=24, out_2_3x3=32, out_pool=32)
  
         # --- Auxiliary Classifier (softmax1) which input from block3 output 
         if self.use_aux:
@@ -251,7 +266,7 @@ class Inception(nn.Module):
  
         # Block4: in=224, out=96+128+64+32 = 320
         self.block4 = ResidualInceptionBlock(224, out_1x1=96, out_3x3_reduced=64,  out_3x3=128,
-                                          out_2_3x3_reduced=32, out_2_3x3=64,  out_pool=32, use_se=use_se, se_reduction=se_reduction)
+                                          out_2_3x3_reduced=32, out_2_3x3=64,  out_pool=32)
 
         # Giảm spatial lần 1: 48x48 --> 24x24 
         self.maxpool1 = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
@@ -259,11 +274,11 @@ class Inception(nn.Module):
         # --- Inception block 5-6 (keep 24x24) ---
         # Block5: in=320, out=128+192+32+32 = 384
         self.block5 = ResidualInceptionBlock(320, out_1x1=128, out_3x3_reduced=96,  out_3x3=192,
-                                          out_2_3x3_reduced=24, out_2_3x3=32,  out_pool=32, use_se=use_se, se_reduction=se_reduction)
+                                          out_2_3x3_reduced=24, out_2_3x3=32,  out_pool=32)
  
         # Block6: in=384, out=160+224+32+32 = 448
         self.block6 = ResidualInceptionBlock(384, out_1x1=160, out_3x3_reduced=112, out_3x3=224,
-                                          out_2_3x3_reduced=24, out_2_3x3=32,  out_pool=32, use_se=use_se, se_reduction=se_reduction)
+                                          out_2_3x3_reduced=24, out_2_3x3=32,  out_pool=32)
  
         # Giảm spatial lần 2: 24×24 -> 12×12
         self.maxpool2 = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
@@ -271,7 +286,7 @@ class Inception(nn.Module):
         # --- Inception Block 7  (with 12×12) ---
         # Block7: in=448, out=192+256+32+32 = 512   # Q choose this number before FC
         self.block7 = ResidualInceptionBlock(448, out_1x1=192, out_3x3_reduced=144, out_3x3=256,
-                                          out_2_3x3_reduced=24, out_2_3x3=32,  out_pool=32, use_se=use_se, se_reduction=se_reduction)
+                                          out_2_3x3_reduced=24, out_2_3x3=32,  out_pool=32)
  
 
         # --- Softmax2 - main ouput ---
