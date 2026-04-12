@@ -5,7 +5,7 @@ model:
   pretrained: False
   dropout_main: 0.4
   dropout_aux: 0.3
-  use_aux: True
+  use_aux: False
   use_se: True
   se_reduction: 16
 
