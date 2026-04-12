@@ -2,9 +2,12 @@ _base_: "base.yaml"
 
 model:
   name: "inception"
-  dropout_main: 0.4 # dropout ratio for main dense
-  dropout_aux: 0.3  # dropout ratio for sub dense
+  pretrained: False
+  dropout_main: 0.4
+  dropout_aux: 0.3
   use_aux: True
+  use_se: True
+  se_reduction: 16
 
 data:
   image_size: 48
