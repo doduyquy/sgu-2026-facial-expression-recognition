@@ -62,8 +62,6 @@ def main():
     train_class_distribution = get_class_distribution(trainset_path)
     train_class_distribution_np = train_class_distribution.values
     class_counts = torch.tensor(train_class_distribution_np, dtype=torch.float)
-    class_priors = class_counts / class_counts.sum()
-    class_priors = class_priors.to(device)
 
     class_weight_mode = config['training'].get('class_weight_mode', 'inverse')
     use_class_weights = config['training'].get('use_class_weights', True)
@@ -84,7 +82,7 @@ def main():
         print("--- Class weights disabled")
 
 
-    loss = build_loss(config=config, class_weights=class_weights, class_priors=class_priors)
+    loss = build_loss(config=config, class_weights=class_weights)
     optimizer = build_optimizer(model=model, config=config)
     scheduler = build_scheduler(optimizer=optimizer, config=config)
     

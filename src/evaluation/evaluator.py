@@ -19,9 +19,36 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> Non
 
     os.makedirs(save_dir, exist_ok=True)
     with torch.no_grad():
-        for images, labels in tqdm(test_loader, desc="Evaluate test set..."):
+        for batch in tqdm(test_loader, desc="Evaluate test set..."):
+            if len(batch) == 4:
+                images, labels, landmarks, landmark_mask = batch
+                landmarks = landmarks.to(device)
+                landmark_mask = landmark_mask.to(device)
+            elif len(batch) == 3:
+                images, labels, landmarks = batch
+                landmarks = landmarks.to(device)
+                landmark_mask = None
+            else:
+                images, labels = batch
+                landmarks = None
+                landmark_mask = None
+
             images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
+
+            if landmarks is None:
+                outputs = model(images)
+            else:
+                if landmark_mask is not None:
+                    try:
+                        outputs = model(images, landmarks, landmark_mask)
+                    except TypeError:
+                        outputs = model(images, landmarks)
+                else:
+                    try:
+                        outputs = model(images, landmarks)
+                    except TypeError:
+                        outputs = model(images)
+
             _, preds = torch.max(outputs, 1)
             
             imgs_cpu = images.cpu()

@@ -24,14 +24,21 @@ class Trainer:
         self.config = config
         self.path_save_ckpt = save_dir
 
-    def _forward_model(self, images, labels=None):
-        # ArcFace models may require labels in training forward, while others ignore this.
-        if labels is not None:
+    def _forward_model(self, images, landmarks=None, landmark_mask=None):
+        if landmarks is None:
+            return self.model(images)
+
+        if landmark_mask is not None:
             try:
-                return self.model(images, labels)
+                return self.model(images, landmarks, landmark_mask)
             except TypeError:
-                return self.model(images)
-        return self.model(images)
+                pass
+
+        try:
+            return self.model(images, landmarks)
+        except TypeError:
+            # Keep backward compatibility with single-input models.
+            return self.model(images)
 
 
     def train_one_epoch(self):
@@ -41,11 +48,24 @@ class Trainer:
         corrects = 0
         total = 0
 
-        for images, labels in self.train_loader:
+        for batch in self.train_loader:
+            if len(batch) == 4:
+                images, labels, landmarks, landmark_mask = batch
+                landmarks = landmarks.to(self.device)
+                landmark_mask = landmark_mask.to(self.device)
+            elif len(batch) == 3:
+                images, labels, landmarks = batch
+                landmarks = landmarks.to(self.device)
+                landmark_mask = None
+            else:
+                images, labels = batch
+                landmarks = None
+                landmark_mask = None
+
             images, labels = images.to(self.device), labels.to(self.device)
 
             self.optimizer.zero_grad()
-            outputs = self._forward_model(images, labels)
+            outputs = self._forward_model(images, landmarks, landmark_mask)
             loss = self.criterion(outputs, labels)
             loss.backward()
             self.optimizer.step()
@@ -69,10 +89,23 @@ class Trainer:
         total = 0
 
         with torch.no_grad():
-            for images, labels in self.val_loader:
+            for batch in self.val_loader:
+                if len(batch) == 4:
+                    images, labels, landmarks, landmark_mask = batch
+                    landmarks = landmarks.to(self.device)
+                    landmark_mask = landmark_mask.to(self.device)
+                elif len(batch) == 3:
+                    images, labels, landmarks = batch
+                    landmarks = landmarks.to(self.device)
+                    landmark_mask = None
+                else:
+                    images, labels = batch
+                    landmarks = None
+                    landmark_mask = None
+
                 images, labels = images.to(self.device), labels.to(self.device)
 
-                outputs = self._forward_model(images, None)
+                outputs = self._forward_model(images, landmarks, landmark_mask)
                 loss = self.criterion(outputs, labels)
                 running_loss += loss.item() * images.size(0)
 
@@ -104,8 +137,6 @@ class Trainer:
         print(f'\n--> Start training in total {self.epochs} epochs with {self.device} device. Start...\n')
 
         for ep in range(self.epochs):
-            if hasattr(self.criterion, "set_epoch"):
-                self.criterion.set_epoch(ep + 1)
 
             train_loss, train_acc = self.train_one_epoch()
             val_loss, val_acc = self.validate()
@@ -121,17 +152,14 @@ class Trainer:
 
             # wandb log
             if self.use_wandb:
-                metrics_payload = {
+                log_metrics({
                     "Epoch": ep + 1,
                     "Train/Loss": train_loss,
                     "Train/Accuracy": train_acc,
                     "Val/Loss": val_loss,
                     "Val/Accuracy": val_acc,
                     "Learning_Rate": self.optimizer.param_groups[0]['lr']
-                }
-                if hasattr(self.criterion, "current_tau"):
-                    metrics_payload["Train/LogitAdjustTau"] = float(self.criterion.current_tau)
-                log_metrics(metrics_payload, epoch=ep)
+                }, epoch=ep)
 
             # lr scheduler
             if self.scheduler is not None:

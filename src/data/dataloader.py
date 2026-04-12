@@ -16,10 +16,31 @@ def build_dataloader(config, data_path):
     trans_val = build_transform(config, "val")
     trans_test = build_transform(config, "test")
 
+    use_landmarks = config['data'].get('use_landmarks', False)
+    landmark_config = config.get('landmark', {})
+
     # build dataset
-    data_train = FER2013(data_path=data_path, split="train", transforms=trans_train)
-    data_val = FER2013(data_path=data_path, split="val", transforms=trans_val)
-    data_test = FER2013(data_path=data_path, split="test", transforms=trans_test)
+    data_train = FER2013(
+        data_path=data_path,
+        split="train",
+        transforms=trans_train,
+        use_landmarks=use_landmarks,
+        landmark_config=landmark_config,
+    )
+    data_val = FER2013(
+        data_path=data_path,
+        split="val",
+        transforms=trans_val,
+        use_landmarks=use_landmarks,
+        landmark_config=landmark_config,
+    )
+    data_test = FER2013(
+        data_path=data_path,
+        split="test",
+        transforms=trans_test,
+        use_landmarks=use_landmarks,
+        landmark_config=landmark_config,
+    )
 
     # batch the dataset
     train_loader = DataLoader(

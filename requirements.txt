@@ -9,6 +9,7 @@ scikit-learn
 wandb
 PyYAML
 tqdm
+mediapipe
 
 # Jupyter Notebook & UI
 jupyter

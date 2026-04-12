@@ -19,12 +19,10 @@ MODEL_REGISTRY = {
     "resnet": lambda config, **kw: ResNet50(
         num_classes=config['data'].get('num_classes', 7),
         in_channels=config['data'].get('in_channels', 1),
-        use_eca_stage34=config['model'].get('use_eca_stage34', config['model'].get('use_cbam_stage34', True)),
-        eca_kernel_size=config['model'].get('eca_kernel_size', config['model'].get('cbam_kernel_size', 3)),
-        use_arcface=config['model'].get('use_arcface', False),
-        arcface_s=config['model'].get('arcface_s', 30.0),
-        arcface_m=config['model'].get('arcface_m', 0.5),
-        arcface_easy_margin=config['model'].get('arcface_easy_margin', False),
+        use_landmark_cross_fusion=config['model'].get('use_landmark_cross_fusion', config['data'].get('use_landmarks', False)),
+        landmark_num_points=len(config.get('landmark', {}).get('landmark_indexes', [])) or 12,
+        cross_attn_dim=config['model'].get('cross_attn_dim', 256),
+        cross_attn_heads=config['model'].get('cross_attn_heads', 8),
     ),
     # "resmaskingnet": ResMaskingNet,
 }

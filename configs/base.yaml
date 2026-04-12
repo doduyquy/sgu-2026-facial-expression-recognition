@@ -9,6 +9,17 @@ data:
   image_size: 48  # Q thấy dataset gốc:O 48x48
   batch_size: 64
   num_workers: 2  # num_workers is the number of subprocesses to use for data loading. 
+  use_landmarks: true
+
+landmark:
+  backend: "mediapipe"
+  representation: "heatmap"  # coords | heatmap
+  normalize_mode: "relative"  # absolute | relative (for coords)
+  semantic_weighting: true
+  # Default sparse points from FaceMesh indices.
+  landmark_indexes: [33, 263, 1, 61, 291, 199, 4, 48, 278, 57, 287, 152]
+  heatmap_size: 64
+  heatmap_sigma: 1.0
 
 seed: 
   random_seed: 42
