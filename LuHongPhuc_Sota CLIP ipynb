@@ -2,13 +2,13 @@
  "cells": [
   {
    "cell_type": "markdown",
-   "id": "c38ca251",
+   "id": "8607a356",
    "metadata": {
     "papermill": {
-     "duration": 0.002057,
-     "end_time": "2026-04-12T09:05:36.761607+00:00",
+     "duration": 0.00223,
+     "end_time": "2026-04-12T09:09:27.813399+00:00",
      "exception": false,
-     "start_time": "2026-04-12T09:05:36.759550+00:00",
+     "start_time": "2026-04-12T09:09:27.811169+00:00",
      "status": "completed"
     },
     "tags": []
@@ -19,13 +19,13 @@
   },
   {
    "cell_type": "markdown",
-   "id": "425bb693",
+   "id": "e30790a3",
    "metadata": {
     "papermill": {
-     "duration": 0.001137,
-     "end_time": "2026-04-12T09:05:36.764144+00:00",
+     "duration": 0.001282,
+     "end_time": "2026-04-12T09:09:27.816358+00:00",
      "exception": false,
-     "start_time": "2026-04-12T09:05:36.763007+00:00",
+     "start_time": "2026-04-12T09:09:27.815076+00:00",
      "status": "completed"
     },
     "tags": []
@@ -39,21 +39,21 @@
   {
    "cell_type": "code",
    "execution_count": 1,
-   "id": "c0a1f7bd",
+   "id": "fdf6602c",
    "metadata": {
     "_cell_guid": "b1076dfc-b9ad-4769-8c92-a6c4dae69d19",
     "_uuid": "8f2839f25d086af736a60e9eeb907d3b93b6e0e5",
     "execution": {
-     "iopub.execute_input": "2026-04-12T09:05:36.768696Z",
-     "iopub.status.busy": "2026-04-12T09:05:36.767785Z",
-     "iopub.status.idle": "2026-04-12T09:05:38.224844Z",
-     "shell.execute_reply": "2026-04-12T09:05:38.223848Z"
+     "iopub.execute_input": "2026-04-12T09:09:27.820741Z",
+     "iopub.status.busy": "2026-04-12T09:09:27.820113Z",
+     "iopub.status.idle": "2026-04-12T09:09:29.204275Z",
+     "shell.execute_reply": "2026-04-12T09:09:29.203351Z"
     },
     "papermill": {
-     "duration": 1.461118,
-     "end_time": "2026-04-12T09:05:38.226505+00:00",
+     "duration": 1.388252,
+     "end_time": "2026-04-12T09:09:29.205920+00:00",
      "exception": false,
-     "start_time": "2026-04-12T09:05:36.765387+00:00",
+     "start_time": "2026-04-12T09:09:27.817668+00:00",
      "status": "completed"
     },
     "tags": []
@@ -93,19 +93,19 @@
   {
    "cell_type": "code",
    "execution_count": 2,
-   "id": "d4abbd39",
+   "id": "eb9ae088",
    "metadata": {
     "execution": {
-     "iopub.execute_input": "2026-04-12T09:05:38.230901Z",
-     "iopub.status.busy": "2026-04-12T09:05:38.230530Z",
-     "iopub.status.idle": "2026-04-12T09:05:42.450442Z",
-     "shell.execute_reply": "2026-04-12T09:05:42.449508Z"
+     "iopub.execute_input": "2026-04-12T09:09:29.210173Z",
+     "iopub.status.busy": "2026-04-12T09:09:29.209837Z",
+     "iopub.status.idle": "2026-04-12T09:09:34.163172Z",
+     "shell.execute_reply": "2026-04-12T09:09:34.162251Z"
     },
     "papermill": {
-     "duration": 4.224096,
-     "end_time": "2026-04-12T09:05:42.452220+00:00",
+     "duration": 4.957293,
+     "end_time": "2026-04-12T09:09:34.164787+00:00",
      "exception": false,
-     "start_time": "2026-04-12T09:05:38.228124+00:00",
+     "start_time": "2026-04-12T09:09:29.207494+00:00",
      "status": "completed"
     },
     "tags": []
@@ -130,19 +130,19 @@
   {
    "cell_type": "code",
    "execution_count": 3,
-   "id": "c28e0914",
+   "id": "fd1112dd",
    "metadata": {
     "execution": {
-     "iopub.execute_input": "2026-04-12T09:05:42.456870Z",
-     "iopub.status.busy": "2026-04-12T09:05:42.456605Z",
-     "iopub.status.idle": "2026-04-12T09:05:52.205185Z",
-     "shell.execute_reply": "2026-04-12T09:05:52.204090Z"
+     "iopub.execute_input": "2026-04-12T09:09:34.169320Z",
+     "iopub.status.busy": "2026-04-12T09:09:34.168627Z",
+     "iopub.status.idle": "2026-04-12T09:09:43.774621Z",
+     "shell.execute_reply": "2026-04-12T09:09:43.773564Z"
     },
     "papermill": {
-     "duration": 9.752782,
-     "end_time": "2026-04-12T09:05:52.206698+00:00",
+     "duration": 9.609864,
+     "end_time": "2026-04-12T09:09:43.776213+00:00",
      "exception": false,
-     "start_time": "2026-04-12T09:05:42.453916+00:00",
+     "start_time": "2026-04-12T09:09:34.166349+00:00",
      "status": "completed"
     },
     "tags": []
@@ -155,12 +155,12 @@
       "Secret ok\n",
       "--- Đang clone repo mới ---\n",
       "Cloning into 'sgu-2026-facial-expression-recognition'...\r\n",
-      "remote: Enumerating objects: 1085, done.\u001b[K\r\n",
-      "remote: Counting objects: 100% (334/334), done.\u001b[K\r\n",
-      "remote: Compressing objects: 100% (189/189), done.\u001b[K\r\n",
-      "remote: Total 1085 (delta 248), reused 200 (delta 145), pack-reused 751 (from 2)\u001b[K\r\n",
-      "Receiving objects: 100% (1085/1085), 5.95 MiB | 26.36 MiB/s, done.\r\n",
-      "Resolving deltas: 100% (688/688), done.\r\n",
+      "remote: Enumerating objects: 1095, done.\u001b[K\r\n",
+      "remote: Counting objects: 100% (344/344), done.\u001b[K\r\n",
+      "remote: Compressing objects: 100% (197/197), done.\u001b[K\r\n",
+      "remote: Total 1095 (delta 255), reused 204 (delta 147), pack-reused 751 (from 2)\u001b[K\r\n",
+      "Receiving objects: 100% (1095/1095), 5.95 MiB | 25.07 MiB/s, done.\r\n",
+      "Resolving deltas: 100% (695/695), done.\r\n",
       "Repo ready: /kaggle/working/sgu-2026-facial-expression-recognition\n",
       "\n",
       "Current working dir: /kaggle/working/sgu-2026-facial-expression-recognition\n"
@@ -228,19 +228,19 @@
   {
    "cell_type": "code",
    "execution_count": 4,
-   "id": "4daf0455",
+   "id": "da484fff",
    "metadata": {
     "execution": {
-     "iopub.execute_input": "2026-04-12T09:05:52.212731Z",
-     "iopub.status.busy": "2026-04-12T09:05:52.212078Z",
-     "iopub.status.idle": "2026-04-12T09:06:13.672982Z",
-     "shell.execute_reply": "2026-04-12T09:06:13.672157Z"
+     "iopub.execute_input": "2026-04-12T09:09:43.782461Z",
+     "iopub.status.busy": "2026-04-12T09:09:43.781533Z",
+     "iopub.status.idle": "2026-04-12T09:10:14.968220Z",
+     "shell.execute_reply": "2026-04-12T09:10:14.967186Z"
     },
     "papermill": {
-     "duration": 21.466134,
-     "end_time": "2026-04-12T09:06:13.674989+00:00",
+     "duration": 31.191948,
+     "end_time": "2026-04-12T09:10:14.970253+00:00",
      "exception": false,
-     "start_time": "2026-04-12T09:05:52.208855+00:00",
+     "start_time": "2026-04-12T09:09:43.778305+00:00",
      "status": "completed"
     },
     "tags": []
@@ -250,15 +250,21 @@
      "name": "stdout",
      "output_type": "stream",
      "text": [
+      "\t\t--> In main <--\t\t\r\n",
+      "--- Use device: cuda\r\n",
+      "[OK] Seed set to 42\r\n",
+      "--> Using Class Weights to handle imbalance...\r\n",
       "Traceback (most recent call last):\r\n",
       "  File \"<frozen runpy>\", line 198, in _run_module_as_main\r\n",
       "  File \"<frozen runpy>\", line 88, in _run_code\r\n",
-      "  File \"/kaggle/working/sgu-2026-facial-expression-recognition/scripts/train.py\", line 10, in <module>\r\n",
-      "    from src.models import get_model # in __init__ gfile\r\n",
-      "    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n",
-      "  File \"/kaggle/working/sgu-2026-facial-expression-recognition/src/models/__init__.py\", line 7, in <module>\r\n",
-      "    from .vit_ea_6x6 import VisionTransformerEA_6x6\r\n",
-      "ModuleNotFoundError: No module named 'src.models.vit_ea_6x6'\r\n"
+      "  File \"/kaggle/working/sgu-2026-facial-expression-recognition/scripts/train.py\", line 125, in <module>\r\n",
+      "    main()\r\n",
+      "  File \"/kaggle/working/sgu-2026-facial-expression-recognition/scripts/train.py\", line 74, in main\r\n",
+      "    optimizer = build_optimizer(model=model, config=config)\r\n",
+      "                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\r\n",
+      "  File \"/kaggle/working/sgu-2026-facial-expression-recognition/src/training/optimizer.py\", line 19, in build_optimizer\r\n",
+      "    raise ValueError(f\"Optimizer {opt_name} unsupported!\")\r\n",
+      "ValueError: Optimizer adamw unsupported!\r\n"
      ]
     }
    ],
@@ -308,14 +314,14 @@
   },
   "papermill": {
    "default_parameters": {},
-   "duration": 40.805678,
-   "end_time": "2026-04-12T09:06:14.196739+00:00",
+   "duration": 51.112058,
+   "end_time": "2026-04-12T09:10:15.491718+00:00",
    "environment_variables": {},
    "exception": null,
    "input_path": "__notebook__.ipynb",
    "output_path": "__notebook__.ipynb",
    "parameters": {},
-   "start_time": "2026-04-12T09:05:33.391061+00:00",
+   "start_time": "2026-04-12T09:09:24.379660+00:00",
    "version": "2.7.0"
   }
  },
