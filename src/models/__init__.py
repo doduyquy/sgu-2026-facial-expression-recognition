@@ -4,7 +4,7 @@ from .vgg import VGG19, VGGFusionSpatial, VGGFusionCBAM, VGGFusionSpatialCNN
 from .transformer_encoder import VGGFusionTransformer, VGGFusionTransformerV2, VGGFusionTransformerEA
 from .efficientnet import EfficientNetForFER2013
 from .vgg_ea import VGGEA_CNN
-from .vit_ea_6x6 import VisionTransformerEA_6x6
+# from .vit_ea_6x6 import VisionTransformerEA_6x6
 # from .resmaskingnet import ResMaskingNet
 
 
@@ -31,7 +31,7 @@ MODEL_REGISTRY = {
     # "resmaskingnet": ResMaskingNet,
     "efficientnet_fer2013": EfficientNetForFER2013,
     "vgg_ea_cnn": lambda **kw: VGGEA_CNN(config=kw['config'], channels=kw['config']['data']['channels']),
-    "vit_ea_6x6": lambda **kw: VisionTransformerEA_6x6(config=kw['config'], channels=kw['config']['data']['channels']),
+    # "vit_ea_6x6": lambda **kw: VisionTransformerEA_6x6(config=kw['config'], channels=kw['config']['data']['channels']),
 }
 
 def get_model(name: str, **kwargs):
