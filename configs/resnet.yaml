@@ -21,7 +21,7 @@ model:
 
 training:
   epochs: 200
-  patience: 10
+  patience: 20
   loss: "cross_entropy"
   use_class_weights: False
   class_weight_mode: "sqrt_inverse"

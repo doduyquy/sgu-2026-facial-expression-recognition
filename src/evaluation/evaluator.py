@@ -13,6 +13,7 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> Non
     
     correct_images, correct_trues, correct_preds = [], [], []
     wrong_images, wrong_trues, wrong_preds = [], [], []
+    wrong_masks = []
     
     all_preds = []
     all_trues = []
@@ -52,6 +53,7 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> Non
             _, preds = torch.max(outputs, 1)
             
             imgs_cpu = images.cpu()
+            landmarks_cpu = landmarks.cpu() if landmarks is not None else None
             labels_cpu = labels.cpu().numpy()
             preds_cpu = preds.cpu().numpy()
             
@@ -70,6 +72,10 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> Non
                         wrong_images.append(img)
                         wrong_trues.append(true_label)
                         wrong_preds.append(pred_label)
+                        if landmarks_cpu is not None and landmarks_cpu.dim() == 4:
+                            wrong_masks.append(landmarks_cpu[i])
+                        else:
+                            wrong_masks.append(None)
                         
     # Plot and push W&B
     print("\nPushing to WandB & Dashboard...")
@@ -98,8 +104,9 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> Non
     if len(wrong_images) > 0:
         fig_wrong = plot_prediction_grid(
             wrong_images, wrong_trues, wrong_preds, 
-            title="Incorrect Predictions", 
-            save_path=os.path.join(save_dir, "wrong_preds.png")
+            title="Incorrect Predictions (Mask Overlay)",
+            save_path=os.path.join(save_dir, "wrong_preds_with_mask.png"),
+            masks=wrong_masks,
         )
         log_image_to_wandb("Evaluation/Wrong_Samples", fig_wrong)
 
