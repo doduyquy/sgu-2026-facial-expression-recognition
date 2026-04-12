@@ -212,7 +212,7 @@ class VGGFusionSpatial(VGGFusionBase):
 
 
 
-class VGGFusionSpatialCLIP(VGGFusionBase):
+class VGGFusionSpatialCNN(VGGFusionBase):
     def __init__(self, config, channels=1):
         super().__init__(config, channels)
 
@@ -241,14 +241,10 @@ class VGGFusionSpatialCLIP(VGGFusionBase):
         combined = self.conv_proj(combined)                      # [B,512,3,3]
         combined = torch.flatten(combined, 2)                    # [B,512,9]
         combined = torch.permute(combined, (0, 2, 1))            # [B,9,512]
-        combined = combined.mean(dim=1)                          # [B,512]
+        
+        # Không dùng mean ở đây vì Transformer cần 9 tokens
+        # combined = combined.mean(dim=1)                          # [B,512]
 
-
-
-        # out = self.classifier(out)
-
-        # if self.training and self.use_aux:
-        #     return out, aux_out
         return combined
 
 
