@@ -6,6 +6,7 @@ model:
   name: "resnet50"
   attention_type: "cbam"  # options: 'cbam', 'eca', null
   attention_kernel_size: 7
+  use_fusion: true        # captures Stage 3 + Stage 4 features
   use_arcface: false      # set to true if using ArcFace loss
   arcface:
     s: 30.0

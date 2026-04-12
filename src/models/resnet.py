@@ -4,14 +4,13 @@ import torch.nn.functional as F
 from .CBAM import ECA, CBAM
 
 # Input:  (B, 1, 48, 48)
-# conv1: 3x3, stride=1, pad=1           -> (B, 64, 48, 48)
-# pool:  2x2, stride=2                  -> (B, 64, 24, 24)
-# layer2: ConvBlock(s=1) + 2 IDs        -> (B, 256, 24, 24)
-# layer3: ConvBlock(s=2) + 3 IDs        -> (B, 512, 12, 12)
-# layer4: ConvBlock(s=2) + 3 IDs        -> (B, 1024, 6, 6)
-# avgpool: AdaptiveAvgPool2d((1,1))     -> (B, 1024, 1, 1)
-# flatten                               -> (B, 1024)
-# fc                                    -> (B, num_classes)
+# conv1 + pool: 3x3, stride=1 + 2x2, stride=2  -> (B, 64, 24, 24)
+# layer2 (Stage 1 Bottleneck): 3 blocks       -> (B, 256, 24, 24)
+# layer3 (Stage 2 Bottleneck): 4 blocks       -> (B, 512, 12, 12)
+# layer4 (Stage 3 Bottleneck): 4 blocks       -> (B, 1024, 6, 6)
+# If Fusion: Cat(Pool(Layer3), Pool(Layer4))  -> (B, 1536)
+# Else: Pool(Layer4)                          -> (B, 1024)
+# fc / arcface_head                           -> (B, num_classes)
 #Hout = ((Hin + 2*pad - kernel_size) // stride) + 1
 
 
@@ -125,6 +124,7 @@ class ResNet50(nn.Module):
         self.attention_type = model_cfg.get('attention_type', 'cbam') # 'eca', 'cbam', or None
         self.attention_kernel_size = model_cfg.get('attention_kernel_size', 7)
         self.use_arcface = model_cfg.get('use_arcface', False)
+        self.use_fusion = model_cfg.get('use_fusion', False)
         
         # Arcface params
         arc_cfg = model_cfg.get('arcface', {})
@@ -172,10 +172,17 @@ class ResNet50(nn.Module):
 
         # Head
         self.avgpool = nn.AdaptiveAvgPool2d((1,1))
-        self.fc = nn.Linear(1024, self.num_classes)
+        
+        # Input features for classifier
+        self.feature_dim = 1024
+        if self.use_fusion:
+            self.feature_dim = 1024 + 512
+            print(f"--> Using Multi-scale Fusion (Stage 3 + Stage 4), Feature dim: {self.feature_dim}")
+
+        self.fc = nn.Linear(self.feature_dim, self.num_classes)
         if self.use_arcface:
             self.arcface_head = ArcMarginProduct(
-                in_features=1024,
+                in_features=self.feature_dim,
                 out_features=self.num_classes,
                 s=self.arcface_s,
                 m=self.arcface_m,
@@ -185,15 +192,24 @@ class ResNet50(nn.Module):
             self.arcface_head = None
 
     def forward(self, x, labels=None):
+        # input: (B, 1, 48, 48)
         x = self.relu(self.bn1(self.conv1(x)))
         x = self.pool(x)
+        # after stem: (B, 64, 24, 24)
 
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
+        x = self.layer2(x) # (B, 256, 24, 24)
+        
+        feat3 = self.layer3(x) # (B, 512, 12, 12)
+        feat4 = self.layer4(feat3) # (B, 1024, 6, 6)
 
-        x = self.avgpool(x)
-        features = torch.flatten(x, 1)
+        if self.use_fusion:
+            # Multi-scale fusion: GAP each stage and concatenate
+            p3 = self.avgpool(feat3).flatten(1) # (B, 512)
+            p4 = self.avgpool(feat4).flatten(1) # (B, 1024)
+            features = torch.cat([p3, p4], dim=1) # (B, 1536)
+        else:
+            x = self.avgpool(feat4)       # (B, 1024, 1, 1)
+            features = torch.flatten(x, 1) # (B, 1024)
 
         if self.use_arcface:
             x = self.arcface_head(features, labels)
