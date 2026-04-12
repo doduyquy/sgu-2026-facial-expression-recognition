@@ -32,28 +32,28 @@ class ResNet50SpatialCNN(nn.Module):
 class LocalAttentionModule(nn.Module):
     """
     Local Attention: Dense -> Conv1D -> Dense
-    As per the user provided diagram.
+    Improved implementation with proper transpositions.
     """
     def __init__(self, embed_dim, kernel_size=3):
         super().__init__()
-        self.conv1d = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim),
-            nn.ReLU(inplace=True),
-            # Conv1D expects [B, C, T]. T=9 tokens.
-            nn.Conv1d(embed_dim, embed_dim, kernel_size, padding=kernel_size//2),
-            nn.ReLU(inplace=True),
-            nn.Linear(embed_dim, embed_dim)
-        )
+        self.dense1 = nn.Linear(embed_dim, embed_dim)
+        self.conv1d = nn.Conv1d(embed_dim, embed_dim, kernel_size, padding=kernel_size//2)
+        self.dense2 = nn.Linear(embed_dim, embed_dim)
+        self.gelu = nn.GELU()
 
     def forward(self, x):
         # x: [B, 9, 512]
-        x_perm = x.transpose(1, 2) # [B, 512, 9]
-        x_conv = self.conv1d[2](x_perm) # Conv1D
-        x_conv = x_conv.transpose(1, 2) # [B, 9, 512]
+        # 1. Dense (feature-wise reflection)
+        out = self.gelu(self.dense1(x))
         
-        # Approximate the diagram: Dense -> Conv1D -> Dense
-        # Since x is already from a dense-like structure (Self Attention output)
-        return x_conv
+        # 2. Conv1D (local spatial/context correlation)
+        out = out.transpose(1, 2)      # [B, 512, 9]
+        out = self.gelu(self.conv1d(out))
+        out = out.transpose(1, 2)      # [B, 9, 512]
+        
+        # 3. Dense (final refinement)
+        out = self.dense2(out)
+        return out
 
 class HybridAttentionFusionBlock(nn.Module):
     def __init__(self, vgg_dim=512, res_dim=1024, embed_dim=512, num_heads=8, dropout=0.1):
