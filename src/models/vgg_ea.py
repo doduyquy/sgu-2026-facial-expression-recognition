@@ -2,6 +2,22 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+class SpatialAttention(nn.Module):
+    def __init__(self, kernel_size=7):
+        super(SpatialAttention, self).__init__()
+        assert kernel_size in [3, 7], 'kernel size must be 3 or 7'
+        padding = 3 if kernel_size == 7 else 1
+        self.conv = nn.Conv2d(2, 1, kernel_size, padding=padding, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        # x: [B, C, H, W]
+        avg_out = torch.mean(x, dim=1, keepdim=True)
+        max_out, _ = torch.max(x, dim=1, keepdim=True)
+        x_in = torch.cat([avg_out, max_out], dim=1) # [B, 2, H, W]
+        attn = self.sigmoid(self.conv(x_in)) # [B, 1, H, W]
+        return x * attn
+
 class CNNAwareAdapter(nn.Module):
     """
     Expression-aware Adapter (EAA) phiên bản dành cho CNN.
@@ -125,6 +141,13 @@ class VGGEA_CNN(nn.Module):
             nn.Dropout(self.dropout_block)
         )
 
+        # --- Spatial Attention & Fusion ---
+        self.sa3 = SpatialAttention(kernel_size=7)   # cho feature 6x6
+        self.sa4 = SpatialAttention(kernel_size=7)   # cho feature 3x3
+        
+        self.fusion_pool = nn.AdaptiveAvgPool2d((3, 3))
+        self.conv_proj = nn.Conv2d(768, 512, kernel_size=1)
+
         # --- Emotion-Aware Adapter (EAA) ---
         # Áp dụng trực tiếp trên feature map cuối cùng
         self.eaa = CNNAwareAdapter(512, bottleneck_dim=128)
@@ -139,17 +162,26 @@ class VGGEA_CNN(nn.Module):
         # 1. Feature Extraction
         x = self.b1(x)
         x = self.b2(x)
-        x = self.b3(x)
-        x = self.b4(x) # [B, 512, 3, 3]
+        feat_b3 = self.b3(x)         # [B, 256, 6, 6]
+        feat_b4 = self.b4(feat_b3)   # [B, 512, 3, 3]
 
-        # 2. Expression-aware Adaptation (EAA)
-        x = self.eaa(x)
+        # 2. Spatial Attention
+        feat_b3 = self.sa3(feat_b3)
+        feat_b4 = self.sa4(feat_b4)
 
-        # 3. Global Pooling
+        # 3. Multi-scale Fusion
+        feat_b3_resized = self.fusion_pool(feat_b3)              # [B, 256, 3, 3]
+        combined = torch.cat([feat_b4, feat_b3_resized], dim=1)  # [B, 768, 3, 3]
+        combined = self.conv_proj(combined)                      # [B, 512, 3, 3]
+
+        # 4. Expression-aware Adaptation (EAA)
+        x = self.eaa(combined)
+
+        # 5. Global Pooling
         v = self.gap(x) # [B, 512, 1, 1]
         v = torch.flatten(v, 1) # [B, 512]
 
-        # 4. IEC Classification
+        # 6. IEC Classification
         logits = self.iec(v)
 
         return logits
