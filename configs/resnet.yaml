@@ -1,0 +1,23 @@
+
+# ResNet50 with CBAM configuration
+_base_: "base.yaml"
+
+model:
+  name: "resnet50"
+  attention_type: "cbam"  # options: 'cbam', 'eca', null
+  attention_kernel_size: 7
+  use_arcface: false      # set to true if using ArcFace loss
+  arcface:
+    s: 30.0
+    m: 0.5
+    easy_margin: false
+
+data:
+  image_size: 48
+  channels: 1             # 1 for grayscale (FER2013)
+  batch_size: 64
+
+training:
+  lr: 0.001
+  epochs: 100
+  optimizer: "adam"
