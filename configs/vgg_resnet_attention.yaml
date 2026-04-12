@@ -1,0 +1,35 @@
+
+# Hybrid VGG-ResNet Attention Fusion Configuration
+_base_: "base.yaml"
+
+model:
+  name: "vgg_resnet_attention"
+  embed_dim: 512
+  num_heads: 8
+  transformer_dropout: 0.3
+  
+  # VGG Backbone settings
+  use_aux: false
+  
+  # ResNet Backbone settings (used internally by the wrapper)
+  attention_type: "cbam"
+  attention_kernel_size: 7
+  use_fusion: false # We use our own attention fusion in dual_fusion.py
+
+data:
+  image_size: 48
+  channels: 1
+  batch_size: 64
+
+training:
+  lr: 0.0001 # Start with a smaller LR for hybrid models
+  epochs: 100
+  optimizer: "adam"
+  use_class_weights: true
+
+env:
+  platform: "kaggle"
+
+kaggle:
+  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
+  root_path: "/kaggle/working/sgu-2026-facial-expression-recognition"
