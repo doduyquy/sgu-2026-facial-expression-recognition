@@ -21,7 +21,7 @@ MODEL_REGISTRY = {
         in_channels=config['data'].get('in_channels', 1),
         use_learned_landmark_branch=config['model'].get('use_learned_landmark_branch', True),
         landmark_num_points=config['model'].get('landmark_num_points', 12),
-        landmark_tau=config['model'].get('landmark_tau', 0.1),
+        landmark_tau=config['model'].get('landmark_tau', 0.03),
     ),
     # "resmaskingnet": ResMaskingNet,
 }

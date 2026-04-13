@@ -23,8 +23,11 @@ class Trainer:
         self.run_name = run_name
         self.config = config
         self.path_save_ckpt = save_dir
-        self.landmark_diversity_lambda = config['training'].get('landmark_diversity_lambda', 0.1)
-        self.landmark_sparsity_lambda = config['training'].get('landmark_sparsity_lambda', 0.01)
+        self.landmark_diversity_lambda = config['training'].get('landmark_diversity_lambda', 0.5)
+        self.landmark_entropy_lambda = config['training'].get(
+            'landmark_entropy_lambda',
+            config['training'].get('landmark_sparsity_lambda', 0.1),
+        )
 
     @staticmethod
     def _extract_logits(outputs):
@@ -65,9 +68,12 @@ class Trainer:
             aux_losses = self._extract_aux_losses(outputs)
 
             div_loss = aux_losses.get("landmark_diversity", torch.tensor(0.0, device=self.device))
-            sparse_loss = aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device))
+            entropy_loss = aux_losses.get(
+                "landmark_entropy",
+                aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
+            )
 
-            loss = cls_loss + (self.landmark_diversity_lambda * div_loss) + (self.landmark_sparsity_lambda * sparse_loss)
+            loss = cls_loss + (self.landmark_diversity_lambda * div_loss) + (self.landmark_entropy_lambda * entropy_loss)
             loss.backward()
             self.optimizer.step()
 
@@ -98,8 +104,11 @@ class Trainer:
                 cls_loss = self.criterion(logits, labels)
                 aux_losses = self._extract_aux_losses(outputs)
                 div_loss = aux_losses.get("landmark_diversity", torch.tensor(0.0, device=self.device))
-                sparse_loss = aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device))
-                loss = cls_loss + (self.landmark_diversity_lambda * div_loss) + (self.landmark_sparsity_lambda * sparse_loss)
+                entropy_loss = aux_losses.get(
+                    "landmark_entropy",
+                    aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
+                )
+                loss = cls_loss + (self.landmark_diversity_lambda * div_loss) + (self.landmark_entropy_lambda * entropy_loss)
                 running_loss += loss.item() * images.size(0)
 
                 _, preds = torch.max(logits, dim=1)

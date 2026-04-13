@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from .CBAM import CBAM
+from .learned_landmark import LearnedLandmarkBranch
 
 
 class IdentityBlock(nn.Module):
@@ -74,7 +75,7 @@ class ResNet50(nn.Module):
         cbam_kernel_size=7,
         use_learned_landmark_branch=True,
         landmark_num_points=12,
-        landmark_tau=0.1,
+        landmark_tau=0.03,
     ):
         super().__init__()
         self.use_learned_landmark_branch = use_learned_landmark_branch
@@ -120,80 +121,24 @@ class ResNet50(nn.Module):
             nn.Linear(512, num_classes),
         )
 
-        # Learned soft-landmark branch.
-        self.landmark_heatmap_head = nn.Sequential(
-            nn.Conv2d(1024, 256, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(256, landmark_num_points, kernel_size=1),
+        self.learned_landmark_branch = LearnedLandmarkBranch(
+            in_channels=1024,
+            landmark_num_points=landmark_num_points,
+            landmark_tau=landmark_tau,
         )
 
         self.landmark_fusion_fc = nn.Sequential(
-            nn.Linear(2048, 512),
+            nn.Linear(1024 * (landmark_num_points + 1), 512),
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(512, num_classes),
         )
-
-    @staticmethod
-    def _soft_argmax(heatmaps):
-        # heatmaps: (B, K, H, W)
-        bsz, keypoints, h, w = heatmaps.shape
-        flat = heatmaps.view(bsz, keypoints, -1)
-        probs = torch.softmax(flat, dim=-1)
-
-        xs = torch.linspace(0, 1, w, device=heatmaps.device, dtype=heatmaps.dtype)
-        ys = torch.linspace(0, 1, h, device=heatmaps.device, dtype=heatmaps.dtype)
-        grid_y, grid_x = torch.meshgrid(ys, xs, indexing="ij")
-        grid_x = grid_x.reshape(-1)
-        grid_y = grid_y.reshape(-1)
-
-        x = (probs * grid_x).sum(dim=-1)
-        y = (probs * grid_y).sum(dim=-1)
-        return torch.stack([x, y], dim=-1)
-
-    @staticmethod
-    def _diversity_loss(heatmaps):
-        # Encourage keypoints to attend to different regions.
-        bsz, keypoints, h, w = heatmaps.shape
-        if keypoints <= 1:
-            return heatmaps.new_tensor(0.0)
-
-        flat = heatmaps.view(bsz, keypoints, -1)
-        flat = flat / flat.norm(dim=-1, keepdim=True).clamp(min=1e-6)
-        sim = torch.bmm(flat, flat.transpose(1, 2))
-
-        eye = torch.eye(keypoints, device=heatmaps.device, dtype=heatmaps.dtype).unsqueeze(0)
-        off_diag = sim * (1.0 - eye)
-        return off_diag.pow(2).mean()
-
-    @staticmethod
-    def _sparsity_loss(heatmaps):
-        # Lower entropy-like pressure for sharper heatmaps.
-        return heatmaps.mean()
 
     def get_aux_losses(self):
         return self._latest_aux_losses
 
     def get_landmark_outputs(self):
         return self._latest_landmark_heatmaps, self._latest_landmark_coords
-
-    def _compute_learned_landmarks(self, feat_map):
-        # feat_map from stage4: (B,1024,H,W)
-        logits = self.landmark_heatmap_head(feat_map)
-        bsz, keypoints, h, w = logits.shape
-
-        scaled = logits.view(bsz, keypoints, -1) / max(self.landmark_tau, 1e-6)
-        probs = torch.softmax(scaled, dim=-1).view(bsz, keypoints, h, w)
-        coords = self._soft_argmax(probs)
-
-        attn = probs.sum(dim=1, keepdim=True).clamp(0.0, 1.0)
-        feat_attn = feat_map * attn
-
-        aux = {
-            "landmark_diversity": self._diversity_loss(probs),
-            "landmark_sparsity": self._sparsity_loss(probs),
-        }
-        return probs, coords, feat_attn, aux
 
     def forward(self, x, landmarks=None, landmark_mask=None):
         _ = landmarks
@@ -217,10 +162,8 @@ class ResNet50(nn.Module):
             self._latest_landmark_coords = None
             return self.fusion_fc(feat)
 
-        heatmaps, coords, feat_attn_map, aux = self._compute_learned_landmarks(x4)
-        feat_attn = torch.flatten(self.avgpool(feat_attn_map), 1)
-
-        fused = torch.cat([feat4, feat_attn], dim=1)
+        heatmaps, coords, feat_k, aux = self.learned_landmark_branch(x4)
+        fused = torch.cat([feat4, feat_k], dim=1)
         logits = self.landmark_fusion_fc(fused)
 
         self._latest_aux_losses = aux
