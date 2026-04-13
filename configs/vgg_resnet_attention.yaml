@@ -20,7 +20,7 @@ model:
   # ── Transfer Learning ──
   # Đường dẫn tới checkpoint tốt nhất của VGG (69.2%) và ResNet (68.5%)
   # Trên Kaggle: upload 2 file .pth lên Dataset rồi trỏ đường dẫn ở đây
-  pretrained_vgg_path: "/kaggle/input/datasets/lhngphc/resnet-0-68/resnet50_12042026_1052_best.pth"
+  pretrained_vgg_path: "/kaggle/input/datasets/lhngphc/vgg-0-912/vgg_spatial_10042026_1053_best.pth"
   pretrained_resnet_path: "/kaggle/input/datasets/lhngphc/resnet-0-68/resnet50_12042026_1052_best.pth"
   
   # Số epoch đóng băng backbone (Phase 1: chỉ train Fusion Head)
