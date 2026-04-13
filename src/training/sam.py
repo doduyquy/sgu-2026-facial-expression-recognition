@@ -33,6 +33,7 @@ class SAM(torch.optim.Optimizer):
                 p.data = self.state[p]["old_p"]  # get back to "w" from "w + e(w)"
 
         self.base_optimizer.step()  # do the actual "w = w - lr * g(w + e(w))" step
+        self._step_count += 1 # Satisfy PyTorch's internal step count for schedulers
 
         if zero_grad: self.zero_grad()
 
