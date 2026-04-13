@@ -23,6 +23,10 @@ class LearnedLandmarkBranch(nn.Module):
         post_softmax_sharpness=1.3,
         use_soft_face_mask=True,
         face_mask_strength=0.15,
+        use_dynamic_patch_localization=True,
+        patch_window_sigma=0.22,
+        patch_gate_strength=0.7,
+        patch_center_detach_for_gate=False,
     ):
         super().__init__()
         self.landmark_num_points = landmark_num_points
@@ -41,12 +45,25 @@ class LearnedLandmarkBranch(nn.Module):
         self.post_softmax_sharpness = post_softmax_sharpness
         self.use_soft_face_mask = use_soft_face_mask
         self.face_mask_strength = face_mask_strength
+        self.use_dynamic_patch_localization = use_dynamic_patch_localization
+        self.patch_window_sigma = patch_window_sigma
+        self.patch_gate_strength = patch_gate_strength
+        self.patch_center_detach_for_gate = patch_center_detach_for_gate
         self.current_prior_strength = prior_strength
+
+        hidden_dim = max(in_channels // 2, 64)
 
         self.landmark_heatmap_head = nn.Sequential(
             nn.Conv2d(in_channels, 256, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.Conv2d(256, landmark_num_points, kernel_size=1),
+        )
+        self.patch_center_head = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(in_channels, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, landmark_num_points * 2),
         )
 
     def set_training_progress(self, progress):
@@ -205,6 +222,21 @@ class LearnedLandmarkBranch(nn.Module):
         outside_mass = (probs * outside.unsqueeze(0).unsqueeze(0)).sum(dim=[2, 3])
         return outside_mass.mean()
 
+    def _build_dynamic_patch_gate(self, centers, h, w, device, dtype):
+        # centers: (B,K,2), normalized in [0,1]
+        ys = torch.linspace(0.0, 1.0, h, device=device, dtype=dtype)
+        xs = torch.linspace(0.0, 1.0, w, device=device, dtype=dtype)
+        grid_y, grid_x = torch.meshgrid(ys, xs, indexing="ij")
+
+        cx = centers[:, :, 0].unsqueeze(-1).unsqueeze(-1)
+        cy = centers[:, :, 1].unsqueeze(-1).unsqueeze(-1)
+
+        dist2 = (grid_x.unsqueeze(0).unsqueeze(0) - cx) ** 2 + (grid_y.unsqueeze(0).unsqueeze(0) - cy) ** 2
+        sigma2 = max(self.patch_window_sigma ** 2, 1e-6)
+        gate = torch.exp(-dist2 / (2.0 * sigma2))
+        gate = gate / gate.amax(dim=[2, 3], keepdim=True).clamp(min=1e-6)
+        return gate
+
     def forward(self, feat_map):
         logits = self.landmark_heatmap_head(feat_map)
         bsz, keypoints, h, w = logits.shape
@@ -216,6 +248,15 @@ class LearnedLandmarkBranch(nn.Module):
         scaled = logits.view(bsz, keypoints, -1) / max(self.landmark_tau, 1e-6)
         probs = torch.softmax(scaled, dim=-1).view(bsz, keypoints, h, w)
         base_probs = probs
+
+        patch_centers = None
+        if self.use_dynamic_patch_localization:
+            patch_centers = torch.sigmoid(self.patch_center_head(feat_map)).view(bsz, keypoints, 2)
+            centers_for_gate = patch_centers.detach() if self.patch_center_detach_for_gate else patch_centers
+            patch_gate = self._build_dynamic_patch_gate(centers_for_gate, h, w, probs.device, probs.dtype)
+            gate = (1.0 - self.patch_gate_strength) + (self.patch_gate_strength * patch_gate)
+            probs = probs * gate
+            probs = probs / probs.sum(dim=[2, 3], keepdim=True).clamp(min=1e-6)
 
         if self.training and self.heatmap_mask_prob > 0.0:
             keep_mask = (torch.rand_like(probs) > self.heatmap_mask_prob).to(probs.dtype)
@@ -266,4 +307,6 @@ class LearnedLandmarkBranch(nn.Module):
             "landmark_border": self._border_suppression_loss(probs),
             "landmark_outside_face": self._outside_face_loss(probs),
         }
+        if patch_centers is not None:
+            aux["landmark_patch_center"] = ((coords - patch_centers) ** 2).sum(dim=-1).mean()
         return probs, coords, feat_k, aux

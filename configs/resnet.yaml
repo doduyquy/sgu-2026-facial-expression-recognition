@@ -8,7 +8,7 @@ model:
   landmark_tau: 0.02
   landmark_feature_dropout_p: 0.3
   landmark_mask_prob: 0.25
-  landmark_prior_strength: 0.05
+  landmark_prior_strength: 0.0
   landmark_prior_min_strength: 0.0
   landmark_prior_anneal_power: 1.5
   landmark_prior_disable_after_progress: 0.3
@@ -18,8 +18,12 @@ model:
   landmark_part_target_inside: 0.35
   landmark_use_cross_keypoint_competition: false
   landmark_post_softmax_sharpness: 1.3
-  landmark_use_soft_face_mask: true
-  landmark_face_mask_strength: 0.15
+  landmark_use_soft_face_mask: false
+  landmark_face_mask_strength: 0.0
+  landmark_use_dynamic_patch_localization: true
+  landmark_patch_window_sigma: 0.22
+  landmark_patch_gate_strength: 0.7
+  landmark_patch_center_detach_for_gate: false
   landmark_from_stage: 3
 
 training:
@@ -38,5 +42,6 @@ training:
   landmark_entropy_lambda: 0.1
   landmark_separation_lambda: 0.2
   landmark_part_prior_lambda: 0.0
-  landmark_border_lambda: 0.05
-  landmark_outside_face_lambda: 0.1
+  landmark_border_lambda: 0.0
+  landmark_outside_face_lambda: 0.02
+  landmark_patch_center_lambda: 0.1

@@ -90,6 +90,10 @@ class ResNet50(nn.Module):
         landmark_post_softmax_sharpness=1.3,
         landmark_use_soft_face_mask=True,
         landmark_face_mask_strength=0.15,
+        landmark_use_dynamic_patch_localization=True,
+        landmark_patch_window_sigma=0.22,
+        landmark_patch_gate_strength=0.7,
+        landmark_patch_center_detach_for_gate=False,
         landmark_from_stage=3,
     ):
         super().__init__()
@@ -157,6 +161,10 @@ class ResNet50(nn.Module):
             post_softmax_sharpness=landmark_post_softmax_sharpness,
             use_soft_face_mask=landmark_use_soft_face_mask,
             face_mask_strength=landmark_face_mask_strength,
+            use_dynamic_patch_localization=landmark_use_dynamic_patch_localization,
+            patch_window_sigma=landmark_patch_window_sigma,
+            patch_gate_strength=landmark_patch_gate_strength,
+            patch_center_detach_for_gate=landmark_patch_center_detach_for_gate,
         )
 
         fusion_in_dim = 1024 + (landmark_num_points * landmark_in_channels)
