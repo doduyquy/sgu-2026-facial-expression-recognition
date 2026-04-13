@@ -9,8 +9,12 @@ model:
   landmark_feature_dropout_p: 0.3
   landmark_mask_prob: 0.25
   landmark_prior_strength: 0.25
+  landmark_prior_min_strength: 0.03
+  landmark_prior_anneal_power: 1.5
   landmark_prior_sigma: 0.20
   landmark_keypoint_dropout_p: 0.2
+  landmark_part_mask_expand: 0.08
+  landmark_part_target_inside: 0.35
   landmark_from_stage: 3
 
 training:

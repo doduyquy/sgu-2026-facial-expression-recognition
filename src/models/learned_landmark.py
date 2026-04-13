@@ -14,6 +14,10 @@ class LearnedLandmarkBranch(nn.Module):
         prior_strength=0.15,
         prior_sigma=0.22,
         keypoint_dropout_p=0.2,
+        prior_min_strength=0.03,
+        prior_anneal_power=1.5,
+        part_mask_expand=0.08,
+        part_target_inside=0.35,
     ):
         super().__init__()
         self.landmark_num_points = landmark_num_points
@@ -23,12 +27,26 @@ class LearnedLandmarkBranch(nn.Module):
         self.prior_strength = prior_strength
         self.prior_sigma = prior_sigma
         self.keypoint_dropout_p = keypoint_dropout_p
+        self.prior_min_strength = prior_min_strength
+        self.prior_anneal_power = prior_anneal_power
+        self.part_mask_expand = part_mask_expand
+        self.part_target_inside = part_target_inside
+        self.current_prior_strength = prior_strength
 
         self.landmark_heatmap_head = nn.Sequential(
             nn.Conv2d(in_channels, 256, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.Conv2d(256, landmark_num_points, kernel_size=1),
         )
+
+    def set_training_progress(self, progress):
+        # progress in [0, 1]: prior strong at start, weaker later for pose flexibility.
+        progress = float(max(0.0, min(1.0, progress)))
+        decay = (1.0 - progress) ** max(self.prior_anneal_power, 0.0)
+        self.current_prior_strength = self.prior_min_strength + (self.prior_strength - self.prior_min_strength) * decay
+
+    def get_current_prior_strength(self):
+        return float(self.current_prior_strength)
 
     def _build_keypoint_priors(self, h, w, device, dtype):
         # Face-aware anchors for FER: brows/eyes, nose, mouth region.
@@ -108,17 +126,17 @@ class LearnedLandmarkBranch(nn.Module):
         off_diag = inv_dist * (1.0 - eye)
         return off_diag.sum() / ((bsz * keypoints * (keypoints - 1)) + 1e-6)
 
-    @staticmethod
-    def _build_part_masks(h, w, device, dtype):
+    def _build_part_masks(self, h, w, device, dtype):
         # Coarse face-region masks for FER-aligned faces.
         ys = torch.linspace(0.0, 1.0, h, device=device, dtype=dtype)
         xs = torch.linspace(0.0, 1.0, w, device=device, dtype=dtype)
         grid_y, grid_x = torch.meshgrid(ys, xs, indexing="ij")
+        m = self.part_mask_expand
 
-        left_eye = ((grid_x >= 0.10) & (grid_x <= 0.45) & (grid_y >= 0.14) & (grid_y <= 0.45)).to(dtype)
-        right_eye = ((grid_x >= 0.55) & (grid_x <= 0.90) & (grid_y >= 0.14) & (grid_y <= 0.45)).to(dtype)
-        nose = ((grid_x >= 0.35) & (grid_x <= 0.65) & (grid_y >= 0.35) & (grid_y <= 0.68)).to(dtype)
-        mouth = ((grid_x >= 0.20) & (grid_x <= 0.80) & (grid_y >= 0.58) & (grid_y <= 0.95)).to(dtype)
+        left_eye = ((grid_x >= 0.10 - m) & (grid_x <= 0.45 + m) & (grid_y >= 0.14 - m) & (grid_y <= 0.45 + m)).to(dtype)
+        right_eye = ((grid_x >= 0.55 - m) & (grid_x <= 0.90 + m) & (grid_y >= 0.14 - m) & (grid_y <= 0.45 + m)).to(dtype)
+        nose = ((grid_x >= 0.35 - m) & (grid_x <= 0.65 + m) & (grid_y >= 0.35 - m) & (grid_y <= 0.68 + m)).to(dtype)
+        mouth = ((grid_x >= 0.20 - m) & (grid_x <= 0.80 + m) & (grid_y >= 0.58 - m) & (grid_y <= 0.95 + m)).to(dtype)
 
         return [left_eye, right_eye, nose, mouth]
 
@@ -135,7 +153,7 @@ class LearnedLandmarkBranch(nn.Module):
         for k, part_id in enumerate(part_ids):
             mask = part_masks[part_id].unsqueeze(0)
             inside = (probs[:, k] * mask).sum(dim=[1, 2])
-            penalties.append((1.0 - inside).mean())
+            penalties.append(torch.relu(self.part_target_inside - inside).mean())
         return torch.stack(penalties).mean()
 
     @staticmethod
@@ -158,9 +176,9 @@ class LearnedLandmarkBranch(nn.Module):
         logits = self.landmark_heatmap_head(feat_map)
         bsz, keypoints, h, w = logits.shape
 
-        if self.prior_strength > 0.0:
+        if self.current_prior_strength > 0.0:
             prior_logits = self._build_keypoint_priors(h, w, logits.device, logits.dtype)
-            logits = logits + (self.prior_strength * prior_logits.unsqueeze(0))
+            logits = logits + (self.current_prior_strength * prior_logits.unsqueeze(0))
 
         scaled = logits.view(bsz, keypoints, -1) / max(self.landmark_tau, 1e-6)
         probs = torch.softmax(scaled, dim=-1).view(bsz, keypoints, h, w)

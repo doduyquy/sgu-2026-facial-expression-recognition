@@ -81,6 +81,10 @@ class ResNet50(nn.Module):
         landmark_prior_strength=0.15,
         landmark_prior_sigma=0.22,
         landmark_keypoint_dropout_p=0.2,
+        landmark_prior_min_strength=0.03,
+        landmark_prior_anneal_power=1.5,
+        landmark_part_mask_expand=0.08,
+        landmark_part_target_inside=0.35,
         landmark_from_stage=3,
     ):
         super().__init__()
@@ -139,6 +143,10 @@ class ResNet50(nn.Module):
             prior_strength=landmark_prior_strength,
             prior_sigma=landmark_prior_sigma,
             keypoint_dropout_p=landmark_keypoint_dropout_p,
+            prior_min_strength=landmark_prior_min_strength,
+            prior_anneal_power=landmark_prior_anneal_power,
+            part_mask_expand=landmark_part_mask_expand,
+            part_target_inside=landmark_part_target_inside,
         )
 
         fusion_in_dim = 1024 + (landmark_num_points * landmark_in_channels)
@@ -154,6 +162,17 @@ class ResNet50(nn.Module):
 
     def get_landmark_outputs(self):
         return self._latest_landmark_heatmaps, self._latest_landmark_coords
+
+    def set_training_progress(self, progress):
+        setter = getattr(self.learned_landmark_branch, "set_training_progress", None)
+        if callable(setter):
+            setter(progress)
+
+    def get_current_prior_strength(self):
+        getter = getattr(self.learned_landmark_branch, "get_current_prior_strength", None)
+        if callable(getter):
+            return getter()
+        return None
 
     def forward(self, x, landmarks=None, landmark_mask=None):
         _ = landmarks

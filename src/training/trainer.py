@@ -162,6 +162,10 @@ class Trainer:
         print(f'\n--> Start training in total {self.epochs} epochs with {self.device} device. Start...\n')
 
         for ep in range(self.epochs):
+            progress = ep / max(self.epochs - 1, 1)
+            set_progress = getattr(self.model, "set_training_progress", None)
+            if callable(set_progress):
+                set_progress(progress)
 
             train_loss, train_acc = self.train_one_epoch()
             val_loss, val_acc = self.validate()
@@ -174,6 +178,11 @@ class Trainer:
                 f"loss: {train_loss:.4f} - accuracy: {train_acc.item():.4f} - "
                 f"val_loss: {val_loss:.4f} - val_accuracy: {val_acc.item():.4f}"
             )
+            get_prior = getattr(self.model, "get_current_prior_strength", None)
+            if callable(get_prior):
+                current_prior = get_prior()
+                if current_prior is not None:
+                    print(f"\tlandmark_prior_strength(now): {current_prior:.4f}")
 
             # wandb log
             if self.use_wandb:
