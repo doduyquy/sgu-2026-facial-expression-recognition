@@ -31,8 +31,8 @@ def build_transform(config, split="train") -> Compose: # train | val | test
             
             v2.Resize(size=(image_size, image_size)),
             v2.RandomHorizontalFlip(p=0.5),
-            v2.RandomRotation(21),
-            v2.RandomResizedCrop(size=(image_size, image_size), scale=(0.8, 1.0)), 
+            v2.RandomRotation(10), # cũ là 21
+            # v2.RandomResizedCrop(size=(image_size, image_size), scale=(0.8, 1.0)), 
 
             v2.ToImage(),
             v2.ToDtype(torch.float32, scale=True),
