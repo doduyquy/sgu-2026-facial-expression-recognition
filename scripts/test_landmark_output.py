@@ -35,6 +35,11 @@ def build_parser():
         default=None,
         help="Optional list of FaceMesh indexes. Uses default if omitted.",
     )
+    parser.add_argument(
+        "--force_template_fallback",
+        action="store_true",
+        help="Use template landmarks when MediaPipe fails on a sample.",
+    )
     return parser
 
 
@@ -54,6 +59,36 @@ def resolve_csv_path(base_path, split):
 def parse_pixels(pixel_str):
     image_vec = np.fromstring(pixel_str, sep=" ", dtype=np.uint8)
     return image_vec.reshape((48, 48))
+
+
+def template_landmarks(num_points):
+    """Approximate normalized landmark template for centered FER faces."""
+    base = np.array(
+        [
+            [0.32, 0.36],
+            [0.68, 0.36],
+            [0.50, 0.45],
+            [0.36, 0.62],
+            [0.64, 0.62],
+            [0.50, 0.78],
+            [0.50, 0.53],
+            [0.28, 0.56],
+            [0.72, 0.56],
+            [0.32, 0.70],
+            [0.68, 0.70],
+            [0.50, 0.88],
+        ],
+        dtype=np.float32,
+    )
+
+    if num_points <= base.shape[0]:
+        points = base[:num_points].copy()
+    else:
+        extra = np.tile(base[-1:], (num_points - base.shape[0], 1))
+        points = np.concatenate([base, extra], axis=0)
+
+    mask = np.ones((num_points,), dtype=np.float32)
+    return points, mask
 
 
 def draw_landmarks(gray_image, points, mask, true_label, save_path):
@@ -108,6 +143,7 @@ def main():
     )
 
     detected_count = 0
+    fallback_count = 0
     for i in range(num_samples):
         label, pixels = df.iloc[i].values
         img = parse_pixels(pixels)
@@ -115,6 +151,10 @@ def main():
 
         if (mask > 0.5).any():
             detected_count += 1
+        elif args.force_template_fallback:
+            n_points = len(args.landmark_indexes) if args.landmark_indexes is not None else len(extractor.landmark_indexes)
+            points, mask = template_landmarks(n_points)
+            fallback_count += 1
 
         save_path = out_dir / f"sample_{i:03d}_label_{int(label)}.png"
         draw_landmarks(
@@ -127,6 +167,8 @@ def main():
 
     print(f"Saved {num_samples} images to: {out_dir}")
     print(f"Landmark detected on {detected_count}/{num_samples} samples")
+    if args.force_template_fallback:
+        print(f"Template fallback used on {fallback_count}/{num_samples} samples")
 
 
 if __name__ == "__main__":
