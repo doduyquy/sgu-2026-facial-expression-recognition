@@ -28,6 +28,9 @@ class FER2013(Dataset):
             enabled=use_landmarks,
             backend=self.landmark_config.get("backend", "mediapipe"),
             landmark_indexes=self.landmark_config.get("landmark_indexes", None),
+            min_detection_confidence=self.landmark_config.get("min_detection_confidence", 0.2),
+            use_template_fallback=self.landmark_config.get("use_template_fallback", True),
+            template_jitter_std=self.landmark_config.get("template_jitter_std", 0.01 if split == "train" else 0.0),
         )
 
     def __len__(self):

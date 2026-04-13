@@ -15,6 +15,9 @@ landmark:
   backend: "mediapipe"
   representation: "heatmap"  # coords | heatmap
   normalize_mode: "relative"  # absolute | relative
+  use_template_fallback: true
+  min_detection_confidence: 0.2
+  template_jitter_std: 0.01
   landmark_indexes: [33, 263, 1, 61, 291, 199, 4, 48, 278, 57, 287, 152]
   heatmap_size: 64
   heatmap_sigma: 1.0
