@@ -8,6 +8,9 @@ model:
   use_aux: False
   use_se: True
   se_reduction: 16
+  use_shuffle: True
+  shuffle_groups: 4
+  
 
 data:
   image_size: 48
