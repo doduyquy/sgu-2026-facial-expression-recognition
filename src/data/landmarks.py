@@ -6,7 +6,7 @@ DEFAULT_LANDMARK_INDEXES = [33, 263, 1, 61, 291, 199, 4, 48, 278, 57, 287, 152]
 
 
 class LandmarkExtractor:
-    """Optional landmark extractor with safe fallback if backend is unavailable."""
+    """Optional extractor for FER images with safe fallback."""
 
     def __init__(self, enabled=False, backend="mediapipe", landmark_indexes=None, min_detection_confidence=0.2):
         self.enabled = enabled
@@ -70,17 +70,16 @@ class LandmarkExtractor:
         else:
             h, w = heatmap_size
 
-        n = points.shape[0]
-        heatmaps = np.zeros((n, h, w), dtype=np.float32)
+        n_points = points.shape[0]
+        heatmaps = np.zeros((n_points, h, w), dtype=np.float32)
         yy, xx = np.mgrid[0:h, 0:w]
 
         if mask is None:
-            mask = np.ones((n,), dtype=np.float32)
+            mask = np.ones((n_points,), dtype=np.float32)
 
-        for i in range(n):
+        for i in range(n_points):
             if mask[i] <= 0.5:
                 continue
-
             px = float(points[i, 0]) * (w - 1)
             py = float(points[i, 1]) * (h - 1)
             dist2 = (xx - px) ** 2 + (yy - py) ** 2
@@ -90,12 +89,10 @@ class LandmarkExtractor:
 
     @staticmethod
     def _upsample_gray(gray_image_np):
-        """FaceMesh struggles on 48x48 FER images, so upscale before inference."""
         h, w = gray_image_np.shape
         target = 192
         if min(h, w) >= target:
             return gray_image_np
-
         scale = max(1, int(np.ceil(target / float(min(h, w)))))
         up = np.repeat(np.repeat(gray_image_np, scale, axis=0), scale, axis=1)
         return up.astype(np.uint8)
@@ -110,7 +107,6 @@ class LandmarkExtractor:
         if gray_image_np.ndim != 2:
             return self._zeros_points(), self._zeros_mask()
 
-        # Retry strategy for tiny FER images: original -> upsampled.
         candidates = [gray_image_np]
         upsampled = self._upsample_gray(gray_image_np)
         if upsampled.shape != gray_image_np.shape:
@@ -126,15 +122,15 @@ class LandmarkExtractor:
         if result is None or (not result.multi_face_landmarks):
             return self._zeros_points(), self._zeros_mask()
 
-        landmarks = result.multi_face_landmarks[0].landmark
+        lm = result.multi_face_landmarks[0].landmark
         points = self._zeros_points()
         mask = self._zeros_mask()
 
         for i, idx in enumerate(self.landmark_indexes):
-            if idx >= len(landmarks):
+            if idx >= len(lm):
                 continue
-            x = min(max(float(landmarks[idx].x), 0.0), 1.0)
-            y = min(max(float(landmarks[idx].y), 0.0), 1.0)
+            x = min(max(float(lm[idx].x), 0.0), 1.0)
+            y = min(max(float(lm[idx].y), 0.0), 1.0)
             points[i, 0] = x
             points[i, 1] = y
             mask[i] = 1.0

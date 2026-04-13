@@ -6,17 +6,9 @@ data:
 model:
   name: "resnet"
   pretrained: false
-  use_landmark_cross_fusion: true
-  use_pyramid_multi_scale: true
-  img_topk_tokens: 49
-  token_selection_mode: "topk_softmax"
-  use_sinusoidal_pos: true
-  pyramid_dropout_rate: 0.1
-  pyramid_depth: 4
-  cross_attn_dim: 256
-  cross_attn_heads: 8
-  use_token_conv_mix: true
+  use_landmark_branch: true
   landmark_token_mode: "learnable"  # learnable | input | hybrid
+  landmark_embed_dim: 128
 
 training:
   epochs: 200
