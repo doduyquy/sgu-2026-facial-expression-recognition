@@ -124,17 +124,12 @@ class LearnedLandmarkBranch(nn.Module):
 
     def _part_prior_loss(self, probs):
         # Encourage each keypoint to stay in meaningful facial parts.
-        bsz, keypoints, h, w = probs.shape
+        _, keypoints, h, w = probs.shape
         part_masks = self._build_part_masks(h, w, probs.device, probs.dtype)
 
-        part_ids = []
-        for k in range(keypoints):
-            if k < 2:
-                part_ids.append(k)  # left_eye, right_eye
-            elif k == 2:
-                part_ids.append(2)  # nose
-            else:
-                part_ids.append(3)  # mouth
+        # Balanced assignment: cycle through [left_eye, right_eye, nose, mouth].
+        base_part_ids = [0, 1, 2, 3]
+        part_ids = [base_part_ids[k % len(base_part_ids)] for k in range(keypoints)]
 
         penalties = []
         for k, part_id in enumerate(part_ids):
@@ -142,6 +137,22 @@ class LearnedLandmarkBranch(nn.Module):
             inside = (probs[:, k] * mask).sum(dim=[1, 2])
             penalties.append((1.0 - inside).mean())
         return torch.stack(penalties).mean()
+
+    @staticmethod
+    def _border_suppression_loss(probs, border_ratio=0.14):
+        # Penalize mass on image borders where FER backgrounds/hair often dominate.
+        _, _, h, w = probs.shape
+        bh = max(int(h * border_ratio), 1)
+        bw = max(int(w * border_ratio), 1)
+
+        border_mask = torch.zeros((h, w), device=probs.device, dtype=probs.dtype)
+        border_mask[:bh, :] = 1.0
+        border_mask[-bh:, :] = 1.0
+        border_mask[:, :bw] = 1.0
+        border_mask[:, -bw:] = 1.0
+
+        border_mass = (probs * border_mask.unsqueeze(0).unsqueeze(0)).sum(dim=[2, 3])
+        return border_mass.mean()
 
     def forward(self, feat_map):
         logits = self.landmark_heatmap_head(feat_map)
@@ -190,5 +201,6 @@ class LearnedLandmarkBranch(nn.Module):
             "landmark_entropy": self._entropy_loss(probs),
             "landmark_separation": self._separation_loss(coords),
             "landmark_part_prior": self._part_prior_loss(probs),
+            "landmark_border": self._border_suppression_loss(probs),
         }
         return probs, coords, feat_k, aux
