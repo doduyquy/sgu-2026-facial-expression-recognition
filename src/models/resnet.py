@@ -77,23 +77,8 @@ class ResNet50(nn.Module):
         landmark_num_points=12,
         landmark_tau=0.03,
         landmark_feature_dropout_p=0.3,
-        landmark_mask_prob=0.2,
-        landmark_prior_strength=0.05,
-        landmark_prior_sigma=0.22,
-        landmark_keypoint_dropout_p=0.1,
-        landmark_prior_min_strength=0.0,
-        landmark_prior_anneal_power=1.5,
-        landmark_part_mask_expand=0.08,
-        landmark_part_target_inside=0.35,
-        landmark_prior_disable_after_progress=0.3,
-        landmark_use_cross_keypoint_competition=False,
-        landmark_post_softmax_sharpness=1.3,
-        landmark_use_soft_face_mask=True,
-        landmark_face_mask_strength=0.15,
-        landmark_use_dynamic_patch_localization=True,
-        landmark_patch_window_sigma=0.22,
-        landmark_patch_gate_strength=0.7,
-        landmark_patch_center_detach_for_gate=False,
+        landmark_use_topk_pooling=True,
+        landmark_topk_pool_k=5,
         landmark_from_stage=3,
     ):
         super().__init__()
@@ -148,23 +133,8 @@ class ResNet50(nn.Module):
             landmark_num_points=landmark_num_points,
             landmark_tau=landmark_tau,
             feature_dropout_p=landmark_feature_dropout_p,
-            heatmap_mask_prob=landmark_mask_prob,
-            prior_strength=landmark_prior_strength,
-            prior_sigma=landmark_prior_sigma,
-            keypoint_dropout_p=landmark_keypoint_dropout_p,
-            prior_min_strength=landmark_prior_min_strength,
-            prior_anneal_power=landmark_prior_anneal_power,
-            part_mask_expand=landmark_part_mask_expand,
-            part_target_inside=landmark_part_target_inside,
-            prior_disable_after_progress=landmark_prior_disable_after_progress,
-            use_cross_keypoint_competition=landmark_use_cross_keypoint_competition,
-            post_softmax_sharpness=landmark_post_softmax_sharpness,
-            use_soft_face_mask=landmark_use_soft_face_mask,
-            face_mask_strength=landmark_face_mask_strength,
-            use_dynamic_patch_localization=landmark_use_dynamic_patch_localization,
-            patch_window_sigma=landmark_patch_window_sigma,
-            patch_gate_strength=landmark_patch_gate_strength,
-            patch_center_detach_for_gate=landmark_patch_center_detach_for_gate,
+            use_topk_pooling=landmark_use_topk_pooling,
+            topk_pool_k=landmark_topk_pool_k,
         )
 
         fusion_in_dim = 1024 + (landmark_num_points * landmark_in_channels)
@@ -182,14 +152,9 @@ class ResNet50(nn.Module):
         return self._latest_landmark_heatmaps, self._latest_landmark_coords
 
     def set_training_progress(self, progress):
-        setter = getattr(self.learned_landmark_branch, "set_training_progress", None)
-        if callable(setter):
-            setter(progress)
+        _ = progress
 
     def get_current_prior_strength(self):
-        getter = getattr(self.learned_landmark_branch, "get_current_prior_strength", None)
-        if callable(getter):
-            return getter()
         return None
 
     def forward(self, x, landmarks=None, landmark_mask=None):

@@ -29,10 +29,6 @@ class Trainer:
             config['training'].get('landmark_sparsity_lambda', 0.1),
         )
         self.landmark_separation_lambda = config['training'].get('landmark_separation_lambda', 0.2)
-        self.landmark_part_prior_lambda = config['training'].get('landmark_part_prior_lambda', 0.0)
-        self.landmark_border_lambda = config['training'].get('landmark_border_lambda', 0.05)
-        self.landmark_outside_face_lambda = config['training'].get('landmark_outside_face_lambda', 0.1)
-        self.landmark_patch_center_lambda = config['training'].get('landmark_patch_center_lambda', 0.1)
 
     @staticmethod
     def _extract_logits(outputs):
@@ -78,20 +74,12 @@ class Trainer:
                 aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
             )
             sep_loss = aux_losses.get("landmark_separation", torch.tensor(0.0, device=self.device))
-            part_prior_loss = aux_losses.get("landmark_part_prior", torch.tensor(0.0, device=self.device))
-            border_loss = aux_losses.get("landmark_border", torch.tensor(0.0, device=self.device))
-            outside_face_loss = aux_losses.get("landmark_outside_face", torch.tensor(0.0, device=self.device))
-            patch_center_loss = aux_losses.get("landmark_patch_center", torch.tensor(0.0, device=self.device))
 
             loss = (
                 cls_loss
                 + (self.landmark_diversity_lambda * div_loss)
                 + (self.landmark_entropy_lambda * entropy_loss)
                 + (self.landmark_separation_lambda * sep_loss)
-                + (self.landmark_part_prior_lambda * part_prior_loss)
-                + (self.landmark_border_lambda * border_loss)
-                + (self.landmark_outside_face_lambda * outside_face_loss)
-                + (self.landmark_patch_center_lambda * patch_center_loss)
             )
             loss.backward()
             self.optimizer.step()
@@ -128,19 +116,11 @@ class Trainer:
                     aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
                 )
                 sep_loss = aux_losses.get("landmark_separation", torch.tensor(0.0, device=self.device))
-                part_prior_loss = aux_losses.get("landmark_part_prior", torch.tensor(0.0, device=self.device))
-                border_loss = aux_losses.get("landmark_border", torch.tensor(0.0, device=self.device))
-                outside_face_loss = aux_losses.get("landmark_outside_face", torch.tensor(0.0, device=self.device))
-                patch_center_loss = aux_losses.get("landmark_patch_center", torch.tensor(0.0, device=self.device))
                 loss = (
                     cls_loss
                     + (self.landmark_diversity_lambda * div_loss)
                     + (self.landmark_entropy_lambda * entropy_loss)
                     + (self.landmark_separation_lambda * sep_loss)
-                    + (self.landmark_part_prior_lambda * part_prior_loss)
-                    + (self.landmark_border_lambda * border_loss)
-                    + (self.landmark_outside_face_lambda * outside_face_loss)
-                    + (self.landmark_patch_center_lambda * patch_center_loss)
                 )
                 running_loss += loss.item() * images.size(0)
 
