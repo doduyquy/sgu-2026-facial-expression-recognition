@@ -13,6 +13,7 @@ class LearnedLandmarkBranch(nn.Module):
         heatmap_mask_prob=0.2,
         prior_strength=0.15,
         prior_sigma=0.22,
+        keypoint_dropout_p=0.2,
     ):
         super().__init__()
         self.landmark_num_points = landmark_num_points
@@ -21,6 +22,7 @@ class LearnedLandmarkBranch(nn.Module):
         self.heatmap_mask_prob = heatmap_mask_prob
         self.prior_strength = prior_strength
         self.prior_sigma = prior_sigma
+        self.keypoint_dropout_p = keypoint_dropout_p
 
         self.landmark_heatmap_head = nn.Sequential(
             nn.Conv2d(in_channels, 256, kernel_size=3, padding=1),
@@ -29,19 +31,21 @@ class LearnedLandmarkBranch(nn.Module):
         )
 
     def _build_keypoint_priors(self, h, w, device, dtype):
-        # Fixed anchors break keypoint permutation symmetry to reduce collapse.
-        cols = max(int(torch.ceil(torch.sqrt(torch.tensor(float(self.landmark_num_points))))), 1)
-        rows = (self.landmark_num_points + cols - 1) // cols
-
-        xs = torch.linspace(0.15, 0.85, cols, device=device, dtype=dtype)
-        ys = torch.linspace(0.15, 0.85, rows, device=device, dtype=dtype)
-
+        # Face-aware anchors for FER: brows/eyes, nose, mouth region.
+        base_centers = [
+            [0.28, 0.24],  # left brow/eye
+            [0.72, 0.24],  # right brow/eye
+            [0.22, 0.38],  # left eye side
+            [0.78, 0.38],  # right eye side
+            [0.50, 0.50],  # nose
+            [0.34, 0.74],  # left mouth
+            [0.66, 0.74],  # right mouth
+            [0.50, 0.84],  # lower lip/chin transition
+        ]
         centers = []
-        for r in range(rows):
-            for c in range(cols):
-                if len(centers) < self.landmark_num_points:
-                    centers.append(torch.stack([xs[c], ys[r]], dim=0))
-        centers = torch.stack(centers, dim=0)
+        for i in range(self.landmark_num_points):
+            centers.append(base_centers[i % len(base_centers)])
+        centers = torch.tensor(centers, device=device, dtype=dtype)
 
         gx = torch.linspace(0.0, 1.0, w, device=device, dtype=dtype)
         gy = torch.linspace(0.0, 1.0, h, device=device, dtype=dtype)
@@ -119,6 +123,16 @@ class LearnedLandmarkBranch(nn.Module):
         if self.training and self.heatmap_mask_prob > 0.0:
             keep_mask = (torch.rand_like(probs) > self.heatmap_mask_prob).to(probs.dtype)
             probs = probs * keep_mask
+            spatial_sum = probs.sum(dim=[2, 3], keepdim=True)
+            probs = torch.where(spatial_sum > 1e-6, probs / spatial_sum.clamp(min=1e-6), base_probs)
+
+        if self.training and self.keypoint_dropout_p > 0.0 and keypoints > 1:
+            kp_keep = (torch.rand(bsz, keypoints, 1, 1, device=probs.device) > self.keypoint_dropout_p).to(probs.dtype)
+            # Ensure at least one keypoint remains active per sample.
+            has_any = kp_keep.sum(dim=1, keepdim=True) > 0
+            fallback = torch.ones_like(kp_keep[:, :1])
+            kp_keep = torch.where(has_any, kp_keep, torch.cat([fallback, torch.zeros_like(kp_keep[:, 1:])], dim=1))
+            probs = probs * kp_keep
             spatial_sum = probs.sum(dim=[2, 3], keepdim=True)
             probs = torch.where(spatial_sum > 1e-6, probs / spatial_sum.clamp(min=1e-6), base_probs)
 
