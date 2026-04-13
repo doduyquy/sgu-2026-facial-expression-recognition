@@ -9,6 +9,8 @@ model:
   num_regions: 6          # Trán, Mắt trái, Mắt phải, Mũi, Miệng, Cằm
   num_encoder_layers: 2   # Số lớp Transformer Encoder
   transformer_dropout: 0.1
+  pretrained_vgg_path: "/kaggle/input/datasets/lhngphc/vgg-0-912/vgg_spatial_10042026_1053_best.pth"
+  pretrained_resnet_path: "/kaggle/input/datasets/lhngphc/resnet-0-68/resnet50_12042026_1052_best.pth"
 
   # VGG Backbone (PURE mode - không Spatial Attention)
   use_aux: false
