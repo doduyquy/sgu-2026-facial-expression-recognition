@@ -6,10 +6,10 @@ model:
   dropout_main: 0.4
   dropout_aux: 0.3
   use_aux: False
-  use_se: True
-  se_reduction: 16
-  use_shuffle: True
-  shuffle_groups: 4
+  # use_se: True
+  # se_reduction: 16
+  # use_shuffle: True
+  # shuffle_groups: 4
   
 
 data:
