@@ -5,6 +5,7 @@ import numpy as np
 from datetime import datetime
 from src.utils.logger_wandb import init_wandb, log_image_to_wandb, log_metrics
 from src.training.losses import inception_loss
+from src.training.optimizer import build_scheduler
 
 class Trainer:
     """Forward -> Compute loss -> zero_grad -> Backward -> Update weights (step)"""
@@ -117,9 +118,12 @@ class Trainer:
                         filter(lambda p: p.requires_grad, self.model.parameters()),
                         lr=finetune_lr
                     )
+                    # REBUILD scheduler to link to NEW optimizer
+                    self.scheduler = build_scheduler(self.optimizer, self.config)
+                    
                     # RESET bộ đếm Early Stopping để Phase 2 được chạy đủ
                     patience_counter = 0
-                    print(f"[Trainer] Rebuilt optimizer with finetune_lr={finetune_lr} and reset patience.")
+                    print(f"[Trainer] Rebuilt optimizer & scheduler with finetune_lr={finetune_lr} and reset patience.")
 
             train_loss, train_acc = self.train_one_epoch()
             val_loss, val_acc = self.validate()
