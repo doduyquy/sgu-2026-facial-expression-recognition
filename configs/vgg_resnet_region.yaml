@@ -1,0 +1,36 @@
+
+# Region-Aligned Facial Expression Recognition Configuration
+_base_: "base.yaml"
+
+model:
+  name: "region_aligned_fer"
+  embed_dim: 512
+  num_heads: 4
+  num_regions: 6          # Trán, Mắt trái, Mắt phải, Mũi, Miệng, Cằm
+  num_encoder_layers: 2   # Số lớp Transformer Encoder
+  transformer_dropout: 0.1
+
+  # VGG Backbone (PURE mode - không Spatial Attention)
+  use_aux: false
+
+  # ResNet Backbone (PURE mode - không CBAM)
+  attention_type: null
+  use_fusion: false
+
+data:
+  image_size: 48
+  channels: 1
+  batch_size: 64
+
+training:
+  lr: 0.0002
+  epochs: 100
+  optimizer: "adam"
+  use_class_weights: true
+
+env:
+  platform: "kaggle"
+
+kaggle:
+  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
+  root_path: "/kaggle/working/sgu-2026-facial-expression-recognition"
