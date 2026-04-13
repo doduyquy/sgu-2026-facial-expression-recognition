@@ -8,6 +8,7 @@ if str(ROOT_DIR) not in sys.path:
 
 import matplotlib.pyplot as plt
 import torch
+import torch.nn.functional as F
 
 from src.data.dataloader import build_dataloader
 from src.models import get_model
@@ -25,18 +26,44 @@ def parse_args():
     return parser.parse_args()
 
 
+def _soft_argmax_pixel_coords(heatmaps_up):
+    # heatmaps_up: (K,H,W), returns coords in image pixel space
+    keypoints, h, w = heatmaps_up.shape
+    flat = heatmaps_up.view(keypoints, -1)
+    probs = flat / flat.sum(dim=-1, keepdim=True).clamp(min=1e-6)
+
+    xs = torch.linspace(0, w - 1, w, device=heatmaps_up.device, dtype=heatmaps_up.dtype)
+    ys = torch.linspace(0, h - 1, h, device=heatmaps_up.device, dtype=heatmaps_up.dtype)
+    grid_y, grid_x = torch.meshgrid(ys, xs, indexing="ij")
+    grid_x = grid_x.reshape(-1)
+    grid_y = grid_y.reshape(-1)
+
+    x = (probs * grid_x).sum(dim=-1)
+    y = (probs * grid_y).sum(dim=-1)
+    return torch.stack([x, y], dim=-1)
+
+
 def save_overlay(image_tensor, heatmaps, coords, save_path, title):
-    # image_tensor: (1,H,W) normalized in [-1,1], heatmaps: (K,h,w), coords: (K,2)
+    # image_tensor: (1,H,W) normalized in [-1,1], heatmaps: (K,h,w)
     img = image_tensor.squeeze(0).cpu().numpy()
     img = (img * 0.5) + 0.5
     img = img.clip(0.0, 1.0)
 
-    hm_sum = heatmaps.sum(dim=0).cpu().numpy()
+    img_h, img_w = img.shape
+    heatmaps_up = F.interpolate(
+        heatmaps.unsqueeze(0),
+        size=(img_h, img_w),
+        mode="bilinear",
+        align_corners=False,
+    ).squeeze(0)
+
+    coords_img = _soft_argmax_pixel_coords(heatmaps_up)
+
+    hm_sum = heatmaps_up.sum(dim=0).cpu().numpy()
     hm_sum = hm_sum / max(float(hm_sum.max()), 1e-6)
 
-    h, w = img.shape
-    xs = coords[:, 0].cpu().numpy() * (w - 1)
-    ys = coords[:, 1].cpu().numpy() * (h - 1)
+    xs = coords_img[:, 0].cpu().numpy()
+    ys = coords_img[:, 1].cpu().numpy()
 
     fig, ax = plt.subplots(1, 1, figsize=(4, 4))
     ax.imshow(img, cmap="gray")
@@ -86,6 +113,8 @@ def main():
 
     if heatmaps is None or coords is None:
         raise RuntimeError("Model did not produce landmark heatmaps. Check config/model branch.")
+
+    print(f"Raw normalized coords range: min={coords.min().item():.4f}, max={coords.max().item():.4f}")
 
     n = min(args.num_samples, images.size(0))
     for i in range(n):
