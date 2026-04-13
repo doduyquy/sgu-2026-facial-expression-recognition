@@ -84,12 +84,14 @@ class ResNet50(nn.Module):
         cross_attn_dim=256,
         cross_attn_heads=8,
         use_token_conv_mix=True,
+        landmark_token_mode="learnable",
     ):
         super().__init__()
         self.use_landmark_cross_fusion = use_landmark_cross_fusion
         self.use_pyramid_multi_scale = use_pyramid_multi_scale
         self.landmark_num_points = landmark_num_points
         self.cross_attn_dim = cross_attn_dim
+        self.landmark_token_mode = landmark_token_mode
 
         candidate_heads = [cross_attn_heads, 8, 4, 2, 1]
         self.poster_heads = 1
@@ -141,6 +143,8 @@ class ResNet50(nn.Module):
         self.lm_spatial_proj = nn.Linear(self.base_lm_dim * 8 * 8, self.base_lm_dim)
         self.lm_coord_proj = nn.Linear(2, self.base_lm_dim)
         self.landmark_index_embed = nn.Embedding(landmark_num_points, self.base_lm_dim)
+        self.learnable_landmark_tokens = nn.Parameter(torch.randn(1, landmark_num_points, self.base_lm_dim))
+        self.hybrid_landmark_gate = nn.Parameter(torch.tensor(0.0))
 
         # Poster-like pyramid module.
         self.pyramid_cross_fusion = PyramidCrossFusionTransformer(
@@ -204,12 +208,62 @@ class ResNet50(nn.Module):
         else:
             return None
 
+        return self._add_landmark_index_embedding(tokens)
+
+    def _add_landmark_index_embedding(self, tokens):
         p = tokens.size(1)
         emb_len = min(p, self.landmark_num_points)
         idx = torch.arange(emb_len, device=tokens.device)
         emb = self.landmark_index_embed(idx).unsqueeze(0)
+        tokens = tokens.clone()
         tokens[:, :emb_len, :] = tokens[:, :emb_len, :] + emb
         return tokens
+
+    @staticmethod
+    def _resize_landmark_tokens(tokens, target_points):
+        if tokens is None:
+            return None
+        if tokens.size(1) == target_points:
+            return tokens
+        resized = torch.nn.functional.interpolate(
+            tokens.transpose(1, 2),
+            size=target_points,
+            mode="linear",
+            align_corners=False,
+        )
+        return resized.transpose(1, 2)
+
+    def _resolve_landmark_tokens(self, landmarks, landmark_mask, batch_size, device, dtype):
+        learned = self.learnable_landmark_tokens.expand(batch_size, -1, -1).to(device=device, dtype=dtype)
+        learned = self._add_landmark_index_embedding(learned)
+
+        if self.landmark_token_mode == "learnable":
+            return learned, None
+
+        input_tokens = self._encode_landmarks_base(landmarks)
+        if input_tokens is not None:
+            input_tokens = self._resize_landmark_tokens(input_tokens, self.landmark_num_points)
+
+        if self.landmark_token_mode == "input":
+            return input_tokens, landmark_mask
+
+        # hybrid mode: blend detector/template tokens with learned anchors.
+        if input_tokens is None:
+            return learned, None
+
+        mix = torch.sigmoid(self.hybrid_landmark_gate)
+        mixed = (mix * input_tokens) + ((1.0 - mix) * learned)
+
+        if landmark_mask is not None:
+            if landmark_mask.size(1) != self.landmark_num_points:
+                landmark_mask = torch.nn.functional.interpolate(
+                    landmark_mask.unsqueeze(1),
+                    size=self.landmark_num_points,
+                    mode="nearest",
+                ).squeeze(1)
+            mixed = mixed * landmark_mask.unsqueeze(-1) + learned * (1.0 - landmark_mask).unsqueeze(-1)
+
+        return mixed, landmark_mask
 
     def forward(self, x, landmarks=None, landmark_mask=None):
         x = self.relu(self.bn1(self.conv1(x)))
@@ -225,15 +279,22 @@ class ResNet50(nn.Module):
 
         base_feat = torch.cat([feat3, feat4], dim=1)
 
-        if self.use_landmark_cross_fusion and self.use_pyramid_multi_scale and landmarks is not None:
-            lm_base = self._encode_landmarks_base(landmarks)
+        if self.use_landmark_cross_fusion and self.use_pyramid_multi_scale:
+            lm_base, lm_mask = self._resolve_landmark_tokens(
+                landmarks=landmarks,
+                landmark_mask=landmark_mask,
+                batch_size=x.size(0),
+                device=x.device,
+                dtype=x.dtype,
+            )
+
             if lm_base is not None:
                 xs, xm, xl = self.pyramid_cross_fusion(
                     x2,
                     x3,
                     x4,
                     lm_base,
-                    landmark_mask=landmark_mask,
+                    landmark_mask=lm_mask,
                 )
 
                 base_token = self.base_feat_proj(base_feat)

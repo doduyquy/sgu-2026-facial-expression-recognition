@@ -30,6 +30,7 @@ MODEL_REGISTRY = {
         cross_attn_dim=config['model'].get('cross_attn_dim', 256),
         cross_attn_heads=config['model'].get('cross_attn_heads', 8),
         use_token_conv_mix=config['model'].get('use_token_conv_mix', True),
+        landmark_token_mode=config['model'].get('landmark_token_mode', 'learnable'),
     ),
     # "resmaskingnet": ResMaskingNet,
 }

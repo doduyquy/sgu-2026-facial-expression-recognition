@@ -1,7 +1,7 @@
 _base_: "base.yaml"
 
 data:
-  use_landmarks: true
+  use_landmarks: false
 
 model:
   name: "resnet"
@@ -16,6 +16,7 @@ model:
   cross_attn_dim: 256
   cross_attn_heads: 8
   use_token_conv_mix: true
+  landmark_token_mode: "learnable"  # learnable | input | hybrid
 
 training:
   epochs: 200
