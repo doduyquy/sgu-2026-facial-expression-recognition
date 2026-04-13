@@ -11,6 +11,8 @@ model:
   # use_shuffle: True
   # shuffle_groups: 4
   
+training:
+  use_class_weights: true
 
 data:
   image_size: 48
