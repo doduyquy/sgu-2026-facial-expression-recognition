@@ -20,8 +20,7 @@ class ResNet50SpatialCNN(nn.Module):
         x = self.resnet.relu(self.resnet.bn1(self.resnet.conv1(x)))
         x = self.resnet.pool(x)
 
-        x = self.resnet.layer1(x) # Added layer1 (fixed bug)
-        x = self.resnet.layer2(x)
+        x = self.resnet.layer2(x) # Architecture starts from layer2
         x = self.resnet.layer3(x)
         x = self.resnet.layer4(x) # [B, 1024, 6, 6]
         
