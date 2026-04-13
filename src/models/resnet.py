@@ -78,6 +78,8 @@ class ResNet50(nn.Module):
         landmark_tau=0.03,
         landmark_feature_dropout_p=0.3,
         landmark_mask_prob=0.2,
+        landmark_prior_strength=0.15,
+        landmark_prior_sigma=0.22,
     ):
         super().__init__()
         self.use_learned_landmark_branch = use_learned_landmark_branch
@@ -129,6 +131,8 @@ class ResNet50(nn.Module):
             landmark_tau=landmark_tau,
             feature_dropout_p=landmark_feature_dropout_p,
             heatmap_mask_prob=landmark_mask_prob,
+            prior_strength=landmark_prior_strength,
+            prior_sigma=landmark_prior_sigma,
         )
 
         self.landmark_fusion_fc = nn.Sequential(
