@@ -37,6 +37,8 @@ training:
   finetune_lr: 0.00001  # Phase 2: LR cực nhỏ - fine-tune toàn bộ
   epochs: 100
   optimizer: "adam"
+  weight_decay: 0.001       # Tăng từ 0.0001 để giảm Overfit
+  label_smoothing: 0.1      # Giảm độ tự tin thái quá của model
   use_class_weights: true
 
 env:

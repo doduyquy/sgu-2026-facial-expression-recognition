@@ -4,6 +4,30 @@ import torch.nn.functional as F
 from .vgg import VGGFusionSpatialCNN
 from .resnet import ResNet50
 
+def drop_path(x, drop_prob: float = 0., training: bool = False):
+    """
+    Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
+    """
+    if drop_prob == 0. or not training:
+        return x
+    keep_prob = 1 - drop_prob
+    shape = (x.shape[0],) + (1,) * (x.ndim - 1) 
+    random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
+    random_tensor.floor_()  # binarize
+    output = x.div(keep_prob) * random_tensor
+    return output
+
+class DropPath(nn.Module):
+    """
+    Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks).
+    """
+    def __init__(self, drop_prob=None):
+        super(DropPath, self).__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x):
+        return drop_path(x, self.drop_prob, self.training)
+
 class ResNet50SpatialCNN(nn.Module):
     """
     Wrapper for ResNet50 that extracts 3x3 spatial features (9 tokens).
@@ -79,6 +103,7 @@ class HybridAttentionFusionBlock(nn.Module):
         self.norm1 = nn.LayerNorm(embed_dim)
         self.norm2 = nn.LayerNorm(embed_dim)
         self.dropout = nn.Dropout(dropout)
+        self.drop_path = DropPath(dropout if dropout > 0. else 0.)
 
     def forward(self, vgg_feat, res_feat):
         # vgg_feat: [B, 9, 512], res_feat: [B, 9, 1024]
@@ -103,8 +128,8 @@ class HybridAttentionFusionBlock(nn.Module):
         l_attn = self.local_attn(attn_out)
         
         # 5. Residual connection (Residual add in diagram)
-        out = self.norm1(attn_out + l_attn)
-        out = self.norm2(out + v) 
+        out = self.norm1(attn_out + self.drop_path(l_attn))
+        out = self.norm2(out + self.drop_path(v))
         
         return out
 

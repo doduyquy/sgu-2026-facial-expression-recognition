@@ -31,12 +31,14 @@ def build_transform(config, split="train") -> Compose: # train | val | test
             
             v2.Resize(size=(image_size, image_size)),
             v2.RandomHorizontalFlip(p=0.5),
-            v2.RandomRotation(21),
+            v2.RandomRotation(15),
+            v2.ColorJitter(brightness=0.2, contrast=0.2), # Thêm biến đổi ánh sáng
             v2.RandomResizedCrop(size=(image_size, image_size), scale=(0.8, 1.0)), 
 
             v2.ToImage(),
             v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize(mean=mean, std=std)
+            v2.Normalize(mean=mean, std=std),
+            v2.RandomErasing(p=0.3, scale=(0.02, 0.2), ratio=(0.3, 3.3)) # Thêm xóa vùng ảnh
         ]
     else:
         transform_ops = [
