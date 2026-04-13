@@ -25,3 +25,4 @@ zmisc
 
 #data quá lớn không pub
 dataset/
+*region_attention*.py
