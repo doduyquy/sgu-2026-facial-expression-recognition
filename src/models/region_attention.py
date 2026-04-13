@@ -208,20 +208,50 @@ class RegionAlignedFER(nn.Module):
         )
 
     def load_pretrained_backbones(self, vgg_ckpt_path, resnet_ckpt_path, device='cpu'):
-        """Load pretrained weights into VGG and ResNet components."""
+        """Load pretrained weights into VGG and ResNet components.
+        Tự động bỏ qua các weight bị lệch shape (ví dụ: sa4 kernel 3x3 vs 7x7).
+        """
         # ── Load VGG ──
         vgg_ckpt = torch.load(vgg_ckpt_path, map_location=device)
         vgg_state = vgg_ckpt['model_state_dict']
-        vgg_filtered = {k: v for k, v in vgg_state.items() if k.startswith(('b1.', 'b2.', 'b3.', 'b4.', 'fusion_pool.', 'sa3.', 'sa4.'))}
-        self.vgg_backbone.load_state_dict(vgg_filtered, strict=False)
-        print(f"[RegionAligned] VGG loaded: {len(vgg_filtered)} weights")
+        vgg_prefixes = ('b1.', 'b2.', 'b3.', 'b4.', 'fusion_pool.', 'sa3.', 'sa4.')
+        vgg_filtered = {k: v for k, v in vgg_state.items() if k.startswith(vgg_prefixes)}
+        
+        # Lọc theo shape: chỉ nạp weight có kích thước khớp với model hiện tại
+        model_state = self.vgg_backbone.state_dict()
+        vgg_compatible = {}
+        vgg_skipped = []
+        for k, v in vgg_filtered.items():
+            if k in model_state and model_state[k].shape == v.shape:
+                vgg_compatible[k] = v
+            else:
+                vgg_skipped.append(k)
+        
+        self.vgg_backbone.load_state_dict(vgg_compatible, strict=False)
+        print(f"[RegionAligned] VGG loaded: {len(vgg_compatible)} weights")
+        if vgg_skipped:
+            print(f"[RegionAligned] VGG skipped (shape mismatch): {vgg_skipped}")
 
         # ── Load ResNet ──
         res_ckpt = torch.load(resnet_ckpt_path, map_location=device)
         res_state = res_ckpt['model_state_dict']
-        res_filtered = {k: v for k, v in res_state.items() if k.startswith(('conv1.', 'bn1.', 'layer2.', 'layer3.', 'layer4.'))}
-        self.res_backbone.resnet.load_state_dict(res_filtered, strict=False)
-        print(f"[RegionAligned] ResNet loaded: {len(res_filtered)} weights")
+        res_prefixes = ('conv1.', 'bn1.', 'layer2.', 'layer3.', 'layer4.')
+        res_filtered = {k: v for k, v in res_state.items() if k.startswith(res_prefixes)}
+        
+        # Lọc theo shape cho ResNet
+        res_model_state = self.res_backbone.resnet.state_dict()
+        res_compatible = {}
+        res_skipped = []
+        for k, v in res_filtered.items():
+            if k in res_model_state and res_model_state[k].shape == v.shape:
+                res_compatible[k] = v
+            else:
+                res_skipped.append(k)
+        
+        self.res_backbone.resnet.load_state_dict(res_compatible, strict=False)
+        print(f"[RegionAligned] ResNet loaded: {len(res_compatible)} weights")
+        if res_skipped:
+            print(f"[RegionAligned] ResNet skipped (shape mismatch): {res_skipped}")
 
     def freeze_backbones(self):
         """Freeze both backbones for Phase 1."""

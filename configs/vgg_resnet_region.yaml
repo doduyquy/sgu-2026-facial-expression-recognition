@@ -8,16 +8,23 @@ model:
   num_heads: 4
   num_regions: 6          # Trán, Mắt trái, Mắt phải, Mũi, Miệng, Cằm
   num_encoder_layers: 2   # Số lớp Transformer Encoder
-  transformer_dropout: 0.1
+  transformer_dropout: 0.2
+
+  # VGG Backbone (giữ Spatial Attention để khớp với checkpoint 69.2%)
+  use_aux: false
+  use_attention: true
+
+  # ResNet Backbone (giữ CBAM để khớp với checkpoint 68.5%)
+  attention_type: "cbam"
+  attention_kernel_size: 7
+  use_fusion: true
+
+  # ── Transfer Learning ──
   pretrained_vgg_path: "/kaggle/input/datasets/lhngphc/vgg-0-912/vgg_spatial_10042026_1053_best.pth"
   pretrained_resnet_path: "/kaggle/input/datasets/lhngphc/resnet-0-68/resnet50_12042026_1052_best.pth"
 
-  # VGG Backbone (PURE mode - không Spatial Attention)
-  use_aux: false
-
-  # ResNet Backbone (PURE mode - không CBAM)
-  attention_type: null
-  use_fusion: false
+  # Số epoch đóng băng backbone (Phase 1: chỉ train Region Head)
+  freeze_backbone_epochs: 20
 
 data:
   image_size: 48
@@ -25,9 +32,12 @@ data:
   batch_size: 64
 
 training:
-  lr: 0.0002
+  lr: 0.0005           # Phase 1: Train Region Alignment + Transformer
+  finetune_lr: 0.00001 # Phase 2: Fine-tune toàn bộ
   epochs: 100
   optimizer: "adam"
+  weight_decay: 0.001       # Chống Overfit
+  label_smoothing: 0.1      # Chống học vẹt nhãn
   use_class_weights: true
 
 env:
