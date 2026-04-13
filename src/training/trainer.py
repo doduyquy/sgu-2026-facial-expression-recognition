@@ -174,7 +174,12 @@ class Trainer:
                 if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                     self.scheduler.step(val_loss)
                 else:
-                    self.scheduler.step()
+                    # SAM uses first_step/second_step instead of step(),
+                    # causing a false-positive warning from PyTorch. Suppress it.
+                    import warnings
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        self.scheduler.step()
 
             # save checkpoint
             if val_loss < best_val_loss:

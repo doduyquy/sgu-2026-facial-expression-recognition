@@ -146,6 +146,7 @@ class RegionAlignedFER(nn.Module):
         self.embed_dim = model_cfg.get('embed_dim', 512)
         self.num_heads = model_cfg.get('num_heads', 4)
         self.num_regions = model_cfg.get('num_regions', 6)
+        self.num_visual_tokens = model_cfg.get('num_visual_tokens', 18)
         self.num_layers = model_cfg.get('num_encoder_layers', 2)
         self.dropout_rate = model_cfg.get('transformer_dropout', 0.1)
         num_classes = config['data']['num_classes']
@@ -196,8 +197,18 @@ class RegionAlignedFER(nn.Module):
             num_layers=self.num_layers
         )
 
-        # Positional Encoding cho region tokens
-        self.pos_embed = nn.Parameter(
+        # Positional Encoding cho visual tokens (trước cross-attention)
+        self.visual_pos_embed = nn.Parameter(
+            torch.randn(1, self.num_visual_tokens, self.embed_dim) * 0.02
+        )
+
+        # Positional Encoding cho hyper-visual tokens theo region
+        self.region_pos_embed = nn.Parameter(
+            torch.randn(1, self.num_regions, self.embed_dim) * 0.02
+        )
+
+        # Positional Encoding bổ sung cho input Transformer Encoder
+        self.encoder_pos_embed = nn.Parameter(
             torch.randn(1, self.num_regions, self.embed_dim) * 0.02
         )
 
@@ -286,6 +297,7 @@ class RegionAlignedFER(nn.Module):
 
         # Φ_visual: nối đặc trưng từ cả hai backbone
         visual_features = torch.cat([vgg_feat, res_feat], dim=1)  # [B, 18, 512]
+        visual_features = visual_features + self.visual_pos_embed[:, :visual_features.size(1), :]
 
         # ── 2. Region Tokens ──
         region_tokens = self.region_dict(B)      # [B, 6, 512]
@@ -303,8 +315,9 @@ class RegionAlignedFER(nn.Module):
         hyper_visual = phi_sem + phi_visual                     # [B, 6, 512]
 
         # ── 5. Transformer Encoder ──
-        hyper_visual = hyper_visual + self.pos_embed            # [B, 6, 512]
-        encoded = self.transformer_encoder(hyper_visual)        # [B, 6, 512]
+        hyper_visual = hyper_visual + self.region_pos_embed     # [B, 6, 512]
+        encoder_input = hyper_visual + self.encoder_pos_embed   # [B, 6, 512]
+        encoded = self.transformer_encoder(encoder_input)       # [B, 6, 512]
 
         # ── 6. Classification ──
         pooled = encoded.mean(dim=1)             # [B, 512]
