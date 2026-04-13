@@ -25,7 +25,7 @@ def plot_loss_curves(train_losses, val_losses, save_path=None):
     plt.show()
 
 
-def plot_prediction_grid(images, true_labels, pred_labels, title, save_path=None, masks=None, mask_alpha=0.35):
+def plot_prediction_grid(images, true_labels, pred_labels, title, save_path=None):
     """Plot 10 true pred and 10 wrong pred images
     Args: 
         images: 10 image (numpy array)
@@ -37,7 +37,7 @@ def plot_prediction_grid(images, true_labels, pred_labels, title, save_path=None
     fig.suptitle(title, fontsize=16)
 
     # Dùng zip để lặp qua từng ô (ax) và dữ liệu tương ứng
-    for idx, (ax, img, true, pred) in enumerate(zip(axes, images, true_labels, pred_labels)):
+    for ax, img, true, pred in zip(axes, images, true_labels, pred_labels):
         
         # 1. Chuyển ảnh về Numpy và xử lý shape
         # Nếu img là Tensor (C, H, W), ta cần chuyển về (H, W) để vẽ ảnh xám
@@ -53,22 +53,6 @@ def plot_prediction_grid(images, true_labels, pred_labels, title, save_path=None
 
         # 2. Vẽ ảnh
         ax.imshow(img, cmap='gray')
-
-        # 2.1 Optional mask overlay (heatmap-style).
-        if masks is not None and idx < len(masks) and masks[idx] is not None:
-            m = masks[idx]
-            if torch.is_tensor(m):
-                m = m.cpu().detach().numpy()
-            if m.ndim == 3 and m.shape[0] == 1:
-                m = m.squeeze(0)
-            if m.ndim == 3:
-                m = m.sum(axis=0)
-            if m.ndim == 2:
-                m = m.astype(np.float32)
-                m_min, m_max = float(m.min()), float(m.max())
-                if m_max > m_min:
-                    m = (m - m_min) / (m_max - m_min)
-                ax.imshow(m, cmap='Reds', alpha=mask_alpha, vmin=0.0, vmax=1.0)
         
         # 3. Đặt tiêu đề cho từng ô nhỏ
         # Đổi màu tiêu đề: xanh nếu đúng, đỏ nếu sai để dễ nhìn

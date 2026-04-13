@@ -15,8 +15,7 @@ def build_dataloader(config, data_path):
     trans_train = build_transform(config, "train")
     trans_val = build_transform(config, "val")
     trans_test = build_transform(config, "test")
-
-    use_landmarks = config['data'].get('use_landmarks', False)
+    use_landmarks = config.get('data', {}).get('use_landmarks', False)
     landmark_config = config.get('landmark', {})
 
     # build dataset

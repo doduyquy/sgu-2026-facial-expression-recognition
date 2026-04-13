@@ -37,7 +37,6 @@ class Trainer:
         try:
             return self.model(images, landmarks)
         except TypeError:
-            # Keep backward compatibility with single-input models.
             return self.model(images)
 
 

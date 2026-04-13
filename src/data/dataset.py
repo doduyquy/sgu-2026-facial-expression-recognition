@@ -20,11 +20,10 @@ class FER2013(Dataset):
         self.transform = transforms
         self.use_landmarks = use_landmarks
         self.landmark_config = landmark_config or {}
-        self.landmark_representation = self.landmark_config.get("representation", "coords")
-        self.landmark_heatmap_size = self.landmark_config.get("heatmap_size", 48)
-        self.landmark_heatmap_sigma = self.landmark_config.get("heatmap_sigma", 1.5)
+        self.landmark_representation = self.landmark_config.get("representation", "heatmap")
+        self.landmark_heatmap_size = self.landmark_config.get("heatmap_size", 64)
+        self.landmark_heatmap_sigma = self.landmark_config.get("heatmap_sigma", 1.0)
         self.landmark_normalize_mode = self.landmark_config.get("normalize_mode", "relative")
-        self.landmark_semantic_weighting = self.landmark_config.get("semantic_weighting", True)
         self.landmark_extractor = LandmarkExtractor(
             enabled=use_landmarks,
             backend=self.landmark_config.get("backend", "mediapipe"),
@@ -62,7 +61,6 @@ class FER2013(Dataset):
                     mask=mask,
                     heatmap_size=self.landmark_heatmap_size,
                     sigma=self.landmark_heatmap_sigma,
-                    semantic_weighting=self.landmark_semantic_weighting,
                 )
                 landmarks = torch.from_numpy(hm)
             else:
