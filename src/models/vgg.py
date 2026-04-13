@@ -248,6 +248,37 @@ class VGGFusionSpatialCNN(VGGFusionBase):
         return combined
 
 
+class VGGPureSpatialCNN(VGGFusionBase):
+    """
+    Bản VGG "sạch": Trích xuất đặc trưng không gian (9 tokens) 
+    nhưng KHÔNG sử dụng Spatial Attention nội bộ.
+    """
+    def __init__(self, config, channels=1):
+        super().__init__(config, channels)
+        print("--> Using PURE VGG Feature Extraction (No Internal Attention)")
+
+    def forward(self, x):
+        x = self.b1(x)
+        x = self.b2(x)
+
+        feat_b3 = self.b3(x)         # [B,256,6,6]
+        feat_b4 = self.b4(feat_b3)   # [B,512,3,3]
+
+        # KHÔNG dùng attention ở đây để giảm nhiễu cho model lai
+
+        aux_out = None
+        if self.training and self.use_aux:
+            aux_out = self.aux_classifier(feat_b3)
+
+        feat_b3_resized = self.fusion_pool(feat_b3)              # [B,256,3,3]
+        combined = torch.cat([feat_b4, feat_b3_resized], dim=1)  # [B,768,3,3]
+        combined = self.conv_proj(combined)                      # [B,512,3,3]
+        combined = torch.flatten(combined, 2)                    # [B,512,9]
+        combined = torch.permute(combined, (0, 2, 1))            # [B,9,512]
+        
+        return combined
+
+
 
 class VGGFusionCBAM(VGGFusionBase):
     def __init__(self, config, channels=1):

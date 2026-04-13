@@ -5,16 +5,15 @@ _base_: "base.yaml"
 model:
   name: "vgg_resnet_attention"
   embed_dim: 512
-  num_heads: 8
+  num_heads: 4 
   transformer_dropout: 0.2
   
-  # VGG Backbone settings
+  # VGG Backbone settings (PURE mode)
   use_aux: false
   
-  # ResNet Backbone settings (used internally by the wrapper)
-  attention_type: "cbam"
-  attention_kernel_size: 7
-  use_fusion: false # We use our own attention fusion in dual_fusion.py
+  # ResNet Backbone settings (PURE mode)
+  attention_type: null 
+  use_fusion: false 
 
 data:
   image_size: 48
@@ -22,7 +21,7 @@ data:
   batch_size: 64
 
 training:
-  lr: 0.0001 # Start with a smaller LR for hybrid models
+  lr: 0.0002 # Increased LR for cleaner backbones
   epochs: 100
   optimizer: "adam"
   use_class_weights: true
