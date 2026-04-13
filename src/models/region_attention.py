@@ -1,8 +1,32 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .vgg import VGGPureSpatialCNN
+from .vgg import VGGFusionSpatialCNN
 from .resnet import ResNet50
+
+def drop_path(x, drop_prob: float = 0., training: bool = False):
+    """
+    Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
+    """
+    if drop_prob == 0. or not training:
+        return x
+    keep_prob = 1 - drop_prob
+    shape = (x.shape[0],) + (1,) * (x.ndim - 1) 
+    random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
+    random_tensor.floor_()  # binarize
+    output = x.div(keep_prob) * random_tensor
+    return output
+
+class DropPath(nn.Module):
+    """
+    Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
+    """
+    def __init__(self, drop_prob=None):
+        super(DropPath, self).__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x):
+        return drop_path(x, self.drop_prob, self.training)
 
 
 class ResNet50FeatureExtractor(nn.Module):
@@ -91,6 +115,7 @@ class SemanticVisualAlignment(nn.Module):
         )
         self.norm2 = nn.LayerNorm(embed_dim)
         self.dropout = nn.Dropout(dropout)
+        self.drop_path = DropPath(dropout if dropout > 0. else 0.)
 
     def forward(self, region_tokens, visual_features):
     
@@ -100,12 +125,12 @@ class SemanticVisualAlignment(nn.Module):
             key=visual_features,
             value=visual_features
         )
-        # Residual + Norm
-        region_enriched = self.norm1(region_tokens + self.dropout(attn_out))
+        # Residual + Norm + DropPath
+        region_enriched = self.norm1(region_tokens + self.drop_path(attn_out))
 
-        # FFN + Residual + Norm
+        # FFN + Residual + Norm + DropPath
         ffn_out = self.ffn(region_enriched)
-        region_enriched = self.norm2(region_enriched + self.dropout(ffn_out))
+        region_enriched = self.norm2(region_enriched + self.drop_path(ffn_out))
 
         return region_enriched, attn_weights
 
@@ -125,9 +150,13 @@ class RegionAlignedFER(nn.Module):
         self.dropout_rate = model_cfg.get('transformer_dropout', 0.1)
         num_classes = config['data']['num_classes']
 
-        # ===== 1. Dual Backbone (Pure Feature Extractors) =====
-        self.vgg_backbone = VGGPureSpatialCNN(config, channels)
+        # ===== 1. Dual Backbone (Feature Extractors) =====
+        self.vgg_backbone = VGGFusionSpatialCNN(config, channels)
         self.res_backbone = ResNet50FeatureExtractor(config, channels)
+        
+        # Transfer Learning state
+        self.is_frozen = False
+        self.freeze_epochs = model_cfg.get('freeze_backbone_epochs', 0)
 
         # Project ResNet 1024-d → 512-d để đồng bộ với VGG
         self.proj_res = nn.Linear(1024, self.embed_dim)
@@ -177,6 +206,41 @@ class RegionAlignedFER(nn.Module):
             nn.Dropout(0.5),
             nn.Linear(self.embed_dim, num_classes)
         )
+
+    def load_pretrained_backbones(self, vgg_ckpt_path, resnet_ckpt_path, device='cpu'):
+        """Load pretrained weights into VGG and ResNet components."""
+        # ── Load VGG ──
+        vgg_ckpt = torch.load(vgg_ckpt_path, map_location=device)
+        vgg_state = vgg_ckpt['model_state_dict']
+        vgg_filtered = {k: v for k, v in vgg_state.items() if k.startswith(('b1.', 'b2.', 'b3.', 'b4.', 'fusion_pool.', 'sa3.', 'sa4.'))}
+        self.vgg_backbone.load_state_dict(vgg_filtered, strict=False)
+        print(f"[RegionAligned] VGG loaded: {len(vgg_filtered)} weights")
+
+        # ── Load ResNet ──
+        res_ckpt = torch.load(resnet_ckpt_path, map_location=device)
+        res_state = res_ckpt['model_state_dict']
+        res_filtered = {k: v for k, v in res_state.items() if k.startswith(('conv1.', 'bn1.', 'layer2.', 'layer3.', 'layer4.'))}
+        self.res_backbone.resnet.load_state_dict(res_filtered, strict=False)
+        print(f"[RegionAligned] ResNet loaded: {len(res_filtered)} weights")
+
+    def freeze_backbones(self):
+        """Freeze both backbones for Phase 1."""
+        for param in self.vgg_backbone.parameters(): param.requires_grad = False
+        for param in self.res_backbone.parameters(): param.requires_grad = False
+        self.is_frozen = True
+        print("[RegionAligned] Backbones FROZEN.")
+
+    def unfreeze_backbones(self):
+        """Unfreeze everything for Phase 2."""
+        for param in self.parameters(): param.requires_grad = True
+        self.is_frozen = False
+        print("[RegionAligned] All parameters UNFROZEN.")
+
+    def check_unfreeze(self, epoch):
+        if self.is_frozen and self.freeze_epochs > 0 and epoch >= self.freeze_epochs:
+            self.unfreeze_backbones()
+            return True
+        return False
 
     def forward(self, x):
         B = x.shape[0]
