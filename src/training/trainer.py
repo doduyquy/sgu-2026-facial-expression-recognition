@@ -23,14 +23,14 @@ class Trainer:
         self.run_name = run_name
         self.config = config
         self.path_save_ckpt = save_dir
-        self.landmark_diversity_lambda = config['training'].get('landmark_diversity_lambda', 0.5)
+        self.landmark_diversity_lambda = config['training'].get('landmark_diversity_lambda', 0.3)
         self.landmark_entropy_lambda = config['training'].get(
             'landmark_entropy_lambda',
             config['training'].get('landmark_sparsity_lambda', 0.1),
         )
-        self.landmark_separation_lambda = config['training'].get('landmark_separation_lambda', 0.5)
-        self.landmark_part_prior_lambda = config['training'].get('landmark_part_prior_lambda', 0.6)
-        self.landmark_border_lambda = config['training'].get('landmark_border_lambda', 0.4)
+        self.landmark_separation_lambda = config['training'].get('landmark_separation_lambda', 0.2)
+        self.landmark_part_prior_lambda = config['training'].get('landmark_part_prior_lambda', 0.0)
+        self.landmark_border_lambda = config['training'].get('landmark_border_lambda', 0.05)
 
     @staticmethod
     def _extract_logits(outputs):

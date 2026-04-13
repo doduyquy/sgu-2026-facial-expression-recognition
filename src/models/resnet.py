@@ -78,13 +78,15 @@ class ResNet50(nn.Module):
         landmark_tau=0.03,
         landmark_feature_dropout_p=0.3,
         landmark_mask_prob=0.2,
-        landmark_prior_strength=0.15,
+        landmark_prior_strength=0.05,
         landmark_prior_sigma=0.22,
-        landmark_keypoint_dropout_p=0.2,
-        landmark_prior_min_strength=0.03,
+        landmark_keypoint_dropout_p=0.1,
+        landmark_prior_min_strength=0.0,
         landmark_prior_anneal_power=1.5,
         landmark_part_mask_expand=0.08,
         landmark_part_target_inside=0.35,
+        landmark_prior_disable_after_progress=0.3,
+        landmark_use_cross_keypoint_competition=False,
         landmark_from_stage=3,
     ):
         super().__init__()
@@ -147,6 +149,8 @@ class ResNet50(nn.Module):
             prior_anneal_power=landmark_prior_anneal_power,
             part_mask_expand=landmark_part_mask_expand,
             part_target_inside=landmark_part_target_inside,
+            prior_disable_after_progress=landmark_prior_disable_after_progress,
+            use_cross_keypoint_competition=landmark_use_cross_keypoint_competition,
         )
 
         fusion_in_dim = 1024 + (landmark_num_points * landmark_in_channels)

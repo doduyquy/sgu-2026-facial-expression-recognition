@@ -11,13 +11,15 @@ class LearnedLandmarkBranch(nn.Module):
         landmark_tau=0.03,
         feature_dropout_p=0.3,
         heatmap_mask_prob=0.2,
-        prior_strength=0.15,
+        prior_strength=0.05,
         prior_sigma=0.22,
-        keypoint_dropout_p=0.2,
-        prior_min_strength=0.03,
+        keypoint_dropout_p=0.1,
+        prior_min_strength=0.0,
         prior_anneal_power=1.5,
         part_mask_expand=0.08,
         part_target_inside=0.35,
+        prior_disable_after_progress=0.3,
+        use_cross_keypoint_competition=False,
     ):
         super().__init__()
         self.landmark_num_points = landmark_num_points
@@ -31,6 +33,8 @@ class LearnedLandmarkBranch(nn.Module):
         self.prior_anneal_power = prior_anneal_power
         self.part_mask_expand = part_mask_expand
         self.part_target_inside = part_target_inside
+        self.prior_disable_after_progress = prior_disable_after_progress
+        self.use_cross_keypoint_competition = use_cross_keypoint_competition
         self.current_prior_strength = prior_strength
 
         self.landmark_heatmap_head = nn.Sequential(
@@ -42,6 +46,9 @@ class LearnedLandmarkBranch(nn.Module):
     def set_training_progress(self, progress):
         # progress in [0, 1]: prior strong at start, weaker later for pose flexibility.
         progress = float(max(0.0, min(1.0, progress)))
+        if progress >= self.prior_disable_after_progress:
+            self.current_prior_strength = 0.0
+            return
         decay = (1.0 - progress) ** max(self.prior_anneal_power, 0.0)
         self.current_prior_strength = self.prior_min_strength + (self.prior_strength - self.prior_min_strength) * decay
 
@@ -200,8 +207,9 @@ class LearnedLandmarkBranch(nn.Module):
             spatial_sum = probs.sum(dim=[2, 3], keepdim=True)
             probs = torch.where(spatial_sum > 1e-6, probs / spatial_sum.clamp(min=1e-6), base_probs)
 
-        # Competition across K heatmaps to avoid all points collapsing to one area.
-        probs = probs / (probs.sum(dim=1, keepdim=True) + 1e-6)
+        # Optional cross-keypoint competition. Disable for softer discovery.
+        if self.use_cross_keypoint_competition:
+            probs = probs / (probs.sum(dim=1, keepdim=True) + 1e-6)
         # Re-normalize per keypoint after competition for stable coords/features.
         probs = probs / probs.sum(dim=[2, 3], keepdim=True).clamp(min=1e-6)
 
