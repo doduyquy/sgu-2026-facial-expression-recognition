@@ -178,7 +178,8 @@ class RegionAlignedFER(nn.Module):
         # Pool visual features → single vector, rồi broadcast cộng vào Φ_sem
         self.visual_proj = nn.Sequential(
             nn.LayerNorm(self.embed_dim),
-            nn.Linear(self.embed_dim, self.embed_dim)
+            nn.Linear(self.embed_dim, self.embed_dim),
+            nn.Dropout(self.dropout_rate) # Add dropout here
         )
 
         # ===== 5. Transformer Encoder =====
@@ -203,8 +204,11 @@ class RegionAlignedFER(nn.Module):
         # ===== 6. Classification Head =====
         self.classifier = nn.Sequential(
             nn.LayerNorm(self.embed_dim),
-            nn.Dropout(0.5),
-            nn.Linear(self.embed_dim, num_classes)
+            nn.Dropout(0.5), # Keep this high
+            nn.Linear(self.embed_dim, 512),
+            nn.GELU(),
+            nn.Dropout(0.3),
+            nn.Linear(512, num_classes)
         )
 
     def load_pretrained_backbones(self, vgg_ckpt_path, resnet_ckpt_path, device='cpu'):

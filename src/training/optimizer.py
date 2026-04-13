@@ -1,5 +1,6 @@
 import torch.optim as optim  
 import torch.optim.lr_scheduler as lr_scheduler
+from .sam import SAM
 
 def build_optimizer(model, config):
     train_cfg = config.get('training', {})
@@ -15,7 +16,27 @@ def build_optimizer(model, config):
         return optim.AdamW(params, lr=lr, weight_decay=weight_decay)
     elif opt_name == 'sgd':
         gamma = train_cfg.get('gamma', 0.9) 
-        return optim.SGD(params, lr=lr, weight_decay=weight_decay, momentum=gamma)
+        base_opt = lambda params, **kwargs: optim.SGD(params, momentum=gamma, **kwargs)
+        if train_cfg.get('optimizer_type', '').lower() != 'sam':
+             return base_opt(params, lr=lr, weight_decay=weight_decay)
+    
+    elif opt_name == 'sam':
+        # Default to AdamW as base for SAM
+        base_opt_name = train_cfg.get('base_optimizer', 'adamw').lower()
+        if base_opt_name == 'adam':
+            base_optimizer = optim.Adam
+        elif base_opt_name == 'sgd':
+            gamma = train_cfg.get('gamma', 0.9)
+            base_optimizer = lambda p, **kwargs: optim.SGD(p, momentum=gamma, **kwargs)
+        else:
+            base_optimizer = optim.AdamW
+            
+        rho = train_cfg.get('sam_rho', 0.05)
+        adaptive = train_cfg.get('sam_adaptive', False)
+        
+        print(f"--> [Optimizer] SAM (base={base_opt_name}, rho={rho}, adaptive={adaptive})")
+        return SAM(params, base_optimizer, rho=rho, adaptive=adaptive, lr=lr, weight_decay=weight_decay)
+
     # add another optimizer
     else:
         raise ValueError(f"Optimizer {opt_name} unsupported!")

@@ -8,7 +8,7 @@ model:
   num_heads: 4
   num_regions: 6          # Trán, Mắt trái, Mắt phải, Mũi, Miệng, Cằm
   num_encoder_layers: 2   # Số lớp Transformer Encoder
-  transformer_dropout: 0.2
+  transformer_dropout: 0.4
 
   # VGG Backbone (giữ Spatial Attention để khớp với checkpoint 69.2%)
   use_aux: false
@@ -32,12 +32,15 @@ data:
   batch_size: 64
 
 training:
-  lr: 0.0005           # Phase 1: Train Region Alignment + Transformer
-  finetune_lr: 0.00001 # Phase 2: Fine-tune toàn bộ
+  lr: 0.0001           # Lower base LR for SAM stability
+  finetune_lr: 0.00002 # Slightly higher fine-tune LR to allow SAM to explore
   epochs: 100
-  optimizer: "adam"
-  weight_decay: 0.001       # Chống Overfit
-  label_smoothing: 0.1      # Chống học vẹt nhãn
+  optimizer: "sam"
+  base_optimizer: "adamw"
+  sam_rho: 0.05
+  weight_decay: 0.05       # Standard for Transformer + AdamW
+  label_smoothing: 0.1
+  scheduler: "cosine"
   use_class_weights: true
 
 env:

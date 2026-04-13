@@ -5,7 +5,8 @@ import numpy as np
 from datetime import datetime
 from src.utils.logger_wandb import init_wandb, log_image_to_wandb, log_metrics
 from src.training.losses import inception_loss
-from src.training.optimizer import build_scheduler
+from src.training.optimizer import build_scheduler, build_optimizer
+from .sam import SAM
 
 class Trainer:
     """Forward -> Compute loss -> zero_grad -> Backward -> Update weights (step)"""
@@ -50,8 +51,25 @@ class Trainer:
             # -------------
 
 
-            loss.backward()
-            self.optimizer.step()
+            if isinstance(self.optimizer, SAM):
+                # ── SAM Step 1 ──
+                loss.backward()
+                self.optimizer.first_step(zero_grad=True)
+
+                # ── SAM Step 2 ──
+                outputs_2 = self.model(images)
+                if isinstance(outputs_2, tuple):
+                    main_out, aux_out = outputs_2
+                    loss_2 = inception_loss(main_out, aux_out, labels, criterion=self.criterion)
+                else:
+                    loss_2 = self.criterion(outputs_2, labels)
+                
+                loss_2.backward()
+                self.optimizer.second_step(zero_grad=True)
+            else:
+                # ── Standard Optimizer ──
+                loss.backward()
+                self.optimizer.step()
 
             running_loss += loss.item() * images.size(0)
             _, preds = torch.max(outputs, dim=1)
@@ -114,10 +132,13 @@ class Trainer:
                 if should_rebuild:
                     # Rebuild optimizer với LR nhỏ hơn cho fine-tuning
                     finetune_lr = self.config['training'].get('finetune_lr', 1e-5)
-                    self.optimizer = torch.optim.Adam(
-                        filter(lambda p: p.requires_grad, self.model.parameters()),
-                        lr=finetune_lr
-                    )
+                    
+                    # Update config temporarily to use build_optimizer
+                    old_lr = self.config['training']['lr']
+                    self.config['training']['lr'] = finetune_lr
+                    self.optimizer = build_optimizer(self.model, self.config)
+                    self.config['training']['lr'] = old_lr # Restore
+                    
                     # REBUILD scheduler to link to NEW optimizer
                     self.scheduler = build_scheduler(self.optimizer, self.config)
                     
