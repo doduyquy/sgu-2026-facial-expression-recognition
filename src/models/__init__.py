@@ -27,6 +27,7 @@ MODEL_REGISTRY = {
         landmark_prior_strength=config['model'].get('landmark_prior_strength', 0.15),
         landmark_prior_sigma=config['model'].get('landmark_prior_sigma', 0.22),
         landmark_keypoint_dropout_p=config['model'].get('landmark_keypoint_dropout_p', 0.2),
+        landmark_from_stage=config['model'].get('landmark_from_stage', 3),
     ),
     # "resmaskingnet": ResMaskingNet,
 }

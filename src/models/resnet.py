@@ -81,11 +81,13 @@ class ResNet50(nn.Module):
         landmark_prior_strength=0.15,
         landmark_prior_sigma=0.22,
         landmark_keypoint_dropout_p=0.2,
+        landmark_from_stage=3,
     ):
         super().__init__()
         self.use_learned_landmark_branch = use_learned_landmark_branch
         self.landmark_num_points = landmark_num_points
         self.landmark_tau = landmark_tau
+        self.landmark_from_stage = landmark_from_stage
 
         self._latest_aux_losses = {}
         self._latest_landmark_heatmaps = None
@@ -126,8 +128,10 @@ class ResNet50(nn.Module):
             nn.Linear(512, num_classes),
         )
 
+        landmark_in_channels = 512 if landmark_from_stage == 3 else 1024
+
         self.learned_landmark_branch = LearnedLandmarkBranch(
-            in_channels=1024,
+            in_channels=landmark_in_channels,
             landmark_num_points=landmark_num_points,
             landmark_tau=landmark_tau,
             feature_dropout_p=landmark_feature_dropout_p,
@@ -137,8 +141,9 @@ class ResNet50(nn.Module):
             keypoint_dropout_p=landmark_keypoint_dropout_p,
         )
 
+        fusion_in_dim = 1024 + (landmark_num_points * landmark_in_channels)
         self.landmark_fusion_fc = nn.Sequential(
-            nn.Linear(1024 * (landmark_num_points + 1), 512),
+            nn.Linear(fusion_in_dim, 512),
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(512, num_classes),
@@ -172,7 +177,8 @@ class ResNet50(nn.Module):
             self._latest_landmark_coords = None
             return self.fusion_fc(feat)
 
-        heatmaps, coords, feat_k, aux = self.learned_landmark_branch(x4)
+        landmark_src = x3 if self.landmark_from_stage == 3 else x4
+        heatmaps, coords, feat_k, aux = self.learned_landmark_branch(landmark_src)
         fused = torch.cat([feat4, feat_k], dim=1)
         logits = self.landmark_fusion_fc(fused)
 

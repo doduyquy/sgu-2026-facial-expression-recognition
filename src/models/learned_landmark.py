@@ -108,6 +108,41 @@ class LearnedLandmarkBranch(nn.Module):
         off_diag = inv_dist * (1.0 - eye)
         return off_diag.sum() / ((bsz * keypoints * (keypoints - 1)) + 1e-6)
 
+    @staticmethod
+    def _build_part_masks(h, w, device, dtype):
+        # Coarse face-region masks for FER-aligned faces.
+        ys = torch.linspace(0.0, 1.0, h, device=device, dtype=dtype)
+        xs = torch.linspace(0.0, 1.0, w, device=device, dtype=dtype)
+        grid_y, grid_x = torch.meshgrid(ys, xs, indexing="ij")
+
+        left_eye = ((grid_x >= 0.10) & (grid_x <= 0.45) & (grid_y >= 0.14) & (grid_y <= 0.45)).to(dtype)
+        right_eye = ((grid_x >= 0.55) & (grid_x <= 0.90) & (grid_y >= 0.14) & (grid_y <= 0.45)).to(dtype)
+        nose = ((grid_x >= 0.35) & (grid_x <= 0.65) & (grid_y >= 0.35) & (grid_y <= 0.68)).to(dtype)
+        mouth = ((grid_x >= 0.20) & (grid_x <= 0.80) & (grid_y >= 0.58) & (grid_y <= 0.95)).to(dtype)
+
+        return [left_eye, right_eye, nose, mouth]
+
+    def _part_prior_loss(self, probs):
+        # Encourage each keypoint to stay in meaningful facial parts.
+        bsz, keypoints, h, w = probs.shape
+        part_masks = self._build_part_masks(h, w, probs.device, probs.dtype)
+
+        part_ids = []
+        for k in range(keypoints):
+            if k < 2:
+                part_ids.append(k)  # left_eye, right_eye
+            elif k == 2:
+                part_ids.append(2)  # nose
+            else:
+                part_ids.append(3)  # mouth
+
+        penalties = []
+        for k, part_id in enumerate(part_ids):
+            mask = part_masks[part_id].unsqueeze(0)
+            inside = (probs[:, k] * mask).sum(dim=[1, 2])
+            penalties.append((1.0 - inside).mean())
+        return torch.stack(penalties).mean()
+
     def forward(self, feat_map):
         logits = self.landmark_heatmap_head(feat_map)
         bsz, keypoints, h, w = logits.shape
@@ -154,5 +189,6 @@ class LearnedLandmarkBranch(nn.Module):
             "landmark_diversity": self._diversity_loss(probs),
             "landmark_entropy": self._entropy_loss(probs),
             "landmark_separation": self._separation_loss(coords),
+            "landmark_part_prior": self._part_prior_loss(probs),
         }
         return probs, coords, feat_k, aux
