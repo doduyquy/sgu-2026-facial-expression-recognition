@@ -9,18 +9,6 @@ data:
   image_size: 48  # Q thấy dataset gốc:O 48x48
   batch_size: 64
   num_workers: 2  # num_workers is the number of subprocesses to use for data loading. 
-  use_landmarks: false
-
-landmark:
-  backend: "mediapipe"
-  representation: "heatmap"  # coords | heatmap
-  normalize_mode: "relative"  # absolute | relative
-  use_template_fallback: true
-  min_detection_confidence: 0.2
-  template_jitter_std: 0.01
-  landmark_indexes: [33, 263, 1, 61, 291, 199, 4, 48, 278, 57, 287, 152]
-  heatmap_size: 64
-  heatmap_sigma: 1.0
 
 seed: 
   random_seed: 42

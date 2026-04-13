@@ -23,21 +23,28 @@ class Trainer:
         self.run_name = run_name
         self.config = config
         self.path_save_ckpt = save_dir
+        self.landmark_diversity_lambda = config['training'].get('landmark_diversity_lambda', 0.1)
+        self.landmark_sparsity_lambda = config['training'].get('landmark_sparsity_lambda', 0.01)
 
-    def _forward_model(self, images, landmarks=None, landmark_mask=None):
-        if landmarks is None:
-            return self.model(images)
+    @staticmethod
+    def _extract_logits(outputs):
+        if isinstance(outputs, dict):
+            return outputs.get("logits")
+        if isinstance(outputs, (list, tuple)) and len(outputs) > 0:
+            return outputs[0]
+        return outputs
 
-        if landmark_mask is not None:
-            try:
-                return self.model(images, landmarks, landmark_mask)
-            except TypeError:
-                pass
-
-        try:
-            return self.model(images, landmarks)
-        except TypeError:
-            return self.model(images)
+    def _extract_aux_losses(self, outputs):
+        if isinstance(outputs, dict):
+            aux = outputs.get("aux_losses", None)
+            if isinstance(aux, dict):
+                return aux
+        getter = getattr(self.model, "get_aux_losses", None)
+        if callable(getter):
+            aux = getter()
+            if isinstance(aux, dict):
+                return aux
+        return {}
 
 
     def train_one_epoch(self):
@@ -47,30 +54,25 @@ class Trainer:
         corrects = 0
         total = 0
 
-        for batch in self.train_loader:
-            if len(batch) == 4:
-                images, labels, landmarks, landmark_mask = batch
-                landmarks = landmarks.to(self.device)
-                landmark_mask = landmark_mask.to(self.device)
-            elif len(batch) == 3:
-                images, labels, landmarks = batch
-                landmarks = landmarks.to(self.device)
-                landmark_mask = None
-            else:
-                images, labels = batch
-                landmarks = None
-                landmark_mask = None
-
+        for images, labels in self.train_loader:
             images, labels = images.to(self.device), labels.to(self.device)
 
             self.optimizer.zero_grad()
-            outputs = self._forward_model(images, landmarks, landmark_mask)
-            loss = self.criterion(outputs, labels)
+            outputs = self.model(images)
+            logits = self._extract_logits(outputs)
+
+            cls_loss = self.criterion(logits, labels)
+            aux_losses = self._extract_aux_losses(outputs)
+
+            div_loss = aux_losses.get("landmark_diversity", torch.tensor(0.0, device=self.device))
+            sparse_loss = aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device))
+
+            loss = cls_loss + (self.landmark_diversity_lambda * div_loss) + (self.landmark_sparsity_lambda * sparse_loss)
             loss.backward()
             self.optimizer.step()
 
             running_loss += loss.item() * images.size(0)
-            _, preds = torch.max(outputs, dim=1)
+            _, preds = torch.max(logits, dim=1)
             corrects += torch.sum(preds == labels.data)
             total += labels.size(0)
 
@@ -88,27 +90,19 @@ class Trainer:
         total = 0
 
         with torch.no_grad():
-            for batch in self.val_loader:
-                if len(batch) == 4:
-                    images, labels, landmarks, landmark_mask = batch
-                    landmarks = landmarks.to(self.device)
-                    landmark_mask = landmark_mask.to(self.device)
-                elif len(batch) == 3:
-                    images, labels, landmarks = batch
-                    landmarks = landmarks.to(self.device)
-                    landmark_mask = None
-                else:
-                    images, labels = batch
-                    landmarks = None
-                    landmark_mask = None
-
+            for images, labels in self.val_loader:
                 images, labels = images.to(self.device), labels.to(self.device)
 
-                outputs = self._forward_model(images, landmarks, landmark_mask)
-                loss = self.criterion(outputs, labels)
+                outputs = self.model(images)
+                logits = self._extract_logits(outputs)
+                cls_loss = self.criterion(logits, labels)
+                aux_losses = self._extract_aux_losses(outputs)
+                div_loss = aux_losses.get("landmark_diversity", torch.tensor(0.0, device=self.device))
+                sparse_loss = aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device))
+                loss = cls_loss + (self.landmark_diversity_lambda * div_loss) + (self.landmark_sparsity_lambda * sparse_loss)
                 running_loss += loss.item() * images.size(0)
 
-                _, preds = torch.max(outputs, dim=1)
+                _, preds = torch.max(logits, dim=1)
                 corrects += torch.sum(preds == labels.data)
                 total += labels.size(0)
 

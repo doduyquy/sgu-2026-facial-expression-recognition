@@ -19,10 +19,9 @@ MODEL_REGISTRY = {
     "resnet": lambda config, **kw: ResNet50(
         num_classes=config['data'].get('num_classes', 7),
         in_channels=config['data'].get('in_channels', 1),
-        use_landmark_branch=config['model'].get('use_landmark_branch', config['data'].get('use_landmarks', False)),
-        landmark_token_mode=config['model'].get('landmark_token_mode', 'learnable'),
-        landmark_num_points=len(config.get('landmark', {}).get('landmark_indexes', [])) or 12,
-        landmark_embed_dim=config['model'].get('landmark_embed_dim', 128),
+        use_learned_landmark_branch=config['model'].get('use_learned_landmark_branch', True),
+        landmark_num_points=config['model'].get('landmark_num_points', 12),
+        landmark_tau=config['model'].get('landmark_tau', 0.1),
     ),
     # "resmaskingnet": ResMaskingNet,
 }
