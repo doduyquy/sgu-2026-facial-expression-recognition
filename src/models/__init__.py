@@ -22,6 +22,8 @@ MODEL_REGISTRY = {
         use_learned_landmark_branch=config['model'].get('use_learned_landmark_branch', True),
         landmark_num_points=config['model'].get('landmark_num_points', 12),
         landmark_tau=config['model'].get('landmark_tau', 0.03),
+        landmark_feature_dropout_p=config['model'].get('landmark_feature_dropout_p', 0.3),
+        landmark_mask_prob=config['model'].get('landmark_mask_prob', 0.2),
     ),
     # "resmaskingnet": ResMaskingNet,
 }

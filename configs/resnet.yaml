@@ -4,8 +4,10 @@ model:
   name: "resnet"
   pretrained: false
   use_learned_landmark_branch: true
-  landmark_num_points: 12
+  landmark_num_points: 8
   landmark_tau: 0.03
+  landmark_feature_dropout_p: 0.3
+  landmark_mask_prob: 0.2
 
 training:
   epochs: 200
@@ -19,5 +21,6 @@ training:
   scheduler: "reduce_lr_on_plateau"
   lr_factor: 0.5
   lr_patience: 3
-  landmark_diversity_lambda: 0.5
-  landmark_entropy_lambda: 0.1
+  landmark_diversity_lambda: 1.0
+  landmark_entropy_lambda: 0.3
+  landmark_separation_lambda: 0.5

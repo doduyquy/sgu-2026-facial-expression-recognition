@@ -28,6 +28,7 @@ class Trainer:
             'landmark_entropy_lambda',
             config['training'].get('landmark_sparsity_lambda', 0.1),
         )
+        self.landmark_separation_lambda = config['training'].get('landmark_separation_lambda', 0.5)
 
     @staticmethod
     def _extract_logits(outputs):
@@ -72,8 +73,14 @@ class Trainer:
                 "landmark_entropy",
                 aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
             )
+            sep_loss = aux_losses.get("landmark_separation", torch.tensor(0.0, device=self.device))
 
-            loss = cls_loss + (self.landmark_diversity_lambda * div_loss) + (self.landmark_entropy_lambda * entropy_loss)
+            loss = (
+                cls_loss
+                + (self.landmark_diversity_lambda * div_loss)
+                + (self.landmark_entropy_lambda * entropy_loss)
+                + (self.landmark_separation_lambda * sep_loss)
+            )
             loss.backward()
             self.optimizer.step()
 
@@ -108,7 +115,13 @@ class Trainer:
                     "landmark_entropy",
                     aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
                 )
-                loss = cls_loss + (self.landmark_diversity_lambda * div_loss) + (self.landmark_entropy_lambda * entropy_loss)
+                sep_loss = aux_losses.get("landmark_separation", torch.tensor(0.0, device=self.device))
+                loss = (
+                    cls_loss
+                    + (self.landmark_diversity_lambda * div_loss)
+                    + (self.landmark_entropy_lambda * entropy_loss)
+                    + (self.landmark_separation_lambda * sep_loss)
+                )
                 running_loss += loss.item() * images.size(0)
 
                 _, preds = torch.max(logits, dim=1)

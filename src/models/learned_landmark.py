@@ -1,12 +1,22 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class LearnedLandmarkBranch(nn.Module):
-    def __init__(self, in_channels=1024, landmark_num_points=12, landmark_tau=0.03):
+    def __init__(
+        self,
+        in_channels=1024,
+        landmark_num_points=12,
+        landmark_tau=0.03,
+        feature_dropout_p=0.3,
+        heatmap_mask_prob=0.2,
+    ):
         super().__init__()
         self.landmark_num_points = landmark_num_points
         self.landmark_tau = landmark_tau
+        self.feature_dropout_p = feature_dropout_p
+        self.heatmap_mask_prob = heatmap_mask_prob
 
         self.landmark_heatmap_head = nn.Sequential(
             nn.Conv2d(in_channels, 256, kernel_size=3, padding=1),
@@ -16,9 +26,10 @@ class LearnedLandmarkBranch(nn.Module):
 
     @staticmethod
     def _soft_argmax(probs):
-        # probs: (B, K, H, W), already normalized
+        # probs: (B, K, H, W), normalize per keypoint map for numerical stability
         bsz, keypoints, h, w = probs.shape
         flat = probs.view(bsz, keypoints, -1)
+        flat = flat / flat.sum(dim=-1, keepdim=True).clamp(min=1e-6)
 
         xs = torch.linspace(0, 1, w, device=probs.device, dtype=probs.dtype)
         ys = torch.linspace(0, 1, h, device=probs.device, dtype=probs.dtype)
@@ -50,12 +61,31 @@ class LearnedLandmarkBranch(nn.Module):
         p = heatmaps.clamp(min=eps)
         return -(p * torch.log(p)).sum(dim=[2, 3]).mean()
 
+    @staticmethod
+    def _separation_loss(coords):
+        # coords: (B, K, 2)
+        bsz, keypoints, _ = coords.shape
+        if keypoints <= 1:
+            return coords.new_tensor(0.0)
+
+        dist = torch.cdist(coords, coords)
+        eye = torch.eye(keypoints, device=coords.device, dtype=coords.dtype).unsqueeze(0)
+        dist = dist + eye
+        inv_dist = 1.0 / dist.clamp(min=1e-6)
+        off_diag = inv_dist * (1.0 - eye)
+        return off_diag.sum() / ((bsz * keypoints * (keypoints - 1)) + 1e-6)
+
     def forward(self, feat_map):
         logits = self.landmark_heatmap_head(feat_map)
         bsz, keypoints, h, w = logits.shape
 
         scaled = logits.view(bsz, keypoints, -1) / max(self.landmark_tau, 1e-6)
         probs = torch.softmax(scaled, dim=-1).view(bsz, keypoints, h, w)
+
+        if self.training and self.heatmap_mask_prob > 0.0:
+            keep_mask = (torch.rand_like(probs) > self.heatmap_mask_prob).to(probs.dtype)
+            probs = probs * keep_mask
+            probs = probs / probs.sum(dim=[2, 3], keepdim=True).clamp(min=1e-6)
 
         # Competition across K heatmaps to avoid all points collapsing to one area.
         probs = probs / (probs.sum(dim=1, keepdim=True) + 1e-6)
@@ -67,9 +97,11 @@ class LearnedLandmarkBranch(nn.Module):
         heat_expanded = probs.unsqueeze(2)
         feat_k = (feat_expanded * heat_expanded).mean(dim=[3, 4])
         feat_k = feat_k.view(bsz, -1)
+        feat_k = F.dropout(feat_k, p=self.feature_dropout_p, training=self.training)
 
         aux = {
             "landmark_diversity": self._diversity_loss(probs),
             "landmark_entropy": self._entropy_loss(probs),
+            "landmark_separation": self._separation_loss(coords),
         }
         return probs, coords, feat_k, aux
