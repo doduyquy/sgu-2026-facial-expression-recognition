@@ -20,6 +20,7 @@ class ResNet50SpatialCNN(nn.Module):
         x = self.resnet.relu(self.resnet.bn1(self.resnet.conv1(x)))
         x = self.resnet.pool(x)
 
+        x = self.resnet.layer1(x) # Added layer1 (fixed bug)
         x = self.resnet.layer2(x)
         x = self.resnet.layer3(x)
         x = self.resnet.layer4(x) # [B, 1024, 6, 6]
@@ -101,11 +102,9 @@ class HybridAttentionFusionBlock(nn.Module):
         
         # 4. Local Attention Branch
         l_attn = self.local_attn(attn_out)
-        l_attn = self.dropout(l_attn) # Add explicit dropout
         
         # 5. Residual connection (Residual add in diagram)
         out = self.norm1(attn_out + l_attn)
-        v = self.dropout(v) # Dropout on value stream
         out = self.norm2(out + v) 
         
         return out

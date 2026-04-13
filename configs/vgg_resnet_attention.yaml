@@ -6,7 +6,7 @@ model:
   name: "vgg_resnet_attention"
   embed_dim: 512
   num_heads: 8
-  transformer_dropout: 0.3
+  transformer_dropout: 0.2
   
   # VGG Backbone settings
   use_aux: false
