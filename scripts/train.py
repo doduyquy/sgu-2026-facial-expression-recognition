@@ -57,6 +57,19 @@ def main():
         config=config)
     
 
+    # ── Transfer Learning: load pretrained backbone weights ──
+    pretrained_vgg = config['model'].get('pretrained_vgg_path', None)
+    pretrained_resnet = config['model'].get('pretrained_resnet_path', None)
+    
+    if pretrained_vgg and pretrained_resnet and hasattr(model, 'load_pretrained_backbones'):
+        print("\n" + "="*50)
+        print("[Transfer Learning] Loading pretrained backbones...")
+        print("="*50)
+        model.load_pretrained_backbones(pretrained_vgg, pretrained_resnet, device=device)
+        model.freeze_backbones()
+        print("="*50 + "\n")
+
+
     # get class_distribution for class_weights (optional)
     use_class_weights = config['training'].get('use_class_weights', False)
     class_weights = None

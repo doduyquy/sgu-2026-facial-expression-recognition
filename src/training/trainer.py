@@ -107,6 +107,18 @@ class Trainer:
 
         for ep in range(self.epochs):
 
+            # ── Transfer Learning: kiểm tra có cần mở băng backbone không ──
+            if hasattr(self.model, 'check_unfreeze'):
+                should_rebuild = self.model.check_unfreeze(ep)
+                if should_rebuild:
+                    # Rebuild optimizer với LR nhỏ hơn cho fine-tuning
+                    finetune_lr = self.config['training'].get('finetune_lr', 1e-5)
+                    self.optimizer = torch.optim.Adam(
+                        filter(lambda p: p.requires_grad, self.model.parameters()),
+                        lr=finetune_lr
+                    )
+                    print(f"[Trainer] Rebuilt optimizer with finetune_lr={finetune_lr}")
+
             train_loss, train_acc = self.train_one_epoch()
             val_loss, val_acc = self.validate()
 

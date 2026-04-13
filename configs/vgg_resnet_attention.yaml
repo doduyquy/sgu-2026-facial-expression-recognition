@@ -1,5 +1,5 @@
 
-# Hybrid VGG-ResNet Attention Fusion Configuration
+# Hybrid VGG-ResNet Attention Fusion + Transfer Learning
 _base_: "base.yaml"
 
 model:
@@ -7,13 +7,23 @@ model:
   embed_dim: 512
   num_heads: 4 
   transformer_dropout: 0.2
-  
-  # VGG Backbone settings (PURE mode)
+
+  # VGG Backbone (PURE mode)
   use_aux: false
-  
-  # ResNet Backbone settings (PURE mode)
+
+  # ResNet Backbone (PURE mode)
   attention_type: null 
-  use_fusion: false 
+  use_fusion: false
+
+  # ── Transfer Learning ──
+  # Đường dẫn tới checkpoint tốt nhất của VGG (69.2%) và ResNet (68.5%)
+  # Trên Kaggle: upload 2 file .pth lên Dataset rồi trỏ đường dẫn ở đây
+  pretrained_vgg_path: "/kaggle/input/datasets/lhngphc/resnet-0-68/resnet50_12042026_1052_best.pth"
+  pretrained_resnet_path: "/kaggle/input/datasets/lhngphc/resnet-0-68/resnet50_12042026_1052_best.pth"
+  
+  # Số epoch đóng băng backbone (Phase 1: chỉ train Fusion Head)
+  # Sau freeze_backbone_epochs epoch, mở băng toàn bộ để fine-tune (Phase 2)
+  freeze_backbone_epochs: 20
 
 data:
   image_size: 48
@@ -21,7 +31,8 @@ data:
   batch_size: 64
 
 training:
-  lr: 0.0002 # Increased LR for cleaner backbones
+  lr: 0.0005         # Phase 1: LR cao - chỉ train Fusion Head
+  finetune_lr: 0.00001  # Phase 2: LR cực nhỏ - fine-tune toàn bộ
   epochs: 100
   optimizer: "adam"
   use_class_weights: true

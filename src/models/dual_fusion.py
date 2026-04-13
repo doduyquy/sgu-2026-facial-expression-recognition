@@ -111,7 +111,7 @@ class HybridAttentionFusionBlock(nn.Module):
 class VGGResNetAttentionFusion(nn.Module):
     """
     Hybrid Model: VGG + ResNet50 + Multi-Attention Fusion.
-    As per user-provided architecture diagram.
+    Supports Transfer Learning: load pretrained backbone weights and freeze/unfreeze.
     """
     def __init__(self, config, channels=1):
         super().__init__()
@@ -121,6 +121,11 @@ class VGGResNetAttentionFusion(nn.Module):
         self.embed_dim = config['model'].get('embed_dim', 512)
         self.num_heads = config['model'].get('num_heads', 8)
         self.dropout = config['model'].get('transformer_dropout', 0.1)
+        
+        # Transfer Learning config
+        model_cfg = config.get('model', {})
+        self.freeze_epochs = model_cfg.get('freeze_backbone_epochs', 0)
+        self.is_frozen = False
         
         self.fusion_block = HybridAttentionFusionBlock(
             vgg_dim=512, 
@@ -138,6 +143,72 @@ class VGGResNetAttentionFusion(nn.Module):
             nn.Linear(512, config['data']['num_classes'])
         )
 
+    def load_pretrained_backbones(self, vgg_ckpt_path, resnet_ckpt_path, device='cpu'):
+        """
+        Load pretrained weights từ các checkpoint VGG (69.2%) và ResNet (68.5%) đã train riêng.
+        Chỉ load các layer backbone (b1-b4, conv1, layer2-4), bỏ qua classifier và attention nội bộ.
+        """
+        # ── Load VGG weights ──
+        vgg_ckpt = torch.load(vgg_ckpt_path, map_location=device)
+        vgg_state = vgg_ckpt['model_state_dict']
+        
+        # Chỉ lấy backbone layers (b1, b2, b3, b4, fusion_pool)
+        # Bỏ qua: sa3, sa4 (Spatial Attention), classifier, aux_classifier, conv_proj (chưa train)
+        vgg_filtered = {}
+        for k, v in vgg_state.items():
+            if k.startswith(('b1.', 'b2.', 'b3.', 'b4.', 'fusion_pool.')):
+                vgg_filtered[k] = v
+        
+        missing, unexpected = self.vgg_backbone.load_state_dict(vgg_filtered, strict=False)
+        print(f"[Transfer] VGG loaded: {len(vgg_filtered)} params | skipped: {len(missing)} missing")
+        
+        # ── Load ResNet weights ──
+        res_ckpt = torch.load(resnet_ckpt_path, map_location=device)
+        res_state = res_ckpt['model_state_dict']
+        
+        # Chỉ lấy backbone layers (conv1, bn1, layer2-4)
+        # Bỏ qua: fc, avgpool, arcface_head
+        res_filtered = {}
+        for k, v in res_state.items():
+            if k.startswith(('conv1.', 'bn1.', 'layer2.', 'layer3.', 'layer4.')):
+                res_filtered[k] = v
+        
+        missing, unexpected = self.res_backbone.resnet.load_state_dict(res_filtered, strict=False)
+        print(f"[Transfer] ResNet loaded: {len(res_filtered)} params | skipped: {len(missing)} missing")
+
+    def freeze_backbones(self):
+        """Đóng băng cả VGG và ResNet, chỉ cho train Fusion Head."""
+        for param in self.vgg_backbone.parameters():
+            param.requires_grad = False
+        for param in self.res_backbone.parameters():
+            param.requires_grad = False
+        self.is_frozen = True
+        
+        trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in self.parameters())
+        print(f"[Freeze] Backbones frozen. Trainable: {trainable:,} / {total:,} ({100*trainable/total:.1f}%)")
+
+    def unfreeze_backbones(self):
+        """Mở băng toàn bộ model để fine-tune."""
+        for param in self.vgg_backbone.parameters():
+            param.requires_grad = True
+        for param in self.res_backbone.parameters():
+            param.requires_grad = True
+        self.is_frozen = False
+        
+        trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        print(f"[Unfreeze] All params trainable: {trainable:,}")
+
+    def check_unfreeze(self, epoch):
+        """Gọi bởi Trainer mỗi epoch để kiểm tra có nên mở băng không."""
+        if self.is_frozen and self.freeze_epochs > 0 and epoch >= self.freeze_epochs:
+            print(f"\n{'='*50}")
+            print(f"[Phase 2] Epoch {epoch+1}: Unfreezing backbones for fine-tuning!")
+            print(f"{'='*50}\n")
+            self.unfreeze_backbones()
+            return True  # Signal to trainer to rebuild optimizer
+        return False
+
     def forward(self, x):
         # 1. Extract features from both backbones
         vgg_feat = self.vgg_backbone(x) # [B, 9, 512]
@@ -151,3 +222,4 @@ class VGGResNetAttentionFusion(nn.Module):
         logits = self.classifier(out)
         
         return logits
+
