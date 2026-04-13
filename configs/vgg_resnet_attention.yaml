@@ -8,12 +8,14 @@ model:
   num_heads: 4 
   transformer_dropout: 0.2
 
-  # VGG Backbone (PURE mode)
+  # VGG Backbone (giữ nguyên Spatial Attention như lúc train 69%)
   use_aux: false
+  use_attention: true
 
-  # ResNet Backbone (PURE mode)
-  attention_type: null 
-  use_fusion: false
+  # ResNet Backbone (giữ nguyên CBAM như lúc train 68%)
+  attention_type: "cbam"
+  attention_kernel_size: 7
+  use_fusion: true
 
   # ── Transfer Learning ──
   # Đường dẫn tới checkpoint tốt nhất của VGG (69.2%) và ResNet (68.5%)

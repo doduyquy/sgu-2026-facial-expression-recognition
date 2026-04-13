@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .vgg import VGGFusionSpatialCNN, VGGPureSpatialCNN
+from .vgg import VGGFusionSpatialCNN
 from .resnet import ResNet50
 
 class ResNet50SpatialCNN(nn.Module):
@@ -115,7 +115,7 @@ class VGGResNetAttentionFusion(nn.Module):
     """
     def __init__(self, config, channels=1):
         super().__init__()
-        self.vgg_backbone = VGGPureSpatialCNN(config, channels)
+        self.vgg_backbone = VGGFusionSpatialCNN(config, channels)
         self.res_backbone = ResNet50SpatialCNN(config, channels)
         
         self.embed_dim = config['model'].get('embed_dim', 512)
