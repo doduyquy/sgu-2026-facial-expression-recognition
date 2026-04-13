@@ -20,6 +20,9 @@ class LearnedLandmarkBranch(nn.Module):
         part_target_inside=0.35,
         prior_disable_after_progress=0.3,
         use_cross_keypoint_competition=False,
+        post_softmax_sharpness=1.3,
+        use_soft_face_mask=True,
+        face_mask_strength=0.15,
     ):
         super().__init__()
         self.landmark_num_points = landmark_num_points
@@ -35,6 +38,9 @@ class LearnedLandmarkBranch(nn.Module):
         self.part_target_inside = part_target_inside
         self.prior_disable_after_progress = prior_disable_after_progress
         self.use_cross_keypoint_competition = use_cross_keypoint_competition
+        self.post_softmax_sharpness = post_softmax_sharpness
+        self.use_soft_face_mask = use_soft_face_mask
+        self.face_mask_strength = face_mask_strength
         self.current_prior_strength = prior_strength
 
         self.landmark_heatmap_head = nn.Sequential(
@@ -179,6 +185,26 @@ class LearnedLandmarkBranch(nn.Module):
         border_mass = (probs * border_mask.unsqueeze(0).unsqueeze(0)).sum(dim=[2, 3])
         return border_mass.mean()
 
+    @staticmethod
+    def _build_soft_face_mask(h, w, device, dtype):
+        ys = torch.linspace(0.0, 1.0, h, device=device, dtype=dtype)
+        xs = torch.linspace(0.0, 1.0, w, device=device, dtype=dtype)
+        grid_y, grid_x = torch.meshgrid(ys, xs, indexing="ij")
+
+        # Soft elliptical face prior: flexible enough for pose variations.
+        cx, cy = 0.50, 0.52
+        sx, sy = 0.38, 0.46
+        norm = ((grid_x - cx) / sx) ** 2 + ((grid_y - cy) / sy) ** 2
+        mask = torch.exp(-0.5 * norm)
+        mask = mask / mask.max().clamp(min=1e-6)
+        return mask
+
+    def _outside_face_loss(self, probs):
+        face_mask = self._build_soft_face_mask(probs.size(2), probs.size(3), probs.device, probs.dtype)
+        outside = 1.0 - face_mask
+        outside_mass = (probs * outside.unsqueeze(0).unsqueeze(0)).sum(dim=[2, 3])
+        return outside_mass.mean()
+
     def forward(self, feat_map):
         logits = self.landmark_heatmap_head(feat_map)
         bsz, keypoints, h, w = logits.shape
@@ -207,6 +233,16 @@ class LearnedLandmarkBranch(nn.Module):
             spatial_sum = probs.sum(dim=[2, 3], keepdim=True)
             probs = torch.where(spatial_sum > 1e-6, probs / spatial_sum.clamp(min=1e-6), base_probs)
 
+        if self.post_softmax_sharpness > 1.0:
+            probs = probs.pow(self.post_softmax_sharpness)
+            probs = probs / probs.sum(dim=[2, 3], keepdim=True).clamp(min=1e-6)
+
+        if self.use_soft_face_mask and self.face_mask_strength > 0.0:
+            face_mask = self._build_soft_face_mask(h, w, probs.device, probs.dtype)
+            gate = (1.0 - self.face_mask_strength) + (self.face_mask_strength * face_mask)
+            probs = probs * gate.unsqueeze(0).unsqueeze(0)
+            probs = probs / probs.sum(dim=[2, 3], keepdim=True).clamp(min=1e-6)
+
         # Optional cross-keypoint competition. Disable for softer discovery.
         if self.use_cross_keypoint_competition:
             probs = probs / (probs.sum(dim=1, keepdim=True) + 1e-6)
@@ -228,5 +264,6 @@ class LearnedLandmarkBranch(nn.Module):
             "landmark_separation": self._separation_loss(coords),
             "landmark_part_prior": self._part_prior_loss(probs),
             "landmark_border": self._border_suppression_loss(probs),
+            "landmark_outside_face": self._outside_face_loss(probs),
         }
         return probs, coords, feat_k, aux

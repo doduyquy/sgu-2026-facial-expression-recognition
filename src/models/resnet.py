@@ -87,6 +87,9 @@ class ResNet50(nn.Module):
         landmark_part_target_inside=0.35,
         landmark_prior_disable_after_progress=0.3,
         landmark_use_cross_keypoint_competition=False,
+        landmark_post_softmax_sharpness=1.3,
+        landmark_use_soft_face_mask=True,
+        landmark_face_mask_strength=0.15,
         landmark_from_stage=3,
     ):
         super().__init__()
@@ -151,6 +154,9 @@ class ResNet50(nn.Module):
             part_target_inside=landmark_part_target_inside,
             prior_disable_after_progress=landmark_prior_disable_after_progress,
             use_cross_keypoint_competition=landmark_use_cross_keypoint_competition,
+            post_softmax_sharpness=landmark_post_softmax_sharpness,
+            use_soft_face_mask=landmark_use_soft_face_mask,
+            face_mask_strength=landmark_face_mask_strength,
         )
 
         fusion_in_dim = 1024 + (landmark_num_points * landmark_in_channels)
