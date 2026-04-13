@@ -1,0 +1,29 @@
+# VGG Spatial Attention + Fusion + Transformer Encoder (EA Version)
+# Inspired by EA-CLIP (EAA + IEC)
+_base_: "base.yaml"
+
+model:
+  name: "vgg_transformer_ea"
+  embed_dim: 512
+  num_heads: 8
+  num_layers: 2
+  transformer_dropout: 0.1
+  use_aux: true
+  dropout_block: 0.3
+  dropout_dense: 0.5
+
+data:
+  image_size: 48
+  channels: 1 
+  batch_size: 64
+  # Thống kê tính toán từ EDA notebook
+  mean: [0.5077]
+  std: [0.2550]
+
+training:
+  use_class_weights: true
+  lr: 0.0001          # Transformer thường cần LR thấp (1e-4)
+  epochs: 100
+  patience: 20
+  label_smoothing: 0.1
+  loss: "cross_entropy"

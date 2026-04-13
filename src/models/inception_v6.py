@@ -48,37 +48,6 @@ class SEBlock(nn.Module):
         return x * scale
 
 
-def channel_shuffle(x: torch.Tensor, groups: int) -> torch.Tensor:
-    """
-    Shuffle channels across groups.
-
-    Args:
-        x: Tensor of shape [B, C, H, W]
-        groups: number of channel groups
-
-    Returns:
-        Shuffled tensor with the same shape as input.
-    """
-    batch_size, num_channels, height, width = x.size()
-
-    if num_channels % groups != 0:
-        raise ValueError(
-            f"channel_shuffle: num_channels={num_channels} must be divisible by groups={groups}"
-        )
-
-    channels_per_group = num_channels // groups
-
-    # [B, C, H, W] -> [B, groups, channels_per_group, H, W]
-    x = x.view(batch_size, groups, channels_per_group, height, width)
-
-    # swap group axis and channel-within-group axis
-    x = x.transpose(1, 2).contiguous()
-
-    # back to [B, C, H, W]
-    x = x.view(batch_size, num_channels, height, width)
-
-    return x
-
 class InceptionBlock(nn.Module):
     """Inception Block: 
     Main:
@@ -113,8 +82,6 @@ class InceptionBlock(nn.Module):
         out_2_3x3_reduced   : int,
         out_2_3x3           : int,
         out_pool            : int,
-        use_shuffle         : bool = False,
-        shuffle_groups      : int = 4,
     ):
         super().__init__()
 
@@ -139,11 +106,6 @@ class InceptionBlock(nn.Module):
             nn.MaxPool2d(kernel_size=3, stride=1, padding=1),
             ConvBlock(in_channels, out_pool, kernel_size=1, stride=1, padding=0)
         )
-
-        self.use_shuffle = use_shuffle
-        self.shuffle_groups = shuffle_groups
-
-
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b1 = self.b1(x)
@@ -151,10 +113,8 @@ class InceptionBlock(nn.Module):
         b3 = self.b3(x)
         b4 = self.b4(x)
 
-        out = torch.cat([b1, b2, b3, b4], dim=1)
-        if self.use_shuffle:
-            out = channel_shuffle(out, groups=self.shuffle_groups)
-        return out
+        # depth concat
+        return torch.cat([b1, b2, b3, b4], dim=1)
     
 class ResidualInceptionBlock(nn.Module):
     def __init__(
@@ -168,8 +128,6 @@ class ResidualInceptionBlock(nn.Module):
         out_pool: int,
         use_se: bool = False,
         se_reduction: int = 16,
-        use_shuffle: bool = False,
-        shuffle_groups: int = 4,
     ):
         super().__init__()
 
@@ -181,8 +139,6 @@ class ResidualInceptionBlock(nn.Module):
             out_2_3x3_reduced=out_2_3x3_reduced,
             out_2_3x3=out_2_3x3,
             out_pool=out_pool,
-            use_shuffle=use_shuffle,
-            shuffle_groups=shuffle_groups,
         )
 
         out_channels = out_1x1 + out_3x3 + out_2_3x3 + out_pool
@@ -263,9 +219,6 @@ class Inception(nn.Module):
         use_se = config['model'].get('use_se', False)
         se_reduction = config['model'].get('se_reduction', 16)
 
-        use_shuffle = config['model'].get('use_shuffle', False)
-        shuffle_groups = config['model'].get('shuffle_groups', 4)
-
         # Tranditional CNN or Stem (Stem?)
         # Bx1x48x48 --> Bx32x48x48
         # self.stem_conv = ConvBlock(in_channels=1, out_channels=32, kernel_size=3, stride=1, padding=1)
@@ -280,18 +233,15 @@ class Inception(nn.Module):
         # --- Inception block 1-4 (keep 48x48) ---
         # Block1: in:32 --> out: 8 + 24 + 16 + 16 = 64
         self.block1 = ResidualInceptionBlock(32,  out_1x1=8,  out_3x3_reduced=16, out_3x3=24,
-                                          out_2_3x3_reduced=8,  out_2_3x3=16, out_pool=16, use_se=use_se, se_reduction=se_reduction,
-                                          use_shuffle=use_shuffle, shuffle_groups=shuffle_groups)
+                                          out_2_3x3_reduced=8,  out_2_3x3=16, out_pool=16, use_se=use_se, se_reduction=se_reduction)
  
         # Block2: in=64,  out=32+48+24+24 = 128
         self.block2 = ResidualInceptionBlock(64,  out_1x1=32, out_3x3_reduced=24, out_3x3=48,
-                                          out_2_3x3_reduced=16, out_2_3x3=24, out_pool=24, use_se=use_se, se_reduction=se_reduction,
-                                          use_shuffle=use_shuffle, shuffle_groups=shuffle_groups)
+                                          out_2_3x3_reduced=16, out_2_3x3=24, out_pool=24, use_se=use_se, se_reduction=se_reduction)
  
         # Block3: in=128, out=64+96+32+32 = 224
         self.block3 = ResidualInceptionBlock(128, out_1x1=64, out_3x3_reduced=48, out_3x3=96,
-                                          out_2_3x3_reduced=24, out_2_3x3=32, out_pool=32, use_se=use_se, se_reduction=se_reduction,
-                                          use_shuffle=use_shuffle, shuffle_groups=shuffle_groups)
+                                          out_2_3x3_reduced=24, out_2_3x3=32, out_pool=32, use_se=use_se, se_reduction=se_reduction)
  
         # --- Auxiliary Classifier (softmax1) which input from block3 output 
         if self.use_aux:
@@ -301,8 +251,7 @@ class Inception(nn.Module):
  
         # Block4: in=224, out=96+128+64+32 = 320
         self.block4 = ResidualInceptionBlock(224, out_1x1=96, out_3x3_reduced=64,  out_3x3=128,
-                                          out_2_3x3_reduced=32, out_2_3x3=64,  out_pool=32, use_se=use_se, se_reduction=se_reduction,
-                                          use_shuffle=use_shuffle, shuffle_groups=shuffle_groups)
+                                          out_2_3x3_reduced=32, out_2_3x3=64,  out_pool=32, use_se=use_se, se_reduction=se_reduction)
 
         # Giảm spatial lần 1: 48x48 --> 24x24 
         self.maxpool1 = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
@@ -310,13 +259,11 @@ class Inception(nn.Module):
         # --- Inception block 5-6 (keep 24x24) ---
         # Block5: in=320, out=128+192+32+32 = 384
         self.block5 = ResidualInceptionBlock(320, out_1x1=128, out_3x3_reduced=96,  out_3x3=192,
-                                          out_2_3x3_reduced=24, out_2_3x3=32,  out_pool=32, use_se=use_se, se_reduction=se_reduction,
-                                          use_shuffle=use_shuffle, shuffle_groups=shuffle_groups)
+                                          out_2_3x3_reduced=24, out_2_3x3=32,  out_pool=32, use_se=use_se, se_reduction=se_reduction)
  
         # Block6: in=384, out=160+224+32+32 = 448
         self.block6 = ResidualInceptionBlock(384, out_1x1=160, out_3x3_reduced=112, out_3x3=224,
-                                          out_2_3x3_reduced=24, out_2_3x3=32,  out_pool=32, use_se=use_se, se_reduction=se_reduction,
-                                          use_shuffle=use_shuffle, shuffle_groups=shuffle_groups)
+                                          out_2_3x3_reduced=24, out_2_3x3=32,  out_pool=32, use_se=use_se, se_reduction=se_reduction)
  
         # Giảm spatial lần 2: 24×24 -> 12×12
         self.maxpool2 = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
@@ -324,8 +271,7 @@ class Inception(nn.Module):
         # --- Inception Block 7  (with 12×12) ---
         # Block7: in=448, out=192+256+32+32 = 512   # Q choose this number before FC
         self.block7 = ResidualInceptionBlock(448, out_1x1=192, out_3x3_reduced=144, out_3x3=256,
-                                          out_2_3x3_reduced=24, out_2_3x3=32,  out_pool=32, use_se=use_se, se_reduction=se_reduction,
-                                          use_shuffle=use_shuffle, shuffle_groups=shuffle_groups)
+                                          out_2_3x3_reduced=24, out_2_3x3=32,  out_pool=32, use_se=use_se, se_reduction=se_reduction)
  
 
         # --- Softmax2 - main ouput ---
@@ -335,7 +281,6 @@ class Inception(nn.Module):
         self.fc             = nn.Linear(512, num_classes)
 
         
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args: 

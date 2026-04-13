@@ -1,0 +1,16 @@
+# VGG Spatial Attention + Fusion + Transformer Encoder V2 (ViT-style)
+_base_: "vgg_spatial_fusion_transformers.yaml"
+
+model:
+  name: "vgg_transformer_v2" # Sử dụng kiến trúc CLS Token + Learned PE
+  num_layers: 2              # Bắt đầu với 2 lớp để tránh overfit
+  transformer_dropout: 0.2    # Tăng dropout lên một chút (0.2)
+  embed_dim: 512
+
+training:
+  lr: 0.0001
+  epochs: 100
+
+data:
+  mean: [0.5077]
+  std: [0.2550]

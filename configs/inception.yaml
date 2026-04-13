@@ -1,5 +1,18 @@
+_base_: "base.yaml"
+
 model:
   name: "inception"
-  dropout_main: 0.4 # dropout ratio for main dense
-  dropout_aux: 0.3  # dropout ratio for sub dense
-  use_aux: True
+  pretrained: False
+  dropout_main: 0.4
+  dropout_aux: 0.3
+  use_aux: False
+  use_se: True
+  se_reduction: 16
+  use_shuffle: True
+  shuffle_groups: 4
+  
+
+data:
+  image_size: 48
+  channels: 1 
+  batch_size: 64
