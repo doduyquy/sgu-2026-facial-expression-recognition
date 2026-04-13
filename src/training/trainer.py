@@ -117,7 +117,9 @@ class Trainer:
                         filter(lambda p: p.requires_grad, self.model.parameters()),
                         lr=finetune_lr
                     )
-                    print(f"[Trainer] Rebuilt optimizer with finetune_lr={finetune_lr}")
+                    # RESET bộ đếm Early Stopping để Phase 2 được chạy đủ
+                    patience_counter = 0
+                    print(f"[Trainer] Rebuilt optimizer with finetune_lr={finetune_lr} and reset patience.")
 
             train_loss, train_acc = self.train_one_epoch()
             val_loss, val_acc = self.validate()
