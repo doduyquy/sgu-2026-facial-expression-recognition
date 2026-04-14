@@ -12,6 +12,9 @@ class LearnedLandmarkBranch(nn.Module):
         feature_dropout_p=0.3,
         head_dropout_p=0.2,
         logit_noise_std=0.1,
+        tau_start=0.5,
+        tau_mid=0.2,
+        tau_end=0.05,
     ):
         super().__init__()
         self.landmark_num_points = landmark_num_points
@@ -19,6 +22,10 @@ class LearnedLandmarkBranch(nn.Module):
         self.feature_dropout_p = feature_dropout_p
         self.head_dropout_p = head_dropout_p
         self.logit_noise_std = logit_noise_std
+        self.tau_start = tau_start
+        self.tau_mid = tau_mid
+        self.tau_end = tau_end
+        self.current_tau = landmark_tau
 
         # Multi-head spatial attention maps: one head = one attended facial region.
         self.attn_head = nn.Conv2d(in_channels, landmark_num_points, kernel_size=1)
@@ -58,6 +65,35 @@ class LearnedLandmarkBranch(nn.Module):
         p = attn.clamp(min=eps)
         return -(p * torch.log(p)).sum(dim=[2, 3]).mean()
 
+    @staticmethod
+    def _coord_separation_loss(coords):
+        # coords: (B, K, 2) in normalized image coordinates.
+        _, keypoints, _ = coords.shape
+        if keypoints <= 1:
+            return coords.new_tensor(0.0)
+
+        dist = torch.cdist(coords, coords).clamp(min=1e-6)
+        eye = torch.eye(keypoints, device=coords.device, dtype=coords.dtype).unsqueeze(0)
+        off_diag = (1.0 / dist) * (1.0 - eye)
+        denom = float(keypoints * (keypoints - 1))
+        return off_diag.sum(dim=[1, 2]).mean() / max(denom, 1.0)
+
+    @staticmethod
+    def _balance_loss(attn):
+        # Encourage heads to keep comparable spatial energy.
+        energy = attn.sum(dim=[2, 3])
+        return energy.std(dim=1).mean()
+
+    def set_training_progress(self, progress):
+        p = float(max(0.0, min(1.0, progress)))
+        if p <= 0.5:
+            alpha = p / 0.5
+            tau = self.tau_start + alpha * (self.tau_mid - self.tau_start)
+        else:
+            alpha = (p - 0.5) / 0.5
+            tau = self.tau_mid + alpha * (self.tau_end - self.tau_mid)
+        self.current_tau = float(max(tau, 1e-6))
+
     def forward(self, feat_map):
         attn_logits = self.attn_head(feat_map)
         # Create lightweight competition so heads do not all follow the same hotspot.
@@ -67,7 +103,8 @@ class LearnedLandmarkBranch(nn.Module):
             attn_logits = attn_logits + (torch.rand_like(attn_logits) * self.logit_noise_std)
 
         bsz, keypoints, h, w = attn_logits.shape
-        scaled = attn_logits.view(bsz, keypoints, -1) / max(self.landmark_tau, 1e-6)
+        tau = max(self.current_tau, 1e-6)
+        scaled = attn_logits.view(bsz, keypoints, -1) / tau
         attn = torch.softmax(scaled, dim=-1).view(bsz, keypoints, h, w)
 
         if self.training and self.head_dropout_p > 0.0 and keypoints > 1:
@@ -92,5 +129,7 @@ class LearnedLandmarkBranch(nn.Module):
         aux = {
             "landmark_diversity": self._orthogonal_loss(attn),
             "landmark_entropy": self._entropy_loss(attn),
+            "landmark_coord_separation": self._coord_separation_loss(coords),
+            "landmark_balance": self._balance_loss(attn),
         }
         return attn, coords, feat_k, aux

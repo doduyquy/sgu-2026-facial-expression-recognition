@@ -9,6 +9,10 @@ model:
   landmark_feature_dropout_p: 0.3
   landmark_head_dropout_p: 0.25
   landmark_logit_noise_std: 0.1
+  use_multiscale_landmark_branch: true
+  landmark_tau_start: 0.5
+  landmark_tau_mid: 0.2
+  landmark_tau_end: 0.05
   landmark_from_stage: 3
 
 training:
@@ -25,3 +29,5 @@ training:
   lr_patience: 3
   landmark_diversity_lambda: 0.15
   landmark_entropy_lambda: 0.02
+  landmark_coord_separation_lambda: 0.05
+  landmark_balance_lambda: 0.02

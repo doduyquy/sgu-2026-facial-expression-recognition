@@ -28,6 +28,8 @@ class Trainer:
             'landmark_entropy_lambda',
             config['training'].get('landmark_sparsity_lambda', 0.02),
         )
+        self.landmark_coord_separation_lambda = config['training'].get('landmark_coord_separation_lambda', 0.0)
+        self.landmark_balance_lambda = config['training'].get('landmark_balance_lambda', 0.0)
 
     @staticmethod
     def _extract_logits(outputs):
@@ -72,11 +74,15 @@ class Trainer:
                 "landmark_entropy",
                 aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
             )
+            coord_sep_loss = aux_losses.get("landmark_coord_separation", torch.tensor(0.0, device=self.device))
+            balance_loss = aux_losses.get("landmark_balance", torch.tensor(0.0, device=self.device))
 
             loss = (
                 cls_loss
                 + (self.landmark_diversity_lambda * div_loss)
                 + (self.landmark_entropy_lambda * entropy_loss)
+                + (self.landmark_coord_separation_lambda * coord_sep_loss)
+                + (self.landmark_balance_lambda * balance_loss)
             )
             loss.backward()
             self.optimizer.step()
@@ -112,10 +118,14 @@ class Trainer:
                     "landmark_entropy",
                     aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
                 )
+                coord_sep_loss = aux_losses.get("landmark_coord_separation", torch.tensor(0.0, device=self.device))
+                balance_loss = aux_losses.get("landmark_balance", torch.tensor(0.0, device=self.device))
                 loss = (
                     cls_loss
                     + (self.landmark_diversity_lambda * div_loss)
                     + (self.landmark_entropy_lambda * entropy_loss)
+                    + (self.landmark_coord_separation_lambda * coord_sep_loss)
+                    + (self.landmark_balance_lambda * balance_loss)
                 )
                 running_loss += loss.item() * images.size(0)
 
@@ -147,6 +157,11 @@ class Trainer:
         print(f'\n--> Start training in total {self.epochs} epochs with {self.device} device. Start...\n')
 
         for ep in range(self.epochs):
+            setter = getattr(self.model, "set_training_progress", None)
+            if callable(setter):
+                progress = (ep / max(self.epochs - 1, 1)) if self.epochs > 1 else 1.0
+                setter(progress)
+
             train_loss, train_acc = self.train_one_epoch()
             val_loss, val_acc = self.validate()
 

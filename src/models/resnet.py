@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from .CBAM import CBAM
 from .learned_landmark import LearnedLandmarkBranch
 
@@ -79,6 +80,10 @@ class ResNet50(nn.Module):
         landmark_feature_dropout_p=0.3,
         landmark_head_dropout_p=0.2,
         landmark_logit_noise_std=0.1,
+        use_multiscale_landmark_branch=True,
+        landmark_tau_start=0.5,
+        landmark_tau_mid=0.2,
+        landmark_tau_end=0.05,
 
         landmark_from_stage=3,
     ):
@@ -87,6 +92,7 @@ class ResNet50(nn.Module):
         self.landmark_num_points = landmark_num_points
         self.landmark_tau = landmark_tau
         self.landmark_from_stage = landmark_from_stage
+        self.use_multiscale_landmark_branch = use_multiscale_landmark_branch
 
         self._latest_aux_losses = {}
         self._latest_landmark_heatmaps = None
@@ -127,18 +133,35 @@ class ResNet50(nn.Module):
             nn.Linear(512, num_classes),
         )
 
-        landmark_in_channels = 512 if landmark_from_stage == 3 else 1024
-
-        self.learned_landmark_branch = LearnedLandmarkBranch(
-            in_channels=landmark_in_channels,
+        self.learned_landmark_branch3 = LearnedLandmarkBranch(
+            in_channels=512,
             landmark_num_points=landmark_num_points,
             landmark_tau=landmark_tau,
             feature_dropout_p=landmark_feature_dropout_p,
             head_dropout_p=landmark_head_dropout_p,
             logit_noise_std=landmark_logit_noise_std,
+            tau_start=landmark_tau_start,
+            tau_mid=landmark_tau_mid,
+            tau_end=landmark_tau_end,
         )
 
-        fusion_in_dim = 1024 + ((landmark_num_points + 1) * landmark_in_channels)
+        self.learned_landmark_branch4 = LearnedLandmarkBranch(
+            in_channels=1024,
+            landmark_num_points=landmark_num_points,
+            landmark_tau=landmark_tau,
+            feature_dropout_p=landmark_feature_dropout_p,
+            head_dropout_p=landmark_head_dropout_p,
+            logit_noise_std=landmark_logit_noise_std,
+            tau_start=landmark_tau_start,
+            tau_mid=landmark_tau_mid,
+            tau_end=landmark_tau_end,
+        )
+
+        if self.use_multiscale_landmark_branch:
+            fusion_in_dim = 1024 + ((landmark_num_points + 1) * 512) + ((landmark_num_points + 1) * 1024)
+        else:
+            landmark_in_channels = 512 if landmark_from_stage == 3 else 1024
+            fusion_in_dim = 1024 + ((landmark_num_points + 1) * landmark_in_channels)
         self.landmark_fusion_fc = nn.Sequential(
             nn.Linear(fusion_in_dim, 512),
             nn.ReLU(),
@@ -153,7 +176,8 @@ class ResNet50(nn.Module):
         return self._latest_landmark_heatmaps, self._latest_landmark_coords
 
     def set_training_progress(self, progress):
-        _ = progress
+        self.learned_landmark_branch3.set_training_progress(progress)
+        self.learned_landmark_branch4.set_training_progress(progress)
 
     def get_current_prior_strength(self):
         return None
@@ -180,8 +204,32 @@ class ResNet50(nn.Module):
             self._latest_landmark_coords = None
             return self.fusion_fc(feat)
 
+        if self.use_multiscale_landmark_branch:
+            heatmaps3, coords3, feat_k3, aux3 = self.learned_landmark_branch3(x3)
+            heatmaps4, coords4, feat_k4, aux4 = self.learned_landmark_branch4(x4)
+            fused = torch.cat([feat4, feat_k3, feat_k4], dim=1)
+            logits = self.landmark_fusion_fc(fused)
+
+            heatmaps4_up = F.interpolate(
+                heatmaps4,
+                size=heatmaps3.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            )
+            self._latest_landmark_heatmaps = torch.cat([heatmaps3, heatmaps4_up], dim=1)
+            self._latest_landmark_coords = torch.cat([coords3, coords4], dim=1)
+
+            self._latest_aux_losses = {
+                "landmark_diversity": 0.5 * (aux3["landmark_diversity"] + aux4["landmark_diversity"]),
+                "landmark_entropy": 0.5 * (aux3["landmark_entropy"] + aux4["landmark_entropy"]),
+                "landmark_coord_separation": 0.5 * (aux3["landmark_coord_separation"] + aux4["landmark_coord_separation"]),
+                "landmark_balance": 0.5 * (aux3["landmark_balance"] + aux4["landmark_balance"]),
+            }
+            return logits
+
         landmark_src = x3 if self.landmark_from_stage == 3 else x4
-        heatmaps, coords, feat_k, aux = self.learned_landmark_branch(landmark_src)
+        branch = self.learned_landmark_branch3 if self.landmark_from_stage == 3 else self.learned_landmark_branch4
+        heatmaps, coords, feat_k, aux = branch(landmark_src)
         fused = torch.cat([feat4, feat_k], dim=1)
         logits = self.landmark_fusion_fc(fused)
 
