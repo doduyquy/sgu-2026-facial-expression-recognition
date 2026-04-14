@@ -96,35 +96,51 @@ class Resnet35(nn.Module):
             IdentityBlock(1024, [256, 256, 1024]),
             IdentityBlock(1024, [256, 256, 1024])
         )
-        self.dropout = nn.Dropout(0.3)
+        # self.dropout = nn.Dropout(0.3)
 
-        # 3. Head for Classification (Trường hợp dùng độc lập)
+        # # 3. Head for Classification (Trường hợp dùng độc lập)
 
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(1024, self.num_classes)
+        # self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        # self.fc = nn.Linear(1024, self.num_classes)
+        self.classifier = nn.Sequential(
+            nn.Flatten(),                          # (B, 1024*6*6)
+            nn.Dropout(0.3),
+            nn.Linear(1024 * 6 * 6, 512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.4),
+            nn.Linear(512, self.num_classes)
+        )
 
-    def forward(self, x):
-        """input: (B, C, 48, 48)
-       stage1: (B, 64, 24, 24)
-       stage2: (B, 256, 24, 24)
-       stage3: (B, 512, 12, 12)
-       stage4: (B, 1024, 6, 6)
-       sau quá trình trích xuất đặc trưng ta avgpool để giảm kích thước về (B, 1024, 1, 1)
-       sau đó flatten để giảm kích thước về (B, 1024)
-       cuối cùng ta đưa vào fc để phân loại"""
+    # def forward(self, x):
+    #     """input: (B, C, 48, 48)
+    #    stage1: (B, 64, 24, 24)
+    #    stage2: (B, 256, 24, 24)
+    #    stage3: (B, 512, 12, 12)
+    #    stage4: (B, 1024, 6, 6)
+    #    sau quá trình trích xuất đặc trưng ta avgpool để giảm kích thước về (B, 1024, 1, 1)
+    #    sau đó flatten để giảm kích thước về (B, 1024)
+    #    cuối cùng ta đưa vào fc để phân loại"""
+    #     x = self.relu(self.bn1(self.conv1(x)))
+    #     x = self.pool(x)
+
+    #     # ResNet Blocks
+    #     x = self.layer2(x)  # -> (B, 256, 24, 24)
+    #     x = self.layer3(x)  # -> (B, 512, 12, 12)
+    #     x = self.layer4(x)  # -> (B, 1024, 6, 6)
+
+    #     x = self.avgpool(x) # -> (B, 1024, 1, 1)
+    #     x = torch.flatten(x, 1) # -> (B, 1024)
+    #     x = self.dropout(x)
+    #     x = self.fc(x)
+    #     return x
+
+    def forward(self, x): # thử tính toán nặng hơn 
         x = self.relu(self.bn1(self.conv1(x)))
         x = self.pool(x)
-
-        # ResNet Blocks
         x = self.layer2(x)  # -> (B, 256, 24, 24)
         x = self.layer3(x)  # -> (B, 512, 12, 12)
         x = self.layer4(x)  # -> (B, 1024, 6, 6)
-
-        x = self.avgpool(x) # -> (B, 1024, 1, 1)
-        x = torch.flatten(x, 1) # -> (B, 1024)
-        x = self.dropout(x)
-        x = self.fc(x)
-        return x
+        return self.classifier(x)
     def extract_region_features(self, x):
         x = self.relu(self.bn1(self.conv1(x)))
         x = self.pool(x)
