@@ -1,7 +1,14 @@
 import os
+import sys
 import wandb
 import torch
 import argparse
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 from src.utils.config import load_config
 from src.utils.seed import set_seed
 from src.utils.logger_wandb import init_wandb

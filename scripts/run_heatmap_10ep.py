@@ -34,7 +34,8 @@ def main():
     run_cmd(
         [
             py,
-            "scripts/test_learned_landmark_kaggle.py",
+            "-m",
+            "scripts.test_learned_landmark_kaggle",
             "--env",
             args.env,
             "--config",
@@ -54,7 +55,8 @@ def main():
     run_cmd(
         [
             py,
-            "scripts/train.py",
+            "-m",
+            "scripts.train",
             "--config",
             "resnet_landmark_10ep",
             "--env",
@@ -70,7 +72,8 @@ def main():
     run_cmd(
         [
             py,
-            "scripts/test_learned_landmark_kaggle.py",
+            "-m",
+            "scripts.test_learned_landmark_kaggle",
             "--env",
             args.env,
             "--config",
