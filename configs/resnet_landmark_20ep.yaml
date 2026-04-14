@@ -1,0 +1,8 @@
+_base_: "resnet.yaml"
+
+training:
+  epochs: 20
+  patience: 7
+
+logging:
+  use_wandb: false

@@ -75,9 +75,10 @@ class ResNet50(nn.Module):
         cbam_kernel_size=7,
         use_learned_landmark_branch=True,
         landmark_num_points=12,
-        landmark_tau=0.1,
+        landmark_tau=0.07,
         landmark_feature_dropout_p=0.3,
         landmark_head_dropout_p=0.2,
+        landmark_logit_noise_std=0.1,
 
         landmark_from_stage=3,
     ):
@@ -134,9 +135,10 @@ class ResNet50(nn.Module):
             landmark_tau=landmark_tau,
             feature_dropout_p=landmark_feature_dropout_p,
             head_dropout_p=landmark_head_dropout_p,
+            logit_noise_std=landmark_logit_noise_std,
         )
 
-        fusion_in_dim = 1024 + (landmark_num_points * landmark_in_channels)
+        fusion_in_dim = 1024 + ((landmark_num_points + 1) * landmark_in_channels)
         self.landmark_fusion_fc = nn.Sequential(
             nn.Linear(fusion_in_dim, 512),
             nn.ReLU(),

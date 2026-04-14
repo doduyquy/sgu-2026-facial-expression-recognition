@@ -4,10 +4,11 @@ model:
   name: "resnet"
   pretrained: false
   use_learned_landmark_branch: true
-  landmark_num_points: 6
-  landmark_tau: 0.08
+  landmark_num_points: 12
+  landmark_tau: 0.07
   landmark_feature_dropout_p: 0.3
-  landmark_head_dropout_p: 0.2
+  landmark_head_dropout_p: 0.25
+  landmark_logit_noise_std: 0.1
   landmark_from_stage: 3
 
 training:

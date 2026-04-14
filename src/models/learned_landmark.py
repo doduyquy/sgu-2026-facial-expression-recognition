@@ -11,12 +11,14 @@ class LearnedLandmarkBranch(nn.Module):
         landmark_tau=0.1,
         feature_dropout_p=0.3,
         head_dropout_p=0.2,
+        logit_noise_std=0.1,
     ):
         super().__init__()
         self.landmark_num_points = landmark_num_points
         self.landmark_tau = landmark_tau
         self.feature_dropout_p = feature_dropout_p
         self.head_dropout_p = head_dropout_p
+        self.logit_noise_std = logit_noise_std
 
         # Multi-head spatial attention maps: one head = one attended facial region.
         self.attn_head = nn.Conv2d(in_channels, landmark_num_points, kernel_size=1)
@@ -39,18 +41,16 @@ class LearnedLandmarkBranch(nn.Module):
         return torch.stack([x, y], dim=-1)
 
     @staticmethod
-    def _diversity_loss(attn):
+    def _orthogonal_loss(attn):
         bsz, keypoints, _, _ = attn.shape
         if keypoints <= 1:
             return attn.new_tensor(0.0)
 
         flat = attn.view(bsz, keypoints, -1)
         flat = flat / flat.norm(dim=-1, keepdim=True).clamp(min=1e-6)
-        sim = torch.bmm(flat, flat.transpose(1, 2))
-
+        gram = torch.bmm(flat, flat.transpose(1, 2))
         eye = torch.eye(keypoints, device=attn.device, dtype=attn.dtype).unsqueeze(0)
-        off_diag = sim * (1.0 - eye)
-        return off_diag.pow(2).mean()
+        return (gram - eye).pow(2).mean()
 
     @staticmethod
     def _entropy_loss(attn):
@@ -60,6 +60,12 @@ class LearnedLandmarkBranch(nn.Module):
 
     def forward(self, feat_map):
         attn_logits = self.attn_head(feat_map)
+        # Create lightweight competition so heads do not all follow the same hotspot.
+        attn_logits = attn_logits - attn_logits.mean(dim=1, keepdim=True)
+
+        if self.training and self.logit_noise_std > 0.0:
+            attn_logits = attn_logits + (torch.rand_like(attn_logits) * self.logit_noise_std)
+
         bsz, keypoints, h, w = attn_logits.shape
         scaled = attn_logits.view(bsz, keypoints, -1) / max(self.landmark_tau, 1e-6)
         attn = torch.softmax(scaled, dim=-1).view(bsz, keypoints, h, w)
@@ -76,11 +82,15 @@ class LearnedLandmarkBranch(nn.Module):
         feat = feat_map.unsqueeze(1)
         attn_exp = attn.unsqueeze(2)
         feat_k = (feat * attn_exp).sum(dim=[3, 4])
+        global_attn = attn.mean(dim=1, keepdim=True)
+        feat_global = (feat_map * global_attn).sum(dim=[2, 3])
+
         feat_k = feat_k.view(bsz, -1)
+        feat_k = torch.cat([feat_k, feat_global], dim=1)
         feat_k = F.dropout(feat_k, p=self.feature_dropout_p, training=self.training)
 
         aux = {
-            "landmark_diversity": self._diversity_loss(attn),
+            "landmark_diversity": self._orthogonal_loss(attn),
             "landmark_entropy": self._entropy_loss(attn),
         }
         return attn, coords, feat_k, aux
