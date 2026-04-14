@@ -103,9 +103,10 @@ class Resnet35(nn.Module):
         # self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         # self.fc = nn.Linear(1024, self.num_classes)
         self.classifier = nn.Sequential(
-            nn.Flatten(),                          # (B, 1024*6*6)
+            nn.AdaptiveAvgPool2d((1, 1)),          
+            nn.Flatten(),                        
             nn.Dropout(0.3),
-            nn.Linear(1024 * 6 * 6, 512),
+            nn.Linear(1024, 512),
             nn.ReLU(inplace=True),
             nn.Dropout(0.4),
             nn.Linear(512, self.num_classes)
