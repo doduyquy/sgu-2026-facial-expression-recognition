@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .CBAM import CBAM
+from .CBAM import CBAM, SpatialAttention,ChannelAttention
 # Input:  (B, 1, 48, 48)
 # conv1: 3x3, stride=1, pad=1           -> (B, 64, 48, 48)
 # pool:  2x2, stride=2                  -> (B, 64, 24, 24)
@@ -186,6 +186,10 @@ class Resnet35(nn.Module):
         def get_attn(in_channels):
             if self.attention_type == 'cbam':
                 return CBAM(in_channels, kernel_size=self.attention_kernel_size)
+            elif self.attention_type == 'spatial':
+                return SpatialAttention(kernel_size=self.attention_kernel_size)
+            elif self.attention_type == 'channel':
+                return ChannelAttention(in_channels)
             return nn.Identity()
 
         # 2. Stages

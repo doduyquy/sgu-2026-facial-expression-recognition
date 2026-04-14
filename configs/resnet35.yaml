@@ -2,6 +2,8 @@ _base_: "base.yaml"
 
 model:
   name: "resnet35"
+  attention_type: "spatial"  
+  attention_kernel_size: 7
 
 data:
   image_size: 48
