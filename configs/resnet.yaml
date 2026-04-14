@@ -5,7 +5,7 @@ model:
   pretrained: false
   use_learned_landmark_branch: true
   landmark_num_points: 6
-  landmark_tau: 0.1
+  landmark_tau: 0.08
   landmark_feature_dropout_p: 0.3
   landmark_head_dropout_p: 0.2
   landmark_from_stage: 3
@@ -22,5 +22,5 @@ training:
   scheduler: "reduce_lr_on_plateau"
   lr_factor: 0.5
   lr_patience: 3
-  landmark_diversity_lambda: 0.1
+  landmark_diversity_lambda: 0.15
   landmark_entropy_lambda: 0.02
