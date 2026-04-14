@@ -42,7 +42,9 @@ class ChannelAttention(nn.Module):
         avg_out = self.mlp(self.avg_pool(x))
         max_out = self.mlp(self.max_pool(x))
         attn = avg_out + max_out
-        return self.sigmoid(attn)
+        # Sửa lỗi: Cần nhân luôn với input gốc x để trả về Feature Map hoàn thiện
+        # Chứ không phải chỉ trả về cục trọng số (sẽ gây lỗi sai dimension khi dùng độc lập)
+        return x * self.sigmoid(attn)
 
 
 # class SpatialAttention(nn.Module):
@@ -89,6 +91,7 @@ class CBAM(nn.Module):
         self.sa = SpatialAttention(kernel_size)
 
     def forward(self, x):
-        attn = self.ca(x) * x
+        # Vì self.ca giờ đã tự nhân với input bên trong hàm forward của nó
+        attn = self.ca(x)
         attn = self.sa(attn)
         return x + attn

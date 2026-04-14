@@ -2,7 +2,7 @@ _base_: "base.yaml"
 
 model:
   name: "resnet35"
-  attention_type: "spatial"  
+  attention_type: "cbam"  
   attention_kernel_size: 3
 
 data:
