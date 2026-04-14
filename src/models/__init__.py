@@ -7,6 +7,7 @@ from .vgg_ea import VGGEA_CNN
 from .resnet import ResNet50
 from .dual_fusion import VGGResNetAttentionFusion
 from .region_attention import RegionAlignedFER
+from .resnetBASE import Resnet35
 # from .vit_ea_6x6 import VisionTransformerEA_6x6
 
 
@@ -30,6 +31,7 @@ MODEL_REGISTRY = {
     # "resnet18": lambda **kw: ResNet(variant="resnet18", **kw),
     # "resnet34": lambda **kw: ResNet(variant="resnet34", **kw),
     "resnet50": lambda **kw: ResNet50(config=kw['config'], channels=kw['config']['data']['channels']),
+    "resnet35": lambda **kw: Resnet35(config=kw['config'], channels=kw['config']['data']['channels']),
     "vgg_resnet_attention": lambda **kw: VGGResNetAttentionFusion(config=kw['config'], channels=kw['config']['data']['channels']),
     "region_aligned_fer": lambda **kw: RegionAlignedFER(config=kw['config'], channels=kw['config']['data']['channels']),
     # "resmaskingnet": ResMaskingNet,

@@ -1,0 +1,16 @@
+_base_: "base.yaml"
+
+model:
+  name: "resnet35"
+
+data:
+  image_size: 48
+  channels: 1             # 1 for grayscale (FER2013)
+  batch_size: 64
+
+training:
+  lr: 0.001
+  epochs: 100
+  optimizer: "adam"
+  scheduler: "reduce_lr_on_plateau"
+  use_class_weights: true # Bật tính năng Class Weights
