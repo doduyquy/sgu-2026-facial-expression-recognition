@@ -200,7 +200,7 @@ class Resnet35(nn.Module):
             IdentityBlock(256, [64, 64, 256]),
             IdentityBlock(256, [64, 64, 256])
         )
-        for i in range(3): self.layer2[i].attn = get_attn(256)
+        # for i in range(3): self.layer2[i].attn = get_attn(256)
 
         # Stage 3: 4 blocks -> Output spatial: 12x12
         self.layer3 = nn.Sequential(
