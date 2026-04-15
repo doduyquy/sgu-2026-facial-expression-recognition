@@ -344,6 +344,9 @@ class CNNDictionary(nn.Module):
         # 3. Positional Encoding cho visual tokens (6×6 = 36 vị trí)
         self.visual_pos = nn.Parameter(torch.randn(1, 36, self.embed_dim) * 0.02)
 
+        # Positional Encoding cho region tokens (tăng cường identity cho dictionary)
+        self.region_pos = nn.Parameter(torch.randn(1, self.num_regions, self.embed_dim) * 0.02)
+
         # 4. Cross-Attention: region tokens (Q) soi vào visual features (K, V)
         self.cross_attn = nn.MultiheadAttention(
             embed_dim=self.embed_dim,
@@ -362,7 +365,17 @@ class CNNDictionary(nn.Module):
         )
         self.norm2 = nn.LayerNorm(self.embed_dim)
 
-        # 5. Classifier
+        # 5. Attention Pooling: học trọng số mỗi region thay vì mean cào bằng
+        #    Dùng 1 learnable query vector "hỏi" K regions → weighted sum
+        self.attn_pool_query = nn.Parameter(torch.randn(1, 1, self.embed_dim) * 0.02)
+        self.attn_pool = nn.MultiheadAttention(
+            embed_dim=self.embed_dim,
+            num_heads=1,
+            batch_first=True
+        )
+        self.norm_pool = nn.LayerNorm(self.embed_dim)
+
+        # 6. Classifier
         self.classifier = nn.Sequential(
             nn.LayerNorm(self.embed_dim),
             nn.Dropout(0.5),
@@ -383,8 +396,9 @@ class CNNDictionary(nn.Module):
         visual = self.resnet35.extract_region_features(x)  # [B, 36, 1024]
         visual = visual + self.visual_pos                   # + positional encoding
 
-        # 2. Lấy region dictionary tokens
+        # 2. Lấy region dictionary tokens + positional encoding
         region_tokens = self.dic_region(B)                  # [B, K, 1024]
+        region_tokens = region_tokens + self.region_pos     # + region PE
 
         # 3. Cross-Attention: Q=region, K=V=visual
         #    Region tokens "hỏi" visual features: mỗi vùng mặt chú ý vào đâu?
@@ -401,8 +415,15 @@ class CNNDictionary(nn.Module):
         ffn_out = self.ffn(region_enriched)
         region_enriched = self.norm2(region_enriched + ffn_out)  # [B, K, 1024]
 
-        # 4. Pool tất cả region tokens → 1 vector
-        pooled = region_enriched.mean(dim=1)                # [B, 1024]
+        # 4. Attention Pooling: 1 query vector hỏi 6 regions → weighted sum
+        #    Model tự học: "emotion này, region nào quan trọng nhất?"
+        pool_query = self.attn_pool_query.expand(B, -1, -1)  # [B, 1, D]
+        pooled, self.pool_weights = self.attn_pool(
+            query=pool_query,
+            key=region_enriched,
+            value=region_enriched
+        )  # pooled: [B, 1, D], pool_weights: [B, 1, K]
+        pooled = self.norm_pool(pooled.squeeze(1))           # [B, D]
 
         # 5. Classify
         logits = self.classifier(pooled)                    # [B, num_classes]
