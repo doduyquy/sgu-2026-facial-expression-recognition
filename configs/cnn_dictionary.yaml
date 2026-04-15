@@ -1,0 +1,24 @@
+_base_: "base.yaml"
+
+model:
+  name: "cnn_dictionary"
+  attention_type: "cbam"      # Attention trong ResNet35 backbone
+  embed_dim: 1024             # Dimension của visual/region tokens
+  num_heads: 4                # Số heads trong Cross-Attention
+  num_regions: 6              # Số vùng khuôn mặt (forehead, left_eye, right_eye, nose, mouth, chin)
+
+data:
+  image_size: 48
+  channels: 1
+  batch_size: 64
+
+training:
+  lr: 0.001
+  epochs: 100
+  optimizer: "adamw"
+  weight_decay: 0.01
+  label_smoothing: 0.1
+  scheduler: "reduce_lr_on_plateau"
+  lr_patience: 5
+  lr_factor: 0.5
+  use_class_weights: true
