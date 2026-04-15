@@ -122,7 +122,7 @@ def main():
     print("="*51)
     
     # Get path of file best  
-    load_checkpoints(model, optimizer, path_save_ckpt, device)
+    load_checkpoints(model, optimizer, path_save_ckpt, device, load_optimizer=False)
     
     eval_dir_path = os.path.join(root_path ,"outputs/figures")
     os.makedirs(eval_dir_path, exist_ok=True)

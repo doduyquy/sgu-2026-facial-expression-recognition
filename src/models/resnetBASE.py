@@ -281,14 +281,17 @@ class Dictionary(nn.Module):
     """
     Facial Region Dictionary: tạo K learnable tokens đại diện cho K vùng khuôn mặt.
     Mỗi token sẽ học cách "query" vào visual features qua Cross-Attention.
+    Với Spatial Region Mask, mỗi token bị ép chỉ nhìn vào vùng tương ứng trên feature map 6×6:
+        Row 0 = forehead, Row 1 = eyebrows, Row 2 = eyes,
+        Row 3 = nose, Row 4 = mouth, Row 5 = chin
     """
     REGION_NAMES = [
-        "forehead",    # 0: Trán, lông mày
-        "left_eye",    # 1: Mắt trái
-        "right_eye",   # 2: Mắt phải
-        "nose",        # 3: Mũi
-        "mouth",       # 4: Miệng
-        "chin",        # 5: Cằm
+        "forehead",    # 0: Row 0 — Trán
+        "eyebrows",    # 1: Row 1 — Lông mày
+        "eyes",        # 2: Row 2 — Mắt
+        "nose",        # 3: Row 3 — Mũi
+        "mouth",       # 4: Row 4 — Miệng
+        "chin",        # 5: Row 5 — Cằm
     ]
 
     def __init__(self, num_regions=6, emb_dim=1024):
@@ -357,6 +360,23 @@ class CNNDictionary(nn.Module):
             num_heads=self.num_heads,
             batch_first=True
         )
+
+        # ── Spatial Region Mask ──
+        # Ép mỗi region token CHỈ attend vào hàng tương ứng trên feature map 6×6
+        # Token 0 (forehead) → row 0, Token 1 (eyebrows) → row 1, ...
+        # mask shape: [num_regions, 36], True = BLOCK, False = ALLOW
+        grid_size = 6
+        num_visual = grid_size * grid_size  # 36
+        rows_per_region = grid_size // self.num_regions  # 1 row each
+        region_mask = torch.ones(self.num_regions, num_visual, dtype=torch.bool)
+        for i in range(self.num_regions):
+            start = i * rows_per_region * grid_size
+            end = start + rows_per_region * grid_size
+            region_mask[i, start:end] = False  # Allow: region i nhìn vào row i
+        self.register_buffer('region_mask', region_mask)
+        print(f"--> Spatial Region Mask: {self.num_regions} regions × {num_visual} visual tokens")
+        print(f"    Each region sees {rows_per_region} row(s) = {rows_per_region * grid_size} tokens")
+
         # LayerNorm + Residual cho cross-attention output
         self.norm1 = nn.LayerNorm(self.embed_dim)
 
@@ -404,12 +424,13 @@ class CNNDictionary(nn.Module):
         region_tokens = self.dic_region(B)                  # [B, K, 1024]
         region_tokens = region_tokens + self.region_pos     # + region PE
 
-        # 3. Cross-Attention: Q=region, K=V=visual
-        #    Region tokens "hỏi" visual features: mỗi vùng mặt chú ý vào đâu?
+        # 3. Cross-Attention: Q=region, K=V=visual + Spatial Region Mask
+        #    Token "forehead" CHỈ nhìn row 0, token "eyes" CHỈ nhìn row 2, ...
         attn_out, self.attn_weights = self.cross_attn(
             query=region_tokens,
             key=visual,
-            value=visual
+            value=visual,
+            attn_mask=self.region_mask  # [K, 36] — ép spatial grounding
         )  # attn_out: [B, K, 1024], attn_weights: [B, K, 36]
 
         # Residual + LayerNorm
