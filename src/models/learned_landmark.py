@@ -13,6 +13,10 @@ class LearnedLandmarkBranch(nn.Module):
         head_dropout_p=0.2,
         edge_guidance_beta=1.0,
         edge_alpha=6.0,
+        edge_feat_guidance_beta=0.3,
+        edge_dropout_prob=0.3,
+        edge_head_scale_std=0.1,
+        edge_mask_threshold=0.3,
     ):
         super().__init__()
         self.landmark_num_points = landmark_num_points
@@ -21,6 +25,10 @@ class LearnedLandmarkBranch(nn.Module):
         self.head_dropout_p = head_dropout_p
         self.edge_guidance_beta = edge_guidance_beta
         self.edge_alpha = edge_alpha
+        self.edge_feat_guidance_beta = edge_feat_guidance_beta
+        self.edge_dropout_prob = edge_dropout_prob
+        self.edge_head_scale_std = edge_head_scale_std
+        self.edge_mask_threshold = edge_mask_threshold
         self.current_edge_weight = 1.0
 
         self.landmark_heatmap_head = nn.Conv2d(in_channels, landmark_num_points, kernel_size=1)
@@ -90,13 +98,29 @@ class LearnedLandmarkBranch(nn.Module):
         edge = F.interpolate(edge, size=(h, w), mode="bilinear", align_corners=False)
         edge = edge / edge.amax(dim=[2, 3], keepdim=True).clamp(min=1e-6)
 
+        # Multi-scale edge composition captures both local details and coarse structures.
+        edge_small = F.avg_pool2d(edge, kernel_size=2, stride=2)
+        edge_small = F.interpolate(edge_small, size=(h, w), mode="bilinear", align_corners=False)
+        edge_large = F.avg_pool2d(edge, kernel_size=5, stride=1, padding=2)
+        edge = (edge + edge_small + edge_large) / 3.0
+
         # Strong edges -> values close to 1, weak edges -> values close to 0.
         return torch.sigmoid((edge - 0.5) * self.edge_alpha)
 
     def forward(self, feat_map, input_image=None):
-        attn_logits = self.landmark_heatmap_head(feat_map)
-        bsz, keypoints, h, w = attn_logits.shape
+        bsz, _, h, w = feat_map.shape
         edge_attn = self._build_edge_attention(input_image, h, w)
+
+        # Randomly disable edge guidance to prevent over-reliance on low-level prior.
+        if self.training and edge_attn is not None and self.edge_dropout_prob > 0.0:
+            if torch.rand(1, device=feat_map.device).item() < self.edge_dropout_prob:
+                edge_attn = None
+
+        if edge_attn is not None and self.edge_feat_guidance_beta > 0.0:
+            feat_map = feat_map * (1.0 + (self.edge_feat_guidance_beta * edge_attn))
+
+        attn_logits = self.landmark_heatmap_head(feat_map)
+        _, keypoints, _, _ = attn_logits.shape
 
         # Lightweight cross-head competition to avoid same hotspot collapse.
         attn_logits = attn_logits - attn_logits.mean(dim=1, keepdim=True)
@@ -111,7 +135,13 @@ class LearnedLandmarkBranch(nn.Module):
 
         if edge_attn is not None and self.edge_guidance_beta > 0.0:
             guide = self.edge_guidance_beta * self.current_edge_weight
-            attn = attn * (1.0 + guide * edge_attn)
+            edge_k = edge_attn.expand(-1, keypoints, -1, -1)
+            if self.training and self.edge_head_scale_std > 0.0:
+                head_scale = 1.0 + (self.edge_head_scale_std * torch.randn(bsz, keypoints, 1, 1, device=attn.device, dtype=attn.dtype))
+                head_scale = head_scale.clamp(min=0.5, max=1.5)
+            else:
+                head_scale = torch.ones(bsz, keypoints, 1, 1, device=attn.device, dtype=attn.dtype)
+            attn = attn * (1.0 + guide * edge_k * head_scale)
 
         attn = attn / attn.sum(dim=[2, 3], keepdim=True).clamp(min=1e-6)
         coords = self._soft_argmax(attn)
@@ -131,7 +161,7 @@ class LearnedLandmarkBranch(nn.Module):
             "landmark_diversity": self._diversity_loss(attn),
             "landmark_entropy": self._entropy_loss(attn),
             "landmark_edge_align": (
-                ((attn.mean(dim=1, keepdim=True) - edge_attn) ** 2).mean()
+                ((attn * (1.0 - (edge_attn > self.edge_mask_threshold).to(attn.dtype))) ** 2).mean()
                 if edge_attn is not None
                 else attn.new_tensor(0.0)
             ),
