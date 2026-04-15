@@ -477,4 +477,22 @@ class CNNDictionary(nn.Module):
         if self.is_frozen and self.freeze_epochs > 0 and epoch >= self.freeze_epochs:
             self.unfreeze_backbone()
             return True  # Signal trainer rebuild optimizer
-        return False
+        return False
+
+    def get_param_groups(self, backbone_lr, head_lr):
+        """Chia parameters thành 2 nhóm LR khác nhau.
+        - backbone (ResNet35): LR thấp, chỉ tinh chỉnh nhẹ
+        - head (Dictionary, Cross-Attention, Classifier): LR cao, cần học mạnh
+        """
+        backbone_params = list(self.resnet35.parameters())
+        backbone_ids = set(id(p) for p in backbone_params)
+        
+        head_params = [p for p in self.parameters() if id(p) not in backbone_ids]
+        
+        print(f"[CNNDictionary] Param groups: backbone={len(backbone_params)} tensors (lr={backbone_lr}), "
+              f"head={len(head_params)} tensors (lr={head_lr})")
+        
+        return [
+            {'params': backbone_params, 'lr': backbone_lr},
+            {'params': head_params, 'lr': head_lr},
+        ]

@@ -8,10 +8,8 @@ model:
   num_regions: 6              # Số vùng khuôn mặt (forehead, left_eye, right_eye, nose, mouth, chin)
 
   # ── Transfer Learning ──
-  # Path tới checkpoint ResNet35 đã train (file .pth)
-  # Trên Kaggle: upload checkpoint lên dataset, đặt path tương ứng
   pretrained_backbone_path: "/kaggle/input/datasets/lhngphc/resnet35-cbam/resnet35_15042026_0221_best.pth"
-  freeze_backbone_epochs: 20  # Freeze backbone 15 epoch đầu, sau đó unfreeze fine-tune
+  freeze_backbone_epochs: 20  # Freeze backbone 20 epoch đầu
 
 data:
   image_size: 48
@@ -19,8 +17,9 @@ data:
   batch_size: 64
 
 training:
-  lr: 0.001                   # LR cho phase 1 (freeze backbone, train head)
-  finetune_lr: 0.00001        # LR cho phase 2 (unfreeze, fine-tune toàn bộ)
+  lr: 0.001                   # LR cho Phase 1 (freeze backbone, train head)
+  finetune_lr: 0.00005        # LR backbone khi unfreeze (low, chỉ tinh chỉnh nhẹ)
+  head_lr: 0.0005             # LR head khi unfreeze (high, tiếp tục học mạnh)
   epochs: 100
   optimizer: "adamw"
   weight_decay: 0.01

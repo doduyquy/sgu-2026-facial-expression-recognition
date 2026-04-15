@@ -130,21 +130,33 @@ class Trainer:
             if hasattr(self.model, 'check_unfreeze'):
                 should_rebuild = self.model.check_unfreeze(ep)
                 if should_rebuild:
-                    # Rebuild optimizer với LR nhỏ hơn cho fine-tuning
                     finetune_lr = self.config['training'].get('finetune_lr', 1e-5)
+                    head_lr = self.config['training'].get('head_lr', 1e-3)
+                    weight_decay = self.config['training'].get('weight_decay', 0.01)
                     
-                    # Update config temporarily to use build_optimizer
-                    old_lr = self.config['training']['lr']
-                    self.config['training']['lr'] = finetune_lr
-                    self.optimizer = build_optimizer(self.model, self.config)
-                    self.config['training']['lr'] = old_lr # Restore
+                    # Discriminative LR: backbone thấp, head cao
+                    if hasattr(self.model, 'get_param_groups'):
+                        param_groups = self.model.get_param_groups(finetune_lr, head_lr)
+                        opt_name = self.config['training'].get('optimizer', 'adamw').lower()
+                        if opt_name == 'adamw':
+                            self.optimizer = torch.optim.AdamW(param_groups, weight_decay=weight_decay)
+                        else:
+                            self.optimizer = torch.optim.Adam(param_groups, weight_decay=weight_decay)
+                        print(f"[Trainer] Discriminative LR: backbone={finetune_lr}, head={head_lr}")
+                    else:
+                        # Fallback: uniform LR
+                        old_lr = self.config['training']['lr']
+                        self.config['training']['lr'] = finetune_lr
+                        self.optimizer = build_optimizer(self.model, self.config)
+                        self.config['training']['lr'] = old_lr
+                        print(f"[Trainer] Rebuilt optimizer with finetune_lr={finetune_lr}")
                     
                     # REBUILD scheduler to link to NEW optimizer
                     self.scheduler = build_scheduler(self.optimizer, self.config)
                     
                     # RESET bộ đếm Early Stopping để Phase 2 được chạy đủ
                     patience_counter = 0
-                    print(f"[Trainer] Rebuilt optimizer & scheduler with finetune_lr={finetune_lr} and reset patience.")
+                    print(f"[Trainer] Reset patience for Phase 2.")
 
             train_loss, train_acc = self.train_one_epoch()
             val_loss, val_acc = self.validate()
