@@ -12,6 +12,7 @@ data:
   channels: 1
   mean: [0.5]
   std: [0.5]
+  num_regions: 6
 
 seed: 
   random_seed: 42

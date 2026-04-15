@@ -277,3 +277,133 @@ class Resnet35(nn.Module):
         x = x.transpose(1, 2)                 # [B, 36, 1024]
         return x
 
+class Dictionary(nn.Module):
+    """
+    Facial Region Dictionary: tạo K learnable tokens đại diện cho K vùng khuôn mặt.
+    Mỗi token sẽ học cách "query" vào visual features qua Cross-Attention.
+    """
+    REGION_NAMES = [
+        "forehead",    # 0: Trán, lông mày
+        "left_eye",    # 1: Mắt trái
+        "right_eye",   # 2: Mắt phải
+        "nose",        # 3: Mũi
+        "mouth",       # 4: Miệng
+        "chin",        # 5: Cằm
+    ]
+
+    def __init__(self, num_regions=6, emb_dim=1024):
+        super().__init__()
+        self.num_regions = num_regions
+
+        # K learnable embedding tokens
+        self.token_embedding = nn.Embedding(num_regions, emb_dim)
+        nn.init.normal_(self.token_embedding.weight, std=0.02)
+
+        # Buffer cố định index → đảm bảo luôn đúng device
+        self.register_buffer(
+            'region_ids',
+            torch.arange(num_regions, dtype=torch.long)
+        )
+
+        print(f"--> Facial Region Dictionary: {self.REGION_NAMES[:num_regions]}")
+
+    def forward(self, batch_size):
+        # region_ids: [K] → token_embedding: [K, D] → expand: [B, K, D]
+        tokens = self.token_embedding(self.region_ids)  # [K, D]
+        return tokens.unsqueeze(0).expand(batch_size, -1, -1)  # [B, K, D]
+
+
+class CNNDictionary(nn.Module):
+    """
+    ResNet35 (backbone) → flatten visual tokens → Cross-Attention với Dictionary → Classifier.
+    Không dùng Transformer Encoder, chỉ 1 lớp Cross-Attention để test heatmap.
+
+    Flow:
+        img → ResNet35 extract → [B, 36, 1024] visual tokens
+        Dictionary → [B, K, 1024] region tokens
+        Cross-Attention(Q=region, K=V=visual) → [B, K, 1024] enriched regions
+        mean pool → [B, 1024] → classifier → [B, num_classes]
+    """
+    def __init__(self, config):
+        super().__init__()
+        model_cfg = config.get('model', {})
+        self.embed_dim = model_cfg.get('embed_dim', 1024)
+        self.num_heads = model_cfg.get('num_heads', 4)
+        self.num_regions = model_cfg.get('num_regions', 6)
+        num_classes = config['data']['num_classes']
+
+        # 1. CNN Backbone
+        self.resnet35 = Resnet35(config, channels=1)
+
+        # 2. Facial Region Dictionary
+        self.dic_region = Dictionary(
+            num_regions=self.num_regions,
+            emb_dim=self.embed_dim
+        )
+
+        # 3. Positional Encoding cho visual tokens (6×6 = 36 vị trí)
+        self.visual_pos = nn.Parameter(torch.randn(1, 36, self.embed_dim) * 0.02)
+
+        # 4. Cross-Attention: region tokens (Q) soi vào visual features (K, V)
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim=self.embed_dim,
+            num_heads=self.num_heads,
+            batch_first=True
+        )
+        # LayerNorm + Residual cho cross-attention output
+        self.norm1 = nn.LayerNorm(self.embed_dim)
+
+        # FFN sau cross-attention
+        self.ffn = nn.Sequential(
+            nn.Linear(self.embed_dim, self.embed_dim * 2),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(self.embed_dim * 2, self.embed_dim)
+        )
+        self.norm2 = nn.LayerNorm(self.embed_dim)
+
+        # 5. Classifier
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(self.embed_dim),
+            nn.Dropout(0.5),
+            nn.Linear(self.embed_dim, 512),
+            nn.GELU(),
+            nn.Dropout(0.3),
+            nn.Linear(512, num_classes)
+        )
+
+    def forward(self, x):
+        """
+        x: [B, 1, 48, 48]
+        return: [B, num_classes]
+        """
+        B = x.shape[0]
+
+        # 1. Extract visual features từ ResNet35
+        visual = self.resnet35.extract_region_features(x)  # [B, 36, 1024]
+        visual = visual + self.visual_pos                   # + positional encoding
+
+        # 2. Lấy region dictionary tokens
+        region_tokens = self.dic_region(B)                  # [B, K, 1024]
+
+        # 3. Cross-Attention: Q=region, K=V=visual
+        #    Region tokens "hỏi" visual features: mỗi vùng mặt chú ý vào đâu?
+        attn_out, self.attn_weights = self.cross_attn(
+            query=region_tokens,
+            key=visual,
+            value=visual
+        )  # attn_out: [B, K, 1024], attn_weights: [B, K, 36]
+
+        # Residual + LayerNorm
+        region_enriched = self.norm1(region_tokens + attn_out)  # [B, K, 1024]
+
+        # FFN + Residual + LayerNorm
+        ffn_out = self.ffn(region_enriched)
+        region_enriched = self.norm2(region_enriched + ffn_out)  # [B, K, 1024]
+
+        # 4. Pool tất cả region tokens → 1 vector
+        pooled = region_enriched.mean(dim=1)                # [B, 1024]
+
+        # 5. Classify
+        logits = self.classifier(pooled)                    # [B, num_classes]
+        return logits
