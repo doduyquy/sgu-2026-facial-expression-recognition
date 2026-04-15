@@ -94,7 +94,8 @@ class LearnedLandmarkBranch(nn.Module):
         if image is None or image.ndim != 4:
             return None
 
-        gray = image.mean(dim=1, keepdim=True)
+        # Edge is a non-trainable prior; detach to avoid building unnecessary graph on input.
+        gray = image.detach().mean(dim=1, keepdim=True)
         sobel_x = torch.tensor(
             [[[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]]],
             device=gray.device,
@@ -139,14 +140,6 @@ class LearnedLandmarkBranch(nn.Module):
 
         # Lightweight cross-head competition to avoid same hotspot collapse.
         attn_logits = attn_logits - attn_logits.mean(dim=1, keepdim=True)
-        scaled = attn_logits.view(bsz, keypoints, -1) / max(self.landmark_tau, 1e-6)
-        attn = torch.softmax(scaled, dim=-1).view(bsz, keypoints, h, w)
-
-        if self.training and self.head_dropout_p > 0.0 and keypoints > 1:
-            kp_keep = (torch.rand(bsz, keypoints, 1, 1, device=attn.device) > self.head_dropout_p).to(attn.dtype)
-            has_any = kp_keep.sum(dim=1, keepdim=True) > 0
-            kp_keep = torch.where(has_any, kp_keep, torch.ones_like(kp_keep))
-            attn = attn * kp_keep
 
         if edge_attn is not None and self.edge_guidance_beta > 0.0:
             guide = self.edge_guidance_beta * self.current_edge_weight
@@ -159,8 +152,15 @@ class LearnedLandmarkBranch(nn.Module):
 
             # Inject edge guidance at logit level so softmax preserves edge bias.
             attn_logits = attn_logits + (guide * edge_k * head_scale)
-            scaled = attn_logits.view(bsz, keypoints, -1) / max(self.landmark_tau, 1e-6)
-            attn = torch.softmax(scaled, dim=-1).view(bsz, keypoints, h, w)
+
+        scaled = attn_logits.view(bsz, keypoints, -1) / max(self.landmark_tau, 1e-6)
+        attn = torch.softmax(scaled, dim=-1).view(bsz, keypoints, h, w)
+
+        if self.training and self.head_dropout_p > 0.0 and keypoints > 1:
+            kp_keep = (torch.rand(bsz, keypoints, 1, 1, device=attn.device) > self.head_dropout_p).to(attn.dtype)
+            has_any = kp_keep.sum(dim=1, keepdim=True) > 0
+            kp_keep = torch.where(has_any, kp_keep, torch.ones_like(kp_keep))
+            attn = attn * kp_keep
 
         attn = attn / attn.sum(dim=[2, 3], keepdim=True).clamp(min=1e-6)
         coords = self._soft_argmax(attn)
@@ -181,7 +181,7 @@ class LearnedLandmarkBranch(nn.Module):
             "landmark_entropy": self._entropy_loss(attn),
             "landmark_coord_spread": self._coord_spread_loss(coords),
             "landmark_edge_align": (
-                ((attn * (1.0 - (edge_attn > self.edge_mask_threshold).to(attn.dtype))) ** 2).mean()
+                (attn * (1.0 - (edge_attn > self.edge_mask_threshold).to(attn.dtype))).sum(dim=[2, 3]).mean()
                 if edge_attn is not None
                 else attn.new_tensor(0.0)
             ),
