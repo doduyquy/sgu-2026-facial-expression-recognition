@@ -11,7 +11,7 @@ model:
   # Path tới checkpoint ResNet35 đã train (file .pth)
   # Trên Kaggle: upload checkpoint lên dataset, đặt path tương ứng
   pretrained_backbone_path: "/kaggle/input/datasets/lhngphc/resnet35-cbam/resnet35_15042026_0221_best.pth"
-  freeze_backbone_epochs: 15  # Freeze backbone 15 epoch đầu, sau đó unfreeze fine-tune
+  freeze_backbone_epochs: 20  # Freeze backbone 15 epoch đầu, sau đó unfreeze fine-tune
 
 data:
   image_size: 48
