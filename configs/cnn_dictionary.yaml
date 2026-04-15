@@ -7,13 +7,20 @@ model:
   num_heads: 4                # Số heads trong Cross-Attention
   num_regions: 6              # Số vùng khuôn mặt (forehead, left_eye, right_eye, nose, mouth, chin)
 
+  # ── Transfer Learning ──
+  # Path tới checkpoint ResNet35 đã train (file .pth)
+  # Trên Kaggle: upload checkpoint lên dataset, đặt path tương ứng
+  pretrained_backbone_path: "/kaggle/input/resnet35-ckpt/resnet35_best.pth"
+  freeze_backbone_epochs: 15  # Freeze backbone 15 epoch đầu, sau đó unfreeze fine-tune
+
 data:
   image_size: 48
   channels: 1
   batch_size: 64
 
 training:
-  lr: 0.001
+  lr: 0.001                   # LR cho phase 1 (freeze backbone, train head)
+  finetune_lr: 0.00001        # LR cho phase 2 (unfreeze, fine-tune toàn bộ)
   epochs: 100
   optimizer: "adamw"
   weight_decay: 0.01

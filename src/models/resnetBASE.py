@@ -335,6 +335,10 @@ class CNNDictionary(nn.Module):
         # 1. CNN Backbone
         self.resnet35 = Resnet35(config, channels=1)
 
+        # Transfer Learning state
+        self.is_frozen = False
+        self.freeze_epochs = model_cfg.get('freeze_backbone_epochs', 0)
+
         # 2. Facial Region Dictionary
         self.dic_region = Dictionary(
             num_regions=self.num_regions,
@@ -427,4 +431,50 @@ class CNNDictionary(nn.Module):
 
         # 5. Classify
         logits = self.classifier(pooled)                    # [B, num_classes]
-        return logits
+        return logits
+
+    # ── Transfer Learning ──
+
+    def load_pretrained_backbone(self, ckpt_path, device='cpu'):
+        """Load pretrained ResNet35 checkpoint vào backbone.
+        Tự bỏ qua weight lệch shape (classifier cũ, attention kernel khác, ...).
+        """
+        ckpt = torch.load(ckpt_path, map_location=device)
+        saved_state = ckpt['model_state_dict']
+
+        # State dict hiện tại của resnet35 backbone
+        model_state = self.resnet35.state_dict()
+
+        compatible = {}
+        skipped = []
+        for k, v in saved_state.items():
+            if k in model_state and model_state[k].shape == v.shape:
+                compatible[k] = v
+            else:
+                skipped.append(k)
+
+        self.resnet35.load_state_dict(compatible, strict=False)
+        print(f"[CNNDictionary] Backbone loaded: {len(compatible)} weights")
+        if skipped:
+            print(f"[CNNDictionary] Skipped (shape mismatch / not in backbone): {skipped}")
+
+    def freeze_backbone(self):
+        """Freeze ResNet35 backbone — chỉ train Dictionary + Cross-Attention + Classifier."""
+        for param in self.resnet35.parameters():
+            param.requires_grad = False
+        self.is_frozen = True
+        print("[CNNDictionary] Backbone FROZEN.")
+
+    def unfreeze_backbone(self):
+        """Unfreeze toàn bộ model cho fine-tuning."""
+        for param in self.parameters():
+            param.requires_grad = True
+        self.is_frozen = False
+        print("[CNNDictionary] All parameters UNFROZEN.")
+
+    def check_unfreeze(self, epoch):
+        """Tự động unfreeze backbone khi đến epoch chỉ định."""
+        if self.is_frozen and self.freeze_epochs > 0 and epoch >= self.freeze_epochs:
+            self.unfreeze_backbone()
+            return True  # Signal trainer rebuild optimizer
+        return False

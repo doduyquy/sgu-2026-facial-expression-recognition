@@ -60,13 +60,24 @@ def main():
     # ── Transfer Learning: load pretrained backbone weights ──
     pretrained_vgg = config['model'].get('pretrained_vgg_path', None)
     pretrained_resnet = config['model'].get('pretrained_resnet_path', None)
+    pretrained_backbone = config['model'].get('pretrained_backbone_path', None)
     
+    # Case 1: Dual backbone (VGG + ResNet) — RegionAlignedFER, DualFusion
     if pretrained_vgg and pretrained_resnet and hasattr(model, 'load_pretrained_backbones'):
         print("\n" + "="*50)
         print("[Transfer Learning] Loading pretrained backbones...")
         print("="*50)
         model.load_pretrained_backbones(pretrained_vgg, pretrained_resnet, device=device)
         model.freeze_backbones()
+        print("="*50 + "\n")
+
+    # Case 2: Single backbone (ResNet35) — CNNDictionary
+    elif pretrained_backbone and hasattr(model, 'load_pretrained_backbone'):
+        print("\n" + "="*50)
+        print("[Transfer Learning] Loading pretrained backbone...")
+        print("="*50)
+        model.load_pretrained_backbone(pretrained_backbone, device=device)
+        model.freeze_backbone()
         print("="*50 + "\n")
 
 
