@@ -30,6 +30,7 @@ MODEL_REGISTRY = {
         landmark_edge_dropout_prob=config['model'].get('landmark_edge_dropout_prob', 0.3),
         landmark_edge_head_scale_std=config['model'].get('landmark_edge_head_scale_std', 0.1),
         landmark_edge_mask_threshold=config['model'].get('landmark_edge_mask_threshold', 0.3),
+        landmark_edge_gamma=config['model'].get('landmark_edge_gamma', 1.7),
         landmark_from_stage=config['model'].get('landmark_from_stage', 3),
     ),
     # "resmaskingnet": ResMaskingNet,

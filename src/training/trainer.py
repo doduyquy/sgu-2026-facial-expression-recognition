@@ -28,6 +28,7 @@ class Trainer:
             'landmark_entropy_lambda',
             config['training'].get('landmark_sparsity_lambda', 0.1),
         )
+        self.landmark_coord_spread_lambda = config['training'].get('landmark_coord_spread_lambda', 0.1)
         self.landmark_edge_align_lambda = config['training'].get('landmark_edge_align_lambda', 0.02)
 
     @staticmethod
@@ -73,12 +74,14 @@ class Trainer:
                 "landmark_entropy",
                 aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
             )
+            coord_spread_loss = aux_losses.get("landmark_coord_spread", torch.tensor(0.0, device=self.device))
             edge_align_loss = aux_losses.get("landmark_edge_align", torch.tensor(0.0, device=self.device))
 
             loss = (
                 cls_loss
                 + (self.landmark_diversity_lambda * div_loss)
                 + (self.landmark_entropy_lambda * entropy_loss)
+                + (self.landmark_coord_spread_lambda * coord_spread_loss)
                 + (self.landmark_edge_align_lambda * edge_align_loss)
             )
             loss.backward()
@@ -115,11 +118,13 @@ class Trainer:
                     "landmark_entropy",
                     aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
                 )
+                coord_spread_loss = aux_losses.get("landmark_coord_spread", torch.tensor(0.0, device=self.device))
                 edge_align_loss = aux_losses.get("landmark_edge_align", torch.tensor(0.0, device=self.device))
                 loss = (
                     cls_loss
                     + (self.landmark_diversity_lambda * div_loss)
                     + (self.landmark_entropy_lambda * entropy_loss)
+                    + (self.landmark_coord_spread_lambda * coord_spread_loss)
                     + (self.landmark_edge_align_lambda * edge_align_loss)
                 )
                 running_loss += loss.item() * images.size(0)

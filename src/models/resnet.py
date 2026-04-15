@@ -84,6 +84,7 @@ class ResNet50(nn.Module):
         landmark_edge_dropout_prob=0.3,
         landmark_edge_head_scale_std=0.1,
         landmark_edge_mask_threshold=0.3,
+        landmark_edge_gamma=1.7,
 
         landmark_from_stage=3,
     ):
@@ -146,6 +147,7 @@ class ResNet50(nn.Module):
             edge_dropout_prob=landmark_edge_dropout_prob,
             edge_head_scale_std=landmark_edge_head_scale_std,
             edge_mask_threshold=landmark_edge_mask_threshold,
+            edge_gamma=landmark_edge_gamma,
         )
 
         fusion_in_dim = 1024 + ((landmark_num_points + 1) * landmark_in_channels)
