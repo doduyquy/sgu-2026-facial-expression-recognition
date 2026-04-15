@@ -56,6 +56,7 @@ class ConvBlock(nn.Module):
             nn.Conv2d(in_channels, f3, kernel_size=1, stride=stride),
             nn.BatchNorm2d(f3),
         )
+        self.attn = nn.Identity()
         self.relu = nn.ReLU()
 
     def forward(self, x):
