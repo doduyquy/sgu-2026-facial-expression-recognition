@@ -18,6 +18,10 @@ class LearnedLandmarkBranch(nn.Module):
         edge_head_scale_std=0.1,
         edge_mask_threshold=0.3,
         edge_gamma=1.7,
+        tau_start=0.2,
+        tau_end=0.05,
+        center_prior_strength=0.3,
+        center_prior_sigma=0.28,
     ):
         super().__init__()
         self.landmark_num_points = landmark_num_points
@@ -31,17 +35,23 @@ class LearnedLandmarkBranch(nn.Module):
         self.edge_head_scale_std = edge_head_scale_std
         self.edge_mask_threshold = edge_mask_threshold
         self.edge_gamma = edge_gamma
+        self.tau_start = tau_start
+        self.tau_end = tau_end
+        self.center_prior_strength = center_prior_strength
+        self.center_prior_sigma = center_prior_sigma
         self.current_edge_weight = 1.0
+        self.current_tau = landmark_tau
 
         self.landmark_heatmap_head = nn.Conv2d(in_channels, landmark_num_points, kernel_size=1)
 
     def set_training_progress(self, progress):
-        # Strong edge guidance at start, then let attention self-organize later.
+        # Anneal attention temperature: early explore, late sharpen.
         progress = float(max(0.0, min(1.0, progress)))
         self.current_edge_weight = max(0.0, 1.0 - progress)
+        self.current_tau = self.tau_start + (self.tau_end - self.tau_start) * progress
 
     def get_current_prior_strength(self):
-        return float(self.current_edge_weight)
+        return float(self.current_tau)
 
     @staticmethod
     def _soft_argmax(probs):
@@ -123,6 +133,15 @@ class LearnedLandmarkBranch(nn.Module):
         edge = edge.clamp(min=0.0, max=1.0)
         return edge.pow(self.edge_gamma)
 
+    def _build_center_prior(self, h, w, device, dtype):
+        ys = torch.linspace(0.0, 1.0, h, device=device, dtype=dtype)
+        xs = torch.linspace(0.0, 1.0, w, device=device, dtype=dtype)
+        gy, gx = torch.meshgrid(ys, xs, indexing="ij")
+        dist2 = (gx - 0.5).pow(2) + (gy - 0.5).pow(2)
+        sigma2 = max(self.center_prior_sigma ** 2, 1e-6)
+        prior = torch.exp(-dist2 / (2.0 * sigma2))
+        return prior.unsqueeze(0).unsqueeze(0)
+
     def forward(self, feat_map, input_image=None):
         bsz, _, h, w = feat_map.shape
         edge_attn = self._build_edge_attention(input_image, h, w)
@@ -132,28 +151,17 @@ class LearnedLandmarkBranch(nn.Module):
             if torch.rand(1, device=feat_map.device).item() < self.edge_dropout_prob:
                 edge_attn = None
 
-        if edge_attn is not None and self.edge_feat_guidance_beta > 0.0:
-            feat_map = feat_map * (1.0 + (self.edge_feat_guidance_beta * edge_attn))
-
         attn_logits = self.landmark_heatmap_head(feat_map)
         _, keypoints, _, _ = attn_logits.shape
+
+        if self.center_prior_strength > 0.0:
+            center_prior = self._build_center_prior(h, w, attn_logits.device, attn_logits.dtype)
+            attn_logits = attn_logits + (self.center_prior_strength * center_prior)
 
         # Lightweight cross-head competition to avoid same hotspot collapse.
         attn_logits = attn_logits - attn_logits.mean(dim=1, keepdim=True)
 
-        if edge_attn is not None and self.edge_guidance_beta > 0.0:
-            guide = self.edge_guidance_beta * self.current_edge_weight
-            edge_k = edge_attn.expand(-1, keypoints, -1, -1)
-            if self.training and self.edge_head_scale_std > 0.0:
-                head_scale = 1.0 + (self.edge_head_scale_std * torch.randn(bsz, keypoints, 1, 1, device=attn_logits.device, dtype=attn_logits.dtype))
-                head_scale = head_scale.clamp(min=0.5, max=1.5)
-            else:
-                head_scale = torch.ones(bsz, keypoints, 1, 1, device=attn_logits.device, dtype=attn_logits.dtype)
-
-            # Inject edge guidance at logit level so softmax preserves edge bias.
-            attn_logits = attn_logits + (guide * edge_k * head_scale)
-
-        scaled = attn_logits.view(bsz, keypoints, -1) / max(self.landmark_tau, 1e-6)
+        scaled = attn_logits.view(bsz, keypoints, -1) / max(self.current_tau, 1e-6)
         attn = torch.softmax(scaled, dim=-1).view(bsz, keypoints, h, w)
 
         if self.training and self.head_dropout_p > 0.0 and keypoints > 1:

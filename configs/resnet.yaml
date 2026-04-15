@@ -7,13 +7,17 @@ model:
   landmark_num_points: 4
   landmark_tau: 0.06
   landmark_head_dropout_p: 0.2
-  landmark_edge_guidance_beta: 1.5
+  landmark_edge_guidance_beta: 0.0
   landmark_edge_alpha: 6.0
-  landmark_edge_feat_guidance_beta: 0.2
-  landmark_edge_dropout_prob: 0.15
+  landmark_edge_feat_guidance_beta: 0.0
+  landmark_edge_dropout_prob: 0.0
   landmark_edge_head_scale_std: 0.08
   landmark_edge_mask_threshold: 0.3
   landmark_edge_gamma: 1.7
+  landmark_tau_start: 0.2
+  landmark_tau_end: 0.05
+  landmark_center_prior_strength: 0.3
+  landmark_center_prior_sigma: 0.28
   landmark_from_stage: 3
 
 training:
