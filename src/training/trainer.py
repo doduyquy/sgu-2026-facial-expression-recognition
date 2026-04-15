@@ -177,7 +177,7 @@ class Trainer:
             if callable(get_prior):
                 current_prior = get_prior()
                 if current_prior is not None:
-                    print(f"\tlandmark_tau(now): {current_prior:.4f}")
+                    print(f"\tlandmark_prior_strength(now): {current_prior:.4f}")
 
             # wandb log
             if self.use_wandb:

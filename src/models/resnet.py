@@ -85,10 +85,6 @@ class ResNet50(nn.Module):
         landmark_edge_head_scale_std=0.1,
         landmark_edge_mask_threshold=0.3,
         landmark_edge_gamma=1.7,
-        landmark_tau_start=0.2,
-        landmark_tau_end=0.05,
-        landmark_center_prior_strength=0.3,
-        landmark_center_prior_sigma=0.28,
 
         landmark_from_stage=3,
     ):
@@ -152,10 +148,6 @@ class ResNet50(nn.Module):
             edge_head_scale_std=landmark_edge_head_scale_std,
             edge_mask_threshold=landmark_edge_mask_threshold,
             edge_gamma=landmark_edge_gamma,
-            tau_start=landmark_tau_start,
-            tau_end=landmark_tau_end,
-            center_prior_strength=landmark_center_prior_strength,
-            center_prior_sigma=landmark_center_prior_sigma,
         )
 
         fusion_in_dim = 1024 + ((landmark_num_points + 1) * landmark_in_channels)
