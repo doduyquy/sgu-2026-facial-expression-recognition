@@ -8,37 +8,40 @@ class LearnedLandmarkBranch(nn.Module):
         self,
         in_channels=1024,
         landmark_num_points=6,
-        landmark_tau=0.1,
+        landmark_tau=0.07,
         feature_dropout_p=0.3,
         head_dropout_p=0.2,
-        logit_noise_std=0.1,
-        tau_start=0.5,
-        tau_mid=0.2,
-        tau_end=0.05,
+        edge_guidance_beta=1.0,
+        edge_alpha=6.0,
     ):
         super().__init__()
         self.landmark_num_points = landmark_num_points
         self.landmark_tau = landmark_tau
         self.feature_dropout_p = feature_dropout_p
         self.head_dropout_p = head_dropout_p
-        self.logit_noise_std = logit_noise_std
-        self.tau_start = tau_start
-        self.tau_mid = tau_mid
-        self.tau_end = tau_end
-        self.current_tau = landmark_tau
+        self.edge_guidance_beta = edge_guidance_beta
+        self.edge_alpha = edge_alpha
+        self.current_edge_weight = 1.0
 
-        # Multi-head spatial attention maps: one head = one attended facial region.
-        self.attn_head = nn.Conv2d(in_channels, landmark_num_points, kernel_size=1)
+        self.landmark_heatmap_head = nn.Conv2d(in_channels, landmark_num_points, kernel_size=1)
+
+    def set_training_progress(self, progress):
+        # Strong edge guidance at start, then let attention self-organize later.
+        progress = float(max(0.0, min(1.0, progress)))
+        self.current_edge_weight = max(0.0, 1.0 - progress)
+
+    def get_current_prior_strength(self):
+        return float(self.current_edge_weight)
 
     @staticmethod
-    def _soft_argmax(attn):
-        # attn: (B, K, H, W)
-        bsz, keypoints, h, w = attn.shape
-        flat = attn.view(bsz, keypoints, -1)
+    def _soft_argmax(probs):
+        # probs: (B, K, H, W), normalize per keypoint map for numerical stability
+        bsz, keypoints, h, w = probs.shape
+        flat = probs.view(bsz, keypoints, -1)
         flat = flat / flat.sum(dim=-1, keepdim=True).clamp(min=1e-6)
 
-        xs = torch.linspace(0, 1, w, device=attn.device, dtype=attn.dtype)
-        ys = torch.linspace(0, 1, h, device=attn.device, dtype=attn.dtype)
+        xs = torch.linspace(0, 1, w, device=probs.device, dtype=probs.dtype)
+        ys = torch.linspace(0, 1, h, device=probs.device, dtype=probs.dtype)
         grid_y, grid_x = torch.meshgrid(ys, xs, indexing="ij")
         grid_x = grid_x.reshape(-1)
         grid_y = grid_y.reshape(-1)
@@ -48,7 +51,7 @@ class LearnedLandmarkBranch(nn.Module):
         return torch.stack([x, y], dim=-1)
 
     @staticmethod
-    def _orthogonal_loss(attn):
+    def _diversity_loss(attn):
         bsz, keypoints, _, _ = attn.shape
         if keypoints <= 1:
             return attn.new_tensor(0.0)
@@ -65,60 +68,58 @@ class LearnedLandmarkBranch(nn.Module):
         p = attn.clamp(min=eps)
         return -(p * torch.log(p)).sum(dim=[2, 3]).mean()
 
-    @staticmethod
-    def _coord_separation_loss(coords):
-        # coords: (B, K, 2) in normalized image coordinates.
-        _, keypoints, _ = coords.shape
-        if keypoints <= 1:
-            return coords.new_tensor(0.0)
+    def _build_edge_attention(self, image, h, w):
+        if image is None or image.ndim != 4:
+            return None
 
-        dist = torch.cdist(coords, coords).clamp(min=1e-6)
-        eye = torch.eye(keypoints, device=coords.device, dtype=coords.dtype).unsqueeze(0)
-        off_diag = (1.0 / dist) * (1.0 - eye)
-        denom = float(keypoints * (keypoints - 1))
-        return off_diag.sum(dim=[1, 2]).mean() / max(denom, 1.0)
+        gray = image.mean(dim=1, keepdim=True)
+        sobel_x = torch.tensor(
+            [[[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]]],
+            device=gray.device,
+            dtype=gray.dtype,
+        ).unsqueeze(1)
+        sobel_y = torch.tensor(
+            [[[-1.0, -2.0, -1.0], [0.0, 0.0, 0.0], [1.0, 2.0, 1.0]]],
+            device=gray.device,
+            dtype=gray.dtype,
+        ).unsqueeze(1)
 
-    @staticmethod
-    def _balance_loss(attn):
-        # Encourage heads to keep comparable spatial energy.
-        energy = attn.sum(dim=[2, 3])
-        return energy.std(dim=1).mean()
+        grad_x = F.conv2d(gray, sobel_x, padding=1)
+        grad_y = F.conv2d(gray, sobel_y, padding=1)
+        edge = torch.sqrt(grad_x.pow(2) + grad_y.pow(2) + 1e-6)
+        edge = F.interpolate(edge, size=(h, w), mode="bilinear", align_corners=False)
+        edge = edge / edge.amax(dim=[2, 3], keepdim=True).clamp(min=1e-6)
 
-    def set_training_progress(self, progress):
-        p = float(max(0.0, min(1.0, progress)))
-        if p <= 0.5:
-            alpha = p / 0.5
-            tau = self.tau_start + alpha * (self.tau_mid - self.tau_start)
-        else:
-            alpha = (p - 0.5) / 0.5
-            tau = self.tau_mid + alpha * (self.tau_end - self.tau_mid)
-        self.current_tau = float(max(tau, 1e-6))
+        # Strong edges -> values close to 1, weak edges -> values close to 0.
+        return torch.sigmoid((edge - 0.5) * self.edge_alpha)
 
-    def forward(self, feat_map):
-        attn_logits = self.attn_head(feat_map)
-        # Create lightweight competition so heads do not all follow the same hotspot.
-        attn_logits = attn_logits - attn_logits.mean(dim=1, keepdim=True)
-
-        if self.training and self.logit_noise_std > 0.0:
-            attn_logits = attn_logits + (torch.rand_like(attn_logits) * self.logit_noise_std)
-
+    def forward(self, feat_map, input_image=None):
+        attn_logits = self.landmark_heatmap_head(feat_map)
         bsz, keypoints, h, w = attn_logits.shape
-        tau = max(self.current_tau, 1e-6)
-        scaled = attn_logits.view(bsz, keypoints, -1) / tau
+        edge_attn = self._build_edge_attention(input_image, h, w)
+
+        # Lightweight cross-head competition to avoid same hotspot collapse.
+        attn_logits = attn_logits - attn_logits.mean(dim=1, keepdim=True)
+        scaled = attn_logits.view(bsz, keypoints, -1) / max(self.landmark_tau, 1e-6)
         attn = torch.softmax(scaled, dim=-1).view(bsz, keypoints, h, w)
 
         if self.training and self.head_dropout_p > 0.0 and keypoints > 1:
-            keep = (torch.rand(bsz, keypoints, 1, 1, device=attn.device) > self.head_dropout_p).to(attn.dtype)
-            has_any = keep.sum(dim=1, keepdim=True) > 0
-            keep = torch.where(has_any, keep, torch.ones_like(keep))
-            attn = attn * keep
-            attn = attn / attn.sum(dim=[2, 3], keepdim=True).clamp(min=1e-6)
+            kp_keep = (torch.rand(bsz, keypoints, 1, 1, device=attn.device) > self.head_dropout_p).to(attn.dtype)
+            has_any = kp_keep.sum(dim=1, keepdim=True) > 0
+            kp_keep = torch.where(has_any, kp_keep, torch.ones_like(kp_keep))
+            attn = attn * kp_keep
 
+        if edge_attn is not None and self.edge_guidance_beta > 0.0:
+            guide = self.edge_guidance_beta * self.current_edge_weight
+            attn = attn * (1.0 + guide * edge_attn)
+
+        attn = attn / attn.sum(dim=[2, 3], keepdim=True).clamp(min=1e-6)
         coords = self._soft_argmax(attn)
 
-        feat = feat_map.unsqueeze(1)
-        attn_exp = attn.unsqueeze(2)
-        feat_k = (feat * attn_exp).sum(dim=[3, 4])
+        feat_expanded = feat_map.unsqueeze(1)
+        heat_expanded = attn.unsqueeze(2)
+        feat_k = (feat_expanded * heat_expanded).sum(dim=[3, 4])
+
         global_attn = attn.mean(dim=1, keepdim=True)
         feat_global = (feat_map * global_attn).sum(dim=[2, 3])
 
@@ -127,9 +128,12 @@ class LearnedLandmarkBranch(nn.Module):
         feat_k = F.dropout(feat_k, p=self.feature_dropout_p, training=self.training)
 
         aux = {
-            "landmark_diversity": self._orthogonal_loss(attn),
+            "landmark_diversity": self._diversity_loss(attn),
             "landmark_entropy": self._entropy_loss(attn),
-            "landmark_coord_separation": self._coord_separation_loss(coords),
-            "landmark_balance": self._balance_loss(attn),
+            "landmark_edge_align": (
+                ((attn.mean(dim=1, keepdim=True) - edge_attn) ** 2).mean()
+                if edge_attn is not None
+                else attn.new_tensor(0.0)
+            ),
         }
         return attn, coords, feat_k, aux

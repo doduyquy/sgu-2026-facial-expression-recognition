@@ -25,6 +25,7 @@ def parse_args():
     parser.add_argument("--checkpoint", type=str, default=None, help="Optional checkpoint path")
     parser.add_argument("--show_points", action="store_true", help="Overlay landmark points (default: off)")
     parser.add_argument("--save_per_keypoint", action="store_true", help="Save per-keypoint heatmap grid")
+    parser.add_argument("--save_attention_only", action="store_true", help="Save attention-only heatmap (after attention)")
     return parser.parse_args()
 
 
@@ -64,7 +65,15 @@ def _region_scores(hm_sum):
     }
 
 
-def save_overlay(image_tensor, heatmaps, save_path, title, show_points=False, per_keypoint_path=None):
+def save_overlay(
+    image_tensor,
+    heatmaps,
+    save_path,
+    title,
+    show_points=False,
+    per_keypoint_path=None,
+    attention_only_path=None,
+):
     # image_tensor: (1,H,W) normalized in [-1,1], heatmaps: (K,h,w)
     img = image_tensor.squeeze(0).cpu().numpy()
     img = (img * 0.5) + 0.5
@@ -120,6 +129,16 @@ def save_overlay(image_tensor, heatmaps, save_path, title, show_points=False, pe
         fig2.savefig(per_keypoint_path, dpi=160, bbox_inches="tight")
         plt.close(fig2)
 
+    if attention_only_path is not None:
+        fig3, ax3 = plt.subplots(1, 1, figsize=(4, 4))
+        im = ax3.imshow(hm_sum, cmap="magma", vmin=0.0, vmax=1.0)
+        ax3.set_title(f"{title} | attention-only")
+        ax3.axis("off")
+        fig3.colorbar(im, ax=ax3, fraction=0.046, pad=0.04)
+        fig3.tight_layout()
+        fig3.savefig(attention_only_path, dpi=180, bbox_inches="tight")
+        plt.close(fig3)
+
     scores = _region_scores(heatmaps_up.sum(dim=0))
     return scores
 
@@ -168,8 +187,11 @@ def main():
     for i in range(n):
         save_path = out_dir / f"sample_{i:03d}_label_{int(labels[i].item())}.png"
         per_k_path = None
+        attn_only_path = None
         if args.save_per_keypoint:
             per_k_path = out_dir / f"sample_{i:03d}_label_{int(labels[i].item())}_per_k.png"
+        if args.save_attention_only:
+            attn_only_path = out_dir / f"sample_{i:03d}_label_{int(labels[i].item())}_attn_only.png"
         title = f"label={int(labels[i].item())} | K={heatmaps.size(1)}"
         region_scores = save_overlay(
             images[i],
@@ -178,6 +200,7 @@ def main():
             title,
             show_points=args.show_points,
             per_keypoint_path=per_k_path,
+            attention_only_path=attn_only_path,
         )
         print(
             "sample={} label={} region_focus: left_eye={:.3f} right_eye={:.3f} nose={:.3f} mouth={:.3f}".format(

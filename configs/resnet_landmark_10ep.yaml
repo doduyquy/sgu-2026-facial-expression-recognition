@@ -1,11 +1,10 @@
-_base_: "resnet.yaml"
-
 model:
-  name: "resnet"
+	name: "resnet"
+	use_learned_landmark_branch: true
 
 training:
-  epochs: 10
-  patience: 5
+	epochs: 10
+	patience: 5
 
 logging:
-  use_wandb: false
+	use_wandb: false
