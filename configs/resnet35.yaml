@@ -13,6 +13,10 @@ data:
 training:
   lr: 0.001
   epochs: 100
-  optimizer: "adam"
+  optimizer: "adamw"
+  weight_decay: 0.01
+  label_smoothing: 0.1
   scheduler: "reduce_lr_on_plateau"
+  lr_patience: 5
+  lr_factor: 0.5
   use_class_weights: true # Bật tính năng Class Weights

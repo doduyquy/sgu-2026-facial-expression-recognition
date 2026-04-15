@@ -91,7 +91,8 @@ class CBAM(nn.Module):
         self.sa = SpatialAttention(kernel_size)
 
     def forward(self, x):
-        # Vì self.ca giờ đã tự nhân với input bên trong hàm forward của nó
-        attn = self.ca(x)
-        attn = self.sa(attn)
-        return x + attn
+        # ca và sa đã tự nhân x * sigmoid(...) bên trong
+        # Không cộng residual ở đây vì ConvBlock/IdentityBlock đã tự + shortcut
+        x = self.ca(x)
+        x = self.sa(x)
+        return x

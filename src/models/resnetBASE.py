@@ -26,7 +26,7 @@ class IdentityBlock(nn.Module):
         self.bn3=nn.BatchNorm2d(F3)
         self.attn=nn.Identity()
 
-        self.relu=nn.ReLU()
+        self.relu=nn.ReLU(inplace=True)
     def forward(self,x):
         shorcut=x
         x=self.relu(self.bn1(self.conv1(x)))
@@ -57,7 +57,7 @@ class ConvBlock(nn.Module):
             nn.BatchNorm2d(f3),
         )
         self.attn = nn.Identity()
-        self.relu = nn.ReLU()
+        self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
         shortcut = self.shortcut(x)
@@ -182,13 +182,12 @@ class Resnet35(nn.Module):
         # Lấy setting Attention
         model_cfg = config.get('model', {}) if config else {}
         self.attention_type = model_cfg.get('attention_type', 'cbam')
-        self.attention_kernel_size = model_cfg.get('attention_kernel_size', 7)
 
-        def get_attn(in_channels):
+        def get_attn(in_channels, kernel_size=7):
             if self.attention_type == 'cbam':
-                return CBAM(in_channels, kernel_size=self.attention_kernel_size)
+                return CBAM(in_channels, kernel_size=kernel_size)
             elif self.attention_type == 'spatial':
-                return SpatialAttention(kernel_size=self.attention_kernel_size)
+                return SpatialAttention(kernel_size=kernel_size)
             elif self.attention_type == 'channel':
                 return ChannelAttention(in_channels)
             return nn.Identity()
@@ -201,32 +200,36 @@ class Resnet35(nn.Module):
             IdentityBlock(256, [64, 64, 256]),
             IdentityBlock(256, [64, 64, 256])
         )
-        # for i in range(3): self.layer2[i].attn = get_attn(256)
+        # for i in range(3): self.layer2[i].attn = get_attn(256, kernel_size=7)
 
-        # Stage 3: 4 blocks -> Output spatial: 12x12
+        # Stage 3: 4 blocks -> Output spatial: 12x12, kernel=7
         self.layer3 = nn.Sequential(
             ConvBlock(256, [128, 128, 512]),
             IdentityBlock(512, [128, 128, 512]),
             IdentityBlock(512, [128, 128, 512]),
             IdentityBlock(512, [128, 128, 512])
         )
-        for i in range(4): self.layer3[i].attn = get_attn(512)
+        for i in range(4): self.layer3[i].attn = get_attn(512, kernel_size=7)
 
-        # Stage 4: 4 blocks -> Output spatial: 6x6
+        # Stage 4: 4 blocks -> Output spatial: 6x6, kernel=3
         self.layer4 = nn.Sequential(
             ConvBlock(512, [256, 256, 1024]),
             IdentityBlock(1024, [256, 256, 1024]),
             IdentityBlock(1024, [256, 256, 1024]),
             IdentityBlock(1024, [256, 256, 1024])
         )
-        for i in range(4): self.layer4[i].attn = get_attn(1024)
-        
-        self.dropout = nn.Dropout(0.3)
+        for i in range(4): self.layer4[i].attn = get_attn(1024, kernel_size=3)
 
-        # 3. Head for Classification (Trường hợp dùng độc lập)
-
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(1024, self.num_classes)
+        # 3. Head for Classification
+        self.classifier = nn.Sequential(
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Flatten(),
+            nn.Dropout(0.4),
+            nn.Linear(1024, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(256, self.num_classes)
+        )
         # self.classifier = nn.Sequential(
         #     nn.AdaptiveAvgPool2d((1, 1)),          
         #     nn.Flatten(),                        
@@ -254,10 +257,7 @@ class Resnet35(nn.Module):
         x = self.layer3(x)  # -> (B, 512, 12, 12)
         x = self.layer4(x)  # -> (B, 1024, 6, 6)
 
-        x = self.avgpool(x) # -> (B, 1024, 1, 1)
-        x = torch.flatten(x, 1) # -> (B, 1024)
-        x = self.dropout(x)
-        x = self.fc(x)
+        x = self.classifier(x)
         return x
 
     # def forward(self, x): # thử tính toán nặng hơn 
