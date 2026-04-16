@@ -59,11 +59,21 @@ class Trainer:
         corrects = 0
         total = 0
 
+
         for images, labels in self.train_loader:
-            images, labels = images.to(self.device), labels.to(self.device)
+            # Dual-branch: images là tuple/list
+            if isinstance(images, (tuple, list)):
+                images = [img.to(self.device) for img in images]
+            else:
+                images = images.to(self.device)
+            labels = labels.to(self.device)
 
             self.optimizer.zero_grad()
-            outputs = self.model(images)
+            # Dual-branch: truyền từng nhánh vào model nếu cần
+            if isinstance(images, (tuple, list)):
+                outputs = self.model(*images)
+            else:
+                outputs = self.model(images)
             logits = self._extract_logits(outputs)
 
             cls_loss = self.criterion(logits, labels)
@@ -87,10 +97,11 @@ class Trainer:
             loss.backward()
             self.optimizer.step()
 
-            running_loss += loss.item() * images.size(0)
+            batch_size = labels.size(0)
+            running_loss += loss.item() * batch_size
             _, preds = torch.max(logits, dim=1)
             corrects += torch.sum(preds == labels.data)
-            total += labels.size(0)
+            total += batch_size
 
         epoch_loss = running_loss / total
         epoch_acc = corrects.double() / total
@@ -105,11 +116,19 @@ class Trainer:
         corrects = 0
         total = 0
 
+
         with torch.no_grad():
             for images, labels in self.val_loader:
-                images, labels = images.to(self.device), labels.to(self.device)
+                if isinstance(images, (tuple, list)):
+                    images = [img.to(self.device) for img in images]
+                else:
+                    images = images.to(self.device)
+                labels = labels.to(self.device)
 
-                outputs = self.model(images)
+                if isinstance(images, (tuple, list)):
+                    outputs = self.model(*images)
+                else:
+                    outputs = self.model(images)
                 logits = self._extract_logits(outputs)
                 cls_loss = self.criterion(logits, labels)
                 aux_losses = self._extract_aux_losses(outputs)
@@ -127,11 +146,12 @@ class Trainer:
                     + (self.landmark_coord_spread_lambda * coord_spread_loss)
                     + (self.landmark_edge_align_lambda * edge_align_loss)
                 )
-                running_loss += loss.item() * images.size(0)
+                batch_size = labels.size(0)
+                running_loss += loss.item() * batch_size
 
                 _, preds = torch.max(logits, dim=1)
                 corrects += torch.sum(preds == labels.data)
-                total += labels.size(0)
+                total += batch_size
 
         epoch_loss = running_loss / total
         epoch_acc = corrects.double() / total
