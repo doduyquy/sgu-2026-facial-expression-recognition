@@ -92,7 +92,6 @@ def main():
         train_class_distribution = get_class_distribution(trainset_path)
         train_class_distribution_np = train_class_distribution.values
         class_weights = 1.0 / torch.tensor(train_class_distribution_np, dtype=torch.float)
-        class_weights = class_weights / class_weights.sum()
         class_weights = class_weights.to(device)
 
     loss = build_loss(config=config, class_weights=class_weights)

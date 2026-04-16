@@ -19,11 +19,11 @@ data:
 training:
   lr: 0.001                   # LR cho Phase 1 (freeze backbone, train head)
   finetune_lr: 0.00005        # LR backbone khi unfreeze (low, chỉ tinh chỉnh nhẹ)
-  head_lr: 0.0005             # LR head khi unfreeze (high, tiếp tục học mạnh)
+  head_lr: 0.0002             # LR head khi unfreeze (giảm để bớt dao động val)
   epochs: 100
   optimizer: "adamw"
-  weight_decay: 0.01
-  label_smoothing: 0.1
+  weight_decay: 0.001
+  label_smoothing: 0.05
   scheduler: "reduce_lr_on_plateau"
   lr_patience: 7
   lr_factor: 0.5
