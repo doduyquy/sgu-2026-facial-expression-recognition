@@ -1,9 +1,15 @@
 _base_: "base.yaml"
 
+data:
+  in_channels: 2
+  use_sobel_channel: true
+  sobel_edge_scale: 0.5
+  sobel_blur_kernel_size: 3
+
 model:
   name: "resnet"
   pretrained: false
-  use_learned_landmark_branch: true
+  use_learned_landmark_branch: false
   landmark_num_points: 4
   landmark_tau: 0.06
   landmark_head_dropout_p: 0.2

@@ -7,6 +7,10 @@ data:
   name: "fer13-split"
   num_classes: 7  # 1-angry, 2-disgust, 3-fear, 4-happy, 5-neutral, 6-sad, 7-surprise
   image_size: 48  # Q thấy dataset gốc:O 48x48
+  in_channels: 1
+  use_sobel_channel: false
+  sobel_edge_scale: 0.5
+  sobel_blur_kernel_size: 3
   batch_size: 64
   num_workers: 2  # num_workers is the number of subprocesses to use for data loading. 
 

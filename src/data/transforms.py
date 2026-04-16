@@ -2,6 +2,52 @@ from torchvision.transforms import Compose
 from posixpath import split
 import torch 
 from torchvision.transforms import v2
+import torch.nn.functional as F
+
+
+class SobelConcat:
+    """Create a second channel using Sobel edge magnitude and concat with grayscale image."""
+
+    def __init__(self, edge_scale=0.5, blur_kernel_size=3):
+        self.edge_scale = edge_scale
+        self.blur_kernel_size = blur_kernel_size
+
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (1, H, W) in [0, 1]
+        if x.ndim != 3 or x.shape[0] != 1:
+            return x
+
+        img = x.unsqueeze(0)
+
+        if self.blur_kernel_size >= 3:
+            # Lightweight Gaussian-like smoothing to suppress FER noise before Sobel.
+            blur_kernel = torch.tensor(
+                [[1.0, 2.0, 1.0], [2.0, 4.0, 2.0], [1.0, 2.0, 1.0]],
+                dtype=img.dtype,
+                device=img.device,
+            )
+            blur_kernel = (blur_kernel / blur_kernel.sum()).view(1, 1, 3, 3)
+            img = F.conv2d(img, blur_kernel, padding=1)
+
+        sobel_x = torch.tensor(
+            [[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]],
+            dtype=img.dtype,
+            device=img.device,
+        ).view(1, 1, 3, 3)
+        sobel_y = torch.tensor(
+            [[-1.0, -2.0, -1.0], [0.0, 0.0, 0.0], [1.0, 2.0, 1.0]],
+            dtype=img.dtype,
+            device=img.device,
+        ).view(1, 1, 3, 3)
+
+        gx = F.conv2d(img, sobel_x, padding=1)
+        gy = F.conv2d(img, sobel_y, padding=1)
+        edge = torch.sqrt(gx.pow(2) + gy.pow(2) + 1e-6)
+        edge = edge / edge.amax(dim=[2, 3], keepdim=True).clamp(min=1e-6)
+        edge = torch.clamp(edge * self.edge_scale, min=0.0, max=1.0)
+
+        x_out = torch.cat([x, edge.squeeze(0)], dim=0)
+        return x_out
 
 def build_transform(config, split="train") -> Compose: # train | val | test
     """Buid transform (augmentatio) for our data
@@ -12,6 +58,13 @@ def build_transform(config, split="train") -> Compose: # train | val | test
         compose: a transform compose
     """
     image_size = config['data']['image_size']
+    use_sobel_channel = config['data'].get('use_sobel_channel', False)
+    sobel_edge_scale = config['data'].get('sobel_edge_scale', 0.5)
+    sobel_blur_kernel_size = config['data'].get('sobel_blur_kernel_size', 3)
+
+    normalize = v2.Normalize(mean=[0.5, 0.5], std=[0.5, 0.5]) if use_sobel_channel else v2.Normalize(mean=[0.5], std=[0.5])
+    maybe_sobel = [SobelConcat(edge_scale=sobel_edge_scale, blur_kernel_size=sobel_blur_kernel_size)] if use_sobel_channel else []
+
     if split == "train":
         trans = v2.Compose([
             # v2.Grayscale(num_output_channels=1),
@@ -25,7 +78,8 @@ def build_transform(config, split="train") -> Compose: # train | val | test
 
             v2.ToImage(),
             v2.ToDtype(torch.float32, scale=True), # scale=True: / 255
-            v2.Normalize(mean=[0.5], std=[0.5])
+            *maybe_sobel,
+            normalize,
         ])
     else:
         trans = v2.Compose([
@@ -33,7 +87,8 @@ def build_transform(config, split="train") -> Compose: # train | val | test
             v2.Resize(size=(image_size, image_size)),
             v2.ToImage(),
             v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize(mean=[0.5], std=[0.5])
+            *maybe_sobel,
+            normalize,
         ])
 
     return trans
