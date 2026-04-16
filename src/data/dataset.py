@@ -40,6 +40,7 @@ class FER2013(Dataset):
         if self.transform is not None:
             image = self.transform(image)
 
+        # Nếu là dual-branch: image là tuple (goc, sobel)
         return (image, label)
     
     def label_to_emotion(self, label):

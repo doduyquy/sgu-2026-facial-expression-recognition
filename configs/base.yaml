@@ -5,50 +5,49 @@
 
 data:
   name: "fer13-split"
-  num_classes: 7  # 1-angry, 2-disgust, 3-fear, 4-happy, 5-neutral, 6-sad, 7-surprise
-  image_size: 48  # Q thấy dataset gốc:O 48x48
+  num_classes: 7 # 1-angry, 2-disgust, 3-fear, 4-happy, 5-neutral, 6-sad, 7-surprise
+  image_size: 48 # Q thấy dataset gốc:O 48x48
   in_channels: 1
   use_sobel_channel: false
   sobel_edge_scale: 0.5
   sobel_blur_kernel_size: 3
   batch_size: 64
-  num_workers: 2  # num_workers is the number of subprocesses to use for data loading. 
+  num_workers: 2 # num_workers is the number of subprocesses to use for data loading.
 
-seed: 
+seed:
   random_seed: 42
 
 model:
-  name: "simple_cnn"       # Tên model (key trong registry)
-  pretrained: False        # Sử dụng pretrain model hông?
+  name: "simple_cnn" # Tên model (key trong registry)
+  pretrained: False # Sử dụng pretrain model hông?
 
 training:
   epochs: 101
   patience: 10
   weight_decay: 0.0001
-  loss: 'cross_entropy'
-  optimizer: "adam"       # adam(*) | sgd 
+  loss: "cross_entropy"
+  optimizer: "adam" # adam(*) | sgd
   lr: 0.001
-  scheduler: "reduce_lr_on_plateau"  # none | step | cosine | reduce_lr_on_plateau (*)
+  scheduler: "reduce_lr_on_plateau" # none | step | cosine | reduce_lr_on_plateau (*)
 
-
-# !!! WARNING !!!  
+# !!! WARNING !!!
 logging:
   # wandb
   use_wandb: true
   wandb_entity: "phucga15062005"
   wandb_project: "FER2013"
   # save_dir_name: "outputs"
-  
-# !!! WARNING !!!  
-env:
-  platform: "kaggle"         # local | kaggle
 
-# !!! WARNING !!!  
+# !!! WARNING !!!
+env:
+  platform: "kaggle" # local | kaggle
+
+# !!! WARNING !!!
 kaggle:
   data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split" # double fer13-split
   root_path: "/kaggle/working/sgu-2026-facial-expression-recognition"
 
 local:
-  data_path: '...'
-  root_path: '...'
+  data_path: "..."
+  root_path: "..."
   # hi, guy, your path
