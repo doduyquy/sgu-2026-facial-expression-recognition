@@ -106,4 +106,25 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> Non
         )
         log_image_to_wandb("Evaluation/Wrong_Samples", fig_wrong)
 
+    # ------ CROSS-ATTENTION HEATMAP (CNNDictionary) ------ #
+    # Tự động phát hiện model có cross-attention weights → vẽ heatmap
+    if hasattr(model, 'attn_weights') and hasattr(model, 'dic_region'):
+        try:
+            from src.utils.attention_heatmap import generate_attention_heatmaps
+            print("\n--> [Attention Heatmap] Generating region attention visualization...")
+            fig_attn_corr, fig_attn_wrong = generate_attention_heatmaps(
+                model, test_loader, device, save_dir,
+                num_correct=4, num_wrong=4
+            )
+            if fig_attn_corr:
+                log_image_to_wandb("Evaluation/Attention_Heatmap_Correct", fig_attn_corr)
+            if fig_attn_wrong:
+                log_image_to_wandb("Evaluation/Attention_Heatmap_Wrong", fig_attn_wrong)
+            print("--> [Attention Heatmap] Done!")
+        except Exception as e:
+            print(f"-!- Attention Heatmap failed: {e}")
+            import traceback
+            traceback.print_exc()
+
     print(f"Done! Save file at: {save_dir}")
+

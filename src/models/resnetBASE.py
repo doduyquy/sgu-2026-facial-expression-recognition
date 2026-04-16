@@ -318,14 +318,23 @@ class Dictionary(nn.Module):
 
 class CNNDictionary(nn.Module):
     """
-    ResNet35 (backbone) → flatten visual tokens → Cross-Attention với Dictionary → Classifier.
-    Không dùng Transformer Encoder, chỉ 1 lớp Cross-Attention để test heatmap.
+    ResNet35 (backbone) → visual tokens → Cross-Attention với Dictionary → Classifier.
+
+    V2 Fixes (4 thủ phạm):
+    1. BỎ hard Spatial Region Mask → cross-attention tự do attend toàn bộ 36 tokens
+    2. Soft Spatial Grounding → region tokens khởi tạo từ visual features thật (pool theo hàng)
+    3. BỎ 2-stage attention (cross_attn + attn_pool) → chỉ cross_attn + mean pool
+    4. Visual Shortcut + Gated Fusion → classifier nhận cả visual global lẫn region features
 
     Flow:
-        img → ResNet35 extract → [B, 36, 1024] visual tokens
-        Dictionary → [B, K, 1024] region tokens
-        Cross-Attention(Q=region, K=V=visual) → [B, K, 1024] enriched regions
-        mean pool → [B, 1024] → classifier → [B, num_classes]
+        img → ResNet35 → [B, 36, 1024] visual tokens
+        Soft grounding: reshape 6×6 → pool theo hàng → [B, 6, 1024] spatial prior
+        Region tokens = dictionary + spatial_prior + region_pos
+        Cross-Attention(Q=region, K=V=visual) → [B, 6, 1024] enriched
+        Mean pool → [B, 1024] region_pooled
+        Visual shortcut: visual.mean → [B, 1024] visual_global
+        Gated Fusion: gate * region_pooled + (1-gate) * visual_global → [B, 1024]
+        Classifier → [B, num_classes]
     """
     def __init__(self, config):
         super().__init__()
@@ -351,33 +360,23 @@ class CNNDictionary(nn.Module):
         # 3. Positional Encoding cho visual tokens (6×6 = 36 vị trí)
         self.visual_pos = nn.Parameter(torch.randn(1, 36, self.embed_dim) * 0.02)
 
-        # Positional Encoding cho region tokens (tăng cường identity cho dictionary)
+        # Positional Encoding cho region tokens
         self.region_pos = nn.Parameter(torch.randn(1, self.num_regions, self.embed_dim) * 0.02)
 
-        # 4. Cross-Attention: region tokens (Q) soi vào visual features (K, V)
+        # 4. [FIX #2] Soft Spatial Grounding
+        #    Pool visual features theo hàng → project → cộng vào region tokens
+        #    Thay vì hard mask, region tokens "biết" vị trí qua actual visual content
+        self.spatial_grounding = nn.Linear(self.embed_dim, self.embed_dim)
+
+        # 5. [FIX #1] Cross-Attention: KHÔNG dùng mask → tự do attend toàn bộ 36 tokens
         self.cross_attn = nn.MultiheadAttention(
             embed_dim=self.embed_dim,
             num_heads=self.num_heads,
-            batch_first=True
+            batch_first=True,
+            dropout=0.1
         )
 
-        # ── Spatial Region Mask ──
-        # Ép mỗi region token CHỈ attend vào hàng tương ứng trên feature map 6×6
-        # Token 0 (forehead) → row 0, Token 1 (eyebrows) → row 1, ...
-        # mask shape: [num_regions, 36], True = BLOCK, False = ALLOW
-        grid_size = 6
-        num_visual = grid_size * grid_size  # 36
-        rows_per_region = grid_size // self.num_regions  # 1 row each
-        region_mask = torch.ones(self.num_regions, num_visual, dtype=torch.bool)
-        for i in range(self.num_regions):
-            start = i * rows_per_region * grid_size
-            end = start + rows_per_region * grid_size
-            region_mask[i, start:end] = False  # Allow: region i nhìn vào row i
-        self.register_buffer('region_mask', region_mask)
-        print(f"--> Spatial Region Mask: {self.num_regions} regions × {num_visual} visual tokens")
-        print(f"    Each region sees {rows_per_region} row(s) = {rows_per_region * grid_size} tokens")
-
-        # LayerNorm + Residual cho cross-attention output
+        # LayerNorm + Residual
         self.norm1 = nn.LayerNorm(self.embed_dim)
 
         # FFN sau cross-attention
@@ -389,17 +388,24 @@ class CNNDictionary(nn.Module):
         )
         self.norm2 = nn.LayerNorm(self.embed_dim)
 
-        # 5. Attention Pooling: học trọng số mỗi region thay vì mean cào bằng
-        #    Dùng 1 learnable query vector "hỏi" K regions → weighted sum
-        self.attn_pool_query = nn.Parameter(torch.randn(1, 1, self.embed_dim) * 0.02)
-        self.attn_pool = nn.MultiheadAttention(
-            embed_dim=self.embed_dim,
-            num_heads=1,
-            batch_first=True
-        )
-        self.norm_pool = nn.LayerNorm(self.embed_dim)
+        # [FIX #3] Bỏ Attention Pooling → dùng mean pool đơn giản
+        # (không cần attn_pool_query, attn_pool, norm_pool)
 
-        # 6. Classifier
+        # 6. [FIX #4] Visual Shortcut: bypass cross-attention, đưa visual signal thẳng tới classifier
+        self.visual_shortcut = nn.Sequential(
+            nn.LayerNorm(self.embed_dim),
+            nn.Linear(self.embed_dim, self.embed_dim),
+            nn.GELU()
+        )
+
+        # Gated Fusion: học cách blend region features + visual shortcut
+        # gate ≈ 1 → tin region head, gate ≈ 0 → tin visual trực tiếp
+        self.fusion_gate = nn.Sequential(
+            nn.Linear(self.embed_dim * 2, self.embed_dim),
+            nn.Sigmoid()
+        )
+
+        # 7. Classifier
         self.classifier = nn.Sequential(
             nn.LayerNorm(self.embed_dim),
             nn.Dropout(0.5),
@@ -408,6 +414,8 @@ class CNNDictionary(nn.Module):
             nn.Dropout(0.3),
             nn.Linear(512, num_classes)
         )
+
+        print(f"--> [CNNDictionary V2] Free cross-attention + soft grounding + visual shortcut")
 
     def forward(self, x):
         """
@@ -420,38 +428,46 @@ class CNNDictionary(nn.Module):
         visual = self.resnet35.extract_region_features(x)  # [B, 36, 1024]
         visual = visual + self.visual_pos                   # + positional encoding
 
-        # 2. Lấy region dictionary tokens + positional encoding
-        region_tokens = self.dic_region(B)                  # [B, K, 1024]
-        region_tokens = region_tokens + self.region_pos     # + region PE
+        # 2. [FIX #2] Soft Spatial Grounding: pool visual features theo hàng
+        #    visual [B, 36, D] → reshape [B, 6, 6, D] → mean over cols → [B, 6, D]
+        #    Region "forehead" nhận thông tin thật từ row 0, "mouth" từ row 4, ...
+        #    Nhưng cross-attention vẫn TỰ DO nhìn toàn bộ 36 tokens
+        visual_grid = visual.reshape(B, 6, 6, self.embed_dim)
+        spatial_prior = visual_grid.mean(dim=2)              # [B, 6, D]
+        spatial_prior = self.spatial_grounding(spatial_prior) # [B, 6, D]
 
-        # 3. Cross-Attention: Q=region, K=V=visual + Spatial Region Mask
-        #    Token "forehead" CHỈ nhìn row 0, token "eyes" CHỈ nhìn row 2, ...
+        # Region tokens = learnable dictionary + spatial grounding + positional encoding
+        region_tokens = self.dic_region(B) + spatial_prior + self.region_pos  # [B, K, D]
+
+        # 3. [FIX #1] Cross-Attention: Q=region, K=V=visual — KHÔNG mask
         attn_out, self.attn_weights = self.cross_attn(
             query=region_tokens,
             key=visual,
-            value=visual,
-            attn_mask=self.region_mask  # [K, 36] — ép spatial grounding
-        )  # attn_out: [B, K, 1024], attn_weights: [B, K, 36]
+            value=visual
+        )  # attn_out: [B, K, D], attn_weights: [B, K, 36]
 
         # Residual + LayerNorm
-        region_enriched = self.norm1(region_tokens + attn_out)  # [B, K, 1024]
+        region_enriched = self.norm1(region_tokens + attn_out)  # [B, K, D]
 
         # FFN + Residual + LayerNorm
         ffn_out = self.ffn(region_enriched)
-        region_enriched = self.norm2(region_enriched + ffn_out)  # [B, K, 1024]
+        region_enriched = self.norm2(region_enriched + ffn_out)  # [B, K, D]
 
-        # 4. Attention Pooling: 1 query vector hỏi 6 regions → weighted sum
-        #    Model tự học: "emotion này, region nào quan trọng nhất?"
-        pool_query = self.attn_pool_query.expand(B, -1, -1)  # [B, 1, D]
-        pooled, self.pool_weights = self.attn_pool(
-            query=pool_query,
-            key=region_enriched,
-            value=region_enriched
-        )  # pooled: [B, 1, D], pool_weights: [B, 1, K]
-        pooled = self.norm_pool(pooled.squeeze(1))           # [B, D]
+        # 4. [FIX #3] Mean pool thay vì attention pool → tránh loãng signal
+        region_pooled = region_enriched.mean(dim=1)             # [B, D]
 
-        # 5. Classify
-        logits = self.classifier(pooled)                    # [B, num_classes]
+        # 5. [FIX #4] Visual Shortcut: global pool → bypass cross-attention
+        visual_global = visual.mean(dim=1)                      # [B, D]
+        visual_global = self.visual_shortcut(visual_global)     # [B, D]
+
+        # Gated Fusion: model tự học blend ratio
+        gate = self.fusion_gate(
+            torch.cat([region_pooled, visual_global], dim=-1)
+        )  # [B, D]
+        fused = gate * region_pooled + (1 - gate) * visual_global  # [B, D]
+
+        # 6. Classify
+        logits = self.classifier(fused)                         # [B, num_classes]
         return logits
 
     # ── Transfer Learning ──

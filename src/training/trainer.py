@@ -69,6 +69,7 @@ class Trainer:
             else:
                 # ── Standard Optimizer ──
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 self.optimizer.step()
 
             running_loss += loss.item() * images.size(0)
@@ -110,7 +111,7 @@ class Trainer:
     def fit(self):
         """ Fit your model
         Return:
-            all_train_loss, all_val_loss
+            all_train_loss, all_val_loss, all_train_acc, all_val_acc
         """
         print(f'\n--> Train on {len(self.train_loader.dataset)} samples, validate on {len(self.val_loader.dataset)} samples')
 
@@ -121,6 +122,8 @@ class Trainer:
         patience_counter = 0
         all_train_loss = []
         all_val_loss = []
+        all_train_acc = []
+        all_val_acc = []
 
         print(f'\n--> Start training in total {self.epochs} epochs with {self.device} device. Start...\n')
 
@@ -154,15 +157,18 @@ class Trainer:
                     # REBUILD scheduler to link to NEW optimizer
                     self.scheduler = build_scheduler(self.optimizer, self.config)
                     
-                    # RESET bộ đếm Early Stopping để Phase 2 được chạy đủ
+                    # RESET bộ đếm Early Stopping + best_val_loss để Phase 2 được chạy công bằng
                     patience_counter = 0
-                    print(f"[Trainer] Reset patience for Phase 2.")
+                    best_val_loss = float("inf")
+                    print(f"[Trainer] Reset patience + best_val_loss for Phase 2.")
 
             train_loss, train_acc = self.train_one_epoch()
             val_loss, val_acc = self.validate()
 
             all_train_loss.append(train_loss)
             all_val_loss.append(val_loss)
+            all_train_acc.append(train_acc.item())
+            all_val_acc.append(val_acc.item())
 
             print(
                 f"Epoch {ep+1}/{self.epochs} - "
@@ -212,7 +218,7 @@ class Trainer:
                     print(f"\t-_- Early stopping at ep={ep+1}")
                     break
 
-        return all_train_loss, all_val_loss
+        return all_train_loss, all_val_loss, all_train_acc, all_val_acc
 
 
 

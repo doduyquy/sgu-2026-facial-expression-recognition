@@ -14,8 +14,9 @@ from src.training.optimizer import build_optimizer
 from src.training.optimizer import build_scheduler
 from src.utils.checkpoint import load_checkpoints
 from src.evaluation.evaluator import evaluate_and_show
+from src.utils.visualization import plot_training_curves
 from src.utils.logger_wandb import save_model_to_wandb
-from src.utils.data_stats import get_class_distribution # testing: class weight
+from src.utils.data_stats import get_class_distribution
 
 from datetime import datetime
 #-------------------------------------------------------------
@@ -114,7 +115,21 @@ def main():
         run_name=run_name,
         save_dir=path_save_ckpt
     )
-    train_losses, val_losses = trainer.fit()
+    train_losses, val_losses, train_accs, val_accs = trainer.fit()
+
+    # ── Plot Training Curves (Loss + Accuracy) ──
+    freeze_epochs = config['model'].get('freeze_backbone_epochs', None)
+    curves_path = os.path.join(root_path, f"outputs/figures/training_curves_{run_name}.png")
+    os.makedirs(os.path.dirname(curves_path), exist_ok=True)
+    
+    fig_curves = plot_training_curves(
+        train_losses, val_losses, train_accs, val_accs,
+        freeze_epochs=freeze_epochs,
+        save_path=curves_path
+    )
+    if config['logging'].get('use_wandb', True):
+        from src.utils.logger_wandb import log_image_to_wandb
+        log_image_to_wandb("Training/Curves", fig_curves)
 
     # evaluate
     print("\n" + "="*51)

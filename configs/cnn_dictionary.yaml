@@ -9,7 +9,7 @@ model:
 
   # ── Transfer Learning ──
   pretrained_backbone_path: "/kaggle/input/datasets/lhngphc/resnet35-cbam/resnet35_15042026_0221_best.pth"
-  freeze_backbone_epochs: 20  # Freeze backbone 20 epoch đầu
+  freeze_backbone_epochs: 15  # Freeze backbone 15 epoch đầu (Phase 1 hội tụ nhanh)
 
 data:
   image_size: 48
@@ -25,6 +25,6 @@ training:
   weight_decay: 0.01
   label_smoothing: 0.1
   scheduler: "reduce_lr_on_plateau"
-  lr_patience: 5
+  lr_patience: 7
   lr_factor: 0.5
   use_class_weights: true
