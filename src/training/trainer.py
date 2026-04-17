@@ -28,6 +28,11 @@ class Trainer:
             config['training'].get('landmark_sparsity_lambda', 0.1),
         )
         self.landmark_edge_align_lambda = config['training'].get('landmark_edge_align_lambda', 0.02)
+        # New lambda for per-keypoint edge consistency loss
+        self.landmark_edge_consistency_lambda = config['training'].get('landmark_edge_consistency_lambda', 0.05)
+        # Regularization lambdas for edge conv
+        self.landmark_edge_conv_reg_lambda = config['training'].get('landmark_edge_conv_reg_lambda', 1e-4)
+        self.landmark_edge_tv_lambda = config['training'].get('landmark_edge_tv_lambda', 1e-4)
 
     @staticmethod
     def _extract_logits(outputs):
@@ -73,12 +78,19 @@ class Trainer:
                 aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
             )
             edge_align_loss = aux_losses.get("landmark_edge_align", torch.tensor(0.0, device=self.device))
+            edge_consistency_loss = aux_losses.get("landmark_edge_consistency", torch.tensor(0.0, device=self.device))
+            edge_conv_reg = aux_losses.get("landmark_edge_conv_reg", torch.tensor(0.0, device=self.device))
+            edge_tv = aux_losses.get("landmark_edge_tv", torch.tensor(0.0, device=self.device))
 
+            # Note: we WANT to discourage too-sharp attention (increase entropy), so subtract entropy term
             loss = (
                 cls_loss
                 + (self.landmark_diversity_lambda * div_loss)
-                + (self.landmark_entropy_lambda * entropy_loss)
+                - (self.landmark_entropy_lambda * entropy_loss)
                 + (self.landmark_edge_align_lambda * edge_align_loss)
+                + (self.landmark_edge_consistency_lambda * edge_consistency_loss)
+                + (self.landmark_edge_conv_reg_lambda * edge_conv_reg)
+                + (self.landmark_edge_tv_lambda * edge_tv)
             )
             loss.backward()
             self.optimizer.step()
@@ -115,11 +127,17 @@ class Trainer:
                     aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
                 )
                 edge_align_loss = aux_losses.get("landmark_edge_align", torch.tensor(0.0, device=self.device))
+                edge_consistency_loss = aux_losses.get("landmark_edge_consistency", torch.tensor(0.0, device=self.device))
+                edge_conv_reg = aux_losses.get("landmark_edge_conv_reg", torch.tensor(0.0, device=self.device))
+                edge_tv = aux_losses.get("landmark_edge_tv", torch.tensor(0.0, device=self.device))
                 loss = (
                     cls_loss
                     + (self.landmark_diversity_lambda * div_loss)
-                    + (self.landmark_entropy_lambda * entropy_loss)
+                    - (self.landmark_entropy_lambda * entropy_loss)
                     + (self.landmark_edge_align_lambda * edge_align_loss)
+                    + (self.landmark_edge_consistency_lambda * edge_consistency_loss)
+                    + (self.landmark_edge_conv_reg_lambda * edge_conv_reg)
+                    + (self.landmark_edge_tv_lambda * edge_tv)
                 )
                 running_loss += loss.item() * images.size(0)
 
