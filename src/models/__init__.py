@@ -2,7 +2,7 @@ from .simple_cnn import SimpleCNN
 # from .vgg import VGG
 # from .resnet import ResNet
 # from .resmaskingnet import ResMaskingNet
-from .resnet import ResNet50, ResNetDualBranch
+from .resnet import ResNetDualBranch
 
 """Hi, guy, tạo model mới thì:
     1. Tạo file src/models/model_name.py
