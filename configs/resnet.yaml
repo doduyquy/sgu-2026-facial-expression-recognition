@@ -13,7 +13,6 @@ model:
   landmark_edge_gamma: 1.7
   landmark_from_stage: 3
 
-training:
   epochs: 200
   patience: 10
   loss: "cross_entropy"
@@ -29,3 +28,6 @@ training:
   landmark_entropy_lambda: 0.03
   landmark_coord_spread_lambda: 0.1
   landmark_edge_align_lambda: 0.05
+
+
+  use_sobel_channel: true

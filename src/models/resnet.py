@@ -84,16 +84,23 @@ class ResNetDualBranch(nn.Module):
         self.conv1_sobel = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
         self.bn1_sobel = nn.BatchNorm2d(32)
 
-        # Attention gate giữa 2 nhánh (learnable)
-        self.gate_conv = nn.Conv2d(64, 32, kernel_size=1)  # Đầu ra 32 kênh (gating cho x1)
-
-        # Sau khi attention fusion: 32 channels
-        self.layer2 = nn.Sequential(
+        # Layer2 riêng cho từng nhánh
+        self.layer2_goc = nn.Sequential(
+            ConvBlock(32, [64, 64, 256], stride=1),
+            IdentityBlock(256, [64, 64, 256]),
+            IdentityBlock(256, [64, 64, 256]),
+        )
+        self.layer2_sobel = nn.Sequential(
             ConvBlock(32, [64, 64, 256], stride=1),
             IdentityBlock(256, [64, 64, 256]),
             IdentityBlock(256, [64, 64, 256]),
         )
 
+        # Attention gate symmetry: 2 conv cho alpha, beta
+        self.gate_conv_alpha = nn.Conv2d(512, 256, kernel_size=1)
+        self.gate_conv_beta = nn.Conv2d(512, 256, kernel_size=1)
+
+        # Sau khi fusion: 256 channels
         self.layer3 = nn.Sequential(
             ConvBlock(256, [128, 128, 512], use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size),
             IdentityBlock(512, [128, 128, 512], use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size),
@@ -117,22 +124,28 @@ class ResNetDualBranch(nn.Module):
         )
 
     def forward(self, img_goc, img_sobel, return_features=False):
-        # img_goc, img_sobel: [B, 1, H, W]
-        x1 = self.relu(self.bn1_goc(self.conv1_goc(img_goc)))  # [B, 32, H, W]
+        # conv1 + pool
+        x1 = self.relu(self.bn1_goc(self.conv1_goc(img_goc)))
+        x1 = self.pool(x1)
         x2 = self.relu(self.bn1_sobel(self.conv1_sobel(img_sobel)))
-        x_cat = torch.cat([x1, x2], dim=1)  # [B, 64, H, W]
-        # Attention gate: học trọng số cho x1, x2
-        alpha = torch.sigmoid(self.gate_conv(x_cat))  # [B, 32, H, W], giá trị (0,1)
-        x = alpha * x1 + (1 - alpha) * x2  # attention fusion
-        x = self.pool(x)
-        x = self.layer2(x)
+        x2 = self.pool(x2)
+        # layer2 riêng
+        x1 = self.layer2_goc(x1)
+        x2 = self.layer2_sobel(x2)
+        # concat feature để tính attention gate
+        x_cat = torch.cat([x1, x2], dim=1)  # [B, 512, H, W]
+        alpha = torch.sigmoid(self.gate_conv_alpha(x_cat))  # [B, 256, H, W]
+        beta = torch.sigmoid(self.gate_conv_beta(x_cat))   # [B, 256, H, W]
+        # symmetry fusion
+        x = alpha * x1 + beta * x2
+        # tiếp tục backbone
         x3 = self.layer3(x)
         x4 = self.layer4(x3)
         feat = torch.flatten(self.avgpool(x4), 1)
         out = self.fusion_fc(feat)
         if return_features:
-            # Trả về feature map cuối của từng nhánh đầu vào (sau conv1)
-            return out, x1, x2, alpha
+            # Trả về output, feature fusion (sau attention), x1, x2, alpha, beta
+            return out, x, x1, x2, alpha, beta
         return out
 
     def set_training_progress(self, progress):
