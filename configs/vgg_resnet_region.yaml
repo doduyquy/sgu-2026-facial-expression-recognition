@@ -7,8 +7,8 @@ model:
   embed_dim: 512
   num_heads: 4
   num_regions: 6          # Trán, Mắt trái, Mắt phải, Mũi, Miệng, Cằm
-  num_encoder_layers: 2   # Số lớp Transformer Encoder
-  transformer_dropout: 0.4
+  num_encoder_layers: 3   # Số lớp Transformer Encoder
+  transformer_dropout: 0.3
 
   # VGG Backbone (giữ Spatial Attention để khớp với checkpoint 69.2%)
   use_aux: false
@@ -24,7 +24,7 @@ model:
   pretrained_resnet_path: "/kaggle/input/datasets/lhngphc/resnet-0-68/resnet50_12042026_1052_best.pth"
 
   # Số epoch đóng băng backbone (Phase 1: chỉ train Region Head)
-  freeze_backbone_epochs: 20
+  freeze_backbone_epochs: 10
 
 data:
   image_size: 48
@@ -33,19 +33,24 @@ data:
 
 training:
   lr: 0.0001           # Lower base LR for SAM stability
-  finetune_lr: 0.00002 # Slightly higher fine-tune LR to allow SAM to explore
-  epochs: 100
+  finetune_lr: 0.000005 # Slightly higher fine-tune LR to allow SAM to explore
+  head_lr: 0.0002      # Higher LR for newly added alignment/transformer/classifier layers
+  epochs: 150
   optimizer: "sam"
   base_optimizer: "adamw"
-  sam_rho: 0.05
-  weight_decay: 0.05       # Standard for Transformer + AdamW
-  label_smoothing: 0.1
+  sam_rho: 0.03
+  weight_decay: 0.08       # Standard for Transformer + AdamW
+  label_smoothing: 0.15
   scheduler: "cosine"
+  warmup_epochs: 5
   use_class_weights: true
+  monitor_metric: "val_accuracy"  # Save best checkpoint by validation accuracy
+  monitor_mode: "max"
+  early_stop_metric: "val_loss"   # Keep early stopping sensitive to overfitting
+  early_stop_mode: "min"
 
 env:
   platform: "kaggle"
 
-kaggle:
-  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
-  root_path: "/kaggle/working/sgu-2026-facial-expression-recognition"
+logging:
+  wandb_run_name: "vgg+resnet+diction+ViT"

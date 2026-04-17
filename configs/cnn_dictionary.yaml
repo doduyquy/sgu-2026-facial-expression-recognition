@@ -19,29 +19,25 @@ data:
 training:
   lr: 0.001                   # LR cho Phase 1 (freeze backbone, train head)
   # ── Phase 2: Unfreeze fine-tuning ──
-  finetune_lr: 0.00001        # Lowered to 1e-5 to preserve robust features
-  head_lr: 0.0002             # Increased slightly (0.0001 -> 0.0002) for better head recovery
+  finetune_lr: 0.00005        # Slightly higher than 1e-5 for AdamW (no SAM overhead)
+  head_lr: 0.0003             # Higher head LR for faster adaptation
   # ── Metrics & Persistence ──
   monitor_metric: "val_accuracy"   # Use accuracy for BEST checkpoint
   monitor_mode: "max"
-  early_stop_metric: "val_loss"    # Use loss for EARLY STOPPING (catch overfitting)
+  early_stop_metric: "val_loss"    # Use loss for EARLY STOPPING
   early_stop_mode: "min"
-  patience: 25                     # Increased for stability
+  patience: 20
   
   epochs: 100
-  optimizer: "sam"            
-  base_optimizer: "adamw"     
-  sam_rho: 0.05               # Restore to 0.05 (LayerNorm + SpatialMask provide stability now)
-  weight_decay: 0.01          # Relaxed from 0.02 to 0.01 for more capacity
-  label_smoothing: 0.05       # Relaxed from 0.1 to 0.05 for sharper predictions
+  optimizer: "adamw"          # Back to AdamW — proven to outperform SAM on this task
+  weight_decay: 0.001         # Light regularization (original best setting)
+  label_smoothing: 0.05       # Moderate smoothing for noisy labels
   scheduler: "reduce_lr_on_plateau"
   lr_patience: 7
-  lr_factor: 0.2              # Reduce more aggressively on plateau
+  lr_factor: 0.5              # Standard decay
   use_class_weights: true
 
 # ── WandB run identity ──
-# Đặt tên run ở đây → tự động link lên WandB với tên này + timestamp
-# Để trống (null) thì dùng tên mặc định: {model_name}_{timestamp}
 logging:
-  wandb_run_name: "cnn_dict_v3_SpatialMask"   # <-- ĐỔI TÊN Ở ĐÂY
+  wandb_run_name: "cnn_dict_v3_AdamW_SpatialMask"
   

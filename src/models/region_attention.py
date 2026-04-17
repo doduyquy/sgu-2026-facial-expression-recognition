@@ -170,19 +170,11 @@ class RegionAlignedFER(nn.Module):
             dropout=self.dropout_rate
         )
 
-        # ===== 4. Hyper-visual Representation =====
-        # Pool visual features → single vector, rồi broadcast cộng vào Φ_sem
-        self.visual_proj = nn.Sequential(
-            nn.LayerNorm(self.embed_dim),
-            nn.Linear(self.embed_dim, self.embed_dim),
-            nn.Dropout(self.dropout_rate) # Add dropout here
-        )
-
         # ===== 5. Transformer Encoder =====
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=self.embed_dim,
             nhead=self.num_heads,
-            dim_feedforward=self.embed_dim * 2,
+            dim_feedforward=self.embed_dim * 4,
             dropout=self.dropout_rate,
             batch_first=True,
             activation='gelu'
@@ -202,19 +194,11 @@ class RegionAlignedFER(nn.Module):
             torch.randn(1, self.num_regions, self.embed_dim) * 0.02
         )
 
-        # Positional Encoding bổ sung cho input Transformer Encoder 
-        self.encoder_pos_embed = nn.Parameter(
-            torch.randn(1, self.num_regions, self.embed_dim) * 0.02
-        )
-
         # ===== 6. Classification Head =====
         self.classifier = nn.Sequential(
             nn.LayerNorm(self.embed_dim),
-            nn.Dropout(0.5), # Keep this high
-            nn.Linear(self.embed_dim, 512),
-            nn.GELU(),
-            nn.Dropout(0.3),
-            nn.Linear(512, num_classes)
+            nn.Dropout(0.4),
+            nn.Linear(self.embed_dim, num_classes)
         )
 
     def load_pretrained_backbones(self, vgg_ckpt_path, resnet_ckpt_path, device='cpu'):
@@ -282,6 +266,25 @@ class RegionAlignedFER(nn.Module):
             return True
         return False
 
+    def get_param_groups(self, backbone_lr, head_lr):
+        """Build discriminative LR groups for fine-tuning.
+        Backbones use a smaller LR, while alignment/encoder/classifier use a larger LR.
+        """
+        backbone_params = list(self.vgg_backbone.parameters()) + list(self.res_backbone.parameters())
+        backbone_ids = {id(p) for p in backbone_params}
+        head_params = [p for p in self.parameters() if id(p) not in backbone_ids]
+
+        return [
+            {
+                'params': [p for p in backbone_params if p.requires_grad],
+                'lr': backbone_lr,
+            },
+            {
+                'params': [p for p in head_params if p.requires_grad],
+                'lr': head_lr,
+            },
+        ]
+
     def forward(self, x):
         B = x.shape[0]
 
@@ -304,14 +307,12 @@ class RegionAlignedFER(nn.Module):
         )                                        # [B, 6, 512], [B, 6, 18]
 
         # ── 4. Hyper-visual Representation ──
-        # Pool toàn bộ visual features → 1 vector, broadcast cộng vào Φ_sem
-        phi_visual = visual_features.mean(dim=1, keepdim=True)  # [B, 1, 512]
-        phi_visual = self.visual_proj(phi_visual)               # [B, 1, 512]
-        hyper_visual = phi_sem + phi_visual                     # [B, 6, 512]
+        # Bỏ đi Global Pool để giữ nguyên thông tin không gian vùng
+        hyper_visual = phi_sem                                  # [B, 6, 512]
 
         # ── 5. Transformer Encoder ──
-        hyper_visual = hyper_visual + self.region_pos_embed     # [B, 6, 512]
-        encoder_input = hyper_visual + self.encoder_pos_embed   # [B, 6, 512]
+        # Bỏ encoder_pos_embed vì bị thừa so với region_pos_embed
+        encoder_input = hyper_visual + self.region_pos_embed    # [B, 6, 512]
         encoded = self.transformer_encoder(encoder_input)       # [B, 6, 512]
 
         # ── 6. Classification ──
