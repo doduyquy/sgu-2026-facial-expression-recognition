@@ -32,7 +32,15 @@ class FocalLoss(nn.Module):
 
         if self.alpha is not None:
             alpha = self.alpha.to(logits.device)
-            focal = alpha[targets] * focal
+            alpha_t = alpha[targets]
+            focal = alpha_t * focal
+
+            # Keep weighted focal loss on a comparable scale to CE.
+            if self.reduction == "mean":
+                return focal.sum() / alpha_t.sum().clamp_min(1e-12)
+            if self.reduction == "sum":
+                return focal.sum()
+            return focal
 
         if self.reduction == "mean":
             return focal.mean()
@@ -58,6 +66,10 @@ def build_loss(config, class_weights=None):
         gamma = config['training'].get('focal_gamma', 2.0)
         use_alpha = config['training'].get('focal_use_class_weights', True)
         alpha = class_weights if (use_alpha and class_weights is not None) else None
+        if alpha is not None:
+            # Train script computes alpha as inverse frequency, which can be very small.
+            # Normalize to mean=1 so focal loss magnitude stays stable.
+            alpha = alpha / alpha.mean().clamp_min(1e-12)
         loss = FocalLoss(gamma=gamma, alpha=alpha)
     
     else: 
