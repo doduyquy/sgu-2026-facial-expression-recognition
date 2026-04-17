@@ -9,10 +9,14 @@ def init_wandb(config, run_name=None):
     if wandb_api_key: 
         wandb.login(key=wandb_api_key)
 
+    # Tags từ config (logging.wandb_tags)
+    tags = config.get('logging', {}).get('wandb_tags', None)
+
     wandb.init(
-        project=config['logging'].get('project_name', "FER2013"), 
+        project=config['logging'].get('wandb_project', config['logging'].get('wandb_project', 'FER2013')),
         entity=config['logging'].get('wandb_entity', 'phucga15062005'),
         name=run_name,
+        tags=tags,
         config=config,
         resume="allow" 
     )
@@ -26,12 +30,13 @@ def log_image_to_wandb(tag, fig):
     if wandb.run is not None:
         wandb.log({tag: wandb.Image(fig)})
 
-def save_model_to_wandb(model_path, model_name="cnn"):
+def save_model_to_wandb(model_path, model_name="model"):
     """Lưu file pth trực tiếp vào Artifacts"""
     if wandb.run is not None:
         try:
-            # Gói file -> Artifacts (Đánh dấu ID để phân biệt các lần chạy khác nhau)
-            artifact = wandb.Artifact(name=f"{model_name}_{wandb.run.id}", type="model")
+            # Dùng run.name làm artifact name cho dễ trace
+            artifact_name = f"{wandb.run.name}_{wandb.run.id}"
+            artifact = wandb.Artifact(name=artifact_name, type="model")
             artifact.add_file(model_path) 
             
             # Push Server WandB

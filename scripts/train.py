@@ -48,7 +48,17 @@ def main():
        
 
     timestamp = datetime.now().strftime("%d%m%Y_%H%M")
-    run_name = f"{config['model'].get('name', 'cnn')}_{timestamp}"
+    
+    # Đọc run_name từ yaml (logging.wandb_run_name)
+    # Nếu đặt tên trong yaml → dùng tên đó + timestamp
+    # Nếu để null → dùng tên mặc định: {model_name}_{timestamp}
+    custom_name = config.get('logging', {}).get('wandb_run_name', None)
+    if custom_name:
+        run_name = f"{custom_name}_{timestamp}"
+    else:
+        run_name = f"{config['model'].get('name', 'cnn')}_{timestamp}"
+    
+    print(f"--> WandB Run Name: {run_name}")
 
     # load data, loss, optim, model
     train_loader, val_loader, test_loader = build_dataloader(config=config, data_path=data_path)

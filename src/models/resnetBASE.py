@@ -373,7 +373,7 @@ class CNNDictionary(nn.Module):
             embed_dim=self.embed_dim,
             num_heads=self.num_heads,
             batch_first=True,
-            dropout=0.1
+            dropout=0.2
         )
 
         # LayerNorm + Residual
@@ -383,7 +383,7 @@ class CNNDictionary(nn.Module):
         self.ffn = nn.Sequential(
             nn.Linear(self.embed_dim, self.embed_dim * 2),
             nn.GELU(),
-            nn.Dropout(0.1),
+            nn.Dropout(0.2),
             nn.Linear(self.embed_dim * 2, self.embed_dim)
         )
         self.norm2 = nn.LayerNorm(self.embed_dim)
