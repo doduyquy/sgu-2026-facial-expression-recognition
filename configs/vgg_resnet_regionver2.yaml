@@ -43,7 +43,7 @@ training:
   label_smoothing: 0.1
   scheduler: "cosine"
   use_class_weights: true
-   monitor_metric: "val_accuracy"  # Save best checkpoint by validation accuracy
+  monitor_metric: "val_accuracy"  # Save best checkpoint by validation accuracy
   monitor_mode: "max"
   early_stop_metric: "val_loss"   # Keep early stopping sensitive to overfitting
   early_stop_mode: "min"
@@ -54,3 +54,5 @@ env:
 kaggle:
   data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
   root_path: "/kaggle/working/sgu-2026-facial-expression-recognition"
+logging:
+  wandb_run_name: "retrain best0.73"
