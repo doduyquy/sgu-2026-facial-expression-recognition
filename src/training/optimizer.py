@@ -2,13 +2,14 @@ import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 from .sam import SAM
 
-def build_optimizer(model, config):
+def build_optimizer(model, config, params=None):
     train_cfg = config.get('training', {})
     opt_name = train_cfg.get('optimizer', 'adam').lower()
     lr = train_cfg.get('lr', 0.001)
     weight_decay = train_cfg.get('weight_decay', 0.0001)
 
-    params = model.parameters()
+    if params is None:
+        params = model.parameters()
 
     if opt_name == 'adam':
         return optim.Adam(params, lr=lr, weight_decay=weight_decay)

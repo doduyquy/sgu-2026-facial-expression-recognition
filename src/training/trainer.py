@@ -172,15 +172,11 @@ class Trainer:
                     head_lr = self.config['training'].get('head_lr', 1e-3)
                     weight_decay = self.config['training'].get('weight_decay', 0.01)
                     
-                    # Discriminative LR: backbone thấp, head cao
+                    # Use unified build_optimizer to support SAM with discriminative LR
                     if hasattr(self.model, 'get_param_groups'):
                         param_groups = self.model.get_param_groups(finetune_lr, head_lr)
-                        opt_name = self.config['training'].get('optimizer', 'adamw').lower()
-                        if opt_name == 'adamw':
-                            self.optimizer = torch.optim.AdamW(param_groups, weight_decay=weight_decay)
-                        else:
-                            self.optimizer = torch.optim.Adam(param_groups, weight_decay=weight_decay)
-                        print(f"[Trainer] Discriminative LR: backbone={finetune_lr}, head={head_lr}")
+                        self.optimizer = build_optimizer(self.model, self.config, params=param_groups)
+                        print(f"[Trainer] Discriminative LR built with config success.")
                     else:
                         # Fallback: uniform LR
                         old_lr = self.config['training']['lr']
