@@ -8,7 +8,7 @@ model:
   num_heads: 4
   num_regions: 6          # Trán, Mắt trái, Mắt phải, Mũi, Miệng, Cằm
   num_encoder_layers: 2   # Số lớp Transformer Encoder
-  transformer_dropout: 0.3
+  transformer_dropout: 0.4
 
   # VGG Backbone (giữ Spatial Attention để khớp với checkpoint 69.2%)
   use_aux: false
@@ -21,10 +21,11 @@ model:
 
   # ── Transfer Learning ──
   pretrained_vgg_path: "/kaggle/input/datasets/lhngphc/vgg-0-912/vgg_spatial_10042026_1053_best.pth"
+  
   pretrained_resnet_path: "/kaggle/input/datasets/lhngphc/resnet-0-68/resnet50_12042026_1052_best.pth"
 
   # Số epoch đóng băng backbone (Phase 1: chỉ train Region Head)
-  freeze_backbone_epochs: 15
+  freeze_backbone_epochs: 20
 
 data:
   image_size: 48
@@ -33,13 +34,13 @@ data:
 
 training:
   lr: 0.0001           # Lower base LR for SAM stability
-  finetune_lr: 0.000005 # Cực thấp để bảo toàn features của backbone khi mở băng
-  epochs: 150
+  finetune_lr: 0.00002 # Slightly higher fine-tune LR to allow SAM to explore
+  epochs: 100
   optimizer: "sam"
   base_optimizer: "adamw"
-  sam_rho: 0.03            # Giảm rủi ro mất ổn định
-  weight_decay: 0.08       # Tăng phạt trọng số
-  label_smoothing: 0.15    # Giúp model giảm tự tin mù quáng
+  sam_rho: 0.05
+  weight_decay: 0.05       # Standard for Transformer + AdamW
+  label_smoothing: 0.1
   scheduler: "cosine"
   use_class_weights: true
 
