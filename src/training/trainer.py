@@ -27,6 +27,8 @@ class Trainer:
         self.path_save_ckpt = save_dir
         self.monitor_metric = config['training'].get('monitor_metric', 'val_loss')
         self.monitor_mode = config['training'].get('monitor_mode', 'min').lower()
+        self.early_stop_metric = config['training'].get('early_stop_metric', self.monitor_metric)
+        self.early_stop_mode = config['training'].get('early_stop_mode', self.monitor_mode).lower()
 
         if self.monitor_metric not in ('val_loss', 'val_accuracy'):
             print(f"[Trainer] Unsupported monitor_metric={self.monitor_metric}, fallback to val_loss")
@@ -36,11 +38,25 @@ class Trainer:
             print(f"[Trainer] Unsupported monitor_mode={self.monitor_mode}, fallback to min")
             self.monitor_mode = 'min'
 
+        if self.early_stop_metric not in ('val_loss', 'val_accuracy'):
+            print(f"[Trainer] Unsupported early_stop_metric={self.early_stop_metric}, fallback to {self.monitor_metric}")
+            self.early_stop_metric = self.monitor_metric
+
+        if self.early_stop_mode not in ('min', 'max'):
+            print(f"[Trainer] Unsupported early_stop_mode={self.early_stop_mode}, fallback to {self.monitor_mode}")
+            self.early_stop_mode = self.monitor_mode
+
     def _init_best_score(self):
         return float('-inf') if self.monitor_mode == 'max' else float('inf')
 
     def _is_better(self, current, best):
         return current > best if self.monitor_mode == 'max' else current < best
+
+    def _init_early_stop_score(self):
+        return float('-inf') if self.early_stop_mode == 'max' else float('inf')
+
+    def _is_early_stop_better(self, current, best):
+        return current > best if self.early_stop_mode == 'max' else current < best
 
 
     def train_one_epoch(self):
@@ -135,6 +151,7 @@ class Trainer:
             init_wandb(config=self.config, run_name=self.run_name)
 
         best_score = self._init_best_score()
+        best_early_stop_score = self._init_early_stop_score()
         patience_counter = 0
         all_train_loss = []
         all_val_loss = []
@@ -143,6 +160,7 @@ class Trainer:
 
         print(f'\n--> Start training in total {self.epochs} epochs with {self.device} device. Start...\n')
         print(f"--> Monitor: {self.monitor_metric} ({self.monitor_mode}) for checkpoint/early-stop")
+        print(f"--> Early stop metric: {self.early_stop_metric} ({self.early_stop_mode})")
 
         for ep in range(self.epochs):
 
@@ -177,6 +195,7 @@ class Trainer:
                     # RESET bộ đếm Early Stopping + best_score để Phase 2 được chạy công bằng
                     patience_counter = 0
                     best_score = self._init_best_score()
+                    best_early_stop_score = self._init_early_stop_score()
                     print(f"[Trainer] Reset patience + best_score for Phase 2.")
 
             train_loss, train_acc = self.train_one_epoch()
@@ -187,6 +206,7 @@ class Trainer:
             all_train_acc.append(train_acc.item())
             all_val_acc.append(val_acc.item())
             current_score = val_acc.item() if self.monitor_metric == 'val_accuracy' else val_loss
+            early_stop_score = val_acc.item() if self.early_stop_metric == 'val_accuracy' else val_loss
 
             print(
                 f"Epoch {ep+1}/{self.epochs} - "
@@ -220,7 +240,6 @@ class Trainer:
             # save checkpoint
             if self._is_better(current_score, best_score):
                 best_score = current_score
-                patience_counter = 0
 
                 torch.save({
                     "model_state_dict": self.model.state_dict(),
@@ -232,6 +251,9 @@ class Trainer:
                     f"path: {self.path_save_ckpt} ---"
                 )
 
+            if self._is_early_stop_better(early_stop_score, best_early_stop_score):
+                best_early_stop_score = early_stop_score
+                patience_counter = 0
             else:
                 patience_counter += 1
                 print(f"\t-!- No improvement: {patience_counter}/{self.patience}")

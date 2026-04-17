@@ -23,6 +23,8 @@ training:
   head_lr: 0.0001             # Lowered to 1e-4 to specialize without overshooting
   monitor_metric: "val_accuracy"
   monitor_mode: "max"
+  early_stop_metric: "val_loss"
+  early_stop_mode: "min"
   epochs: 100
   optimizer: "sam"            # Switched to SAM for better generalization
   base_optimizer: "adamw"     # Base for SAM
