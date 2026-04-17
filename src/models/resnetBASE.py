@@ -537,13 +537,13 @@ class CNNDictionary(nn.Module):
         # Positional Encoding cho region tokens
         self.region_pos = nn.Parameter(torch.randn(1, self.num_regions, self.embed_dim) * 0.02)
 
-        # 4. [FIX #2] Soft Spatial Grounding
+        # 4. 
         #    Học ánh xạ mềm từ 36 visual tokens -> K regions thay vì pool theo hàng cố định.
         self.region_assign = nn.Linear(self.embed_dim, self.num_regions)
         self.assign_temperature = model_cfg.get('assign_temperature', 1.0)
         self.spatial_grounding = nn.Linear(self.embed_dim, self.embed_dim)
 
-        # 5. [FIX #1] Cross-Attention: KHÔNG dùng mask → tự do attend toàn bộ 36 tokens
+        # 5. Multihead cross attention
         self.cross_attn = nn.MultiheadAttention(
             embed_dim=self.embed_dim,
             num_heads=self.num_heads,
@@ -563,10 +563,8 @@ class CNNDictionary(nn.Module):
         )
         self.norm2 = nn.LayerNorm(self.embed_dim)
 
-        # [FIX #3] Bỏ Attention Pooling → dùng mean pool đơn giản
-        # (không cần attn_pool_query, attn_pool, norm_pool)
 
-        # 6. [FIX #4] Visual Shortcut: bypass cross-attention, đưa visual signal thẳng tới classifier
+        # 6. Visual Shortcut: bypass cross-attention, đưa visual signal thẳng tới classifier
         self.visual_shortcut = nn.Sequential(
             nn.LayerNorm(self.embed_dim),
             nn.Linear(self.embed_dim, self.embed_dim),
@@ -599,11 +597,11 @@ class CNNDictionary(nn.Module):
         """
         B = x.shape[0]
 
-        # 1. Extract visual features từ ResNet35
+        #lấy feature từ Resnet
         visual = self.resnet35.extract_region_features(x)  # [B, 36, 1024]
         visual = visual + self.visual_pos                   # + positional encoding
 
-        # Context toàn ảnh để điều kiện hóa dictionary tokens.
+        #tóm tắt toàn khuôn mặt
         visual_context = visual.mean(dim=1)                 # [B, D]
 
         # 2. [FIX #2] Soft Spatial Grounding: learned soft assignment
@@ -617,7 +615,7 @@ class CNNDictionary(nn.Module):
         # Region tokens = learnable dictionary + spatial grounding + positional encoding
         region_tokens = self.dic_region(B, global_context=visual_context) + spatial_prior + self.region_pos  # [B, K, D]
 
-        # 3. [FIX #1] Cross-Attention: Q=region, K=V=visual — KHÔNG mask
+        # Cross-Attention: Q=region, K=V=visual
         attn_out, self.attn_weights = self.cross_attn(
             query=region_tokens,
             key=visual,
@@ -631,10 +629,10 @@ class CNNDictionary(nn.Module):
         ffn_out = self.ffn(region_enriched)
         region_enriched = self.norm2(region_enriched + ffn_out)  # [B, K, D]
 
-        # 4. [FIX #3] Mean pool thay vì attention pool → tránh loãng signal
+        # 4. [Mean pool thay vì attention pool → tránh loãng signal
         region_pooled = region_enriched.mean(dim=1)             # [B, D]
 
-        # 5. [FIX #4] Visual Shortcut: global pool → bypass cross-attention
+        # 5. Visual Shortcut: global pool → bypass cross-attention
         visual_global = visual.mean(dim=1)                      # [B, D]
         visual_global = self.visual_shortcut(visual_global)     # [B, D]
 
