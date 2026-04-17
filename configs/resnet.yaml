@@ -1,5 +1,6 @@
 _base_: "base.yaml"
-
+data:
+  use_sobel_channel: true
 model:
   name: "resnet_dual"
   pretrained: false
