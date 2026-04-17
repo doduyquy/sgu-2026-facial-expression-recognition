@@ -538,8 +538,9 @@ class CNNDictionary(nn.Module):
         self.region_pos = nn.Parameter(torch.randn(1, self.num_regions, self.embed_dim) * 0.02)
 
         # 4. [FIX #2] Soft Spatial Grounding
-        #    Pool visual features theo hàng → project → cộng vào region tokens
-        #    Thay vì hard mask, region tokens "biết" vị trí qua actual visual content
+        #    Học ánh xạ mềm từ 36 visual tokens -> K regions thay vì pool theo hàng cố định.
+        self.region_assign = nn.Linear(self.embed_dim, self.num_regions)
+        self.assign_temperature = model_cfg.get('assign_temperature', 1.0)
         self.spatial_grounding = nn.Linear(self.embed_dim, self.embed_dim)
 
         # 5. [FIX #1] Cross-Attention: KHÔNG dùng mask → tự do attend toàn bộ 36 tokens
@@ -605,13 +606,13 @@ class CNNDictionary(nn.Module):
         # Context toàn ảnh để điều kiện hóa dictionary tokens.
         visual_context = visual.mean(dim=1)                 # [B, D]
 
-        # 2. [FIX #2] Soft Spatial Grounding: pool visual features theo hàng
-        #    visual [B, 36, D] → reshape [B, 6, 6, D] → mean over cols → [B, 6, D]
-        #    Region "forehead" nhận thông tin thật từ row 0, "mouth" từ row 4, ...
-        #    Nhưng cross-attention vẫn TỰ DO nhìn toàn bộ 36 tokens
-        visual_grid = visual.reshape(B, 6, 6, self.embed_dim)
-        spatial_prior = visual_grid.mean(dim=2)              # [B, 6, D]
-        spatial_prior = self.spatial_grounding(spatial_prior) # [B, 6, D]
+        # 2. [FIX #2] Soft Spatial Grounding: learned soft assignment
+        #    assign_logits: [B, 36, K] -> assign: [B, K, 36]
+        #    spatial_prior = assign @ visual -> [B, K, D]
+        assign_logits = self.region_assign(visual)
+        assign = F.softmax((assign_logits / self.assign_temperature).transpose(1, 2), dim=-1)
+        spatial_prior = torch.bmm(assign, visual)
+        spatial_prior = self.spatial_grounding(spatial_prior) # [B, K, D]
 
         # Region tokens = learnable dictionary + spatial grounding + positional encoding
         region_tokens = self.dic_region(B, global_context=visual_context) + spatial_prior + self.region_pos  # [B, K, D]
