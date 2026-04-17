@@ -150,8 +150,7 @@ def main():
     # Learned landmark branch does not need external detector.
     cfg.setdefault("model", {})
     cfg.setdefault("data", {})
-    cfg["model"]["name"] = "resnet"
-    cfg["model"]["use_learned_landmark_branch"] = True
+    cfg["model"]["name"] = "resnet_dual"
     cfg["data"]["use_landmarks"] = False
 
     data_path = cfg["kaggle"]["data_path"] if args.env == "kaggle" else cfg["local"]["data_path"]
@@ -159,7 +158,7 @@ def main():
     loader = {"train": train_loader, "val": val_loader, "test": test_loader}[args.split]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = get_model(name="resnet", config=cfg).to(device)
+    model = get_model(name="resnet_dual", config=cfg).to(device)
 
     if args.checkpoint is not None:
         ckpt = torch.load(args.checkpoint, map_location=device)

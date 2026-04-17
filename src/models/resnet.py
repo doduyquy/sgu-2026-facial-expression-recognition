@@ -66,6 +66,7 @@ class ConvBlock(nn.Module):
 
 
 
+
 class ResNetDualBranch(nn.Module):
     def __init__(
         self,
@@ -134,6 +135,14 @@ class ResNetDualBranch(nn.Module):
             # Trả về feature map cuối của từng nhánh đầu vào (sau conv1)
             return out, x1, x2, alpha
         return out
+
+    def set_training_progress(self, progress):
+        # No-op for dual branch (no landmark branch)
+        pass
+
+    def get_current_prior_strength(self):
+        # No-op for dual branch (no landmark branch)
+        return None
 
         self.layer2 = nn.Sequential(
             ConvBlock(64, [64, 64, 256], stride=1),
