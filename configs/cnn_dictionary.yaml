@@ -9,7 +9,7 @@ model:
 
   # ── Transfer Learning ──
   pretrained_backbone_path: "/kaggle/input/datasets/lhngphc/resnet35-cbam/resnet35_15042026_0221_best.pth"
-  freeze_backbone_epochs: 999  # KHÔNG unfreeze backbone — Phase 2 làm val_loss tệ hơn do fine-tune phá features
+  freeze_backbone_epochs: 12   # Freeze giai đoạn đầu, sau đó unfreeze để backbone thích nghi FER
 
 data:
   image_size: 48
@@ -19,13 +19,13 @@ data:
 training:
   lr: 0.001                   # LR cho Phase 1 (freeze backbone, train head)
   finetune_lr: 0.00005        # LR backbone khi unfreeze (low, chỉ tinh chỉnh nhẹ)
-  head_lr: 0.0002             # LR head khi unfreeze (giảm để bớt dao động val)
+  head_lr: 0.0003             # LR head khi unfreeze (vẫn cao hơn backbone, nhưng không quá gắt)
   epochs: 100
   optimizer: "adamw"
-  weight_decay: 0.05          # Tăng mạnh để chống head overfit (backbone frozen, head cần regularize)
-  label_smoothing: 0.15        # Tăng nhẹ để chống memorize noise của FER2013
+  weight_decay: 0.001         # Giảm regularization để tránh underfit
+  label_smoothing: 0.05       # Nhẹ hơn để giữ độ tự tin dự đoán
   scheduler: "reduce_lr_on_plateau"
-  lr_patience: 5               # Head hội tụ nhanh hơn khi backbone frozen
+  lr_patience: 7              # Tránh giảm LR quá sớm khi val còn dao động
   lr_factor: 0.5
   use_class_weights: true
 
@@ -33,5 +33,5 @@ training:
 # Đặt tên run ở đây → tự động link lên WandB với tên này + timestamp
 # Để trống (null) thì dùng tên mặc định: {model_name}_{timestamp}
 logging:
-  wandb_run_name: "cnn_dict_v2_frozen_backbone"   # <-- ĐỔI TÊN Ở ĐÂY
+  wandb_run_name: "cnn_dict_v2_unfreeze12"   # <-- ĐỔI TÊN Ở ĐÂY
   
