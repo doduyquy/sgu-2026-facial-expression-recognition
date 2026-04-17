@@ -65,43 +65,75 @@ class ConvBlock(nn.Module):
         return x
 
 
-class ResNet50(nn.Module):
+
+class ResNetDualBranch(nn.Module):
     def __init__(
         self,
         num_classes=7,
-        in_channels=1,
         use_cbam_stage34=True,
         cbam_reduction=16,
         cbam_kernel_size=7,
-        use_learned_landmark_branch=True,
-        landmark_num_points=6,
-        landmark_tau=0.07,
-        landmark_feature_dropout_p=0.3,
-        landmark_head_dropout_p=0.2,
-        landmark_edge_guidance_beta=1.0,
-        landmark_edge_alpha=6.0,
-        landmark_edge_feat_guidance_beta=0.3,
-        landmark_edge_dropout_prob=0.3,
-        landmark_edge_head_scale_std=0.1,
-        landmark_edge_mask_threshold=0.3,
-        landmark_edge_gamma=1.7,
-
-        landmark_from_stage=3,
     ):
         super().__init__()
-        self.use_learned_landmark_branch = use_learned_landmark_branch
-        self.landmark_num_points = landmark_num_points
-        self.landmark_tau = landmark_tau
-        self.landmark_from_stage = landmark_from_stage
-
-        self._latest_aux_losses = {}
-        self._latest_landmark_heatmaps = None
-        self._latest_landmark_coords = None
-
-        self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, stride=1, padding=1)
-        self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU()
         self.pool = nn.MaxPool2d(2, stride=2)
+
+        # Hai conv1 riêng biệt cho ảnh gốc và sobel
+        self.conv1_goc = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
+        self.bn1_goc = nn.BatchNorm2d(32)
+        self.conv1_sobel = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
+        self.bn1_sobel = nn.BatchNorm2d(32)
+
+        # Attention gate giữa 2 nhánh (learnable)
+        self.gate_conv = nn.Conv2d(64, 32, kernel_size=1)  # Đầu ra 32 kênh (gating cho x1)
+
+        # Sau khi attention fusion: 32 channels
+        self.layer2 = nn.Sequential(
+            ConvBlock(32, [64, 64, 256], stride=1),
+            IdentityBlock(256, [64, 64, 256]),
+            IdentityBlock(256, [64, 64, 256]),
+        )
+
+        self.layer3 = nn.Sequential(
+            ConvBlock(256, [128, 128, 512], use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size),
+            IdentityBlock(512, [128, 128, 512], use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size),
+            IdentityBlock(512, [128, 128, 512], use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size),
+            IdentityBlock(512, [128, 128, 512], use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size),
+        )
+
+        self.layer4 = nn.Sequential(
+            ConvBlock(512, [256, 256, 1024], use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size),
+            IdentityBlock(1024, [256, 256, 1024], use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size),
+            IdentityBlock(1024, [256, 256, 1024], use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size),
+            IdentityBlock(1024, [256, 256, 1024], use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size),
+        )
+
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fusion_fc = nn.Sequential(
+            nn.Linear(1024, 512),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(512, num_classes),
+        )
+
+    def forward(self, img_goc, img_sobel, return_features=False):
+        # img_goc, img_sobel: [B, 1, H, W]
+        x1 = self.relu(self.bn1_goc(self.conv1_goc(img_goc)))  # [B, 32, H, W]
+        x2 = self.relu(self.bn1_sobel(self.conv1_sobel(img_sobel)))
+        x_cat = torch.cat([x1, x2], dim=1)  # [B, 64, H, W]
+        # Attention gate: học trọng số cho x1, x2
+        alpha = torch.sigmoid(self.gate_conv(x_cat))  # [B, 32, H, W], giá trị (0,1)
+        x = alpha * x1 + (1 - alpha) * x2  # attention fusion
+        x = self.pool(x)
+        x = self.layer2(x)
+        x3 = self.layer3(x)
+        x4 = self.layer4(x3)
+        feat = torch.flatten(self.avgpool(x4), 1)
+        out = self.fusion_fc(feat)
+        if return_features:
+            # Trả về feature map cuối của từng nhánh đầu vào (sau conv1)
+            return out, x1, x2, alpha
+        return out
 
         self.layer2 = nn.Sequential(
             ConvBlock(64, [64, 64, 256], stride=1),

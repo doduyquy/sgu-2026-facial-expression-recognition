@@ -1,20 +1,11 @@
 _base_: "base.yaml"
 
-data:
-  in_channels: 2
-  use_sobel_channel: true
-  sobel_edge_scale: 0.5
-  sobel_blur_kernel_size: 3
-
 model:
-  name: "resnet"
+  name: "resnet_dual"
   pretrained: false
-  use_learned_landmark_branch: false
-  landmark_num_points: 4
-  landmark_tau: 0.06
-  landmark_head_dropout_p: 0.2
-  landmark_edge_guidance_beta: 1.5
-  landmark_edge_alpha: 6.0
+  use_cbam_stage34: true
+  cbam_reduction: 16
+  cbam_kernel_size: 7
   landmark_edge_feat_guidance_beta: 0.2
   landmark_edge_dropout_prob: 0.15
   landmark_edge_head_scale_std: 0.08
