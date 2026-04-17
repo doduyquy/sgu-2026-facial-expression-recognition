@@ -26,6 +26,10 @@ training:
   scheduler: "reduce_lr_on_plateau"
   lr_factor: 0.5
   lr_patience: 3
-  landmark_diversity_lambda: 0.1
-  landmark_entropy_lambda: 0.05
-  landmark_edge_align_lambda: 0.05
+  landmark_diversity_lambda: 0.15
+  landmark_entropy_lambda: 0.02
+  landmark_edge_align_lambda: 0.0
+  landmark_edge_consistency_lambda: 0.01
+  landmark_edge_conv_reg_lambda: 1e-5
+  landmark_augment_consistency_lambda: 0.01
+  landmark_aux_cls_lambda: 0.3

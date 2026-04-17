@@ -140,7 +140,8 @@ class ResNet50(nn.Module):
             edge_alpha=landmark_edge_alpha,
         )
 
-        fusion_in_dim = 1024 + ((landmark_num_points + 1) * landmark_in_channels)
+        # include feat3 (spatial information) + feat4 + landmark features
+        fusion_in_dim = 512 + 1024 + ((landmark_num_points + 1) * landmark_in_channels)
         self.landmark_fusion_fc = nn.Sequential(
             nn.Linear(fusion_in_dim, 512),
             nn.ReLU(),
@@ -148,8 +149,26 @@ class ResNet50(nn.Module):
             nn.Linear(512, num_classes),
         )
 
+        # Auxiliary classifier that maps landmark pooled features to classes.
+        aux_in_dim = (landmark_num_points + 1) * landmark_in_channels
+        self.landmark_aux_fc = nn.Sequential(
+            nn.Linear(aux_in_dim, 256),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(256, num_classes),
+        )
+
+        self._latest_landmark_feat = None
+        self._latest_landmark_aux_logits = None
+
     def get_aux_losses(self):
         return self._latest_aux_losses
+
+    def get_landmark_features(self):
+        return self._latest_landmark_feat
+
+    def get_landmark_aux_logits(self):
+        return self._latest_landmark_aux_logits
 
     def get_landmark_outputs(self):
         return self._latest_landmark_heatmaps, self._latest_landmark_coords
@@ -190,11 +209,17 @@ class ResNet50(nn.Module):
 
         landmark_src = x3 if self.landmark_from_stage == 3 else x4
         heatmaps, coords, feat_k, aux = self.learned_landmark_branch(landmark_src, input_image=input_image)
-        fused = torch.cat([feat4, feat_k], dim=1)
+        fused = torch.cat([feat3, feat4, feat_k], dim=1)
         logits = self.landmark_fusion_fc(fused)
+
+        # auxiliary classification from landmark features
+        # detach landmark features so aux classifier does not backprop strongly into localization
+        aux_logits = self.landmark_aux_fc(feat_k.detach())
 
         self._latest_aux_losses = aux
         self._latest_landmark_heatmaps = heatmaps
         self._latest_landmark_coords = coords
+        self._latest_landmark_feat = feat_k
+        self._latest_landmark_aux_logits = aux_logits
 
         return logits
