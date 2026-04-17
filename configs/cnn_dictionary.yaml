@@ -21,19 +21,22 @@ training:
   # ── Phase 2: Unfreeze fine-tuning ──
   finetune_lr: 0.00001        # Lowered to 1e-5 to preserve robust features
   head_lr: 0.0002             # Increased slightly (0.0001 -> 0.0002) for better head recovery
-  monitor_metric: "val_accuracy"
+  # ── Metrics & Persistence ──
+  monitor_metric: "val_accuracy"   # Use accuracy for BEST checkpoint
   monitor_mode: "max"
-  early_stop_metric: "val_loss"
+  early_stop_metric: "val_loss"    # Use loss for EARLY STOPPING (catch overfitting)
   early_stop_mode: "min"
+  patience: 25                     # Increased for stability
+  
   epochs: 100
-  optimizer: "sam"            # Switched to SAM for better generalization
-  base_optimizer: "adamw"     # Base for SAM
-  sam_rho: 0.02               # Reduced from 0.05 to 0.02 for smoother search
-  weight_decay: 0.02          # Reduced from 0.05 to 0.02 for better convergence
-  label_smoothing: 0.1        # Handle noisy labels
+  optimizer: "sam"            
+  base_optimizer: "adamw"     
+  sam_rho: 0.02               
+  weight_decay: 0.02          
+  label_smoothing: 0.1        
   scheduler: "reduce_lr_on_plateau"
   lr_patience: 7
-  lr_factor: 0.5
+  lr_factor: 0.2              # Reduce more aggressively on plateau
   use_class_weights: true
 
 # ── WandB run identity ──

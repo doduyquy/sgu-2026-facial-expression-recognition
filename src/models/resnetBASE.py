@@ -571,6 +571,9 @@ class CNNDictionary(nn.Module):
             nn.Sigmoid()
         )
 
+        # LayerNorm sau Fusion để ổn định output trước classifier
+        self.norm_fusion = nn.LayerNorm(self.embed_dim)
+
         # 7. Classifier
         self.classifier = nn.Sequential(
             nn.LayerNorm(self.embed_dim),
@@ -634,6 +637,9 @@ class CNNDictionary(nn.Module):
             torch.cat([region_pooled, visual_global], dim=-1)
         )  # [B, D]
         fused = gate * region_pooled + (1 - gate) * visual_global  # [B, D]
+
+        # Ổn định hóa fusion trước khi đưa vào classifier
+        fused = self.norm_fusion(fused)
 
         # 6. Classify
         logits = self.classifier(fused)                         # [B, num_classes]
