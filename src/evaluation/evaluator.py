@@ -18,41 +18,19 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> Non
     all_trues = []
 
     os.makedirs(save_dir, exist_ok=True)
-
-    # --- Dual-branch: xuất feature map cuối của từng nhánh ---
-    def save_feature_map(tensor, save_path):
-        import matplotlib.pyplot as plt
-        arr = tensor.detach().cpu().numpy()
-        # Nếu là (C, H, W), lấy max/mean theo C
-        if arr.ndim == 3:
-            arr = arr.max(0)
-        plt.imsave(save_path, arr, cmap='jet')
-
     with torch.no_grad():
         for images, labels in tqdm(test_loader, desc="Evaluate test set..."):
-            # Nếu dual-branch: images là tuple (goc, sobel)
-            if isinstance(images, (tuple, list)) and len(images) == 2:
-                img_goc, img_sobel = images[0].to(device), images[1].to(device)
-                outputs, feat_goc, feat_sobel = model(img_goc, img_sobel, return_features=True)
-            else:
-                images, labels = images.to(device), labels.to(device)
-                outputs = model(images)
-                feat_goc = feat_sobel = None
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
             _, preds = torch.max(outputs, 1)
-
-            # Lưu heatmap feature map cho 5 ảnh đầu tiên mỗi nhánh
-            if feat_goc is not None and feat_sobel is not None:
-                for i in range(min(5, feat_goc.shape[0])):
-                    save_feature_map(feat_goc[i], os.path.join(save_dir, f"heatmap_goc_{i}.png"))
-                    save_feature_map(feat_sobel[i], os.path.join(save_dir, f"heatmap_sobel_{i}.png"))
-
-            imgs_cpu = images[0].cpu() if feat_goc is not None else images.cpu()
+            
+            imgs_cpu = images.cpu()
             labels_cpu = labels.cpu().numpy()
             preds_cpu = preds.cpu().numpy()
-
+            
             all_trues.extend(labels_cpu)
             all_preds.extend(preds_cpu)
-
+            
             for i in range(len(preds_cpu)):
                 img, true_label, pred_label = imgs_cpu[i], labels_cpu[i], preds_cpu[i]
                 if true_label == pred_label:

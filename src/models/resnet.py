@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from .CBAM import CBAM
+from .learned_landmark import LearnedLandmarkBranch
 
 
 class IdentityBlock(nn.Module):
@@ -64,43 +65,45 @@ class ConvBlock(nn.Module):
         return x
 
 
-
-
-class ResNetDualBranch(nn.Module):
+class ResNet50(nn.Module):
     def __init__(
         self,
         num_classes=7,
+        in_channels=1,
         use_cbam_stage34=True,
         cbam_reduction=16,
         cbam_kernel_size=7,
+        use_learned_landmark_branch=True,
+        landmark_num_points=6,
+        landmark_tau=0.07,
+        landmark_feature_dropout_p=0.3,
+        landmark_head_dropout_p=0.2,
+        landmark_edge_guidance_beta=1.0,
+        landmark_edge_alpha=6.0,
+
+        landmark_from_stage=3,
     ):
         super().__init__()
+        self.use_learned_landmark_branch = use_learned_landmark_branch
+        self.landmark_num_points = landmark_num_points
+        self.landmark_tau = landmark_tau
+        self.landmark_from_stage = landmark_from_stage
+
+        self._latest_aux_losses = {}
+        self._latest_landmark_heatmaps = None
+        self._latest_landmark_coords = None
+
+        self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, stride=1, padding=1)
+        self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU()
         self.pool = nn.MaxPool2d(2, stride=2)
 
-        # Hai conv1 riêng biệt cho ảnh gốc và sobel
-        self.conv1_goc = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
-        self.bn1_goc = nn.BatchNorm2d(32)
-        self.conv1_sobel = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
-        self.bn1_sobel = nn.BatchNorm2d(32)
-
-        # Layer2 riêng cho từng nhánh
-        self.layer2_goc = nn.Sequential(
-            ConvBlock(32, [64, 64, 256], stride=1),
-            IdentityBlock(256, [64, 64, 256]),
-            IdentityBlock(256, [64, 64, 256]),
-        )
-        self.layer2_sobel = nn.Sequential(
-            ConvBlock(32, [64, 64, 256], stride=1),
+        self.layer2 = nn.Sequential(
+            ConvBlock(64, [64, 64, 256], stride=1),
             IdentityBlock(256, [64, 64, 256]),
             IdentityBlock(256, [64, 64, 256]),
         )
 
-        # Attention gate symmetry: 2 conv cho alpha, beta
-        self.gate_conv_alpha = nn.Conv2d(512, 256, kernel_size=1)
-        self.gate_conv_beta = nn.Conv2d(512, 256, kernel_size=1)
-
-        # Sau khi fusion: 256 channels
         self.layer3 = nn.Sequential(
             ConvBlock(256, [128, 128, 512], use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size),
             IdentityBlock(512, [128, 128, 512], use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size),
@@ -116,45 +119,54 @@ class ResNetDualBranch(nn.Module):
         )
 
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+
+        # Baseline classifier (no landmark branch).
         self.fusion_fc = nn.Sequential(
-            nn.Linear(1024, 512),
+            nn.Linear(1536, 512),
             nn.ReLU(),
             nn.Dropout(0.5),
             nn.Linear(512, num_classes),
         )
 
-    def forward(self, img_goc, img_sobel, return_features=False):
-        # conv1 + pool
-        x1 = self.relu(self.bn1_goc(self.conv1_goc(img_goc)))
-        x1 = self.pool(x1)
-        x2 = self.relu(self.bn1_sobel(self.conv1_sobel(img_sobel)))
-        x2 = self.pool(x2)
-        # layer2 riêng
-        x1 = self.layer2_goc(x1)
-        x2 = self.layer2_sobel(x2)
-        # concat feature để tính attention gate
-        x_cat = torch.cat([x1, x2], dim=1)  # [B, 512, H, W]
-        alpha = torch.sigmoid(self.gate_conv_alpha(x_cat))  # [B, 256, H, W]
-        beta = torch.sigmoid(self.gate_conv_beta(x_cat))   # [B, 256, H, W]
-        # symmetry fusion
-        x = alpha * x1 + beta * x2
-        # tiếp tục backbone
-        x3 = self.layer3(x)
-        x4 = self.layer4(x3)
-        feat = torch.flatten(self.avgpool(x4), 1)
-        out = self.fusion_fc(feat)
-        if return_features:
-            # Trả về output, feature fusion (sau attention), x1, x2, alpha, beta
-            return out, x, x1, x2, alpha, beta
-        return out
+        landmark_in_channels = 512 if landmark_from_stage == 3 else 1024
+
+        self.learned_landmark_branch = LearnedLandmarkBranch(
+            in_channels=landmark_in_channels,
+            landmark_num_points=landmark_num_points,
+            landmark_tau=landmark_tau,
+            feature_dropout_p=landmark_feature_dropout_p,
+            head_dropout_p=landmark_head_dropout_p,
+            edge_guidance_beta=landmark_edge_guidance_beta,
+            edge_alpha=landmark_edge_alpha,
+        )
+
+        fusion_in_dim = 1024 + ((landmark_num_points + 1) * landmark_in_channels)
+        self.landmark_fusion_fc = nn.Sequential(
+            nn.Linear(fusion_in_dim, 512),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(512, num_classes),
+        )
+
+    def get_aux_losses(self):
+        return self._latest_aux_losses
+
+    def get_landmark_outputs(self):
+        return self._latest_landmark_heatmaps, self._latest_landmark_coords
 
     def set_training_progress(self, progress):
-        # No-op for dual branch (no landmark branch)
-        pass
+        setter = getattr(self.learned_landmark_branch, "set_training_progress", None)
+        if callable(setter):
+            setter(progress)
 
     def get_current_prior_strength(self):
-        # No-op for dual branch (no landmark branch)
+        getter = getattr(self.learned_landmark_branch, "get_current_prior_strength", None)
+        if callable(getter):
+            return getter()
         return None
+
+    def forward(self, x, landmarks=None, landmark_mask=None):
+        _ = landmarks
         _ = landmark_mask
         input_image = x
 

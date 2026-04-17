@@ -1,19 +1,20 @@
 _base_: "base.yaml"
-data:
-  use_sobel_channel: true
+
 model:
-  name: "resnet_dual"
+  name: "resnet"
   pretrained: false
-  use_cbam_stage34: true
-  cbam_reduction: 16
-  cbam_kernel_size: 7
-  landmark_edge_feat_guidance_beta: 0.2
-  landmark_edge_dropout_prob: 0.15
-  landmark_edge_head_scale_std: 0.08
-  landmark_edge_mask_threshold: 0.3
-  landmark_edge_gamma: 1.7
+  use_learned_landmark_branch: true
+  landmark_tau: 0.07
+  landmark_tau: 0.02
+  landmark_head_dropout_p: 0.2
+  landmark_edge_guidance_beta: 1.0
+  landmark_edge_alpha: 5.0
+  landmark_use_cross_keypoint_competition: false
+  landmark_edge_guidance_beta: 0.2
+  landmark_edge_alpha: 6.0
   landmark_from_stage: 3
 
+training:
   epochs: 200
   patience: 10
   loss: "cross_entropy"
@@ -25,10 +26,6 @@ model:
   scheduler: "reduce_lr_on_plateau"
   lr_factor: 0.5
   lr_patience: 3
-  landmark_diversity_lambda: 0.2
-  landmark_entropy_lambda: 0.03
-  landmark_coord_spread_lambda: 0.1
+  landmark_diversity_lambda: 0.1
+  landmark_entropy_lambda: 0.05
   landmark_edge_align_lambda: 0.05
-
-
-  use_sobel_channel: true

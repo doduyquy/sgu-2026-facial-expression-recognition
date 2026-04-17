@@ -1,5 +1,3 @@
-import torch
-from torch import device
 import os
 import numpy as np 
 from datetime import datetime
@@ -28,7 +26,6 @@ class Trainer:
             'landmark_entropy_lambda',
             config['training'].get('landmark_sparsity_lambda', 0.1),
         )
-        self.landmark_coord_spread_lambda = config['training'].get('landmark_coord_spread_lambda', 0.1)
         self.landmark_edge_align_lambda = config['training'].get('landmark_edge_align_lambda', 0.02)
 
     @staticmethod
@@ -59,21 +56,11 @@ class Trainer:
         corrects = 0
         total = 0
 
-
         for images, labels in self.train_loader:
-            # Dual-branch: images là tuple/list
-            if isinstance(images, (tuple, list)):
-                images = [img.to(self.device) for img in images]
-            else:
-                images = images.to(self.device)
-            labels = labels.to(self.device)
+            images, labels = images.to(self.device), labels.to(self.device)
 
             self.optimizer.zero_grad()
-            # Dual-branch: truyền từng nhánh vào model nếu cần
-            if isinstance(images, (tuple, list)):
-                outputs = self.model(*images)
-            else:
-                outputs = self.model(images)
+            outputs = self.model(images)
             logits = self._extract_logits(outputs)
 
             cls_loss = self.criterion(logits, labels)
@@ -84,24 +71,21 @@ class Trainer:
                 "landmark_entropy",
                 aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
             )
-            coord_spread_loss = aux_losses.get("landmark_coord_spread", torch.tensor(0.0, device=self.device))
             edge_align_loss = aux_losses.get("landmark_edge_align", torch.tensor(0.0, device=self.device))
 
             loss = (
                 cls_loss
                 + (self.landmark_diversity_lambda * div_loss)
                 + (self.landmark_entropy_lambda * entropy_loss)
-                + (self.landmark_coord_spread_lambda * coord_spread_loss)
                 + (self.landmark_edge_align_lambda * edge_align_loss)
             )
             loss.backward()
             self.optimizer.step()
 
-            batch_size = labels.size(0)
-            running_loss += loss.item() * batch_size
+            running_loss += loss.item() * images.size(0)
             _, preds = torch.max(logits, dim=1)
             corrects += torch.sum(preds == labels.data)
-            total += batch_size
+            total += labels.size(0)
 
         epoch_loss = running_loss / total
         epoch_acc = corrects.double() / total
@@ -116,19 +100,11 @@ class Trainer:
         corrects = 0
         total = 0
 
-
         with torch.no_grad():
             for images, labels in self.val_loader:
-                if isinstance(images, (tuple, list)):
-                    images = [img.to(self.device) for img in images]
-                else:
-                    images = images.to(self.device)
-                labels = labels.to(self.device)
+                images, labels = images.to(self.device), labels.to(self.device)
 
-                if isinstance(images, (tuple, list)):
-                    outputs = self.model(*images)
-                else:
-                    outputs = self.model(images)
+                outputs = self.model(images)
                 logits = self._extract_logits(outputs)
                 cls_loss = self.criterion(logits, labels)
                 aux_losses = self._extract_aux_losses(outputs)
@@ -137,21 +113,18 @@ class Trainer:
                     "landmark_entropy",
                     aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
                 )
-                coord_spread_loss = aux_losses.get("landmark_coord_spread", torch.tensor(0.0, device=self.device))
                 edge_align_loss = aux_losses.get("landmark_edge_align", torch.tensor(0.0, device=self.device))
                 loss = (
                     cls_loss
                     + (self.landmark_diversity_lambda * div_loss)
                     + (self.landmark_entropy_lambda * entropy_loss)
-                    + (self.landmark_coord_spread_lambda * coord_spread_loss)
                     + (self.landmark_edge_align_lambda * edge_align_loss)
                 )
-                batch_size = labels.size(0)
-                running_loss += loss.item() * batch_size
+                running_loss += loss.item() * images.size(0)
 
                 _, preds = torch.max(logits, dim=1)
                 corrects += torch.sum(preds == labels.data)
-                total += batch_size
+                total += labels.size(0)
 
         epoch_loss = running_loss / total
         epoch_acc = corrects.double() / total
