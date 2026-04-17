@@ -38,5 +38,5 @@ training:
 # Đặt tên run ở đây → tự động link lên WandB với tên này + timestamp
 # Để trống (null) thì dùng tên mặc định: {model_name}_{timestamp}
 logging:
-  wandb_run_name: "cnn_dict_v2_dong"   # <-- ĐỔI TÊN Ở ĐÂY
+  wandb_run_name: "cnn_dict_v2_SAM_Agument"   # <-- ĐỔI TÊN Ở ĐÂY
   
