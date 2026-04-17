@@ -1,0 +1,51 @@
+
+# Region-Aligned Facial Expression Recognition Configuration
+_base_: "base.yaml"
+
+model:
+  name: "region_aligned_ferver2"
+  embed_dim: 512
+  num_heads: 4
+  num_regions: 6          # Trán, Mắt trái, Mắt phải, Mũi, Miệng, Cằm
+  num_encoder_layers: 2   # Số lớp Transformer Encoder
+  transformer_dropout: 0.3
+
+  # VGG Backbone (giữ Spatial Attention để khớp với checkpoint 69.2%)
+  use_aux: false
+  use_attention: true
+
+  # ResNet Backbone (giữ CBAM để khớp với checkpoint 68.5%)
+  attention_type: "cbam"
+  attention_kernel_size: 7
+  use_fusion: true
+
+  # ── Transfer Learning ──
+  pretrained_vgg_path: "/kaggle/input/datasets/lhngphc/vgg-0-912/vgg_spatial_10042026_1053_best.pth"
+  pretrained_resnet_path: "/kaggle/input/datasets/lhngphc/resnet-0-68/resnet50_12042026_1052_best.pth"
+
+  # Số epoch đóng băng backbone (Phase 1: chỉ train Region Head)
+  freeze_backbone_epochs: 15
+
+data:
+  image_size: 48
+  channels: 1
+  batch_size: 64
+
+training:
+  lr: 0.0001           # Lower base LR for SAM stability
+  finetune_lr: 0.000005 # Cực thấp để bảo toàn features của backbone khi mở băng
+  epochs: 150
+  optimizer: "sam"
+  base_optimizer: "adamw"
+  sam_rho: 0.03            # Giảm rủi ro mất ổn định
+  weight_decay: 0.08       # Tăng phạt trọng số
+  label_smoothing: 0.15    # Giúp model giảm tự tin mù quáng
+  scheduler: "cosine"
+  use_class_weights: true
+
+env:
+  platform: "kaggle"
+
+kaggle:
+  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
+  root_path: "/kaggle/working/sgu-2026-facial-expression-recognition"
