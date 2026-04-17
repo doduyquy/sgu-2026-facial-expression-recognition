@@ -20,6 +20,8 @@ training:
   lr: 0.001                   # LR cho Phase 1 (freeze backbone, train head)
   finetune_lr: 0.00005        # LR backbone khi unfreeze (low, chỉ tinh chỉnh nhẹ)
   head_lr: 0.0003             # LR head khi unfreeze (vẫn cao hơn backbone, nhưng không quá gắt)
+  monitor_metric: "val_accuracy"   # Chọn checkpoint + early-stop theo metric mục tiêu
+  monitor_mode: "max"
   epochs: 100
   optimizer: "adamw"
   weight_decay: 0.001         # Giảm regularization để tránh underfit

@@ -25,6 +25,22 @@ class Trainer:
         self.run_name = run_name
         self.config = config
         self.path_save_ckpt = save_dir
+        self.monitor_metric = config['training'].get('monitor_metric', 'val_loss')
+        self.monitor_mode = config['training'].get('monitor_mode', 'min').lower()
+
+        if self.monitor_metric not in ('val_loss', 'val_accuracy'):
+            print(f"[Trainer] Unsupported monitor_metric={self.monitor_metric}, fallback to val_loss")
+            self.monitor_metric = 'val_loss'
+
+        if self.monitor_mode not in ('min', 'max'):
+            print(f"[Trainer] Unsupported monitor_mode={self.monitor_mode}, fallback to min")
+            self.monitor_mode = 'min'
+
+    def _init_best_score(self):
+        return float('-inf') if self.monitor_mode == 'max' else float('inf')
+
+    def _is_better(self, current, best):
+        return current > best if self.monitor_mode == 'max' else current < best
 
 
     def train_one_epoch(self):
@@ -118,7 +134,7 @@ class Trainer:
         if self.use_wandb:
             init_wandb(config=self.config, run_name=self.run_name)
 
-        best_val_loss = float("inf")
+        best_score = self._init_best_score()
         patience_counter = 0
         all_train_loss = []
         all_val_loss = []
@@ -126,6 +142,7 @@ class Trainer:
         all_val_acc = []
 
         print(f'\n--> Start training in total {self.epochs} epochs with {self.device} device. Start...\n')
+        print(f"--> Monitor: {self.monitor_metric} ({self.monitor_mode}) for checkpoint/early-stop")
 
         for ep in range(self.epochs):
 
@@ -157,10 +174,10 @@ class Trainer:
                     # REBUILD scheduler to link to NEW optimizer
                     self.scheduler = build_scheduler(self.optimizer, self.config)
                     
-                    # RESET bộ đếm Early Stopping + best_val_loss để Phase 2 được chạy công bằng
+                    # RESET bộ đếm Early Stopping + best_score để Phase 2 được chạy công bằng
                     patience_counter = 0
-                    best_val_loss = float("inf")
-                    print(f"[Trainer] Reset patience + best_val_loss for Phase 2.")
+                    best_score = self._init_best_score()
+                    print(f"[Trainer] Reset patience + best_score for Phase 2.")
 
             train_loss, train_acc = self.train_one_epoch()
             val_loss, val_acc = self.validate()
@@ -169,6 +186,7 @@ class Trainer:
             all_val_loss.append(val_loss)
             all_train_acc.append(train_acc.item())
             all_val_acc.append(val_acc.item())
+            current_score = val_acc.item() if self.monitor_metric == 'val_accuracy' else val_loss
 
             print(
                 f"Epoch {ep+1}/{self.epochs} - "
@@ -200,8 +218,8 @@ class Trainer:
                         self.scheduler.step()
 
             # save checkpoint
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
+            if self._is_better(current_score, best_score):
+                best_score = current_score
                 patience_counter = 0
 
                 torch.save({
@@ -209,7 +227,10 @@ class Trainer:
                     "optimizer_state_dict": self.optimizer.state_dict(),
                     "epoch": ep
                 }, self.path_save_ckpt)
-                print(f"\t--- Save best at ep {ep+1}, val_loss: {val_loss:.4f}, path: {self.path_save_ckpt} ---")
+                print(
+                    f"\t--- Save best at ep {ep+1}, {self.monitor_metric}: {current_score:.4f}, "
+                    f"path: {self.path_save_ckpt} ---"
+                )
 
             else:
                 patience_counter += 1
