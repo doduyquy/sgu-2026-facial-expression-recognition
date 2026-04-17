@@ -240,6 +240,18 @@ class Resnet35(nn.Module):
         #     nn.Linear(512, self.num_classes)
         # )
 
+    def forward_features(self, x):
+        """Return final feature map before classifier: [B, 1024, 6, 6]."""
+        x = self.relu(self.bn1(self.conv1(x)))
+        x = self.pool(x)
+
+        # ResNet Blocks
+        x = self.layer2(x)  # -> (B, 256, 24, 24)
+        x = self.layer3(x)  # -> (B, 512, 12, 12)
+        x = self.layer4(x)  # -> (B, 1024, 6, 6)
+
+        return x
+
     def forward(self, x):
         """input: (B, C, 48, 48)
        stage1: (B, 64, 24, 24)
@@ -249,13 +261,7 @@ class Resnet35(nn.Module):
        sau quá trình trích xuất đặc trưng ta avgpool để giảm kích thước về (B, 1024, 1, 1)
        sau đó flatten để giảm kích thước về (B, 1024)
        cuối cùng ta đưa vào fc để phân loại"""
-        x = self.relu(self.bn1(self.conv1(x)))
-        x = self.pool(x)
-
-        # ResNet Blocks
-        x = self.layer2(x)  # -> (B, 256, 24, 24)
-        x = self.layer3(x)  # -> (B, 512, 12, 12)
-        x = self.layer4(x)  # -> (B, 1024, 6, 6)
+        x = self.forward_features(x)
 
         x = self.classifier(x)
         return x
@@ -268,14 +274,162 @@ class Resnet35(nn.Module):
     #     x = self.layer4(x)  # -> (B, 1024, 6, 6)
     #     return self.classifier(x)
     def extract_region_features(self, x):
-        x = self.relu(self.bn1(self.conv1(x)))
-        x = self.pool(x)
-        x = self.layer2(x) #[B,256,24,24]
-        x = self.layer3(x) #[B,512,12,12]
-        x = self.layer4(x)  # [B, 1024, 6, 6]
+        x = self.forward_features(x)  # [B, 1024, 6, 6]
         x = torch.flatten(x, 2)               # [B, 1024, 36]
         x = x.transpose(1, 2)                 # [B, 36, 1024]
         return x
+class TransformerBlock(nn.Module):
+    def __init__(self, dim=512, num_heads=4, mlp_ratio=2.0, dropout=0.1):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(dim)
+        self.attn = nn.MultiheadAttention(
+            embed_dim=dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True
+        )
+        self.norm2 = nn.LayerNorm(dim)
+        hidden_dim = int(dim * mlp_ratio)
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, dim),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x):
+        x_norm = self.norm1(x)
+        attn_out, _ = self.attn(x_norm, x_norm, x_norm)
+        x = x + attn_out
+        x = x + self.mlp(self.norm2(x))
+        return x
+
+
+class TinyViTHead(nn.Module):
+    def __init__(self, in_dim=1024, embed_dim=512, depth=2, num_heads=4, num_classes=7, dropout=0.1):
+        super().__init__()
+        self.proj = nn.Linear(in_dim, embed_dim)
+        self.pos_embed = nn.Parameter(torch.randn(1, 36, embed_dim) * 0.02)
+
+        self.blocks = nn.Sequential(*[
+            TransformerBlock(
+                dim=embed_dim,
+                num_heads=num_heads,
+                mlp_ratio=2.0,
+                dropout=dropout
+            )
+            for _ in range(depth)
+        ])
+
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(embed_dim),
+            nn.Dropout(0.4),
+            nn.Linear(embed_dim, 256),
+            nn.GELU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, num_classes)
+        )
+
+    def forward(self, x):
+        # x: [B, 1024, 6, 6]
+        B, C, H, W = x.shape
+        x = x.flatten(2).transpose(1, 2)   # [B, 36, 1024]
+        x = self.proj(x)                   # [B, 36, 512]
+        x = x + self.pos_embed[:, :x.size(1), :]
+        x = self.blocks(x)                 # [B, 36, 512]
+        x = x.mean(dim=1)                  # [B, 512]
+        out = self.classifier(x)
+        return out
+
+class ResNet35_CBAM_ViT(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        model_cfg = config.get('model', {}) if config else {}
+        self.backbone = Resnet35(config, channels=1)
+        self.is_frozen = False
+        self.freeze_epochs = model_cfg.get('freeze_backbone_epochs', 0)
+
+        self.vit_head = TinyViTHead(
+            in_dim=1024,
+            embed_dim=model_cfg.get('vit_embed_dim', 512),
+            depth=model_cfg.get('vit_depth', 2),
+            num_heads=model_cfg.get('vit_num_heads', 4),
+            num_classes=config['data']['num_classes'],
+            dropout=model_cfg.get('vit_dropout', 0.1)
+        )
+
+    def forward(self, x):
+        feat = self.backbone.forward_features(x)
+        out = self.vit_head(feat)
+        return out
+
+    def load_pretrained_backbone(self, ckpt_path, device='cpu'):
+        """Load pretrained weights into the CNN backbone only (shape-safe)."""
+        ckpt = torch.load(ckpt_path, map_location=device)
+        saved_state = ckpt.get('model_state_dict', ckpt)
+
+        model_state = self.backbone.state_dict()
+        compatible = {}
+        skipped = []
+
+        for k, v in saved_state.items():
+            candidate_keys = [k]
+            if k.startswith('resnet35.'):
+                candidate_keys.append(k.replace('resnet35.', '', 1))
+            if k.startswith('backbone.'):
+                candidate_keys.append(k.replace('backbone.', '', 1))
+
+            mapped_key = None
+            for ckey in candidate_keys:
+                if ckey in model_state and model_state[ckey].shape == v.shape:
+                    mapped_key = ckey
+                    break
+
+            if mapped_key is not None:
+                compatible[mapped_key] = v
+            else:
+                skipped.append(k)
+
+        self.backbone.load_state_dict(compatible, strict=False)
+        print(f"[ResNet35_CBAM_ViT] Backbone loaded: {len(compatible)} weights")
+        if skipped:
+            print(f"[ResNet35_CBAM_ViT] Skipped: {len(skipped)} keys")
+
+    def freeze_backbone(self):
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+        self.is_frozen = True
+        print("[ResNet35_CBAM_ViT] Backbone FROZEN.")
+
+    def unfreeze_backbone(self):
+        for param in self.parameters():
+            param.requires_grad = True
+        self.is_frozen = False
+        print("[ResNet35_CBAM_ViT] All parameters UNFROZEN.")
+
+    def check_unfreeze(self, epoch):
+        if self.is_frozen and self.freeze_epochs > 0 and epoch >= self.freeze_epochs:
+            self.unfreeze_backbone()
+            return True
+        return False
+
+    def get_param_groups(self, backbone_lr, head_lr):
+        backbone_params = list(self.backbone.parameters())
+        backbone_ids = set(id(p) for p in backbone_params)
+        head_params = [p for p in self.parameters() if id(p) not in backbone_ids]
+
+        print(
+            f"[ResNet35_CBAM_ViT] Param groups: backbone={len(backbone_params)} tensors (lr={backbone_lr}), "
+            f"head={len(head_params)} tensors (lr={head_lr})"
+        )
+
+        return [
+            {'params': backbone_params, 'lr': backbone_lr},
+            {'params': head_params, 'lr': head_lr},
+        ]
+
+
 
 class Dictionary(nn.Module):
     """
@@ -532,4 +686,4 @@ class CNNDictionary(nn.Module):
         return [
             {'params': backbone_params, 'lr': backbone_lr},
             {'params': head_params, 'lr': head_lr},
-        ]
+        ]

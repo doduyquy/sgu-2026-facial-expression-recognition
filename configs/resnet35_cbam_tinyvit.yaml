@@ -1,0 +1,40 @@
+_base_: "base.yaml"
+
+model:
+  name: "resnet35_cbam_tinyvit"
+  attention_type: "cbam"
+
+  # Pretrained from strong ResNet35+CBAM baseline checkpoint.
+  pretrained_backbone_path: "/kaggle/input/datasets/lhngphc/resnet35-cbam/resnet35_15042026_0221_best.pth"
+
+  # Warmup: freeze backbone for first N epochs, then unfreeze for full fine-tune.
+  freeze_backbone_epochs: 6
+
+  # TinyViT head settings
+  vit_embed_dim: 512
+  vit_depth: 2
+  vit_num_heads: 4
+  vit_dropout: 0.1
+
+data:
+  image_size: 48
+  channels: 1
+  batch_size: 64
+
+training:
+  loss: "cross_entropy"
+  label_smoothing: 0.05
+  lr: 0.0007
+  finetune_lr: 0.00005
+  head_lr: 0.0005
+  epochs: 100
+  optimizer: "adamw"
+  weight_decay: 0.001
+  scheduler: "reduce_lr_on_plateau"
+  lr_patience: 4
+  lr_factor: 0.5
+  patience: 20
+  use_class_weights: true
+
+logging:
+  wandb_run_name: "resnet35_cbam_tinyvit"
