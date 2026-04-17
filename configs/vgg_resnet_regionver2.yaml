@@ -21,7 +21,7 @@ model:
 
   # ── Transfer Learning ──
   pretrained_vgg_path: "/kaggle/input/datasets/lhngphc/vgg-0-912/vgg_spatial_10042026_1053_best.pth"
-  
+
   pretrained_resnet_path: "/kaggle/input/datasets/lhngphc/resnet-0-68/resnet50_12042026_1052_best.pth"
 
   # Số epoch đóng băng backbone (Phase 1: chỉ train Region Head)
@@ -43,6 +43,10 @@ training:
   label_smoothing: 0.1
   scheduler: "cosine"
   use_class_weights: true
+   monitor_metric: "val_accuracy"  # Save best checkpoint by validation accuracy
+  monitor_mode: "max"
+  early_stop_metric: "val_loss"   # Keep early stopping sensitive to overfitting
+  early_stop_mode: "min"
 
 env:
   platform: "kaggle"
