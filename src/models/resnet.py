@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 from .CBAM import CBAM
-from .learned_landmark import LearnedLandmarkBranch
 
 
 class IdentityBlock(nn.Module):
@@ -143,81 +142,6 @@ class ResNetDualBranch(nn.Module):
     def get_current_prior_strength(self):
         # No-op for dual branch (no landmark branch)
         return None
-
-        self.layer2 = nn.Sequential(
-            ConvBlock(64, [64, 64, 256], stride=1),
-            IdentityBlock(256, [64, 64, 256]),
-            IdentityBlock(256, [64, 64, 256]),
-        )
-
-        self.layer3 = nn.Sequential(
-            ConvBlock(256, [128, 128, 512], use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size),
-            IdentityBlock(512, [128, 128, 512], use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size),
-            IdentityBlock(512, [128, 128, 512], use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size),
-            IdentityBlock(512, [128, 128, 512], use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size),
-        )
-
-        self.layer4 = nn.Sequential(
-            ConvBlock(512, [256, 256, 1024], use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size),
-            IdentityBlock(1024, [256, 256, 1024], use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size),
-            IdentityBlock(1024, [256, 256, 1024], use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size),
-            IdentityBlock(1024, [256, 256, 1024], use_cbam=use_cbam_stage34, cbam_reduction=cbam_reduction, cbam_kernel_size=cbam_kernel_size),
-        )
-
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-
-        # Baseline classifier (no landmark branch).
-        self.fusion_fc = nn.Sequential(
-            nn.Linear(1536, 512),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(512, num_classes),
-        )
-
-        landmark_in_channels = 512 if landmark_from_stage == 3 else 1024
-
-        self.learned_landmark_branch = LearnedLandmarkBranch(
-            in_channels=landmark_in_channels,
-            landmark_num_points=landmark_num_points,
-            landmark_tau=landmark_tau,
-            feature_dropout_p=landmark_feature_dropout_p,
-            head_dropout_p=landmark_head_dropout_p,
-            edge_guidance_beta=landmark_edge_guidance_beta,
-            edge_alpha=landmark_edge_alpha,
-            edge_feat_guidance_beta=landmark_edge_feat_guidance_beta,
-            edge_dropout_prob=landmark_edge_dropout_prob,
-            edge_head_scale_std=landmark_edge_head_scale_std,
-            edge_mask_threshold=landmark_edge_mask_threshold,
-            edge_gamma=landmark_edge_gamma,
-        )
-
-        fusion_in_dim = 1024 + ((landmark_num_points + 1) * landmark_in_channels)
-        self.landmark_fusion_fc = nn.Sequential(
-            nn.Linear(fusion_in_dim, 512),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(512, num_classes),
-        )
-
-    def get_aux_losses(self):
-        return self._latest_aux_losses
-
-    def get_landmark_outputs(self):
-        return self._latest_landmark_heatmaps, self._latest_landmark_coords
-
-    def set_training_progress(self, progress):
-        setter = getattr(self.learned_landmark_branch, "set_training_progress", None)
-        if callable(setter):
-            setter(progress)
-
-    def get_current_prior_strength(self):
-        getter = getattr(self.learned_landmark_branch, "get_current_prior_strength", None)
-        if callable(getter):
-            return getter()
-        return None
-
-    def forward(self, x, landmarks=None, landmark_mask=None):
-        _ = landmarks
         _ = landmark_mask
         input_image = x
 
