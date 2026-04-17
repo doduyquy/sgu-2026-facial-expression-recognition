@@ -18,16 +18,19 @@ data:
 
 training:
   lr: 0.001                   # LR cho Phase 1 (freeze backbone, train head)
-  finetune_lr: 0.00005        # LR backbone khi unfreeze (low, chỉ tinh chỉnh nhẹ)
-  head_lr: 0.0003             # LR head khi unfreeze (vẫn cao hơn backbone, nhưng không quá gắt)
-  monitor_metric: "val_accuracy"   # Chọn checkpoint + early-stop theo metric mục tiêu
+  # ── Phase 2: Unfreeze fine-tuning ──
+  finetune_lr: 0.00001        # Lowered to 1e-5 to preserve robust features
+  head_lr: 0.0001             # Lowered to 1e-4 to specialize without overshooting
+  monitor_metric: "val_accuracy"
   monitor_mode: "max"
   epochs: 100
-  optimizer: "adamw"
-  weight_decay: 0.001         # Giảm regularization để tránh underfit
-  label_smoothing: 0.05       # Nhẹ hơn để giữ độ tự tin dự đoán
+  optimizer: "sam"            # Switched to SAM for better generalization
+  base_optimizer: "adamw"     # Base for SAM
+  sam_rho: 0.05               # Neighborhood size for SAM
+  weight_decay: 0.05          # Increased from 0.001 to 0.05 (Strong regularization)
+  label_smoothing: 0.1        # Increased from 0.05 to 0.1 (Handle noisy labels)
   scheduler: "reduce_lr_on_plateau"
-  lr_patience: 7              # Tránh giảm LR quá sớm khi val còn dao động
+  lr_patience: 7
   lr_factor: 0.5
   use_class_weights: true
 

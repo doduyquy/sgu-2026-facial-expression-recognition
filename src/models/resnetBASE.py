@@ -493,13 +493,6 @@ class Dictionary(nn.Module):
 class CNNDictionary(nn.Module):
     """
     ResNet35 (backbone) → visual tokens → Cross-Attention với Dictionary → Classifier.
-
-    V2 Fixes (4 thủ phạm):
-    1. BỎ hard Spatial Region Mask → cross-attention tự do attend toàn bộ 36 tokens
-    2. Soft Spatial Grounding → region tokens khởi tạo từ visual features thật (pool theo hàng)
-    3. BỎ 2-stage attention (cross_attn + attn_pool) → chỉ cross_attn + mean pool
-    4. Visual Shortcut + Gated Fusion → classifier nhận cả visual global lẫn region features
-
     Flow:
         img → ResNet35 → [B, 36, 1024] visual tokens
         Soft grounding: reshape 6×6 → pool theo hàng → [B, 6, 1024] spatial prior
@@ -548,7 +541,7 @@ class CNNDictionary(nn.Module):
             embed_dim=self.embed_dim,
             num_heads=self.num_heads,
             batch_first=True,
-            dropout=0.2
+            dropout=0.3
         )
 
         # LayerNorm + Residual
@@ -558,7 +551,7 @@ class CNNDictionary(nn.Module):
         self.ffn = nn.Sequential(
             nn.Linear(self.embed_dim, self.embed_dim * 2),
             nn.GELU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.3),
             nn.Linear(self.embed_dim * 2, self.embed_dim)
         )
         self.norm2 = nn.LayerNorm(self.embed_dim)

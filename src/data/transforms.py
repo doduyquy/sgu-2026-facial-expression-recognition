@@ -32,6 +32,7 @@ def build_transform(config, split="train") -> Compose: # train | val | test
             v2.Resize(size=(image_size, image_size)),
             v2.RandomHorizontalFlip(p=0.5),
             v2.RandomRotation(10),
+            v2.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.9, 1.1)), # Thêm tịnh tiến và thu phóng
             v2.ColorJitter(brightness=0.15, contrast=0.15), # Thêm biến đổi ánh sáng
 
             v2.ToImage(),
