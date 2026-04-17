@@ -8,7 +8,7 @@ model:
   num_regions: 6              # Số vùng khuôn mặt (forehead, left_eye, right_eye, nose, mouth, chin)
 
   # ── Transfer Learning ──
-  pretrained_backbone_path: "/kaggle/input/datasets/lhngphc/resnet35-cbam/resnet35_15042026_0221_best.pth"
+  pretrained_backbone_path: "/kaggle/input/datasets/nadkli2704/resnet35-cbam/resnet35_15042026_0221_best.pth"
   freeze_backbone_epochs: 12   # Freeze giai đoạn đầu, sau đó unfreeze để backbone thích nghi FER
 
 data:
@@ -33,5 +33,5 @@ training:
 # Đặt tên run ở đây → tự động link lên WandB với tên này + timestamp
 # Để trống (null) thì dùng tên mặc định: {model_name}_{timestamp}
 logging:
-  wandb_run_name: "cnn_dict_v2_unfreeze12"   # <-- ĐỔI TÊN Ở ĐÂY
+  wandb_run_name: "cnn_dict_v2_dong"   # <-- ĐỔI TÊN Ở ĐÂY
   

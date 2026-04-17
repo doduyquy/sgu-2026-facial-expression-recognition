@@ -451,10 +451,19 @@ class Dictionary(nn.Module):
     def __init__(self, num_regions=6, emb_dim=1024):
         super().__init__()
         self.num_regions = num_regions
+        self.emb_dim = emb_dim
 
         # K learnable embedding tokens
         self.token_embedding = nn.Embedding(num_regions, emb_dim)
         nn.init.normal_(self.token_embedding.weight, std=0.02)
+
+        # Dynamic dictionary: điều kiện hóa token theo ngữ cảnh ảnh.
+        self.context_proj = nn.Sequential(
+            nn.Linear(emb_dim, emb_dim),
+            nn.GELU(),
+            nn.Linear(emb_dim, emb_dim)
+        )
+        self.region_gate = nn.Linear(emb_dim, num_regions)
 
         # Buffer cố định index → đảm bảo luôn đúng device
         self.register_buffer(
@@ -464,10 +473,21 @@ class Dictionary(nn.Module):
 
         print(f"--> Facial Region Dictionary: {self.REGION_NAMES[:num_regions]}")
 
-    def forward(self, batch_size):
+    def forward(self, batch_size, global_context=None):
         # region_ids: [K] → token_embedding: [K, D] → expand: [B, K, D]
         tokens = self.token_embedding(self.region_ids)  # [K, D]
-        return tokens.unsqueeze(0).expand(batch_size, -1, -1)  # [B, K, D]
+        tokens = tokens.unsqueeze(0).expand(batch_size, -1, -1)  # [B, K, D]
+
+        if global_context is None:
+            return tokens
+
+        # global_context: [B, D] -> dynamic_bias: [B, 1, D]
+        dynamic_bias = self.context_proj(global_context).unsqueeze(1)
+        # gate theo từng region: [B, K, 1]
+        region_gate = torch.sigmoid(self.region_gate(global_context)).unsqueeze(-1)
+
+        # Token cuối = token nền + phần điều kiện hóa theo ảnh.
+        return tokens + region_gate * dynamic_bias
 
 
 class CNNDictionary(nn.Module):
@@ -582,6 +602,9 @@ class CNNDictionary(nn.Module):
         visual = self.resnet35.extract_region_features(x)  # [B, 36, 1024]
         visual = visual + self.visual_pos                   # + positional encoding
 
+        # Context toàn ảnh để điều kiện hóa dictionary tokens.
+        visual_context = visual.mean(dim=1)                 # [B, D]
+
         # 2. [FIX #2] Soft Spatial Grounding: pool visual features theo hàng
         #    visual [B, 36, D] → reshape [B, 6, 6, D] → mean over cols → [B, 6, D]
         #    Region "forehead" nhận thông tin thật từ row 0, "mouth" từ row 4, ...
@@ -591,7 +614,7 @@ class CNNDictionary(nn.Module):
         spatial_prior = self.spatial_grounding(spatial_prior) # [B, 6, D]
 
         # Region tokens = learnable dictionary + spatial grounding + positional encoding
-        region_tokens = self.dic_region(B) + spatial_prior + self.region_pos  # [B, K, D]
+        region_tokens = self.dic_region(B, global_context=visual_context) + spatial_prior + self.region_pos  # [B, K, D]
 
         # 3. [FIX #1] Cross-Attention: Q=region, K=V=visual — KHÔNG mask
         attn_out, self.attn_weights = self.cross_attn(
