@@ -82,6 +82,12 @@ class Trainer:
         edge_consistency_lambda = getattr(self, '_runtime_edge_consistency_lambda', self.landmark_edge_consistency_lambda)
         augment_lambda = getattr(self, '_runtime_augment_lambda', self.landmark_augment_consistency_lambda)
         aux_cls_lambda = getattr(self, '_runtime_aux_cls_lambda', self.landmark_aux_cls_lambda)
+        # convert lambdas to tensors to avoid dtype/interop issues when combining with torch tensors
+        div_lambda_t = torch.tensor(float(div_lambda), device=self.device)
+        entropy_lambda_t = torch.tensor(float(entropy_lambda), device=self.device)
+        edge_consistency_lambda_t = torch.tensor(float(edge_consistency_lambda), device=self.device)
+        augment_lambda_t = torch.tensor(float(augment_lambda), device=self.device)
+        aux_cls_lambda_t = torch.tensor(float(aux_cls_lambda), device=self.device)
 
         for images, labels in self.train_loader:
             images, labels = images.to(self.device), labels.to(self.device)
@@ -122,9 +128,9 @@ class Trainer:
             # Note: we intentionally exclude conv/TV regularizers from the main loss to avoid over-constraint
             loss = (
                 cls_loss
-                + (div_lambda * div_loss)
-                + (entropy_lambda * entropy_reg)
-                + (edge_consistency_lambda * edge_consistency_loss)
+                + (div_lambda_t * div_loss)
+                + (entropy_lambda_t * entropy_reg)
+                + (edge_consistency_lambda_t * edge_consistency_loss)
             )
 
             # Auxiliary classification on landmark features (encourage feat_k to be useful)
@@ -135,19 +141,20 @@ class Trainer:
                 aux_logits = None
             if aux_logits is not None:
                 try:
-                    if aux_cls_lambda > 0.0:
+                    if aux_cls_lambda_t.item() > 0.0:
                         aux_cls_loss = F.cross_entropy(aux_logits, labels)
-                        loss = loss + (aux_cls_lambda * aux_cls_loss)
+                        loss = loss + (aux_cls_lambda_t * aux_cls_loss)
                     # KL consistency: make aux logits follow main logits' decision
                     aux_consistency_lambda = getattr(self, '_runtime_aux_consistency_lambda', self.landmark_aux_consistency_lambda)
-                    if aux_consistency_lambda > 0.0:
+                    aux_consistency_lambda_t = torch.tensor(float(aux_consistency_lambda), device=self.device)
+                    if aux_consistency_lambda_t.item() > 0.0:
                         # mutual learning: symmetric KL between main and aux (average of both directions)
                         p_main = F.softmax(logits.detach(), dim=1)
                         p_aux = F.softmax(aux_logits, dim=1)
                         kl1 = F.kl_div(F.log_softmax(aux_logits, dim=1), p_main, reduction='batchmean')
                         kl2 = F.kl_div(F.log_softmax(logits, dim=1), p_aux.detach(), reduction='batchmean')
                         kl = 0.5 * (kl1 + kl2)
-                        loss = loss + (aux_consistency_lambda * kl)
+                        loss = loss + (aux_consistency_lambda_t * kl)
                 except Exception:
                     pass
 
@@ -244,12 +251,17 @@ class Trainer:
                 entropy_lambda = getattr(self, '_runtime_entropy_lambda', self.landmark_entropy_lambda)
                 edge_consistency_lambda = getattr(self, '_runtime_edge_consistency_lambda', self.landmark_edge_consistency_lambda)
                 edge_conv_reg_lambda = getattr(self, '_runtime_edge_conv_reg_lambda', self.landmark_edge_conv_reg_lambda)
+                # convert to tensors to avoid type-mixing errors
+                div_lambda_t = torch.tensor(float(div_lambda), device=self.device)
+                entropy_lambda_t = torch.tensor(float(entropy_lambda), device=self.device)
+                edge_consistency_lambda_t = torch.tensor(float(edge_consistency_lambda), device=self.device)
+                edge_conv_reg_lambda_t = torch.tensor(float(edge_conv_reg_lambda), device=self.device)
                 loss = (
                     cls_loss
-                    + (div_lambda * div_loss)
-                    + (entropy_lambda * entropy_reg)
-                    + (edge_consistency_lambda * edge_consistency_loss)
-                    + (edge_conv_reg_lambda * edge_conv_reg)
+                    + (div_lambda_t * div_loss)
+                    + (entropy_lambda_t * entropy_reg)
+                    + (edge_consistency_lambda_t * edge_consistency_loss)
+                    + (edge_conv_reg_lambda_t * edge_conv_reg)
                 )
                 running_loss += loss.item() * images.size(0)
 
