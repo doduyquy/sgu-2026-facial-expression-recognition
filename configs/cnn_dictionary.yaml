@@ -31,9 +31,9 @@ training:
   epochs: 100
   optimizer: "sam"            
   base_optimizer: "adamw"     
-  sam_rho: 0.02               
-  weight_decay: 0.02          
-  label_smoothing: 0.1        
+  sam_rho: 0.05               # Restore to 0.05 (LayerNorm + SpatialMask provide stability now)
+  weight_decay: 0.01          # Relaxed from 0.02 to 0.01 for more capacity
+  label_smoothing: 0.05       # Relaxed from 0.1 to 0.05 for sharper predictions
   scheduler: "reduce_lr_on_plateau"
   lr_patience: 7
   lr_factor: 0.2              # Reduce more aggressively on plateau
@@ -43,5 +43,5 @@ training:
 # Đặt tên run ở đây → tự động link lên WandB với tên này + timestamp
 # Để trống (null) thì dùng tên mặc định: {model_name}_{timestamp}
 logging:
-  wandb_run_name: "cnn_dict_v2_SAM_Agument"   # <-- ĐỔI TÊN Ở ĐÂY
+  wandb_run_name: "cnn_dict_v3_SpatialMask"   # <-- ĐỔI TÊN Ở ĐÂY
   

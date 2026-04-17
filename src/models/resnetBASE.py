@@ -530,11 +530,24 @@ class CNNDictionary(nn.Module):
         # Positional Encoding cho region tokens
         self.region_pos = nn.Parameter(torch.randn(1, self.num_regions, self.embed_dim) * 0.02)
 
-        # 4. 
-        #    Học ánh xạ mềm từ 36 visual tokens -> K regions thay vì pool theo hàng cố định.
+        # 4. Spatial Prior Mask + Soft Grounding
+        #    Ép mỗi region token nhìn đúng vùng trên feature map 6×6.
+        #    Row 0=forehead, Row 1=eyebrows, Row 2=eyes, Row 3=nose, Row 4=mouth, Row 5=chin
         self.region_assign = nn.Linear(self.embed_dim, self.num_regions)
         self.assign_temperature = model_cfg.get('assign_temperature', 1.0)
         self.spatial_grounding = nn.Linear(self.embed_dim, self.embed_dim)
+
+        # Geometric Prior: mỗi region k tập trung vào row k, lan nhẹ sang hàng kề
+        spatial_mask = torch.zeros(self.num_regions, 36)
+        for k in range(self.num_regions):
+            for col in range(6):
+                spatial_mask[k, k * 6 + col] = 1.0          # Row chính
+                if k > 0:
+                    spatial_mask[k, (k - 1) * 6 + col] = 0.3  # Hàng trên (overlap)
+                if k < self.num_regions - 1:
+                    spatial_mask[k, (k + 1) * 6 + col] = 0.3  # Hàng dưới (overlap)
+        self.register_buffer('spatial_mask', spatial_mask)  # [K, 36]
+        self.mask_strength = nn.Parameter(torch.tensor(3.0))  # Learnable strength
 
         # 5. Multihead cross attention
         self.cross_attn = nn.MultiheadAttention(
@@ -574,17 +587,16 @@ class CNNDictionary(nn.Module):
         # LayerNorm sau Fusion để ổn định output trước classifier
         self.norm_fusion = nn.LayerNorm(self.embed_dim)
 
-        # 7. Classifier
+        # 7. Classifier (LayerNorm đã có ở norm_fusion, không cần double)
         self.classifier = nn.Sequential(
-            nn.LayerNorm(self.embed_dim),
-            nn.Dropout(0.5),
+            nn.Dropout(0.4),
             nn.Linear(self.embed_dim, 512),
             nn.GELU(),
             nn.Dropout(0.3),
             nn.Linear(512, num_classes)
         )
 
-        print(f"--> [CNNDictionary V2] Free cross-attention + soft grounding + visual shortcut")
+        print(f"--> [CNNDictionary V3] Spatial Prior Mask + soft grounding + visual shortcut")
 
     def forward(self, x):
         """
@@ -600,13 +612,16 @@ class CNNDictionary(nn.Module):
         #tóm tắt toàn khuôn mặt
         visual_context = visual.mean(dim=1)                 # [B, D]
 
-        # 2. [FIX #2] Soft Spatial Grounding: learned soft assignment
-        #    assign_logits: [B, 36, K] -> assign: [B, K, 36]
+        # 2. Spatially-Guided Soft Grounding:
+        #    assign_logits: [B, 36, K] -> transpose -> [B, K, 36]
+        #    spatial_bias ép mỗi region nhìn đúng hàng trên feature map
         #    spatial_prior = assign @ visual -> [B, K, D]
-        assign_logits = self.region_assign(visual)
-        assign = F.softmax((assign_logits / self.assign_temperature).transpose(1, 2), dim=-1)
-        spatial_prior = torch.bmm(assign, visual)
-        spatial_prior = self.spatial_grounding(spatial_prior) # [B, K, D]
+        assign_logits = self.region_assign(visual)                           # [B, 36, K]
+        spatial_bias = self.spatial_mask * self.mask_strength                # [K, 36]
+        guided_logits = (assign_logits / self.assign_temperature).transpose(1, 2) + spatial_bias.unsqueeze(0)
+        assign = F.softmax(guided_logits, dim=-1)                           # [B, K, 36]
+        spatial_prior = torch.bmm(assign, visual)                           # [B, K, D]
+        spatial_prior = self.spatial_grounding(spatial_prior)                # [B, K, D]
 
         # Region tokens = learnable dictionary + spatial grounding + positional encoding
         region_tokens = self.dic_region(B, global_context=visual_context) + spatial_prior + self.region_pos  # [B, K, D]
