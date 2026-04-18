@@ -18,7 +18,8 @@ class MultiHeadLandmarkBranch(LearnedLandmarkBranch):
         num_heads=4,
         landmark_tau=0.07,
         feature_dropout_p=0.3,
-        head_dropout_p=0.2,
+        kp_proj_dim=64,
+        head_dropout_p=0.1,
         edge_guidance_beta=1.0,
         edge_alpha=6.0,
     ):
@@ -26,6 +27,7 @@ class MultiHeadLandmarkBranch(LearnedLandmarkBranch):
             in_channels=in_channels,
             landmark_num_points=landmark_num_points,
             landmark_tau=landmark_tau,
+            kp_proj_dim=kp_proj_dim,
             feature_dropout_p=feature_dropout_p,
             head_dropout_p=head_dropout_p,
             edge_guidance_beta=edge_guidance_beta,
@@ -41,6 +43,12 @@ class MultiHeadLandmarkBranch(LearnedLandmarkBranch):
         )
 
     def forward(self, feat_map, input_image=None):
+        # apply positional encoding to feature map to help separate facial regions
+        try:
+            feat_map = self._apply_pos_encoding(feat_map)
+        except Exception:
+            pass
+
         # attn_logits_heads: (B, num_heads*K, H, W) -> (B, num_heads, K, H, W)
         attn_logits_heads = self.landmark_heatmap_head(feat_map)
         bsz, hk, h, w = attn_logits_heads.shape
@@ -84,6 +92,23 @@ class MultiHeadLandmarkBranch(LearnedLandmarkBranch):
             keep = torch.where(has_any, keep, torch.ones_like(keep))
             attn_heads = attn_heads * keep
 
+        # Inter-head similarity penalty: encourage heads to be different
+        try:
+            flat_heads = attn_heads.view(bsz, nh, K, -1)  # (B, nh, K, D)
+            # normalize over spatial dim
+            flat_norm = flat_heads / (flat_heads.norm(dim=-1, keepdim=True).clamp(min=1e-6))
+            # move keypoint dim forward: (B, K, nh, D)
+            flat_perm = flat_norm.permute(0, 2, 1, 3)
+            # sim: (B, K, nh, nh)
+            sim = torch.matmul(flat_perm, flat_perm.transpose(-1, -2))
+            # remove diagonal similarity
+            with torch.no_grad():
+                eye_h = torch.eye(nh, device=sim.device, dtype=sim.dtype).view(1, 1, nh, nh)
+            sim_off = sim * (1.0 - eye_h)
+            inter_head_loss = (sim_off.pow(2)).sum() / max(sim_off.numel(), 1)
+        except Exception:
+            inter_head_loss = attn_heads.new_tensor(0.0)
+
         # aggregate heads with learned weights (softmax over heads)
         try:
             w = torch.softmax(self.head_weight, dim=0)
@@ -103,9 +128,13 @@ class MultiHeadLandmarkBranch(LearnedLandmarkBranch):
         # pooled per-keypoint features: (B, K, C)
         feat_k = (feat_expanded * heat_expanded).sum(dim=[3, 4])
 
-        # preserve keypoint structure by flattening K*C
+        # reduce per-keypoint dim if projection available to avoid massive flatten
         bsz, Kp, C = feat_k.shape
-        feat_k_flat = feat_k.view(bsz, Kp * C)
+        if getattr(self, 'kp_proj', None) is not None:
+            feat_k_reduced = self.kp_proj(feat_k)  # (B, K, kp_proj_dim)
+            feat_k_flat = feat_k_reduced.view(bsz, Kp * self.kp_proj_dim)
+        else:
+            feat_k_flat = feat_k.view(bsz, Kp * C)
 
         global_attn = attn.mean(dim=1, keepdim=True)
         feat_global = (feat_map * global_attn).sum(dim=[2, 3])
@@ -131,6 +160,7 @@ class MultiHeadLandmarkBranch(LearnedLandmarkBranch):
         aux = {
             "landmark_diversity": self._diversity_loss(attn, coords=coords),
             "landmark_entropy": peak_loss,
+            "landmark_inter_head_similarity": inter_head_loss,
             "landmark_edge_consistency": edge_consistency,
             "landmark_edge_align": attn.new_tensor(0.0),
             "landmark_edge_conv_reg": edge_conv_reg,

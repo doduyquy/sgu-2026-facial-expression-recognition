@@ -12,7 +12,7 @@ model:
   landmark_use_cross_keypoint_competition: false
   landmark_edge_guidance_beta: 0.2
   landmark_edge_alpha: 6.0
-  landmark_from_stage: 3
+  landmark_from_stage: 34
 
 training:
   epochs: 200

@@ -9,9 +9,10 @@ class LearnedLandmarkBranch(nn.Module):
         in_channels=1024,
         landmark_num_points=6,
         landmark_tau=0.07,
-        diversity_margin=0.1,
+        diversity_margin=0.25,
+        kp_proj_dim=64,
         feature_dropout_p=0.3,
-        head_dropout_p=0.2,
+        head_dropout_p=0.1,
         edge_guidance_beta=1.0,
         edge_alpha=6.0,
     ):
@@ -29,10 +30,23 @@ class LearnedLandmarkBranch(nn.Module):
         self.diversity_margin = float(diversity_margin)
 
         self.landmark_heatmap_head = nn.Conv2d(in_channels, landmark_num_points, kernel_size=1)
+        # positional encoding: a lightweight 2-channel (x,y) coord projector
+        self.use_pos_encoding = True
+        try:
+            self.pos_proj = nn.Conv2d(2, in_channels, kernel_size=1)
+            self.pos_scale = nn.Parameter(torch.tensor(0.1))
+        except Exception:
+            self.use_pos_encoding = False
         # For low-res FER, remove learnable edge extractor and heavy sobel targets
         # Keep simple attention-only branch (soft regions), so do not create edge conv/bias
         self.edge_beta = None
         self.landmark_bias = None
+        # per-keypoint projection to reduce C -> kp_proj_dim before flattening
+        self.kp_proj_dim = int(kp_proj_dim)
+        try:
+            self.kp_proj = nn.Linear(in_channels, self.kp_proj_dim)
+        except Exception:
+            self.kp_proj = None
 
     def set_training_progress(self, progress):
         # Strong edge guidance at start, then let attention self-organize later.
@@ -62,6 +76,22 @@ class LearnedLandmarkBranch(nn.Module):
         y = (flat * grid_y).sum(dim=-1)
         return torch.stack([x, y], dim=-1)
 
+    def _apply_pos_encoding(self, feat_map):
+        # feat_map: (B, C, H, W)
+        if not getattr(self, 'use_pos_encoding', False):
+            return feat_map
+        bsz, C, H, W = feat_map.shape
+        # normalized coords in [0,1]
+        xs = torch.linspace(0, 1, W, device=feat_map.device, dtype=feat_map.dtype)
+        ys = torch.linspace(0, 1, H, device=feat_map.device, dtype=feat_map.dtype)
+        grid_y, grid_x = torch.meshgrid(ys, xs, indexing='ij')
+        pos = torch.stack([grid_x, grid_y], dim=0).unsqueeze(0)  # (1,2,H,W)
+        pos = pos.repeat(bsz, 1, 1, 1)
+        try:
+            delta = self.pos_proj(pos) * torch.sigmoid(self.pos_scale)
+            return feat_map + delta
+        except Exception:
+            return feat_map
     def _diversity_loss(self, attn, coords=None):
         # Encourage landmark coordinates to be far apart using pairwise distances
         # coords: (B, K, 2) in normalized [0,1] space. If not provided, fallback to previous gram-based loss.
@@ -112,6 +142,12 @@ class LearnedLandmarkBranch(nn.Module):
         return None
 
     def forward(self, feat_map, input_image=None):
+        # add positional encoding to help landmark separation (eyes/mouth etc.)
+        try:
+            feat_map = self._apply_pos_encoding(feat_map)
+        except Exception:
+            pass
+
         attn_logits = self.landmark_heatmap_head(feat_map)
         bsz, keypoints, h, w = attn_logits.shape
         edge_attn = self._build_edge_attention(input_image, h, w)
@@ -155,16 +191,20 @@ class LearnedLandmarkBranch(nn.Module):
         # pooled per-keypoint features: (B, K, C)
         feat_k = (feat_expanded * heat_expanded).sum(dim=[3, 4])
 
-        # Preserve keypoint structure by flattening K*C instead of mean-pooling
-        # This keeps relative information between eyes/mouth/eyebrows
+        # Preserve keypoint structure but reduce per-keypoint dims to avoid huge vectors
         bsz, K, C = feat_k.shape
-        feat_k_flat = feat_k.view(bsz, K * C)  # (B, K*C)
+        if getattr(self, 'kp_proj', None) is not None:
+            # apply projection per keypoint
+            feat_k_reduced = self.kp_proj(feat_k)  # (B, K, kp_proj_dim)
+            feat_k_flat = feat_k_reduced.view(bsz, K * self.kp_proj_dim)
+        else:
+            feat_k_flat = feat_k.view(bsz, K * C)
 
         # global pooled feature (B, C)
         global_attn = attn.mean(dim=1, keepdim=True)
         feat_global = (feat_map * global_attn).sum(dim=[2, 3])  # (B, C)
 
-        # concat flattened per-keypoint features and global pooled -> (B, K*C + C)
+        # concat flattened per-keypoint features and global pooled -> (B, K*kp_proj_dim + C)
         feat_k = torch.cat([feat_k_flat, feat_global], dim=1)
         # normalize fused landmark features to avoid backbone domination
         feat_k = F.normalize(feat_k, dim=1)
@@ -183,11 +223,26 @@ class LearnedLandmarkBranch(nn.Module):
         max_val = attn.amax(dim=[2, 3])
         peak_loss = ((1.0 - max_val) ** 2 ).mean()
 
+        # Heatmap overlap penalty: discourage different keypoints from overlapping
+        flat_maps = attn.view(bsz, keypoints, -1)
+        # normalize per-map for stable dot products
+        flat_norm = flat_maps / (flat_maps.norm(dim=-1, keepdim=True).clamp(min=1e-6))
+        with torch.no_grad():
+            eye = torch.eye(keypoints, device=attn.device, dtype=attn.dtype).unsqueeze(0)
+        sim_m = torch.bmm(flat_norm, flat_norm.transpose(1, 2))  # (B, K, K)
+        mask = ~eye.bool()
+        if mask.sum() > 0:
+            overlap_loss = sim_m[mask].mean()
+        else:
+            overlap_loss = attn.new_tensor(0.0)
+
         # Keep only lightweight, non-toxic auxiliaries for low-res FER
         aux = {
-            "landmark_diversity": self._diversity_loss(attn),
+            "landmark_diversity": self._diversity_loss(attn, coords=coords),
             # use peak-based loss instead of raw entropy to encourage sharp attention
             "landmark_entropy": peak_loss,
+            # heatmap overlap penalty
+            "landmark_overlap": overlap_loss,
             # keep edge consistency (soft guidance) but avoid heavy alignment/conv/TV penalties
             "landmark_edge_consistency": edge_consistency,
             "landmark_edge_align": attn.new_tensor(0.0),

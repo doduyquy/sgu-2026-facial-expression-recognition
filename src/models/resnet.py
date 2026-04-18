@@ -85,6 +85,7 @@ class ResNet50(nn.Module):
 
         landmark_from_stage=3,#Dùng để xác định lấy feature map từ stage nào để làm input cho nhánh landmark (3 hoặc 4)
         landmark_num_heads=1, #Dùng để xác định số head trong multi-head landmark branch (>=1, nếu =1 thì sẽ dùng single-head như trước)
+        landmark_kp_proj_dim=64,
         # Optionally upsample input images before backbone (e.g., (96,96) or (112,112))
         input_upsample=None,
     ):
@@ -162,12 +163,14 @@ class ResNet50(nn.Module):
                 head_dropout_p=landmark_head_dropout_p,
                 edge_guidance_beta=landmark_edge_guidance_beta,
                 edge_alpha=landmark_edge_alpha,
+                kp_proj_dim=landmark_kp_proj_dim,
             )
         else:
             self.learned_landmark_branch = LearnedLandmarkBranch(
                 in_channels=landmark_in_channels,
                 landmark_num_points=landmark_num_points,
                 landmark_tau=landmark_tau,
+                kp_proj_dim=landmark_kp_proj_dim,
                 feature_dropout_p=landmark_feature_dropout_p,
                 head_dropout_p=landmark_head_dropout_p,
                 edge_guidance_beta=landmark_edge_guidance_beta,
@@ -175,9 +178,10 @@ class ResNet50(nn.Module):
             )
 
         # reduce high-dimensional pooled landmark features to a compact vector before fusion
-        # after learned_landmark pooling we now produce a vector of size (K*C + C) i.e. (landmark_num_points + 1) * landmark_in_channels
+        # after learned_landmark pooling we produce: (K * kp_proj_dim) + C_global
         self.landmark_reduce_dim = 512
-        landmark_feat_in_dim = landmark_in_channels * (self.landmark_num_points + 1)
+        kp_proj_dim = getattr(self.learned_landmark_branch, 'kp_proj_dim', 64)
+        landmark_feat_in_dim = (self.landmark_num_points * int(kp_proj_dim)) + landmark_in_channels
         self.landmark_reduce = nn.Sequential(
             nn.LayerNorm(landmark_feat_in_dim),
             nn.Linear(landmark_feat_in_dim, self.landmark_reduce_dim),
