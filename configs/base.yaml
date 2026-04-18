@@ -30,7 +30,7 @@ training:
 # !!! WARNING !!!  
 logging:
   # wandb
-  use_wandb: true
+  use_wandb: False
   wandb_entity: "phucga15062005"
   wandb_project: "FER2013"
   # save_dir_name: "outputs"
