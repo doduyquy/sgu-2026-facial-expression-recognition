@@ -3,7 +3,7 @@
 _base_: "base.yaml"
 
 device:
-  n_gpu: 2
+  n_gpu: 1
 
 model:
   name: "region_aligned_fer"
@@ -32,7 +32,7 @@ model:
 data:
   image_size: 48
   channels: 1
-  batch_size: 4
+  batch_size: 64
 
 training:
   lr: 0.0001           # Lower base LR for SAM stability
