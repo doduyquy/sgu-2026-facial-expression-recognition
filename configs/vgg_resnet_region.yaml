@@ -32,7 +32,7 @@ model:
 data:
   image_size: 48
   channels: 1
-  batch_size: 64
+  batch_size: 32
 
 training:
   lr: 0.0001           # Lower base LR for SAM stability
