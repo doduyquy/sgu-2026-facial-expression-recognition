@@ -189,7 +189,8 @@ class ResNet50(nn.Module):
         # after learned_landmark pooling we produce: (K * kp_proj_dim) + C_global
         self.landmark_reduce_dim = 512
         kp_proj_dim = getattr(self.learned_landmark_branch, 'kp_proj_dim', 64)
-        landmark_feat_in_dim = (self.landmark_num_points * int(kp_proj_dim)) + landmark_in_channels
+        # landmark_feat_in_dim should reflect the branch input channel (branch_in_channels)
+        landmark_feat_in_dim = (self.landmark_num_points * int(kp_proj_dim)) + int(branch_in_channels)
         self.landmark_reduce = nn.Sequential(
             nn.LayerNorm(landmark_feat_in_dim),
             nn.Linear(landmark_feat_in_dim, self.landmark_reduce_dim),
