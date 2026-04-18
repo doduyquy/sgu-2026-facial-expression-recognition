@@ -65,8 +65,22 @@ def main():
         print("\n" + "="*50)
         print("[Transfer Learning] Loading pretrained backbones...")
         print("="*50)
-        base_model.load_pretrained_backbones(pretrained_vgg, pretrained_resnet, device=device)
-        base_model.freeze_backbones()
+
+        missing_paths = []
+        if not os.path.exists(pretrained_vgg):
+            missing_paths.append(("VGG", pretrained_vgg))
+        if not os.path.exists(pretrained_resnet):
+            missing_paths.append(("ResNet", pretrained_resnet))
+
+        if missing_paths:
+            print("[Transfer Learning] Skip pretrained backbone loading.")
+            for backbone_name, missing_path in missing_paths:
+                print(f"  - Missing {backbone_name} checkpoint: {missing_path}")
+            print("  - Training will continue from scratch for this model.")
+        else:
+            base_model.load_pretrained_backbones(pretrained_vgg, pretrained_resnet, device=device)
+            base_model.freeze_backbones()
+
         print("="*50 + "\n")
 
 
