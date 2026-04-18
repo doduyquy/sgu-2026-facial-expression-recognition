@@ -172,23 +172,21 @@ class RegionAlignedFER(nn.Module):
         # Project ResNet 1024-d → 512-d để đồng bộ với VGG
         self.proj_res = nn.Linear(1024, self.embed_dim)
 
-        # ===== 1.5. Visual Transformer (Self-Attention) =====
-        # Positional Encoding Cố định (Sine/Cosine) cho khối hình ảnh 45 tokens
+        # ===== 1.5. Visual Fusion (Cross-Attention) =====
+        # Phân tách Positional Encoding thành 2 mảng riêng biệt cho VGG(9) và Resnet(36)
         self.register_buffer(
-            'visual_pos_embed',
-            get_sinusoidal_position_encoding(45, self.embed_dim)
+            'vgg_pos_embed',
+            get_sinusoidal_position_encoding(9, self.embed_dim)
         )
-        visual_encoder_layer = nn.TransformerEncoderLayer(
-            d_model=self.embed_dim,
-            nhead=self.num_heads,
-            dim_feedforward=self.embed_dim * 2,
-            dropout=self.dropout_rate,
-            batch_first=True,
-            activation='gelu'
+        self.register_buffer(
+            'res_pos_embed',
+            get_sinusoidal_position_encoding(36, self.embed_dim)
         )
-        self.visual_encoder = nn.TransformerEncoder(
-            visual_encoder_layer,
-            num_layers=1
+        # Sử dụng SemanticVisualAlignment để làm Cross-Attention dung hợp VGG và ResNet
+        self.visual_cross_fusion = SemanticVisualAlignment(
+            embed_dim=self.embed_dim,
+            num_heads=self.num_heads,
+            dropout=self.dropout_rate
         )
 
         # ===== 2. Facial Region Dictionary =====
@@ -314,22 +312,25 @@ class RegionAlignedFER(nn.Module):
         res_feat = self.res_backbone(x)          # [B, 36, 1024]
         res_feat = self.proj_res(res_feat)       # [B, 36, 512]
 
-        # Φ_visual: nối đặc trưng từ cả hai backbone
-        visual_features = torch.cat([vgg_feat, res_feat], dim=1)  # [B, 45, 512]
+        # Chèn Positional Encoding độc lập
+        vgg_feat = vgg_feat + self.vgg_pos_embed
+        res_feat = res_feat + self.res_pos_embed
 
-        # ── 1.5. Visual Transformer (Self-Attention) ──
-        # Kết hợp các token ảnh lại với nhau, cấy thông tin không gian
-        visual_features = visual_features + self.visual_pos_embed
-        visual_features = self.visual_encoder(visual_features)
+        # ── 1.5. Visual Fusion (Cross-Attention) ──
+        # VGG (9) làm Query, đi nội suy các chi tiết từ ResNet (36)
+        visual_features, _ = self.visual_cross_fusion(
+            region_tokens=vgg_feat,          # Query
+            visual_features=res_feat         # Key / Value
+        ) # Output: [B, 9, 512]
 
         # ── 2. Region Tokens ──
         region_tokens = self.region_dict(B)      # [B, 6, 512]
 
         # ── 3. Semantic-Visual Alignment (Cross-Attention) ──
-        # region Q "soi" vào visual K,V
+        # region Q (6) "soi" vào visual K,V (9)
         phi_sem, attn_weights = self.alignment(
             region_tokens, visual_features
-        )                                        # [B, 6, 512], [B, 6, 45]
+        )                                        # [B, 6, 512], [B, 6, 9]
 
         # ── 4. Hyper-visual Representation ──
         # Pool toàn bộ visual features → 1 vector, broadcast cộng vào Φ_sem
