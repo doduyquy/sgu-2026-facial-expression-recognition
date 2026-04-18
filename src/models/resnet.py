@@ -69,21 +69,23 @@ class ConvBlock(nn.Module):
 class ResNet50(nn.Module):
     def __init__(
         self,
-        num_classes=7,
-        in_channels=1,
+        num_classes=7, #số class mặc định là 7 (theo FER2013), nhưng có thể override qua config
+        in_channels=1, #số channel của input, mặc định 1 (grayscale), nhưng có thể override qua config
         use_cbam_stage34=True,
-        cbam_reduction=16,
-        cbam_kernel_size=7,
-        use_learned_landmark_branch=True,
-        landmark_num_points=6,
-        landmark_tau=0.07,
-        landmark_feature_dropout_p=0.3,
-        landmark_head_dropout_p=0.2,
-        landmark_edge_guidance_beta=1.0,
-        landmark_edge_alpha=6.0,
+        cbam_reduction=16, #số lượng kênh giảm trong CBAM, mặc định 16, nhưng có thể override qua config
+        cbam_kernel_size=7, #kích thước kernel trong CBAM, mặc định 7, nhưng có thể override qua config
+        use_learned_landmark_branch=True, #Xác định dùng nhánh learned landmark
+        landmark_num_points=6, #Số điểm landmark, mặc định 6, nhưng có thể override qua config
+        landmark_tau=0.07, #Dùng để điều chỉnh độ mềm của heatmap
+        landmark_feature_dropout_p=0.3, #Dùng để dropout trên feature map trước khi tạo heatmap để tăng tính generalization
+        landmark_head_dropout_p=0.2, # Dùng để dropout trên từng head của multi-head để tăng tính diversity giữa các head
+        landmark_edge_guidance_beta=1.0, #Dùng để điều chỉnh trọng số edge guidance trong loss của nhánh landmark
+        landmark_edge_alpha=6.0, #Dùng để điều chỉnh độ nhạy của edge guidance (alpha trong exp(-alpha * edge_dist)) để làm mờ dần ảnh hưởng của các điểm xa cạnh
 
-        landmark_from_stage=3,
-        landmark_num_heads=1,
+        landmark_from_stage=3,#Dùng để xác định lấy feature map từ stage nào để làm input cho nhánh landmark (3 hoặc 4)
+        landmark_num_heads=1, #Dùng để xác định số head trong multi-head landmark branch (>=1, nếu =1 thì sẽ dùng single-head như trước)
+        # Optionally upsample input images before backbone (e.g., (96,96) or (112,112))
+        input_upsample=None,
     ):
         super().__init__()
         self.use_learned_landmark_branch = use_learned_landmark_branch
@@ -91,10 +93,12 @@ class ResNet50(nn.Module):
         self.landmark_tau = landmark_tau
         self.landmark_from_stage = landmark_from_stage
         self.landmark_num_heads = max(1, int(landmark_num_heads))
+        # optional input upsample size (H, W) or None
+        self.input_upsample = tuple(input_upsample) if input_upsample is not None else None
 
-        self._latest_aux_losses = {}
-        self._latest_landmark_heatmaps = None
-        self._latest_landmark_coords = None
+        self._latest_aux_losses = {} #dùng để lưu trữ các loss phụ từ nhánh landmark để log lên wandb, tránh việc phải return nhiều giá trị từ forward
+        self._latest_landmark_heatmaps = None #dùng để lưu trữ heatmap đầu ra từ nhánh landmark để log lên wandb
+        self._latest_landmark_coords = None #dùng để lưu trữ tọa độ landmark đầu ra từ nhánh landmark để log lên wandb
 
         self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, stride=1, padding=1)
         self.bn1 = nn.BatchNorm2d(64)
@@ -156,8 +160,8 @@ class ResNet50(nn.Module):
                 edge_alpha=landmark_edge_alpha,
             )
 
-        # include feat3 (spatial information) + feat4 + landmark features
-        fusion_in_dim = 512 + 1024 + ((landmark_num_points + 1) * landmark_in_channels)
+        #Dùng để fusion giữa feature map từ backbone và feature map từ nhánh landmark để đưa vào classifier cuối cùng. Kích thước đầu vào sẽ là tổng của 3 phần: feature map từ stage 3, feature map từ stage 4, và feature map được trích xuất từ heatmap landmark (sau khi flatten). Cụ thể là: 512 (stage 3) + 1024 (stage 4) + ((landmark_num_points + 1) * landmark_in_channels) (từ nhánh landmark, bao gồm cả điểm đặc trưng trung tâm). Tổng sẽ là 1536 nếu dùng 6 điểm landmark với input 512 kênh cho nhánh landmark.
+        fusion_in_dim = 512 + 1024 + ((landmark_num_points + 1) * landmark_in_channels) #tính toán kích thước đầu vào cho fusion_fc dựa trên số điểm landmark và số kênh đầu vào cho nhánh landmark
         self.landmark_fusion_fc = nn.Sequential(
             nn.Linear(fusion_in_dim, 512),
             nn.ReLU(),
@@ -165,8 +169,8 @@ class ResNet50(nn.Module):
             nn.Linear(512, num_classes),
         )
 
-        # Auxiliary classifier that maps landmark pooled features to classes.
-        aux_in_dim = (landmark_num_points + 1) * landmark_in_channels
+        #Dùng để auxiliary classification chỉ dựa trên feature map từ nhánh landmark để đảm bảo rằng các điểm landmark được học ra có tính phân biệt cao đối với nhiệm vụ chính. Kích thước đầu vào sẽ là kích thước của feature map được trích xuất từ heatmap landmark (sau khi flatten), cụ thể là (landmark_num_points + 1) * landmark_in_channels, trong đó +1 là cho điểm đặc trưng trung tâm.
+        aux_in_dim = (landmark_num_points + 1) * landmark_in_channels #tính toán kích thước đầu vào cho landmark_aux_fc dựa trên số điểm landmark và số kênh đầu vào cho nhánh landmark
         self.landmark_aux_fc = nn.Sequential(
             nn.Linear(aux_in_dim, 256),
             nn.ReLU(),
@@ -178,6 +182,9 @@ class ResNet50(nn.Module):
         self._latest_landmark_aux_logits = None
         # learnable scale for landmark features to avoid hardcoded heuristics
         self.landmark_scale = nn.Parameter(torch.tensor(1.0))
+
+        # small projection for landmark features can be added later; keep placeholder name
+        self.landmark_proj = None
 
     def get_aux_losses(self):
         return self._latest_aux_losses
@@ -207,7 +214,16 @@ class ResNet50(nn.Module):
         _ = landmark_mask
         input_image = x
 
-        x = self.relu(self.bn1(self.conv1(x)))
+        # optionally upsample input image to larger spatial size to give backbone more resolution
+        if self.input_upsample is not None:
+            try:
+                input_image = nn.functional.interpolate(input_image, size=self.input_upsample, mode='bilinear', align_corners=False)
+            except Exception:
+                # fallback to original if interpolation fails
+                input_image = x
+
+        # run backbone on (possibly upsampled) input
+        x = self.relu(self.bn1(self.conv1(input_image)))
         x = self.pool(x)
 
         x = self.layer2(x)

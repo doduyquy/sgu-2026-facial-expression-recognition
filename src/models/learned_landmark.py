@@ -9,6 +9,7 @@ class LearnedLandmarkBranch(nn.Module):
         in_channels=1024,
         landmark_num_points=6,
         landmark_tau=0.07,
+        diversity_margin=0.05,
         feature_dropout_p=0.3,
         head_dropout_p=0.2,
         edge_guidance_beta=1.0,
@@ -22,6 +23,7 @@ class LearnedLandmarkBranch(nn.Module):
         self.edge_guidance_beta = edge_guidance_beta
         self.edge_alpha = edge_alpha
         self.current_edge_weight = 1.0
+        self.diversity_margin = float(diversity_margin)
 
         self.landmark_heatmap_head = nn.Conv2d(in_channels, landmark_num_points, kernel_size=1)
         # Learnable per-keypoint edge extractor (replaces fixed Sobel)
@@ -68,8 +70,7 @@ class LearnedLandmarkBranch(nn.Module):
         y = (flat * grid_y).sum(dim=-1)
         return torch.stack([x, y], dim=-1)
 
-    @staticmethod
-    def _diversity_loss(attn, coords=None):
+    def _diversity_loss(self, attn, coords=None):
         # Encourage landmark coordinates to be far apart using pairwise distances
         # coords: (B, K, 2) in normalized [0,1] space. If not provided, fallback to previous gram-based loss.
         bsz, keypoints, _, _ = attn.shape
@@ -91,8 +92,10 @@ class LearnedLandmarkBranch(nn.Module):
             # mask out diagonal
             mask = ~torch.eye(keypoints, device=d.device, dtype=torch.bool).unsqueeze(0)
             d_masked = d[mask].view(bsz, keypoints * (keypoints - 1))
-            # encourage large distances via exponential penalty on small distances
-            loss_per_sample = torch.exp(-d_masked).mean(dim=1)
+            # stronger margin-based diversity: penalize when points closer than margin
+            margin = getattr(self, 'diversity_margin', 0.05)
+            # use relu(margin - distance) to push points apart when too close
+            loss_per_sample = F.relu(margin - d_masked).mean(dim=1)
             return loss_per_sample.mean()
         except Exception:
             # safe fallback
@@ -173,6 +176,8 @@ class LearnedLandmarkBranch(nn.Module):
 
         feat_k = feat_k.view(bsz, -1)
         feat_k = torch.cat([feat_k, feat_global], dim=1)
+        # normalize fused landmark features to avoid backbone domination
+        feat_k = F.normalize(feat_k, dim=1)
         feat_k = F.dropout(feat_k, p=self.feature_dropout_p, training=self.training)
 
         # Edge consistency per keypoint: encourage overlap between attention and sobel target

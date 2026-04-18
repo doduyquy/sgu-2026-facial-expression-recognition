@@ -14,6 +14,8 @@ class Trainer:
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.criterion = criterion
+        # keep base criterion available for runtime switching (focal vs base)
+        self._base_criterion = self.criterion
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.device = device
@@ -47,6 +49,18 @@ class Trainer:
         self.landmark_aux_cls_lambda = config['training'].get('landmark_aux_cls_lambda', 0.1)
         # auxiliary logits consistency (KL) weight
         self.landmark_aux_consistency_lambda = config['training'].get('landmark_aux_consistency_lambda', 0.1)
+        # focal loss removed to avoid conflict with SCN; use base criterion only
+        # === SCN (light) ===
+        self.use_scn = config['training'].get('use_scn', True)
+        # default warmup: 30% of total epochs
+        self.scn_warmup_epochs = int(config['training'].get('scn_warmup_epochs', max(1, int(0.3 * self.epochs))))
+        self.scn_alpha = float(config['training'].get('scn_alpha', 1.0))
+        self.scn_rank_lambda = float(config['training'].get('scn_rank_lambda', 0.1))
+        self.scn_min_weight = float(config['training'].get('scn_min_weight', 0.2))
+        # margin for ranking loss
+        self.scn_margin = float(config['training'].get('scn_margin', 0.1))
+        # runtime flags (set by fit staging)
+        self._runtime_use_scn = None
 
     @staticmethod
     def _extract_logits(outputs):
@@ -68,6 +82,62 @@ class Trainer:
                 return aux
         return {}
 
+    def _scn_loss(self, logits, labels):
+        """
+        SCN-light:
+        - sample weighting theo confidence
+        - ranking loss (easy vs hard)
+        Returns: total_loss, logs_dict
+        """
+        # per-sample CE
+        ce = F.cross_entropy(logits, labels, reduction='none')  # (B,)
+
+        with torch.no_grad():
+            probs = F.softmax(logits, dim=1)
+            conf = probs.gather(1, labels.unsqueeze(1)).squeeze(1)  # (B,)
+            # normalize confidence (relative within batch) then squash (unused)
+            # conf_norm = (conf - conf.mean()) / (conf.std() + 1e-6)
+            # invert weighting: low-conf (hard) -> higher weight (stronger for FER noisy)
+            weights = (1.0 - conf).pow(2.0)
+            weights = weights.clamp(min=self.scn_min_weight)
+
+        # main weighted CE term
+        loss = (weights * ce).mean()
+
+        # ranking loss: use percentile split (e.g., 30% hardest) to be robust
+        sorted_conf, idx = torch.sort(conf)
+        B = logits.size(0)
+        k = max(1, int(0.3 * B))
+        hard_idx = idx[:k]
+        easy_idx = idx[k:]
+        # safe computation in small batches: fallback to zero when empty
+        if hard_idx.numel() > 0:
+            hard_loss = ce[hard_idx].mean()
+        else:
+            hard_loss = torch.tensor(0.0, device=self.device)
+        if easy_idx.numel() > 0:
+            easy_loss = ce[easy_idx].mean()
+        else:
+            easy_loss = torch.tensor(0.0, device=self.device)
+        # margin to enforce separation
+        margin = float(getattr(self, 'scn_margin', 0.1))
+        # start ranking after SCN warmup (scale with config)
+        ranking_start = int(getattr(self, 'scn_warmup_epochs', 0))
+        if getattr(self, '_current_epoch', 0) > ranking_start:
+            ranking_loss = F.relu(easy_loss - hard_loss + margin)
+        else:
+            ranking_loss = torch.tensor(0.0, device=self.device)
+
+        # combine with alpha scaling
+        total_loss = (self.scn_alpha * loss) + (self.scn_rank_lambda * ranking_loss)
+
+        logs = {
+            "scn_weight_mean": float(weights.mean().cpu().item()),
+            "scn_conf_mean": float(conf.mean().cpu().item()),
+            "scn_rank_loss": float(ranking_loss.cpu().item()),
+        }
+        return total_loss, logs
+
 
     def train_one_epoch(self):
         self.model.train()
@@ -75,16 +145,22 @@ class Trainer:
         running_loss = 0.0
         corrects = 0
         total = 0
+        # reset latest scn logs for this epoch
+        self._latest_scn_logs = None
+
+        # accumulator for scn metrics across batches
+        _scn_acc = {"scn_weight_mean": [], "scn_conf_mean": [], "scn_rank_loss": []}
 
         # runtime lambdas (may be set by fit() for staged schedule)
         div_lambda = getattr(self, '_runtime_diversity_lambda', self.landmark_diversity_lambda)
-        entropy_lambda = getattr(self, '_runtime_entropy_lambda', self.landmark_entropy_lambda)
+        # entropy regularization removed (use Option A: do not enforce target entropy per-image)
+        # entropy_lambda = getattr(self, '_runtime_entropy_lambda', self.landmark_entropy_lambda)
         edge_consistency_lambda = getattr(self, '_runtime_edge_consistency_lambda', self.landmark_edge_consistency_lambda)
-        augment_lambda = getattr(self, '_runtime_augment_lambda', self.landmark_augment_consistency_lambda)
+        # augment consistency intentionally disabled to avoid destabilizing landmarks on small images
+        augment_lambda = 0.0
         aux_cls_lambda = getattr(self, '_runtime_aux_cls_lambda', self.landmark_aux_cls_lambda)
         # convert lambdas to tensors to avoid dtype/interop issues when combining with torch tensors
         div_lambda_t = torch.tensor(float(div_lambda), device=self.device)
-        entropy_lambda_t = torch.tensor(float(entropy_lambda), device=self.device)
         edge_consistency_lambda_t = torch.tensor(float(edge_consistency_lambda), device=self.device)
         augment_lambda_t = torch.tensor(float(augment_lambda), device=self.device)
         aux_cls_lambda_t = torch.tensor(float(aux_cls_lambda), device=self.device)
@@ -96,7 +172,26 @@ class Trainer:
             outputs = self.model(images)
             logits = self._extract_logits(outputs)
 
-            cls_loss = self.criterion(logits, labels)
+            # determine effective runtime flag for SCN (set by fit phases if present)
+            runtime_use_scn = getattr(self, '_runtime_use_scn', self.use_scn)
+
+            # apply SCN-light after warmup epochs if enabled by runtime flag
+            if runtime_use_scn and getattr(self, '_current_epoch', 0) >= getattr(self, 'scn_warmup_epochs', 0):
+                try:
+                    cls_loss, scn_logs = self._scn_loss(logits, labels)
+                    # accumulate scn logs for epoch-level summary
+                    try:
+                        _scn_acc["scn_weight_mean"].append(scn_logs.get("scn_weight_mean", 0.0))
+                        _scn_acc["scn_conf_mean"].append(scn_logs.get("scn_conf_mean", 0.0))
+                        _scn_acc["scn_rank_loss"].append(scn_logs.get("scn_rank_loss", 0.0))
+                    except Exception:
+                        pass
+                except Exception:
+                    # fallback to base criterion
+                    cls_loss = self._base_criterion(logits, labels)
+            else:
+                # use base criterion when SCN not active
+                cls_loss = self._base_criterion(logits, labels)
             aux_losses = self._extract_aux_losses(outputs)
 
             # (no target) use raw entropy directly for both train and val
@@ -106,20 +201,18 @@ class Trainer:
                 "landmark_entropy",
                 aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
             )
-            # normalize entropy by heatmap area to make it scale-invariant: entropy / log(H*W)
+            # (entropy regularization removed) keep raw value if needed elsewhere
             heatmaps_now, _ = self.model.get_landmark_outputs()
             if heatmaps_now is not None:
                 try:
                     _, _, H_att, W_att = heatmaps_now.shape
-                    denom = float(np.log(max(1, H_att * W_att)))
-                    if denom > 0:
-                        entropy_reg = entropy_loss / denom
-                    else:
-                        entropy_reg = entropy_loss
+                    denom = float(np.log(max(2, H_att * W_att)))
+                    if denom <= 0:
+                        denom = 1e-6
                 except Exception:
-                    entropy_reg = entropy_loss
+                    denom = 1.0
             else:
-                entropy_reg = entropy_loss
+                denom = 1.0
             edge_align_loss = aux_losses.get("landmark_edge_align", torch.tensor(0.0, device=self.device))
             edge_consistency_loss = aux_losses.get("landmark_edge_consistency", torch.tensor(0.0, device=self.device))
             edge_conv_reg = aux_losses.get("landmark_edge_conv_reg", torch.tensor(0.0, device=self.device))
@@ -129,7 +222,6 @@ class Trainer:
             loss = (
                 cls_loss
                 + (div_lambda_t * div_loss)
-                + (entropy_lambda_t * entropy_reg)
                 + (edge_consistency_lambda_t * edge_consistency_loss)
             )
 
@@ -148,12 +240,9 @@ class Trainer:
                     aux_consistency_lambda = getattr(self, '_runtime_aux_consistency_lambda', self.landmark_aux_consistency_lambda)
                     aux_consistency_lambda_t = torch.tensor(float(aux_consistency_lambda), device=self.device)
                     if aux_consistency_lambda_t.item() > 0.0:
-                        # mutual learning: symmetric KL between main and aux (average of both directions)
+                        # safer: guide main prediction with aux (aux -> main)
                         p_main = F.softmax(logits.detach(), dim=1)
-                        p_aux = F.softmax(aux_logits, dim=1)
-                        kl1 = F.kl_div(F.log_softmax(aux_logits, dim=1), p_main, reduction='batchmean')
-                        kl2 = F.kl_div(F.log_softmax(logits, dim=1), p_aux.detach(), reduction='batchmean')
-                        kl = 0.5 * (kl1 + kl2)
+                        kl = F.kl_div(F.log_softmax(aux_logits, dim=1), p_main, reduction='batchmean')
                         loss = loss + (aux_consistency_lambda_t * kl)
                 except Exception:
                     pass
@@ -168,7 +257,7 @@ class Trainer:
                         # build an augmented batch (same random params for whole batch)
                         bsz, c, H, W = heatmaps_orig.shape
                         # sample milder random affine params to avoid heavy misalignment on small images
-                        angle = float(np.random.uniform(-10, 10))
+                        angle = float(np.random.uniform(-5, 5))
                         max_tx = max(1, int(0.05 * W))
                         max_ty = max(1, int(0.05 * H))
                         translate = (int(np.random.randint(-max_tx, max_tx + 1)), int(np.random.randint(-max_ty, max_ty + 1)))
@@ -178,13 +267,15 @@ class Trainer:
                         # apply same transform to input images
                         images_aug = torch.stack([TF.affine(img, angle=angle, translate=translate, scale=scale, shear=shear, fill=0) for img in images])
 
-                        # forward pass on augmented images without updating BN running stats or grads
+                        # forward pass on augmented images without updating grads
+                        # use eval() to keep BN/dropout behavior stable for consistency signal
                         was_training = self.model.training
                         self.model.eval()
                         with torch.no_grad():
                             _ = self.model(images_aug)
                         heatmaps_aug, coords_aug = self.model.get_landmark_outputs()
                         if was_training:
+                            # restore train mode if we started in train
                             self.model.train()
 
                         if heatmaps_aug is not None:
@@ -217,6 +308,19 @@ class Trainer:
         epoch_loss = running_loss / total
         epoch_acc = corrects.double() / total
 
+        # finalize SCN logs (mean across batches) if any
+        try:
+            if len(_scn_acc["scn_weight_mean"]) > 0:
+                self._latest_scn_logs = {
+                    "scn_weight_mean": float(sum(_scn_acc["scn_weight_mean"]) / len(_scn_acc["scn_weight_mean"])),
+                    "scn_conf_mean": float(sum(_scn_acc["scn_conf_mean"]) / len(_scn_acc["scn_conf_mean"])),
+                    "scn_rank_loss": float(sum(_scn_acc["scn_rank_loss"]) / len(_scn_acc["scn_rank_loss"])),
+                }
+            else:
+                self._latest_scn_logs = None
+        except Exception:
+            self._latest_scn_logs = None
+
         return epoch_loss, epoch_acc
 
 
@@ -236,28 +340,24 @@ class Trainer:
                 cls_loss = self.criterion(logits, labels)
                 aux_losses = self._extract_aux_losses(outputs)
                 div_loss = aux_losses.get("landmark_diversity", torch.tensor(0.0, device=self.device))
+                # entropy auxiliary is present but not used as an explicit regularizer
                 entropy_loss = aux_losses.get(
                     "landmark_entropy",
                     aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
                 )
-                # use raw entropy as regularizer (no target -- temperature already controls sharpness)
-                entropy_reg = entropy_loss
                 edge_align_loss = aux_losses.get("landmark_edge_align", torch.tensor(0.0, device=self.device))
                 edge_consistency_loss = aux_losses.get("landmark_edge_consistency", torch.tensor(0.0, device=self.device))
                 edge_conv_reg = aux_losses.get("landmark_edge_conv_reg", torch.tensor(0.0, device=self.device))
                 edge_tv = aux_losses.get("landmark_edge_tv", torch.tensor(0.0, device=self.device))
                 # Use runtime lambdas if scheduled by fit(), otherwise fall back to configured defaults
                 div_lambda = getattr(self, '_runtime_diversity_lambda', self.landmark_diversity_lambda)
-                entropy_lambda = getattr(self, '_runtime_entropy_lambda', self.landmark_entropy_lambda)
                 edge_consistency_lambda = getattr(self, '_runtime_edge_consistency_lambda', self.landmark_edge_consistency_lambda)
                 # convert to tensors to avoid type-mixing errors
                 div_lambda_t = torch.tensor(float(div_lambda), device=self.device)
-                entropy_lambda_t = torch.tensor(float(entropy_lambda), device=self.device)
                 edge_consistency_lambda_t = torch.tensor(float(edge_consistency_lambda), device=self.device)
                 loss = (
                     cls_loss
                     + (div_lambda_t * div_loss)
-                    + (entropy_lambda_t * entropy_reg)
                     + (edge_consistency_lambda_t * edge_consistency_loss)
                 )
                 running_loss += loss.item() * images.size(0)
@@ -290,6 +390,8 @@ class Trainer:
         print(f'\n--> Start training in total {self.epochs} epochs with {self.device} device. Start...\n')
 
         for ep in range(self.epochs):
+            # expose current epoch for runtime gating (SCN warmup etc.)
+            self._current_epoch = ep
             progress = ep / max(self.epochs - 1, 1)
             set_progress = getattr(self.model, "set_training_progress", None)
             if callable(set_progress):
@@ -299,31 +401,38 @@ class Trainer:
                     pass
 
             # apply 3-phase staged lambda schedule (Sunset recommendation)
+            # Phase-based schedule aligned with SCN paper guidance
             if progress <= 0.3:
-                # Phase 1: focus on classification only
+                # Phase 1 (0-30%): CLEAN LEARNING
+                # only base classification (no SCN, no focal, no landmark losses)
                 self._runtime_diversity_lambda = 0.0
                 self._runtime_entropy_lambda = 0.0
                 self._runtime_augment_lambda = 0.0
                 self._runtime_edge_consistency_lambda = 0.0
                 self._runtime_aux_cls_lambda = 0.0
                 self._runtime_aux_consistency_lambda = 0.0
+                self._runtime_use_scn = False
             elif progress <= 0.7:
-                # Phase 2: start lightweight landmark usefulness training
-                self._runtime_diversity_lambda = 0.05
+                # Phase 2 (30-70%): NOISE HANDLING
+                # enable SCN (weighted CE + optional ranking), keep landmark losses off
+                self._runtime_diversity_lambda = 0.0
                 self._runtime_entropy_lambda = 0.0
                 self._runtime_augment_lambda = 0.0
                 self._runtime_edge_consistency_lambda = 0.0
-                self._runtime_aux_cls_lambda = 0.1
-                self._runtime_aux_consistency_lambda = 0.1
+                # small auxiliary classification to encourage usefulness
+                self._runtime_aux_cls_lambda = 0.05
+                self._runtime_aux_consistency_lambda = 0.05
+                self._runtime_use_scn = True
             else:
-                # Phase 3: refine attention, weak regularizers
-                self._runtime_diversity_lambda = 0.2
-                # stronger peak-based sharpness regularizer in Phase 3
-                self._runtime_entropy_lambda = 0.05
+                # Phase 3 (70-100%): REFINEMENT
+                # keep SCN, enable light landmark regularizers and aux losses
+                self._runtime_diversity_lambda = 0.1
+                self._runtime_entropy_lambda = 0.02
                 self._runtime_augment_lambda = 0.01
-                self._runtime_edge_consistency_lambda = 0.001
+                self._runtime_edge_consistency_lambda = 0.0005
                 self._runtime_aux_cls_lambda = 0.1
                 self._runtime_aux_consistency_lambda = 0.1
+                self._runtime_use_scn = True
 
             train_loss, train_acc = self.train_one_epoch()
             val_loss, val_acc = self.validate()
@@ -352,6 +461,12 @@ class Trainer:
                     "Val/Accuracy": val_acc,
                     "Learning_Rate": self.optimizer.param_groups[0]['lr']
                 }, epoch=ep)
+            # log SCN internals if present (use epoch-aggregated self._latest_scn_logs)
+            if self.use_wandb and getattr(self, '_latest_scn_logs', None) is not None:
+                try:
+                    log_metrics(self._latest_scn_logs, epoch=ep)
+                except Exception:
+                    pass
 
             # lr scheduler
             if self.scheduler is not None:
@@ -395,6 +510,11 @@ if __name__ == "__main__":
             self.fc = nn.Linear(10, 7)
         def forward(self, x):
             return self.fc(x)
+        # minimal stubs used by Trainer test
+        def get_landmark_outputs(self):
+            return None, None
+        def get_aux_losses(self):
+            return {}
 
     class DummyDataset(Dataset):
         def __len__(self): return 16
@@ -404,7 +524,8 @@ if __name__ == "__main__":
     mock_config = {
         'training': {'epochs': 3, 'patience': 2},
         'path': {'root': '/tmp/'},
-        'model': {'name': 'dummy_model'}
+        'model': {'name': 'dummy_model'},
+        'logging': {'use_wandb': False}
     }
 
     train_loader = DataLoader(DummyDataset(), batch_size=8)
@@ -416,7 +537,21 @@ if __name__ == "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     try:
-        trainer = Trainer(model, train_loader, val_loader, criterion, optimizer, mock_config, device)
+        scheduler = None
+        run_name = "debug_run"
+        save_path = "checkpoint.pth"
+        trainer = Trainer(
+            model,
+            train_loader,
+            val_loader,
+            criterion,
+            optimizer,
+            scheduler,
+            mock_config,
+            device,
+            run_name,
+            save_path,
+        )
         print("Fitting...")
         trainer.fit()
         print("Done!")
