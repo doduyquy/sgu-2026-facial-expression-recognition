@@ -227,12 +227,13 @@ class LearnedLandmarkBranch(nn.Module):
         flat_maps = attn.view(bsz, keypoints, -1)
         # normalize per-map for stable dot products
         flat_norm = flat_maps / (flat_maps.norm(dim=-1, keepdim=True).clamp(min=1e-6))
-        with torch.no_grad():
-            eye = torch.eye(keypoints, device=attn.device, dtype=attn.dtype).unsqueeze(0)
         sim_m = torch.bmm(flat_norm, flat_norm.transpose(1, 2))  # (B, K, K)
-        mask = ~eye.bool()
-        if mask.sum() > 0:
-            overlap_loss = sim_m[mask].mean()
+        # zero out diagonal (self-similarity) and average off-diagonals across batch
+        eye = torch.eye(keypoints, device=attn.device, dtype=sim_m.dtype).unsqueeze(0)
+        masked = sim_m * (1.0 - eye)
+        denom = float(bsz * keypoints * max(1, (keypoints - 1)))
+        if denom > 0:
+            overlap_loss = masked.sum() / denom
         else:
             overlap_loss = attn.new_tensor(0.0)
 
