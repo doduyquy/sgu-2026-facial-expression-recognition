@@ -13,7 +13,7 @@ model:
   num_encoder_layers: 2   # Số lớp Transformer Encoder
   transformer_dropout: 0.4
 
-  # VGG Backbone (giữ Spatial Attention để khớp với checkpoint 69.2%)
+  # VGG Backbone (giữ Spatial Attention để khớp với checkpoint 69.2%) 
   use_aux: false
   use_attention: true
 
