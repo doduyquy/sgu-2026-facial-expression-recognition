@@ -30,7 +30,7 @@ model:
 data:
   image_size: 48
   channels: 1
-  batch_size: 32
+  batch_size: 16
 
 training:
   lr: 0.0005         # Phase 1: LR cao - chỉ train Fusion Head
