@@ -57,6 +57,8 @@ class Trainer:
         self.landmark_aux_cls_lambda = config['training'].get('landmark_aux_cls_lambda', 0.05)
         # optional positional supervision (upper/lower face guidance)
         self.landmark_pos_sup_lambda = config['training'].get('landmark_pos_sup_lambda', 0.05)
+        # heatmap overlap penalty default
+        self.landmark_overlap_lambda = config['training'].get('landmark_overlap_lambda', 0.05)
         # auxiliary logits consistency (KL) weight (lighter default)
         self.landmark_aux_consistency_lambda = config['training'].get('landmark_aux_consistency_lambda', 0.05)
         # focal loss removed to avoid conflict with SCN; use base criterion only

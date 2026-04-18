@@ -15,8 +15,8 @@ model:
   landmark_from_stage: 34
 
 training:
-  epochs: 200
-  patience: 20
+  epochs: 300
+  patience: 30
   loss: "cross_entropy"
   use_class_weights: False
   class_weight_mode: "sqrt_inverse"
