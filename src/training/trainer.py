@@ -1,10 +1,7 @@
 import torch
-from torch import device
-import os
-import numpy as np 
-from datetime import datetime
-from src.utils.logger_wandb import init_wandb, log_image_to_wandb, log_metrics
+from src.utils.logger_wandb import init_wandb, log_metrics
 from src.training.losses import inception_loss
+from src.utils.checkpoint import save_checkpoint
 
 class Trainer:
     """Forward -> Compute loss -> zero_grad -> Backward -> Update weights (step)"""
@@ -142,11 +139,12 @@ class Trainer:
                 best_val_loss = val_loss
                 patience_counter = 0
 
-                torch.save({
-                    "model_state_dict": self.model.state_dict(),
-                    "optimizer_state_dict": self.optimizer.state_dict(),
-                    "epoch": ep
-                }, self.path_save_ckpt)
+                save_checkpoint(
+                    model=self.model,
+                    optimizer=self.optimizer,
+                    epoch=ep,
+                    checkpoint_path=self.path_save_ckpt,
+                )
                 print(f"\t--- Save best at ep {ep+1}, val_loss: {val_loss:.4f}, path: {self.path_save_ckpt} ---")
 
             else:

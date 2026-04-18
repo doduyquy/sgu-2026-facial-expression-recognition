@@ -98,19 +98,13 @@ class VGGFusionTransformer(nn.Module):
             embed_dim=self.embed_dim, 
             num_heads=self.num_heads, 
             num_layers=self.num_layers, 
-            max_len=10,
             dropout=self.dropout
         )
+        self.pe_layer = SinusoidalPositionalEncoding(self.embed_dim, max_len=10)
         self.fc = nn.Linear(self.embed_dim, config['data']['num_classes'])
 
     def forward(self, x):
         x = self.vgg(x)          # [B, 9, 512]
-        
-        # Thêm Positional Encoding Sinusoidal (bản cũ)
-        # Giả sử ta vẫn dùng Sinusoidal cho V1, ta khởi tạo PE trong __init__ và cộng ở đây
-        if not hasattr(self, 'pe_layer'):
-            self.pe_layer = SinusoidalPositionalEncoding(self.embed_dim, max_len=10).to(x.device)
-        
         x = self.pe_layer(x)
         x = self.transformer(x)  # [B, 9, 512]
         
@@ -153,7 +147,6 @@ class VGGFusionTransformerV2(nn.Module):
             embed_dim=self.embed_dim, 
             num_heads=self.num_heads, 
             num_layers=self.num_layers, 
-            max_len=10,
             dropout=self.dropout
         )
         

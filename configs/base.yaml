@@ -16,6 +16,9 @@ data:
 seed: 
   random_seed: 42
 
+device:
+  n_gpu: 1  # 0: CPU | 1: single GPU | >=2: DataParallel nếu máy có đủ GPU
+
 model:
   name: "simple_cnn"       # Tên model (key trong registry)
   pretrained: False        # Sử dụng pretrain model hông?
