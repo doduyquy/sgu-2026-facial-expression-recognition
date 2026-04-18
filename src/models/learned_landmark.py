@@ -45,7 +45,8 @@ class LearnedLandmarkBranch(nn.Module):
     def set_training_progress(self, progress):
         # Strong edge guidance at start, then let attention self-organize later.
         progress = float(max(0.0, min(1.0, progress)))
-        self.current_edge_weight = max(0.0, 1.0 - progress)
+        # use squared decay to let prior fade smoothly toward end of training
+        self.current_edge_weight = float(max(0.0, (1.0 - progress) ** 2))
 
     def get_current_prior_strength(self):
         return float(self.current_edge_weight)
@@ -68,16 +69,38 @@ class LearnedLandmarkBranch(nn.Module):
         return torch.stack([x, y], dim=-1)
 
     @staticmethod
-    def _diversity_loss(attn):
+    def _diversity_loss(attn, coords=None):
+        # Encourage landmark coordinates to be far apart using pairwise distances
+        # coords: (B, K, 2) in normalized [0,1] space. If not provided, fallback to previous gram-based loss.
         bsz, keypoints, _, _ = attn.shape
         if keypoints <= 1:
             return attn.new_tensor(0.0)
 
-        flat = attn.view(bsz, keypoints, -1)
-        flat = flat / flat.norm(dim=-1, keepdim=True).clamp(min=1e-6)
-        gram = torch.bmm(flat, flat.transpose(1, 2))
-        eye = torch.eye(keypoints, device=attn.device, dtype=attn.dtype).unsqueeze(0)
-        return (gram - eye).pow(2).mean()
+        if coords is None:
+            # fallback: original feature-space diversity (weakened)
+            flat = attn.view(bsz, keypoints, -1)
+            flat = flat / flat.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+            gram = torch.bmm(flat, flat.transpose(1, 2))
+            eye = torch.eye(keypoints, device=attn.device, dtype=attn.dtype).unsqueeze(0)
+            return (gram - eye).pow(2).mean()
+
+        # coords: (B, K, 2)
+        try:
+            # pairwise distances per sample: (B, K, K)
+            d = torch.cdist(coords, coords, p=2)
+            # mask out diagonal
+            mask = ~torch.eye(keypoints, device=d.device, dtype=torch.bool).unsqueeze(0)
+            d_masked = d[mask].view(bsz, keypoints * (keypoints - 1))
+            # encourage large distances via exponential penalty on small distances
+            loss_per_sample = torch.exp(-d_masked).mean(dim=1)
+            return loss_per_sample.mean()
+        except Exception:
+            # safe fallback
+            flat = attn.view(bsz, keypoints, -1)
+            flat = flat / flat.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+            gram = torch.bmm(flat, flat.transpose(1, 2))
+            eye = torch.eye(keypoints, device=attn.device, dtype=attn.dtype).unsqueeze(0)
+            return (gram - eye).pow(2).mean()
 
     @staticmethod
     def _entropy_loss(attn):
@@ -152,13 +175,14 @@ class LearnedLandmarkBranch(nn.Module):
         feat_k = torch.cat([feat_k, feat_global], dim=1)
         feat_k = F.dropout(feat_k, p=self.feature_dropout_p, training=self.training)
 
-        # Edge consistency per keypoint: compare predicted attn maps with fixed Sobel target
+        # Edge consistency per keypoint: encourage overlap between attention and sobel target
         if sobel_target is not None:
-            # duplicate sobel_target to K channels
+            # sobel_target: (B,1,H,W) -> expand for elementwise overlap
             sobel_k = sobel_target.repeat(1, keypoints, 1, 1)
-            edge_consistency = F.l1_loss(attn, sobel_k, reduction="mean")
+            # encourage overlap, not exact equality: mean of elementwise product
+            edge_consistency = (attn * sobel_k).mean()
             # legacy alignment metric (global mean vs edge mean using sobel)
-            edge_align = ((attn.mean(dim=1, keepdim=True) - sobel_k) ** 2).mean()
+            edge_align = ((attn.mean(dim=1, keepdim=True) - sobel_target) ** 2).mean()
         else:
             edge_consistency = attn.new_tensor(0.0)
             edge_align = attn.new_tensor(0.0)
@@ -179,9 +203,15 @@ class LearnedLandmarkBranch(nn.Module):
         else:
             edge_tv = attn.new_tensor(0.0)
 
+        # Peaky constraint: encourage each keypoint map to have a strong peak
+        # max_val: (B,K) -> encourage values near 1.0
+        max_val = attn.amax(dim=[2, 3])
+        peak_loss = (1.0 - max_val).mean()
+
         aux = {
             "landmark_diversity": self._diversity_loss(attn),
-            "landmark_entropy": self._entropy_loss(attn),
+            # use peak-based loss instead of raw entropy to encourage sharp attention
+            "landmark_entropy": peak_loss,
             "landmark_edge_align": edge_align,
             "landmark_edge_consistency": edge_consistency,
             "landmark_edge_conv_reg": edge_conv_reg,

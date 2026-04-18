@@ -1,0 +1,15 @@
+_base_: "resnet.yaml"
+
+# Lightweight test config for running on Kaggle (1-2 epoch smoke)
+model:
+  landmark_num_heads: 4
+
+data:
+  batch_size: 32
+
+training:
+  epochs: 2
+  patience: 1
+
+logging:
+  use_wandb: false

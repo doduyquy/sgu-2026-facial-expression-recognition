@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from .CBAM import CBAM
 from .learned_landmark import LearnedLandmarkBranch
+from .landmark_multihead import MultiHeadLandmarkBranch
 
 
 class IdentityBlock(nn.Module):
@@ -82,12 +83,14 @@ class ResNet50(nn.Module):
         landmark_edge_alpha=6.0,
 
         landmark_from_stage=3,
+        landmark_num_heads=1,
     ):
         super().__init__()
         self.use_learned_landmark_branch = use_learned_landmark_branch
         self.landmark_num_points = landmark_num_points
         self.landmark_tau = landmark_tau
         self.landmark_from_stage = landmark_from_stage
+        self.landmark_num_heads = max(1, int(landmark_num_heads))
 
         self._latest_aux_losses = {}
         self._latest_landmark_heatmaps = None
@@ -130,15 +133,28 @@ class ResNet50(nn.Module):
 
         landmark_in_channels = 512 if landmark_from_stage == 3 else 1024
 
-        self.learned_landmark_branch = LearnedLandmarkBranch(
-            in_channels=landmark_in_channels,
-            landmark_num_points=landmark_num_points,
-            landmark_tau=landmark_tau,
-            feature_dropout_p=landmark_feature_dropout_p,
-            head_dropout_p=landmark_head_dropout_p,
-            edge_guidance_beta=landmark_edge_guidance_beta,
-            edge_alpha=landmark_edge_alpha,
-        )
+        # support optional multi-head landmark branch
+        if self.landmark_num_heads > 1:
+            self.learned_landmark_branch = MultiHeadLandmarkBranch(
+                in_channels=landmark_in_channels,
+                landmark_num_points=landmark_num_points,
+                num_heads=self.landmark_num_heads,
+                landmark_tau=landmark_tau,
+                feature_dropout_p=landmark_feature_dropout_p,
+                head_dropout_p=landmark_head_dropout_p,
+                edge_guidance_beta=landmark_edge_guidance_beta,
+                edge_alpha=landmark_edge_alpha,
+            )
+        else:
+            self.learned_landmark_branch = LearnedLandmarkBranch(
+                in_channels=landmark_in_channels,
+                landmark_num_points=landmark_num_points,
+                landmark_tau=landmark_tau,
+                feature_dropout_p=landmark_feature_dropout_p,
+                head_dropout_p=landmark_head_dropout_p,
+                edge_guidance_beta=landmark_edge_guidance_beta,
+                edge_alpha=landmark_edge_alpha,
+            )
 
         # include feat3 (spatial information) + feat4 + landmark features
         fusion_in_dim = 512 + 1024 + ((landmark_num_points + 1) * landmark_in_channels)
@@ -160,6 +176,8 @@ class ResNet50(nn.Module):
 
         self._latest_landmark_feat = None
         self._latest_landmark_aux_logits = None
+        # learnable scale for landmark features to avoid hardcoded heuristics
+        self.landmark_scale = nn.Parameter(torch.tensor(1.0))
 
     def get_aux_losses(self):
         return self._latest_aux_losses
@@ -209,12 +227,13 @@ class ResNet50(nn.Module):
 
         landmark_src = x3 if self.landmark_from_stage == 3 else x4
         heatmaps, coords, feat_k, aux = self.learned_landmark_branch(landmark_src, input_image=input_image)
-        fused = torch.cat([feat3, feat4, feat_k], dim=1)
+        # emphasize landmark features via a learnable scale to avoid brittle heuristics
+        fused = torch.cat([feat3, feat4, self.landmark_scale * feat_k], dim=1)
         logits = self.landmark_fusion_fc(fused)
 
         # auxiliary classification from landmark features
-        # detach landmark features so aux classifier does not backprop strongly into localization
-        aux_logits = self.landmark_aux_fc(feat_k.detach())
+        # allow gradient flow so landmark features can become discriminative
+        aux_logits = self.landmark_aux_fc(feat_k)
 
         self._latest_aux_losses = aux
         self._latest_landmark_heatmaps = heatmaps

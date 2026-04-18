@@ -28,23 +28,23 @@ class Trainer:
         self.landmark_diversity_lambda = config['training'].get('landmark_diversity_lambda', 0.15)
         self.landmark_entropy_lambda = config['training'].get(
             'landmark_entropy_lambda',
-            config['training'].get('landmark_sparsity_lambda', 0.02),
+            config['training'].get('landmark_sparsity_lambda', 0.05),
         )
         # keep edge_align disabled by default
         self.landmark_edge_align_lambda = config['training'].get('landmark_edge_align_lambda', 0.0)
-        # per-keypoint edge consistency (weaker default)
-        self.landmark_edge_consistency_lambda = config['training'].get('landmark_edge_consistency_lambda', 0.01)
-        # small regularization on learned edge conv; disable TV by default
-        self.landmark_edge_conv_reg_lambda = config['training'].get('landmark_edge_conv_reg_lambda', 1e-5)
+        # per-keypoint edge consistency - disabled by default for SOTA simplicity
+        self.landmark_edge_consistency_lambda = config['training'].get('landmark_edge_consistency_lambda', 0.0)
+        # disable heavy regularizers by default (keep code but no loss contribution)
+        self.landmark_edge_conv_reg_lambda = config['training'].get('landmark_edge_conv_reg_lambda', 0.0)
         self.landmark_edge_tv_lambda = config['training'].get('landmark_edge_tv_lambda', 0.0)
-        # augment consistency lambda (pred(Aug(x)) ≈ Aug(pred(x))) - conservative default
-        self.landmark_augment_consistency_lambda = config['training'].get('landmark_augment_consistency_lambda', 0.01)
-        # probability to run augment-consistency per batch (to save compute)
-        self.landmark_augment_consistency_prob = config['training'].get('landmark_augment_consistency_prob', 0.3)
+        # augment consistency disabled by default (expensive / can harm alignment)
+        self.landmark_augment_consistency_lambda = config['training'].get('landmark_augment_consistency_lambda', 0.0)
+        # probability to run augment-consistency per batch (to save compute). Disabled by default.
+        self.landmark_augment_consistency_prob = config['training'].get('landmark_augment_consistency_prob', 0.0)
         # Target entropy for attention maps; regularize toward this value (abs diff)
         self.landmark_target_entropy = config['training'].get('landmark_target_entropy', 2.0)
         # auxiliary classification head weight for landmark features
-        self.landmark_aux_cls_lambda = config['training'].get('landmark_aux_cls_lambda', 0.3)
+        self.landmark_aux_cls_lambda = config['training'].get('landmark_aux_cls_lambda', 0.1)
         # auxiliary logits consistency (KL) weight
         self.landmark_aux_consistency_lambda = config['training'].get('landmark_aux_consistency_lambda', 0.1)
 
@@ -125,7 +125,7 @@ class Trainer:
             edge_conv_reg = aux_losses.get("landmark_edge_conv_reg", torch.tensor(0.0, device=self.device))
             edge_tv = aux_losses.get("landmark_edge_tv", torch.tensor(0.0, device=self.device))
             # Compose base loss (classification + landmark auxes) using runtime lambdas
-            # Note: we intentionally exclude conv/TV regularizers from the main loss to avoid over-constraint
+            # conv/TV regularizers are intentionally excluded from the main loss to avoid over-constraint
             loss = (
                 cls_loss
                 + (div_lambda_t * div_loss)
@@ -250,18 +250,15 @@ class Trainer:
                 div_lambda = getattr(self, '_runtime_diversity_lambda', self.landmark_diversity_lambda)
                 entropy_lambda = getattr(self, '_runtime_entropy_lambda', self.landmark_entropy_lambda)
                 edge_consistency_lambda = getattr(self, '_runtime_edge_consistency_lambda', self.landmark_edge_consistency_lambda)
-                edge_conv_reg_lambda = getattr(self, '_runtime_edge_conv_reg_lambda', self.landmark_edge_conv_reg_lambda)
                 # convert to tensors to avoid type-mixing errors
                 div_lambda_t = torch.tensor(float(div_lambda), device=self.device)
                 entropy_lambda_t = torch.tensor(float(entropy_lambda), device=self.device)
                 edge_consistency_lambda_t = torch.tensor(float(edge_consistency_lambda), device=self.device)
-                edge_conv_reg_lambda_t = torch.tensor(float(edge_conv_reg_lambda), device=self.device)
                 loss = (
                     cls_loss
                     + (div_lambda_t * div_loss)
                     + (entropy_lambda_t * entropy_reg)
                     + (edge_consistency_lambda_t * edge_consistency_loss)
-                    + (edge_conv_reg_lambda_t * edge_conv_reg)
                 )
                 running_loss += loss.item() * images.size(0)
 
@@ -321,10 +318,11 @@ class Trainer:
             else:
                 # Phase 3: refine attention, weak regularizers
                 self._runtime_diversity_lambda = 0.2
-                self._runtime_entropy_lambda = 0.01
+                # stronger peak-based sharpness regularizer in Phase 3
+                self._runtime_entropy_lambda = 0.05
                 self._runtime_augment_lambda = 0.01
-                self._runtime_edge_consistency_lambda = 0.005
-                self._runtime_aux_cls_lambda = 0.2
+                self._runtime_edge_consistency_lambda = 0.001
+                self._runtime_aux_cls_lambda = 0.1
                 self._runtime_aux_consistency_lambda = 0.1
 
             train_loss, train_acc = self.train_one_epoch()

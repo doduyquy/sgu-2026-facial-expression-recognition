@@ -22,6 +22,7 @@ MODEL_REGISTRY = {
         use_learned_landmark_branch=config['model'].get('use_learned_landmark_branch', True),
         landmark_num_points=config['model'].get('landmark_num_points', 6),
         landmark_tau=config['model'].get('landmark_tau', 0.07),
+        landmark_num_heads=config['model'].get('landmark_num_heads', 1),
         landmark_feature_dropout_p=config['model'].get('landmark_feature_dropout_p', 0.3),
         landmark_head_dropout_p=config['model'].get('landmark_head_dropout_p', 0.2),
         landmark_edge_guidance_beta=config['model'].get('landmark_edge_guidance_beta', 1.0),
