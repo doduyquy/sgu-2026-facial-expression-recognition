@@ -525,7 +525,7 @@ if __name__ == "__main__":
         'training': {'epochs': 3, 'patience': 2},
         'path': {'root': '/tmp/'},
         'model': {'name': 'dummy_model'},
-        'logging': {'use_wandb': False}
+        'logging': {'use_wandb': True}
     }
 
     train_loader = DataLoader(DummyDataset(), batch_size=8)
