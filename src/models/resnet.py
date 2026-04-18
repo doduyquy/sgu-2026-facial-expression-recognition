@@ -151,23 +151,31 @@ class ResNet50(nn.Module):
             landmark_in_channels = 512 + 1024
         else:
             landmark_in_channels = 512 if landmark_from_stage == 3 else 1024
+        # Prepare optional projection and choose branch input channels to avoid mismatch
+        if landmark_from_stage == 34:
+            # project fused (1536) -> 512 for stable branch input
+            self.landmark_proj = nn.Conv2d(1536, 512, kernel_size=1)
+            branch_in_channels = 512
+        else:
+            self.landmark_proj = None
+            branch_in_channels = landmark_in_channels
 
-        #nếu dùng nhánh learned landmark thì khởi tạo nhánh này, nếu không thì sẽ bỏ qua và chỉ dùng classifier baseline với feature map từ stage 3 và stage 4. Nếu số head > 1 thì sẽ dùng multi-head, nếu không thì sẽ dùng single-head như trước. Việc tách biệt này giúp giữ nguyên các ưu điểm của nhánh learned landmark hiện tại trong khi thêm lựa chọn đa dạng hơn với multi-head.
+        # nếu dùng nhánh learned landmark thì khởi tạo nhánh này, nếu không thì sẽ bỏ qua.
         if self.landmark_num_heads > 1:
             self.learned_landmark_branch = MultiHeadLandmarkBranch(
-                in_channels=landmark_in_channels,
+                in_channels=branch_in_channels,
                 landmark_num_points=landmark_num_points,
                 num_heads=self.landmark_num_heads,
                 landmark_tau=landmark_tau,
                 feature_dropout_p=landmark_feature_dropout_p,
+                kp_proj_dim=landmark_kp_proj_dim,
                 head_dropout_p=landmark_head_dropout_p,
                 edge_guidance_beta=landmark_edge_guidance_beta,
                 edge_alpha=landmark_edge_alpha,
-                kp_proj_dim=landmark_kp_proj_dim,
             )
         else:
             self.learned_landmark_branch = LearnedLandmarkBranch(
-                in_channels=landmark_in_channels,
+                in_channels=branch_in_channels,
                 landmark_num_points=landmark_num_points,
                 landmark_tau=landmark_tau,
                 kp_proj_dim=landmark_kp_proj_dim,
@@ -216,13 +224,7 @@ class ResNet50(nn.Module):
         #Keep small so landmark doesn't overpower backbone on low-res FER.
         # Use an unconstrained scalar parameter and sigmoid at usage to keep smooth gradients
         self.landmark_scale = nn.Parameter(torch.tensor(0.5))
-
         #Dùng để lưu trữ trọng số của các priors trong nhánh landmark thông qua hàm get_current_prior_strength.
-        #Create projection only for the fused x3+x4 case to avoid silent shape mismatches.
-        if landmark_from_stage == 34:
-            self.landmark_proj = nn.Conv2d(1536, 512, kernel_size=1)
-        else:
-            self.landmark_proj = None
 
     def get_aux_losses(self): 
         return self._latest_aux_losses
