@@ -5,6 +5,13 @@ import torch.nn.functional as F
 from .vgg import VGGFusionSpatialCNN
 from .resnet import ResNet50
 
+
+def _strip_module_prefix(state_dict):
+    return {
+        (key[len("module."):] if key.startswith("module.") else key): value
+        for key, value in state_dict.items()
+    }
+
 def drop_path(x, drop_prob: float = 0., training: bool = False):
     """
     Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
@@ -245,7 +252,7 @@ class RegionAlignedFER(nn.Module):
         """
         # ── Load VGG ──
         vgg_ckpt = torch.load(vgg_ckpt_path, map_location=device)
-        vgg_state = vgg_ckpt['model_state_dict']
+        vgg_state = _strip_module_prefix(vgg_ckpt['model_state_dict'])
         vgg_prefixes = ('b1.', 'b2.', 'b3.', 'b4.', 'fusion_pool.', 'sa3.', 'sa4.')
         vgg_filtered = {k: v for k, v in vgg_state.items() if k.startswith(vgg_prefixes)}
         
@@ -266,7 +273,7 @@ class RegionAlignedFER(nn.Module):
 
         # ── Load ResNet ──
         res_ckpt = torch.load(resnet_ckpt_path, map_location=device)
-        res_state = res_ckpt['model_state_dict']
+        res_state = _strip_module_prefix(res_ckpt['model_state_dict'])
         res_prefixes = ('conv1.', 'bn1.', 'layer2.', 'layer3.', 'layer4.')
         res_filtered = {k: v for k, v in res_state.items() if k.startswith(res_prefixes)}
         

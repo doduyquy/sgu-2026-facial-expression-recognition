@@ -4,7 +4,6 @@ import torch
 import argparse
 from src.utils.config import load_config
 from src.utils.seed import set_seed
-from src.utils.logger_wandb import init_wandb
 
 from src.data.dataloader import build_dataloader
 from src.models import get_model # in __init__ gfile
@@ -16,16 +15,14 @@ from src.utils.checkpoint import load_checkpoints
 from src.evaluation.evaluator import evaluate_and_show
 from src.utils.logger_wandb import save_model_to_wandb
 from src.utils.data_stats import get_class_distribution # testing: class weight
+from src.utils.checkpoint import unwrap_model
+from src.utils.device import setup_device, prepare_model_for_device
 
 from datetime import datetime
 #-------------------------------------------------------------
 
 def main():
     print("\t\t--> In main <--\t\t")
-
-    # device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  
-    print("--- Use device:", device)
 
     # get args 
     parser = argparse.ArgumentParser()
@@ -36,6 +33,7 @@ def main():
     # load config
     config = load_config(args.config, args.env)
     set_seed(config['seed'].get('random_seed', 21))
+    device, actual_n_gpu = setup_device(config)
 
     # data path and root path for each platform
     if config['env']['platform'] == 'kaggle':
@@ -55,18 +53,20 @@ def main():
     model = get_model(
         name=config['model']['name'],
         config=config)
+    model = prepare_model_for_device(model=model, device=device, n_gpu=actual_n_gpu)
+    base_model = unwrap_model(model)
     
 
     # ── Transfer Learning: load pretrained backbone weights ──
     pretrained_vgg = config['model'].get('pretrained_vgg_path', None)
     pretrained_resnet = config['model'].get('pretrained_resnet_path', None)
     
-    if pretrained_vgg and pretrained_resnet and hasattr(model, 'load_pretrained_backbones'):
+    if pretrained_vgg and pretrained_resnet and hasattr(base_model, 'load_pretrained_backbones'):
         print("\n" + "="*50)
         print("[Transfer Learning] Loading pretrained backbones...")
         print("="*50)
-        model.load_pretrained_backbones(pretrained_vgg, pretrained_resnet, device=device)
-        model.freeze_backbones()
+        base_model.load_pretrained_backbones(pretrained_vgg, pretrained_resnet, device=device)
+        base_model.freeze_backbones()
         print("="*50 + "\n")
 
 

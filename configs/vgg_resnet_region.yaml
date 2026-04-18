@@ -2,6 +2,9 @@
 # Region-Aligned Facial Expression Recognition Configuration
 _base_: "base.yaml"
 
+device:
+  n_gpu: 2
+
 model:
   name: "region_aligned_fer"
   embed_dim: 512
