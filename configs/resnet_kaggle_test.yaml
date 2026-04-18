@@ -2,6 +2,7 @@ _base_: "resnet.yaml"
 
 # Lightweight test config for running on Kaggle (1-2 epoch smoke)
 model:
+  name: "resnet"
   landmark_num_heads: 4
 
 data:
