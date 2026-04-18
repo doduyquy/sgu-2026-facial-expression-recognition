@@ -38,7 +38,6 @@ class ResNet50FeatureExtractor(nn.Module):
     def __init__(self, config, channels=1):
         super().__init__()
         self.resnet = ResNet50(config, channels)
-        self.pool = nn.AdaptiveAvgPool2d((3, 3))
 
     def forward(self, x):
         # Stem
@@ -50,9 +49,8 @@ class ResNet50FeatureExtractor(nn.Module):
         x = self.resnet.layer3(x)      # [B, 512, 12, 12]
         x = self.resnet.layer4(x)      # [B, 1024, 6, 6]
 
-        x = self.pool(x)              # [B, 1024, 3, 3]
-        x = torch.flatten(x, 2)       # [B, 1024, 9]
-        x = x.transpose(1, 2)         # [B, 9, 1024]
+        x = torch.flatten(x, 2)       # [B, 1024, 36]
+        x = x.transpose(1, 2)         # [B, 36, 1024]
         return x
 
 
@@ -203,9 +201,9 @@ class RegionAlignedFER(nn.Module):
 
         # ===== 6. Classification Head =====
         self.classifier = nn.Sequential(
-            nn.LayerNorm(self.embed_dim),
+            nn.LayerNorm(self.num_regions * self.embed_dim),
             nn.Dropout(0.5), # Keep this high
-            nn.Linear(self.embed_dim, 512),
+            nn.Linear(self.num_regions * self.embed_dim, 512),
             nn.GELU(),
             nn.Dropout(0.3),
             nn.Linear(512, num_classes)
@@ -281,11 +279,11 @@ class RegionAlignedFER(nn.Module):
 
         # ── 1. Feature Extraction ──
         vgg_feat = self.vgg_backbone(x)          # [B, 9, 512]
-        res_feat = self.res_backbone(x)          # [B, 9, 1024]
-        res_feat = self.proj_res(res_feat)       # [B, 9, 512]
+        res_feat = self.res_backbone(x)          # [B, 36, 1024]
+        res_feat = self.proj_res(res_feat)       # [B, 36, 512]
 
         # Φ_visual: nối đặc trưng từ cả hai backbone
-        visual_features = torch.cat([vgg_feat, res_feat], dim=1)  # [B, 18, 512]
+        visual_features = torch.cat([vgg_feat, res_feat], dim=1)  # [B, 45, 512]
 
         # ── 2. Region Tokens ──
         region_tokens = self.region_dict(B)      # [B, 6, 512]
@@ -294,7 +292,7 @@ class RegionAlignedFER(nn.Module):
         # region Q "soi" vào visual K,V
         phi_sem, attn_weights = self.alignment(
             region_tokens, visual_features
-        )                                        # [B, 6, 512], [B, 6, 18]
+        )                                        # [B, 6, 512], [B, 6, 45]
 
         # ── 4. Hyper-visual Representation ──
         # Pool toàn bộ visual features → 1 vector, broadcast cộng vào Φ_sem
@@ -307,7 +305,7 @@ class RegionAlignedFER(nn.Module):
         encoded = self.transformer_encoder(hyper_visual)        # [B, 6, 512]
 
         # ── 6. Classification ──
-        pooled = encoded.mean(dim=1)             # [B, 512]
+        pooled = encoded.reshape(B, -1)          # [B, 6 * 512]
         logits = self.classifier(pooled)         # [B, num_classes]
 
         return logits
