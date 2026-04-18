@@ -39,5 +39,9 @@ def prepare_model_for_device(model, device, n_gpu):
 
     if device.type == "cuda" and n_gpu > 1:
         model = torch.nn.DataParallel(model, device_ids=list(range(n_gpu)))
-
+        # warm-up GPU (not Lazy Initialization)
+        for i in range(n_gpu):
+            tensor_A = torch.ones(1, 1).to(f"cuda:{i}")
+            tensor_B = torch.ones(1, 1).to(f"cuda:{i}")
+            _ = torch.matmul(tensor_A, tensor_B)
     return model
