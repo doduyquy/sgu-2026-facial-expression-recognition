@@ -7,9 +7,9 @@ class LearnedLandmarkBranch(nn.Module):
     def __init__(
         self,
         in_channels=1024,
-        landmark_num_points=6,
+        landmark_num_points=8,
         landmark_tau=0.07,
-        diversity_margin=0.25,
+        diversity_margin=0.4,
         kp_proj_dim=64,
         feature_dropout_p=0.3,
         head_dropout_p=0.1,
@@ -47,6 +47,12 @@ class LearnedLandmarkBranch(nn.Module):
             self.kp_proj = nn.Linear(in_channels, self.kp_proj_dim)
         except Exception:
             self.kp_proj = None
+        # optional light positional supervision: indices expected in normalized y
+        # upper_idxs: keypoint indices that should stay in upper-face (y <= 0.5)
+        # lower_idxs: keypoint indices that should stay in lower-face (y >= 0.5)
+        self.upper_idxs = []
+        self.lower_idxs = []
+        self.pos_supervision_weight = 0.05
 
     def set_training_progress(self, progress):
         # Strong edge guidance at start, then let attention self-organize later.
@@ -237,6 +243,27 @@ class LearnedLandmarkBranch(nn.Module):
         else:
             overlap_loss = attn.new_tensor(0.0)
 
+        # Positional supervision: lightly nudge some keypoints to expected vertical halves
+        pos_sup = attn.new_tensor(0.0)
+        try:
+            if len(self.upper_idxs) > 0 or len(self.lower_idxs) > 0:
+                # coords: (B, K, 2) with y in second dim
+                ys = coords[..., 1]
+                penalties = []
+                if len(self.upper_idxs) > 0:
+                    up = ys[:, self.upper_idxs]
+                    # encourage y <= 0.5
+                    penalties.append(F.relu(up - 0.5).mean())
+                if len(self.lower_idxs) > 0:
+                    lo = ys[:, self.lower_idxs]
+                    # encourage y >= 0.5
+                    penalties.append(F.relu(0.5 - lo).mean())
+                if len(penalties) > 0:
+                    pos_sup = sum(penalties) / len(penalties)
+                    pos_sup = pos_sup * float(getattr(self, 'pos_supervision_weight', 0.05))
+        except Exception:
+            pos_sup = attn.new_tensor(0.0)
+
         # Keep only lightweight, non-toxic auxiliaries for low-res FER
         aux = {
             "landmark_diversity": self._diversity_loss(attn, coords=coords),
@@ -244,6 +271,8 @@ class LearnedLandmarkBranch(nn.Module):
             "landmark_entropy": peak_loss,
             # heatmap overlap penalty
             "landmark_overlap": overlap_loss,
+            # light positional supervision penalty (upper/lower guidance)
+            "landmark_pos_supervision": pos_sup,
             # keep edge consistency (soft guidance) but avoid heavy alignment/conv/TV penalties
             "landmark_edge_consistency": edge_consistency,
             "landmark_edge_align": attn.new_tensor(0.0),

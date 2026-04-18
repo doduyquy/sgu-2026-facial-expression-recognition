@@ -14,8 +14,8 @@ class MultiHeadLandmarkBranch(LearnedLandmarkBranch):
     def __init__(
         self,
         in_channels=1024,
-        landmark_num_points=6,
-        num_heads=4,
+        landmark_num_points=8,
+        num_heads=1,
         landmark_tau=0.07,
         feature_dropout_p=0.3,
         kp_proj_dim=64,
@@ -109,62 +109,75 @@ class MultiHeadLandmarkBranch(LearnedLandmarkBranch):
         except Exception:
             inter_head_loss = attn_heads.new_tensor(0.0)
 
-        # aggregate heads with learned weights (softmax over heads)
+        # Instead of collapsing heads into a single attention map for features,
+        # keep per-head pooled features and concatenate them so multi-head diversity
+        # is preserved in the downstream landmark feature vector.
+        # Aggregate a weighted attention map only for coords/visualization, but use
+        # per-head pooling for `feat_k`.
         try:
             w = torch.softmax(self.head_weight, dim=0)
-            attn = (attn_heads * w.view(1, nh, 1, 1, 1)).sum(dim=1)
+            attn_agg = (attn_heads * w.view(1, nh, 1, 1, 1)).sum(dim=1)
         except Exception:
-            attn = attn_heads.mean(dim=1)
+            attn_agg = attn_heads.mean(dim=1)
 
-        # normalize aggregated attention maps
-        attn = attn / attn.sum(dim=[2, 3], keepdim=True).clamp(min=1e-6)
+        # normalize aggregated attention maps (for coords and logging)
+        attn_agg = attn_agg / attn_agg.sum(dim=[2, 3], keepdim=True).clamp(min=1e-6)
 
         # coordinates via soft-argmax on aggregated maps
-        coords = self._soft_argmax(attn)
+        coords = self._soft_argmax(attn_agg)
 
-        # pooled per-keypoint features
-        feat_expanded = feat_map.unsqueeze(1)
-        heat_expanded = attn.unsqueeze(2)
-        # pooled per-keypoint features: (B, K, C)
-        feat_k = (feat_expanded * heat_expanded).sum(dim=[3, 4])
+        # pooled per-keypoint features per head: build list then stack -> (B, nh, K, C)
+        feat_expanded = feat_map.unsqueeze(1).unsqueeze(1)  # (B,1,1,C,H,W)
+        feat_k_heads = []
+        for h in range(nh):
+            attn_h = attn_heads[:, h]  # (B, K, H, W)
+            heat_expanded_h = attn_h.unsqueeze(2)  # (B, K, 1, H, W)
+            # (B, K, C)
+            pooled = (feat_map.unsqueeze(1) * heat_expanded_h).sum(dim=[3, 4])
+            feat_k_heads.append(pooled)
+        feat_k_heads = torch.stack(feat_k_heads, dim=1)  # (B, nh, K, C)
 
-        # reduce per-keypoint dim if projection available to avoid massive flatten
-        bsz, Kp, C = feat_k.shape
+        # reduce per-keypoint per-head dims if projection available
+        bsz, nh_, Kp, C = feat_k_heads.shape
         if getattr(self, 'kp_proj', None) is not None:
-            feat_k_reduced = self.kp_proj(feat_k)  # (B, K, kp_proj_dim)
-            feat_k_flat = feat_k_reduced.view(bsz, Kp * self.kp_proj_dim)
+            # apply kp_proj across last dim: reshape to (B*nh*K, C) -> apply -> reshape back
+            resh = feat_k_heads.view(bsz * nh_ * Kp, C)
+            reduced = self.kp_proj(resh)
+            reduced = reduced.view(bsz, nh_, Kp, self.kp_proj_dim)
+            feat_k_flat = reduced.view(bsz, nh_ * Kp * self.kp_proj_dim)
         else:
-            feat_k_flat = feat_k.view(bsz, Kp * C)
+            feat_k_flat = feat_k_heads.view(bsz, nh_ * Kp * C)
 
-        global_attn = attn.mean(dim=1, keepdim=True)
+        # global attn from aggregated map
+        global_attn = attn_agg.mean(dim=1, keepdim=True)
         feat_global = (feat_map * global_attn).sum(dim=[2, 3])
 
         feat_k = torch.cat([feat_k_flat, feat_global], dim=1)
         feat_k = F.normalize(feat_k, dim=1)
         feat_k = F.dropout(feat_k, p=self.feature_dropout_p, training=self.training)
 
-        # No edge guidance for low-res FER
-        edge_consistency = attn.new_tensor(0.0)
-        edge_align = attn.new_tensor(0.0)
+        # No edge guidance for low-res FER (use aggregated attn for logging/aux)
+        edge_consistency = attn_agg.new_tensor(0.0)
+        edge_align = attn_agg.new_tensor(0.0)
 
         # Reduce toxic regularizers for low-res FER: keep only soft edge_consistency
-        edge_conv_reg = attn.new_tensor(0.0)
-        edge_tv = attn.new_tensor(0.0)
+        edge_conv_reg = attn_agg.new_tensor(0.0)
+        edge_tv = attn_agg.new_tensor(0.0)
 
-        # peaky loss
-        max_val = attn.amax(dim=[2, 3])
+        # peaky loss (on aggregated maps)
+        max_val = attn_agg.amax(dim=[2, 3])
         peak_loss = ((1.0 - max_val) ** 2 ).mean()
 
         # normalize pooled features and return compact aux set
         feat_k = F.normalize(feat_k, dim=1)
         aux = {
-            "landmark_diversity": self._diversity_loss(attn, coords=coords),
+            "landmark_diversity": self._diversity_loss(attn_agg, coords=coords),
             "landmark_entropy": peak_loss,
             "landmark_inter_head_similarity": inter_head_loss,
             "landmark_edge_consistency": edge_consistency,
-            "landmark_edge_align": attn.new_tensor(0.0),
+            "landmark_edge_align": attn_agg.new_tensor(0.0),
             "landmark_edge_conv_reg": edge_conv_reg,
             "landmark_edge_tv": edge_tv,
         }
 
-        return attn, coords, feat_k, aux
+        return attn_agg, coords, feat_k, aux

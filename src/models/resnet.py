@@ -76,7 +76,7 @@ class ResNet50(nn.Module):
         cbam_reduction=16, #số lượng kênh giảm trong CBAM, mặc định 16, nhưng có thể override qua config
         cbam_kernel_size=7, #kích thước kernel trong CBAM, mặc định 7, nhưng có thể override qua config
         use_learned_landmark_branch=True, #Xác định dùng nhánh learned landmark
-        landmark_num_points=6, #Số điểm landmark, mặc định 6, nhưng có thể override qua config
+        landmark_num_points=8, #Số điểm landmark, mặc định 6, nhưng có thể override qua config
         landmark_tau=0.07, #Dùng để điều chỉnh độ mềm của heatmap
         landmark_feature_dropout_p=0.3, #Dùng để dropout trên feature map trước khi tạo heatmap để tăng tính generalization
         landmark_head_dropout_p=0.1, # Dùng để dropout trên từng head của multi-head để tăng tính diversity giữa các head
@@ -87,7 +87,7 @@ class ResNet50(nn.Module):
         landmark_num_heads=1, #Dùng để xác định số head trong multi-head landmark branch (>=1, nếu =1 thì sẽ dùng single-head như trước)
         landmark_kp_proj_dim=64,
         # Optionally upsample input images before backbone (e.g., (96,96) or (112,112))
-        input_upsample=None,
+        input_upsample=(112, 112),
     ):
         super().__init__()
         self.use_learned_landmark_branch = use_learned_landmark_branch

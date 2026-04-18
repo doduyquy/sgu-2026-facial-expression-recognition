@@ -16,6 +16,14 @@ class Trainer:
         self.criterion = criterion
         # keep base criterion available for runtime switching (focal vs base)
         self._base_criterion = self.criterion
+        # optionally enable label smoothing for CrossEntropy if configured
+        ls = float(config.get('training', {}).get('label_smoothing', 0.0)) if isinstance(config, dict) else 0.0
+        if ls and isinstance(self._base_criterion, torch.nn.CrossEntropyLoss):
+            try:
+                self.criterion = torch.nn.CrossEntropyLoss(label_smoothing=ls)
+                self._base_criterion = self.criterion
+            except Exception:
+                pass
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.device = device
@@ -27,7 +35,7 @@ class Trainer:
         self.config = config
         self.path_save_ckpt = save_dir
         # Tuned defaults to avoid over-constraint (Sunset suggestions)
-        self.landmark_diversity_lambda = config['training'].get('landmark_diversity_lambda', 0.15)
+        self.landmark_diversity_lambda = config['training'].get('landmark_diversity_lambda', 0.25)
         self.landmark_entropy_lambda = config['training'].get(
             'landmark_entropy_lambda',
             config['training'].get('landmark_sparsity_lambda', 0.1),
@@ -47,18 +55,21 @@ class Trainer:
         self.landmark_target_entropy = config['training'].get('landmark_target_entropy', 2.0)
         # auxiliary classification head weight for landmark features (lighter default)
         self.landmark_aux_cls_lambda = config['training'].get('landmark_aux_cls_lambda', 0.05)
+        # optional positional supervision (upper/lower face guidance)
+        self.landmark_pos_sup_lambda = config['training'].get('landmark_pos_sup_lambda', 0.05)
         # auxiliary logits consistency (KL) weight (lighter default)
         self.landmark_aux_consistency_lambda = config['training'].get('landmark_aux_consistency_lambda', 0.05)
         # focal loss removed to avoid conflict with SCN; use base criterion only
         # === SCN (light) ===
         self.use_scn = config['training'].get('use_scn', True)
-        # default warmup: 30% of total epochs
-        self.scn_warmup_epochs = int(config['training'].get('scn_warmup_epochs', max(1, int(0.3 * self.epochs))))
+        # default warmup: small fixed epochs to enable SCN earlier (helps noisy FER)
+        self.scn_warmup_epochs = int(config['training'].get('scn_warmup_epochs', 5))
         self.scn_alpha = float(config['training'].get('scn_alpha', 1.0))
-        self.scn_rank_lambda = float(config['training'].get('scn_rank_lambda', 0.1))
+        # stronger ranking influence by default for FER
+        self.scn_rank_lambda = float(config['training'].get('scn_rank_lambda', 0.2))
         self.scn_min_weight = float(config['training'].get('scn_min_weight', 0.2))
-        # margin for ranking loss
-        self.scn_margin = float(config['training'].get('scn_margin', 0.1))
+        # margin for ranking loss (increase for difficult FER samples)
+        self.scn_margin = float(config['training'].get('scn_margin', 0.2))
         # runtime flags (set by fit staging)
         self._runtime_use_scn = None
 
@@ -153,14 +164,18 @@ class Trainer:
 
         # runtime lambdas (may be set by fit() for staged schedule)
         div_lambda = getattr(self, '_runtime_diversity_lambda', self.landmark_diversity_lambda)
-        # entropy regularization removed (use Option A: do not enforce target entropy per-image)
-        # entropy_lambda = getattr(self, '_runtime_entropy_lambda', self.landmark_entropy_lambda)
+        # entropy and overlap lambdas (used to shape heatmaps)
+        entropy_lambda = getattr(self, '_runtime_entropy_lambda', self.landmark_entropy_lambda)
+        overlap_lambda = getattr(self, '_runtime_overlap_lambda', self.landmark_overlap_lambda)
         edge_consistency_lambda = getattr(self, '_runtime_edge_consistency_lambda', self.landmark_edge_consistency_lambda)
         # augment consistency intentionally disabled to avoid destabilizing landmarks on small images
         augment_lambda = 0.0
         aux_cls_lambda = getattr(self, '_runtime_aux_cls_lambda', self.landmark_aux_cls_lambda)
+        pos_sup_lambda = getattr(self, '_runtime_pos_sup_lambda', self.landmark_pos_sup_lambda)
         # convert lambdas to tensors to avoid dtype/interop issues when combining with torch tensors
         div_lambda_t = torch.tensor(float(div_lambda), device=self.device)
+        entropy_lambda_t = torch.tensor(float(entropy_lambda), device=self.device)
+        overlap_lambda_t = torch.tensor(float(overlap_lambda), device=self.device)
         edge_consistency_lambda_t = torch.tensor(float(edge_consistency_lambda), device=self.device)
         augment_lambda_t = torch.tensor(float(augment_lambda), device=self.device)
         aux_cls_lambda_t = torch.tensor(float(aux_cls_lambda), device=self.device)
@@ -215,6 +230,7 @@ class Trainer:
                 "landmark_entropy",
                 aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
             )
+            overlap_loss = aux_losses.get("landmark_overlap", torch.tensor(0.0, device=self.device))
             # (entropy regularization removed) keep raw value if needed elsewhere
             heatmaps_now, _ = self.model.get_landmark_outputs()
             if heatmaps_now is not None:
@@ -229,6 +245,7 @@ class Trainer:
                 denom = 1.0
             edge_align_loss = aux_losses.get("landmark_edge_align", torch.tensor(0.0, device=self.device))
             edge_consistency_loss = aux_losses.get("landmark_edge_consistency", torch.tensor(0.0, device=self.device))
+            pos_sup_loss = aux_losses.get("landmark_pos_supervision", torch.tensor(0.0, device=self.device))
             edge_conv_reg = aux_losses.get("landmark_edge_conv_reg", torch.tensor(0.0, device=self.device))
             edge_tv = aux_losses.get("landmark_edge_tv", torch.tensor(0.0, device=self.device))
             # Compose base loss (classification + landmark auxes) using runtime lambdas
@@ -237,7 +254,16 @@ class Trainer:
                 cls_loss
                 + (div_lambda_t * div_loss)
                 + (edge_consistency_lambda_t * edge_consistency_loss)
+                + (torch.tensor(float(pos_sup_lambda), device=self.device) * pos_sup_loss)
             )
+            # include overlap and entropy aux signals (light-weight) to shape heatmaps
+            try:
+                if overlap_lambda_t.item() > 0.0:
+                    loss = loss + (overlap_lambda_t * overlap_loss)
+                if entropy_lambda_t.item() > 0.0:
+                    loss = loss + (entropy_lambda_t * entropy_loss)
+            except Exception:
+                pass
 
             # Auxiliary classification on landmark features (encourage feat_k to be useful)
             aux_logits_getter = getattr(self.model, 'get_landmark_aux_logits', None)
@@ -359,6 +385,7 @@ class Trainer:
                     "landmark_entropy",
                     aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
                 )
+                overlap_loss = aux_losses.get("landmark_overlap", torch.tensor(0.0, device=self.device))
                 edge_align_loss = aux_losses.get("landmark_edge_align", torch.tensor(0.0, device=self.device))
                 edge_consistency_loss = aux_losses.get("landmark_edge_consistency", torch.tensor(0.0, device=self.device))
                 edge_conv_reg = aux_losses.get("landmark_edge_conv_reg", torch.tensor(0.0, device=self.device))
@@ -369,11 +396,20 @@ class Trainer:
                 # convert to tensors to avoid type-mixing errors
                 div_lambda_t = torch.tensor(float(div_lambda), device=self.device)
                 edge_consistency_lambda_t = torch.tensor(float(edge_consistency_lambda), device=self.device)
+                entropy_lambda_t = torch.tensor(float(getattr(self, '_runtime_entropy_lambda', self.landmark_entropy_lambda)), device=self.device)
+                overlap_lambda_t = torch.tensor(float(getattr(self, '_runtime_overlap_lambda', self.landmark_overlap_lambda)), device=self.device)
                 loss = (
                     cls_loss
                     + (div_lambda_t * div_loss)
                     + (edge_consistency_lambda_t * edge_consistency_loss)
                 )
+                try:
+                    if overlap_lambda_t.item() > 0.0:
+                        loss = loss + (overlap_lambda_t * overlap_loss)
+                    if entropy_lambda_t.item() > 0.0:
+                        loss = loss + (entropy_lambda_t * entropy_loss)
+                except Exception:
+                    pass
                 running_loss += loss.item() * images.size(0)
 
                 _, preds = torch.max(logits, dim=1)
@@ -414,34 +450,35 @@ class Trainer:
                 except Exception:
                     pass
 
-            # apply 3-phase staged lambda schedule (Sunset recommendation)
-            # Phase-based schedule aligned with SCN paper guidance
-            if progress <= 0.3:
-                # Phase 1 (0-30%): CLEAN LEARNING
-                # only base classification: no SCN, no landmark
+            # apply 3-phase staged lambda schedule tuned for noisy FER datasets
+            # Phase 1: very early (0-20%): keep base learning but allow light regularization
+            # Phase 2: (20-70%): enable SCN and light landmark signals so landmarks learn while backbone still adapts
+            # Phase 3: (70-100%): refinement with stronger landmark regularizers
+            if progress <= 0.2:
+                # Phase 1 (0-20%): mostly base classification, minimal landmarks
                 self._runtime_diversity_lambda = 0.0
                 self._runtime_entropy_lambda = 0.0
+                self._runtime_overlap_lambda = 0.0
                 self._runtime_augment_lambda = 0.0
                 self._runtime_edge_consistency_lambda = 0.0
                 self._runtime_aux_cls_lambda = 0.0
                 self._runtime_aux_consistency_lambda = 0.0
                 self._runtime_use_scn = False
             elif progress <= 0.7:
-                # Phase 2 (30-70%): NOISE HANDLING
-                # enable SCN only, keep landmark losses off
-                self._runtime_diversity_lambda = 0.0
-                self._runtime_entropy_lambda = 0.0
+                # Phase 2 (20-70%): enable SCN early and provide light landmark guidance
+                self._runtime_diversity_lambda = 0.05
+                self._runtime_entropy_lambda = 0.02
+                self._runtime_overlap_lambda = 0.02
                 self._runtime_augment_lambda = 0.0
                 self._runtime_edge_consistency_lambda = 0.0
-                self._runtime_aux_cls_lambda = 0.0
+                self._runtime_aux_cls_lambda = 0.02
                 self._runtime_aux_consistency_lambda = 0.0
                 self._runtime_use_scn = True
             else:
-                # Phase 3 (70-100%): REFINEMENT
-                # enable SCN + light landmark regularizers and aux losses
-                # Keep Phase3 minimal: only diversity + aux_cls to avoid noisy signals
-                self._runtime_diversity_lambda = 0.1
+                # Phase 3 (70-100%): Refinement — stronger diversity and aux cls
+                self._runtime_diversity_lambda = 0.15
                 self._runtime_entropy_lambda = 0.0
+                self._runtime_overlap_lambda = 0.05
                 self._runtime_augment_lambda = 0.0
                 self._runtime_edge_consistency_lambda = 0.0
                 self._runtime_aux_cls_lambda = 0.05
