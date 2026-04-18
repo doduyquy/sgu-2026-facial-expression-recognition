@@ -117,7 +117,7 @@ class Trainer:
         if self.use_wandb:
             init_wandb(config=self.config, run_name=self.run_name)
 
-        best_val_loss = float("inf")
+        best_val_acc = 0.0
         patience_counter = 0
         all_train_loss = []
         all_val_loss = []
@@ -177,8 +177,8 @@ class Trainer:
                     self.scheduler.step()
 
             # save checkpoint
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
                 patience_counter = 0
 
                 torch.save({
@@ -186,7 +186,7 @@ class Trainer:
                     "optimizer_state_dict": self.optimizer.state_dict(),
                     "epoch": ep
                 }, self.path_save_ckpt)
-                print(f"\t--- Save best at ep {ep+1}, val_loss: {val_loss:.4f}, path: {self.path_save_ckpt} ---")
+                print(f"\t--- Save best at ep {ep+1}, val_accuracy: {val_acc:.4f}, path: {self.path_save_ckpt} ---")
 
             else:
                 patience_counter += 1
