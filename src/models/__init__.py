@@ -7,6 +7,7 @@ from .vgg_ea import VGGEA_CNN
 from .resnet import ResNet50
 from .dual_fusion import VGGResNetAttentionFusion
 from .region_attention import RegionAlignedFER
+# from .region_attetnion_ver2 import RegionAlignedFER as RegionAlignedFER_V2
 # from .vit_ea_6x6 import VisionTransformerEA_6x6
 
 
@@ -32,6 +33,7 @@ MODEL_REGISTRY = {
     "resnet50": lambda **kw: ResNet50(config=kw['config'], channels=kw['config']['data']['channels']),
     "vgg_resnet_attention": lambda **kw: VGGResNetAttentionFusion(config=kw['config'], channels=kw['config']['data']['channels']),
     "region_aligned_fer": lambda **kw: RegionAlignedFER(config=kw['config'], channels=kw['config']['data']['channels']),
+    # "region_aligned_ferver2": lambda **kw: RegionAlignedFER_V2(config=kw['config'], channels=kw['config']['data']['channels']),
     # "resmaskingnet": ResMaskingNet,
     "efficientnet_fer2013": EfficientNetForFER2013,
     "vgg_ea_cnn": lambda **kw: VGGEA_CNN(config=kw['config'], channels=kw['config']['data']['channels']),
