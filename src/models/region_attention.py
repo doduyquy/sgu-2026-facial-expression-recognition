@@ -136,6 +136,18 @@ class SemanticVisualAlignment(nn.Module):
 # =====================================================================
 # 3. Model chính: RegionAlignedFER
 # =====================================================================
+
+def get_sinusoidal_position_encoding(length, dim):
+    """
+    Tạo ma trận Sine/Cosine Positional Encoding (Attention Is All You Need).
+    """
+    position = torch.arange(length).unsqueeze(1)
+    div_term = torch.exp(torch.arange(0, dim, 2) * (-math.log(10000.0) / dim))
+    pe = torch.zeros(1, length, dim)
+    pe[0, :, 0::2] = torch.sin(position * div_term)
+    pe[0, :, 1::2] = torch.cos(position * div_term)
+    return pe
+
 class RegionAlignedFER(nn.Module):
 
     def __init__(self, config, channels=1):
@@ -158,6 +170,25 @@ class RegionAlignedFER(nn.Module):
 
         # Project ResNet 1024-d → 512-d để đồng bộ với VGG
         self.proj_res = nn.Linear(1024, self.embed_dim)
+
+        # ===== 1.5. Visual Transformer (Self-Attention) =====
+        # Positional Encoding Cố định (Sine/Cosine) cho khối hình ảnh 45 tokens
+        self.register_buffer(
+            'visual_pos_embed',
+            get_sinusoidal_position_encoding(45, self.embed_dim)
+        )
+        visual_encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.embed_dim,
+            nhead=self.num_heads,
+            dim_feedforward=self.embed_dim * 2,
+            dropout=self.dropout_rate,
+            batch_first=True,
+            activation='gelu'
+        )
+        self.visual_encoder = nn.TransformerEncoder(
+            visual_encoder_layer,
+            num_layers=1
+        )
 
         # ===== 2. Facial Region Dictionary =====
         self.region_dict = FacialRegionDictionary(
@@ -284,6 +315,11 @@ class RegionAlignedFER(nn.Module):
 
         # Φ_visual: nối đặc trưng từ cả hai backbone
         visual_features = torch.cat([vgg_feat, res_feat], dim=1)  # [B, 45, 512]
+
+        # ── 1.5. Visual Transformer (Self-Attention) ──
+        # Kết hợp các token ảnh lại với nhau, cấy thông tin không gian
+        visual_features = visual_features + self.visual_pos_embed
+        visual_features = self.visual_encoder(visual_features)
 
         # ── 2. Region Tokens ──
         region_tokens = self.region_dict(B)      # [B, 6, 512]
