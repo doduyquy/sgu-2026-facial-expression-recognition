@@ -30,7 +30,7 @@ class Trainer:
         self.landmark_diversity_lambda = config['training'].get('landmark_diversity_lambda', 0.15)
         self.landmark_entropy_lambda = config['training'].get(
             'landmark_entropy_lambda',
-            config['training'].get('landmark_sparsity_lambda', 0.05),
+            config['training'].get('landmark_sparsity_lambda', 0.1),
         )
         # keep edge_align disabled by default
         self.landmark_edge_align_lambda = config['training'].get('landmark_edge_align_lambda', 0.0)
@@ -45,10 +45,10 @@ class Trainer:
         self.landmark_augment_consistency_prob = config['training'].get('landmark_augment_consistency_prob', 0.0)
         # Target entropy for attention maps; regularize toward this value (abs diff)
         self.landmark_target_entropy = config['training'].get('landmark_target_entropy', 2.0)
-        # auxiliary classification head weight for landmark features
-        self.landmark_aux_cls_lambda = config['training'].get('landmark_aux_cls_lambda', 0.1)
-        # auxiliary logits consistency (KL) weight
-        self.landmark_aux_consistency_lambda = config['training'].get('landmark_aux_consistency_lambda', 0.1)
+        # auxiliary classification head weight for landmark features (lighter default)
+        self.landmark_aux_cls_lambda = config['training'].get('landmark_aux_cls_lambda', 0.05)
+        # auxiliary logits consistency (KL) weight (lighter default)
+        self.landmark_aux_consistency_lambda = config['training'].get('landmark_aux_consistency_lambda', 0.05)
         # focal loss removed to avoid conflict with SCN; use base criterion only
         # === SCN (light) ===
         self.use_scn = config['training'].get('use_scn', True)
@@ -97,8 +97,8 @@ class Trainer:
             conf = probs.gather(1, labels.unsqueeze(1)).squeeze(1)  # (B,)
             # normalize confidence (relative within batch) then squash (unused)
             # conf_norm = (conf - conf.mean()) / (conf.std() + 1e-6)
-            # invert weighting: low-conf (hard) -> higher weight (stronger for FER noisy)
-            weights = (1.0 - conf).pow(2.0)
+            # softer weighting: low-conf (hard) -> higher weight, but not overly aggressive
+            weights = (1.0 - conf)
             weights = weights.clamp(min=self.scn_min_weight)
 
         # main weighted CE term
@@ -172,6 +172,15 @@ class Trainer:
             outputs = self.model(images)
             logits = self._extract_logits(outputs)
 
+            # batch confidence used to scale landmark diversity: low-confidence batches
+            # should emphasize landmark regularizers more (helps hard samples)
+            try:
+                probs_batch = F.softmax(logits, dim=1)
+                conf_batch = probs_batch.gather(1, labels.unsqueeze(1)).squeeze(1)
+                conf_batch_mean = conf_batch.mean()
+            except Exception:
+                conf_batch_mean = torch.tensor(0.0, device=self.device)
+
             # determine effective runtime flag for SCN (set by fit phases if present)
             runtime_use_scn = getattr(self, '_runtime_use_scn', self.use_scn)
 
@@ -197,6 +206,11 @@ class Trainer:
             # (no target) use raw entropy directly for both train and val
 
             div_loss = aux_losses.get("landmark_diversity", torch.tensor(0.0, device=self.device))
+            try:
+                # scale diversity by (1 - mean_confidence) so hard batches push landmarks harder
+                div_loss = div_loss * (1.0 - conf_batch_mean)
+            except Exception:
+                pass
             entropy_loss = aux_losses.get(
                 "landmark_entropy",
                 aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
@@ -404,7 +418,7 @@ class Trainer:
             # Phase-based schedule aligned with SCN paper guidance
             if progress <= 0.3:
                 # Phase 1 (0-30%): CLEAN LEARNING
-                # only base classification (no SCN, no focal, no landmark losses)
+                # only base classification: no SCN, no landmark
                 self._runtime_diversity_lambda = 0.0
                 self._runtime_entropy_lambda = 0.0
                 self._runtime_augment_lambda = 0.0
@@ -414,18 +428,17 @@ class Trainer:
                 self._runtime_use_scn = False
             elif progress <= 0.7:
                 # Phase 2 (30-70%): NOISE HANDLING
-                # enable SCN (weighted CE + optional ranking), keep landmark losses off
+                # enable SCN only, keep landmark losses off
                 self._runtime_diversity_lambda = 0.0
                 self._runtime_entropy_lambda = 0.0
                 self._runtime_augment_lambda = 0.0
                 self._runtime_edge_consistency_lambda = 0.0
-                # small auxiliary classification to encourage usefulness
-                self._runtime_aux_cls_lambda = 0.05
-                self._runtime_aux_consistency_lambda = 0.05
+                self._runtime_aux_cls_lambda = 0.0
+                self._runtime_aux_consistency_lambda = 0.0
                 self._runtime_use_scn = True
             else:
                 # Phase 3 (70-100%): REFINEMENT
-                # keep SCN, enable light landmark regularizers and aux losses
+                # enable SCN + light landmark regularizers and aux losses
                 self._runtime_diversity_lambda = 0.1
                 self._runtime_entropy_lambda = 0.02
                 self._runtime_augment_lambda = 0.01

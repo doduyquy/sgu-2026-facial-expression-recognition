@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from .CBAM import CBAM
 from .learned_landmark import LearnedLandmarkBranch
 from .landmark_multihead import MultiHeadLandmarkBranch
@@ -78,7 +79,7 @@ class ResNet50(nn.Module):
         landmark_num_points=6, #Số điểm landmark, mặc định 6, nhưng có thể override qua config
         landmark_tau=0.07, #Dùng để điều chỉnh độ mềm của heatmap
         landmark_feature_dropout_p=0.3, #Dùng để dropout trên feature map trước khi tạo heatmap để tăng tính generalization
-        landmark_head_dropout_p=0.2, # Dùng để dropout trên từng head của multi-head để tăng tính diversity giữa các head
+        landmark_head_dropout_p=0.1, # Dùng để dropout trên từng head của multi-head để tăng tính diversity giữa các head
         landmark_edge_guidance_beta=1.0, #Dùng để điều chỉnh trọng số edge guidance trong loss của nhánh landmark
         landmark_edge_alpha=6.0, #Dùng để điều chỉnh độ nhạy của edge guidance (alpha trong exp(-alpha * edge_dist)) để làm mờ dần ảnh hưởng của các điểm xa cạnh
 
@@ -103,10 +104,19 @@ class ResNet50(nn.Module):
         self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, stride=1, padding=1)
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU()
-        self.pool = nn.MaxPool2d(2, stride=2)
+        # avoid aggressive early downsampling: keep higher spatial resolution for landmark branch
+        # replace the initial maxpool with Identity so spatial size is preserved
+        self.pool = nn.Identity()
+
+        # add layer1 to more closely match ResNet stage layout (conv1 -> layer1 -> layer2 ...)
+        self.layer1 = nn.Sequential(
+            ConvBlock(64, [64, 64, 256], stride=1),
+            IdentityBlock(256, [64, 64, 256]),
+            IdentityBlock(256, [64, 64, 256]),
+        )
 
         self.layer2 = nn.Sequential(
-            ConvBlock(64, [64, 64, 256], stride=1),
+            ConvBlock(256, [64, 64, 256], stride=2),
             IdentityBlock(256, [64, 64, 256]),
             IdentityBlock(256, [64, 64, 256]),
         )
@@ -135,9 +145,13 @@ class ResNet50(nn.Module):
             nn.Linear(512, num_classes),
         )
 
-        landmark_in_channels = 512 if landmark_from_stage == 3 else 1024
+        # If fusing stage3 + upsampled stage4 as input to landmark branch, the in_channels becomes 512 + 1024
+        if landmark_from_stage == 34:
+            landmark_in_channels = 512 + 1024
+        else:
+            landmark_in_channels = 512 if landmark_from_stage == 3 else 1024
 
-        # support optional multi-head landmark branch
+        #nếu dùng nhánh learned landmark thì khởi tạo nhánh này, nếu không thì sẽ bỏ qua và chỉ dùng classifier baseline với feature map từ stage 3 và stage 4. Nếu số head > 1 thì sẽ dùng multi-head, nếu không thì sẽ dùng single-head như trước. Việc tách biệt này giúp giữ nguyên các ưu điểm của nhánh learned landmark hiện tại trong khi thêm lựa chọn đa dạng hơn với multi-head.
         if self.landmark_num_heads > 1:
             self.learned_landmark_branch = MultiHeadLandmarkBranch(
                 in_channels=landmark_in_channels,
@@ -160,8 +174,22 @@ class ResNet50(nn.Module):
                 edge_alpha=landmark_edge_alpha,
             )
 
+        # reduce high-dimensional pooled landmark features to a compact vector before fusion
+        # after learned_landmark pooling we now produce a vector of size (K*C + C) i.e. (landmark_num_points + 1) * landmark_in_channels
+        self.landmark_reduce_dim = 512
+        landmark_feat_in_dim = landmark_in_channels * (self.landmark_num_points + 1)
+        self.landmark_reduce = nn.Sequential(
+            nn.LayerNorm(landmark_feat_in_dim),
+            nn.Linear(landmark_feat_in_dim, self.landmark_reduce_dim),
+            nn.ReLU(),
+        )
+
         #Dùng để fusion giữa feature map từ backbone và feature map từ nhánh landmark để đưa vào classifier cuối cùng. Kích thước đầu vào sẽ là tổng của 3 phần: feature map từ stage 3, feature map từ stage 4, và feature map được trích xuất từ heatmap landmark (sau khi flatten). Cụ thể là: 512 (stage 3) + 1024 (stage 4) + ((landmark_num_points + 1) * landmark_in_channels) (từ nhánh landmark, bao gồm cả điểm đặc trưng trung tâm). Tổng sẽ là 1536 nếu dùng 6 điểm landmark với input 512 kênh cho nhánh landmark.
-        fusion_in_dim = 512 + 1024 + ((landmark_num_points + 1) * landmark_in_channels) #tính toán kích thước đầu vào cho fusion_fc dựa trên số điểm landmark và số kênh đầu vào cho nhánh landmark
+        # flattened dims from x3 and x4 after avgpool are 512 and 1024 respectively
+        feat3_dim = 512
+        feat4_dim = 1024
+        # include feat3 and feat4 + reduced landmark vector (reduce dims to avoid blowup)
+        fusion_in_dim = feat3_dim + feat4_dim + self.landmark_reduce_dim
         self.landmark_fusion_fc = nn.Sequential(
             nn.Linear(fusion_in_dim, 512),
             nn.ReLU(),
@@ -170,7 +198,7 @@ class ResNet50(nn.Module):
         )
 
         #Dùng để auxiliary classification chỉ dựa trên feature map từ nhánh landmark để đảm bảo rằng các điểm landmark được học ra có tính phân biệt cao đối với nhiệm vụ chính. Kích thước đầu vào sẽ là kích thước của feature map được trích xuất từ heatmap landmark (sau khi flatten), cụ thể là (landmark_num_points + 1) * landmark_in_channels, trong đó +1 là cho điểm đặc trưng trung tâm.
-        aux_in_dim = (landmark_num_points + 1) * landmark_in_channels #tính toán kích thước đầu vào cho landmark_aux_fc dựa trên số điểm landmark và số kênh đầu vào cho nhánh landmark
+        aux_in_dim = self.landmark_reduce_dim # after reduction
         self.landmark_aux_fc = nn.Sequential(
             nn.Linear(aux_in_dim, 256),
             nn.ReLU(),
@@ -178,15 +206,21 @@ class ResNet50(nn.Module):
             nn.Linear(256, num_classes),
         )
 
-        self._latest_landmark_feat = None
-        self._latest_landmark_aux_logits = None
-        # learnable scale for landmark features to avoid hardcoded heuristics
-        self.landmark_scale = nn.Parameter(torch.tensor(1.0))
+        self._latest_landmark_feat = None #dùng để lưu trữ feature map được trích xuất từ heatmap landmark để log lên wandb hoặc dùng cho mục đích phân tích thêm, tránh việc phải return nhiều giá trị từ forward
+        self._latest_landmark_aux_logits = None #dùng để lưu trữ logits đầu ra từ landmark_aux_fc để log lên wandb hoặc dùng cho mục đích phân tích thêm, tránh việc phải return nhiều giá trị từ forward
+        #Dùng để diều chỉnh trọng số các điểm landmark khi fusion với feature map từ backbone.
+        #Keep small so landmark doesn't overpower backbone on low-res FER.
+        # Use an unconstrained scalar parameter and sigmoid at usage to keep smooth gradients
+        self.landmark_scale = nn.Parameter(torch.tensor(0.5))
 
-        # small projection for landmark features can be added later; keep placeholder name
-        self.landmark_proj = None
+        #Dùng để lưu trữ trọng số của các priors trong nhánh landmark thông qua hàm get_current_prior_strength.
+        #Create projection only for the fused x3+x4 case to avoid silent shape mismatches.
+        if landmark_from_stage == 34:
+            self.landmark_proj = nn.Conv2d(1536, 512, kernel_size=1)
+        else:
+            self.landmark_proj = None
 
-    def get_aux_losses(self):
+    def get_aux_losses(self): 
         return self._latest_aux_losses
 
     def get_landmark_features(self):
@@ -197,12 +231,12 @@ class ResNet50(nn.Module):
 
     def get_landmark_outputs(self):
         return self._latest_landmark_heatmaps, self._latest_landmark_coords
-
-    def set_training_progress(self, progress):
+    #Dùng để cập nhật tiến trình training cho nhánh learned landmark nếu có, giúp điều chỉnh các regularizer/priors trong nhánh này theo từng giai đoạn của quá trình training mà không cần phải return nhiều giá trị từ forward hoặc tạo callback phức tạp.
+    def set_training_progress(self, progress): 
         setter = getattr(self.learned_landmark_branch, "set_training_progress", None)
         if callable(setter):
             setter(progress)
-
+    #Dùng để lấy trọng số hiện tại của các priors trong nhánh Landmark
     def get_current_prior_strength(self):
         getter = getattr(self.learned_landmark_branch, "get_current_prior_strength", None)
         if callable(getter):
@@ -210,11 +244,11 @@ class ResNet50(nn.Module):
         return None
 
     def forward(self, x, landmarks=None, landmark_mask=None):
-        _ = landmarks
+        _ = landmarks 
         _ = landmark_mask
         input_image = x
 
-        # optionally upsample input image to larger spatial size to give backbone more resolution
+        # Nếu input_upsample được cấu hình, ta sẽ upsample ảnh đầu vào trước khi đưa vào backbone. Điều này có thể giúp cải thiện hiệu suất của nhánh learned landmark bằng cách cung cấp ảnh có độ phân giải cao hơn, nhưng cũng sẽ tăng chi phí tính toán. Việc này được thực hiện một cách linh hoạt để không ảnh hưởng đến các trường hợp không cần thiết.
         if self.input_upsample is not None:
             try:
                 input_image = nn.functional.interpolate(input_image, size=self.input_upsample, mode='bilinear', align_corners=False)
@@ -222,15 +256,15 @@ class ResNet50(nn.Module):
                 # fallback to original if interpolation fails
                 input_image = x
 
-        # run backbone on (possibly upsampled) input
         x = self.relu(self.bn1(self.conv1(input_image)))
         x = self.pool(x)
 
+        # run layer1 -> layer2 -> layer3 for nicer ResNet staging
+        x = self.layer1(x)
         x = self.layer2(x)
 
         x3 = self.layer3(x)
         feat3 = torch.flatten(self.avgpool(x3), 1)
-
         x4 = self.layer4(x3)
         feat4 = torch.flatten(self.avgpool(x4), 1)
 
@@ -240,11 +274,45 @@ class ResNet50(nn.Module):
             self._latest_landmark_heatmaps = None
             self._latest_landmark_coords = None
             return self.fusion_fc(feat)
+        # Nếu dùng nhánh learned landmark, ta sẽ lấy feature map từ stage 3 hoặc stage 4 tùy theo cấu hình để làm input cho nhánh này. Nhánh learned landmark sẽ trả về heatmap, tọa độ landmark, feature map được pooled theo từng điểm landmark, và các loss phụ. Ta sẽ fusion feature map từ backbone (stage 3 và stage 4) với feature map từ nhánh landmark (sau khi nhân với một hệ số learnable để cân bằng) rồi đưa vào classifier cuối cùng. Ngoài ra, ta cũng có một auxiliary classifier chỉ dựa trên feature map từ nhánh landmark để đảm bảo rằng các điểm landmark được học ra có tính phân biệt cao đối với nhiệm vụ chính.
+        # prepare input for learned landmark branch (build landmark_src first, optional proj afterwards)
+        if self.landmark_from_stage == 34:
+            # fuse stage3 + upsampled stage4 along channel dim so landmark branch sees both scales
+            x4_ups = nn.functional.interpolate(x4, size=(x3.shape[2], x3.shape[3]), mode='bilinear', align_corners=False)
+            landmark_src = torch.cat([x3, x4_ups], dim=1)
+        else:
+            landmark_src = x3 if self.landmark_from_stage == 3 else x4
 
-        landmark_src = x3 if self.landmark_from_stage == 3 else x4
+        # optional projection if defined and shape matches (safe try)
+        if getattr(self, 'landmark_proj', None) is not None:
+            try:
+                landmark_src = self.landmark_proj(landmark_src)
+            except Exception:
+                # skip projection if shapes mismatch
+                pass
+
         heatmaps, coords, feat_k, aux = self.learned_landmark_branch(landmark_src, input_image=input_image)
-        # emphasize landmark features via a learnable scale to avoid brittle heuristics
-        fused = torch.cat([feat3, feat4, self.landmark_scale * feat_k], dim=1)
+
+        # normalize landmark features (branch may already normalize)
+        try:
+            feat_k = F.normalize(feat_k, dim=1)
+        except Exception:
+            pass
+
+        # reduce to compact representation
+        try:
+            feat_k = self.landmark_reduce(feat_k)
+        except Exception:
+            pass
+
+        # use sigmoid on learned scale for smooth, learnable gating in (0,1)
+        try:
+            scale = torch.sigmoid(self.landmark_scale)
+        except Exception:
+            scale = self.landmark_scale
+
+        # fuse feat3, feat4 and reduced landmark vector
+        fused = torch.cat([feat3, feat4, scale * feat_k], dim=1)
         logits = self.landmark_fusion_fc(fused)
 
         # auxiliary classification from landmark features

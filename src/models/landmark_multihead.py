@@ -33,6 +33,8 @@ class MultiHeadLandmarkBranch(LearnedLandmarkBranch):
         )
 
         self.num_heads = int(max(1, num_heads))
+        # learnable head weights so model can prefer certain heads (not plain averaging)
+        self.head_weight = nn.Parameter(torch.ones(self.num_heads))
         # replace single-head heatmap with multi-head heatmap conv
         self.landmark_heatmap_head = nn.Conv2d(
             in_channels, landmark_num_points * self.num_heads, kernel_size=1
@@ -46,9 +48,9 @@ class MultiHeadLandmarkBranch(LearnedLandmarkBranch):
         nh = self.num_heads
         attn_logits_heads = attn_logits_heads.view(bsz, nh, K, h, w)
 
-        # Reuse edge guidance from parent
-        edge_attn = self._build_edge_attention(input_image, h, w)
-        sobel_target = self._build_sobel_target(input_image, h, w)
+        # Edge guidance removed for low-res FER; parent methods will return None
+        edge_attn = None
+        sobel_target = None
 
         # Per-head processing: center logits per-head to encourage competition
         attn_logits_heads = attn_logits_heads - attn_logits_heads.mean(dim=3, keepdim=True).mean(dim=4, keepdim=True)
@@ -67,15 +69,27 @@ class MultiHeadLandmarkBranch(LearnedLandmarkBranch):
         flat = attn_logits_heads.view(bsz, nh, K, -1) / max(self.landmark_tau, 1e-6)
         attn_heads = torch.softmax(flat, dim=-1).view(bsz, nh, K, h, w)
 
-        # head dropout (randomly drop entire heads per keypoint during training)
-        if self.training and self.head_dropout_p > 0.0 and K > 1:
-            keep = (torch.rand(bsz, nh, K, 1, 1, device=attn_heads.device) > self.head_dropout_p).to(attn_heads.dtype)
+        # head dropout: enable conservatively only late in training
+        effective_head_p = 0.0
+        try:
+            if self.training and K > 1:
+                if getattr(self, '_training_progress', 0.0) >= 0.7:
+                    effective_head_p = float(self.head_dropout_p)
+        except Exception:
+            effective_head_p = 0.0
+
+        if effective_head_p > 0.0:
+            keep = (torch.rand(bsz, nh, K, 1, 1, device=attn_heads.device) > effective_head_p).to(attn_heads.dtype)
             has_any = keep.sum(dim=2, keepdim=True) > 0
             keep = torch.where(has_any, keep, torch.ones_like(keep))
             attn_heads = attn_heads * keep
 
-        # aggregate heads by simple average (could be learned later)
-        attn = attn_heads.mean(dim=1)
+        # aggregate heads with learned weights (softmax over heads)
+        try:
+            w = torch.softmax(self.head_weight, dim=0)
+            attn = (attn_heads * w.view(1, nh, 1, 1, 1)).sum(dim=1)
+        except Exception:
+            attn = attn_heads.mean(dim=1)
 
         # normalize aggregated attention maps
         attn = attn / attn.sum(dim=[2, 3], keepdim=True).clamp(min=1e-6)
@@ -86,47 +100,39 @@ class MultiHeadLandmarkBranch(LearnedLandmarkBranch):
         # pooled per-keypoint features
         feat_expanded = feat_map.unsqueeze(1)
         heat_expanded = attn.unsqueeze(2)
+        # pooled per-keypoint features: (B, K, C)
         feat_k = (feat_expanded * heat_expanded).sum(dim=[3, 4])
+
+        # preserve keypoint structure by flattening K*C
+        bsz, Kp, C = feat_k.shape
+        feat_k_flat = feat_k.view(bsz, Kp * C)
 
         global_attn = attn.mean(dim=1, keepdim=True)
         feat_global = (feat_map * global_attn).sum(dim=[2, 3])
 
-        feat_k = feat_k.view(bsz, -1)
-        feat_k = torch.cat([feat_k, feat_global], dim=1)
+        feat_k = torch.cat([feat_k_flat, feat_global], dim=1)
+        feat_k = F.normalize(feat_k, dim=1)
         feat_k = F.dropout(feat_k, p=self.feature_dropout_p, training=self.training)
 
-        # Edge consistency computed on aggregated maps
-        if sobel_target is not None:
-            sobel_k = sobel_target.repeat(1, K, 1, 1)
-            edge_consistency = (attn * sobel_k).mean()
-            edge_align = ((attn.mean(dim=1, keepdim=True) - sobel_target) ** 2).mean()
-        else:
-            edge_consistency = attn.new_tensor(0.0)
-            edge_align = attn.new_tensor(0.0)
+        # No edge guidance for low-res FER
+        edge_consistency = attn.new_tensor(0.0)
+        edge_align = attn.new_tensor(0.0)
 
-        # Regularizers: keep original edge_conv_reg and TV from parent
-        with torch.no_grad():
-            fixed = torch.sqrt(self._fixed_sobel_x.pow(2) + self._fixed_sobel_y.pow(2))
-        fixed_rep = fixed.repeat(K, 1, 1, 1).to(self.edge_conv.weight.device)
-        edge_conv_reg = F.mse_loss(self.edge_conv.weight, fixed_rep, reduction="mean")
-
-        if edge_attn is not None:
-            e = edge_attn
-            tv_h = torch.abs(e[:, :, 1:, :] - e[:, :, :-1, :]).mean()
-            tv_w = torch.abs(e[:, :, :, 1:] - e[:, :, :, :-1]).mean()
-            edge_tv = (tv_h + tv_w) * 0.5
-        else:
-            edge_tv = attn.new_tensor(0.0)
+        # Reduce toxic regularizers for low-res FER: keep only soft edge_consistency
+        edge_conv_reg = attn.new_tensor(0.0)
+        edge_tv = attn.new_tensor(0.0)
 
         # peaky loss
         max_val = attn.amax(dim=[2, 3])
-        peak_loss = (1.0 - max_val).mean()
+        peak_loss = ((1.0 - max_val) ** 2 ).mean()
 
+        # normalize pooled features and return compact aux set
+        feat_k = F.normalize(feat_k, dim=1)
         aux = {
             "landmark_diversity": self._diversity_loss(attn, coords=coords),
             "landmark_entropy": peak_loss,
-            "landmark_edge_align": edge_align,
             "landmark_edge_consistency": edge_consistency,
+            "landmark_edge_align": attn.new_tensor(0.0),
             "landmark_edge_conv_reg": edge_conv_reg,
             "landmark_edge_tv": edge_tv,
         }
