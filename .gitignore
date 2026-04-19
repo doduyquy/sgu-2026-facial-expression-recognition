@@ -25,3 +25,5 @@ zmisc
 
 #data quá lớn không pub
 dataset/
+outputs/
+notebooks/Agument/
