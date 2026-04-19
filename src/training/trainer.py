@@ -187,6 +187,11 @@ class Trainer:
 
         for images, labels in self.train_loader:
             images, labels = images.to(self.device), labels.to(self.device)
+            try:
+                # debug: check label range per user's request
+                print("labels range:", labels.min().item(), labels.max().item())
+            except Exception:
+                pass
 
             self.optimizer.zero_grad()
 

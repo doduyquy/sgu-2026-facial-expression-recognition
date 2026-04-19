@@ -31,15 +31,18 @@ from datetime import datetime
 def main():
     print("\t\t--> In main <--\t\t")
 
-    # device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  
-    print("--- Use device:", device)
-
     # get args 
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--env", type=str, default="local", choices=["local", "kaggle"])
     args = parser.parse_args()
+    # If running on Kaggle, enable CUDA launch blocking for correct stack traces
+    if args.env == 'kaggle':
+        os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
+    # device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  
+    print("--- Use device:", device)
     
     # load config
     config = load_config(args.config, args.env)

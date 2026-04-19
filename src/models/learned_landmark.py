@@ -115,6 +115,27 @@ class LearnedLandmarkBranch(nn.Module):
             return (gram - eye).pow(2).mean()
 
         # coords: (B, K, 2)
+        # --- Debug instrumentation per user request: check NaN and shapes ---
+        try:
+            try:
+                if torch.isnan(attn).any():
+                    print("NaN in attn")
+            except Exception:
+                pass
+            try:
+                if torch.isnan(coords).any():
+                    print("NaN in coords")
+            except Exception:
+                pass
+            try:
+                print("attn.shape:", tuple(attn.shape))
+                print("coords.shape:", tuple(coords.shape))
+                print("keypoints:", keypoints)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
         try:
             # sanitize coords on CPU to avoid triggering CUDA device-side asserts
             coords_cpu = coords.detach().cpu()
