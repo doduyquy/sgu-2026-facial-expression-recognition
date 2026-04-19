@@ -1,0 +1,42 @@
+# Single-Backbone ResNet Region Attention Configuration
+_base_: "base.yaml"
+
+model:
+  name: "resnet_region_aligned_fer"
+  embed_dim: 512
+  num_heads: 4
+  num_regions: 6          # Trán, Mắt trái, Mắt phải, Mũi, Miệng, Cằm
+  num_encoder_layers: 2   # Số lớp Transformer Encoder
+  transformer_dropout: 0.4
+  
+  # ResNet Configuration
+  attention_type: "cbam"
+  attention_kernel_size: 7
+
+  # Bỏ qua hoàn toàn: pretrained_path và freeze_backbone_epochs
+  # vì model được yêu cầu train từ đầu (scratch) 100%.
+
+data:
+  image_size: 48
+  channels: 1
+  batch_size: 64
+
+training:
+  # Cần đẩy learning rate lên cao hơn ở giai đoạn đầu để mô hình train từ scratch có thể hội tụ
+  lr: 0.0003           # Default AdamW LR for training from scratch
+  finetune_lr: 0.00005 # Learning rate lower bound
+  epochs: 150          # Cần nhiều epochs hơn vì train từ số 0
+  optimizer: "sam"
+  base_optimizer: "adamw"
+  sam_rho: 0.05
+  weight_decay: 0.05       # Standard for Transformer + AdamW
+  label_smoothing: 0.1
+  scheduler: "cosine"
+  use_class_weights: true
+
+env:
+  platform: "kaggle"
+
+kaggle:
+  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
+  root_path: "/kaggle/working/sgu-2026-facial-expression-recognition"
