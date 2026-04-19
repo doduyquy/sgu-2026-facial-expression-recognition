@@ -292,15 +292,28 @@ class LearnedLandmarkBranch(nn.Module):
             if len(self.upper_idxs) > 0 or len(self.lower_idxs) > 0:
                 # coords: (B, K, 2) with y in second dim
                 ys = coords[..., 1]
+                b_k = ys.shape
+                # defensive checks to avoid CUDA device-side asserts from OOB indices
+                K_actual = ys.shape[1] if len(ys.shape) > 1 else 0
+                # debug info if mismatch
+                try:
+                    if max(self.upper_idxs) >= K_actual or max(self.lower_idxs) >= K_actual:
+                        print(f"[landmark pos_sup] Warning: idx out-of-bounds detected. K_actual={K_actual}, upper_idxs={self.upper_idxs}, lower_idxs={self.lower_idxs}")
+                except Exception:
+                    pass
+
+                # filter valid indices
+                valid_upper = [i for i in self.upper_idxs if 0 <= i < K_actual]
+                valid_lower = [i for i in self.lower_idxs if 0 <= i < K_actual]
+
                 penalties = []
-                if len(self.upper_idxs) > 0:
-                    up = ys[:, self.upper_idxs]
-                    # encourage y <= 0.5
+                if len(valid_upper) > 0:
+                    up = ys[:, valid_upper]
                     penalties.append(F.relu(up - 0.5).mean())
-                if len(self.lower_idxs) > 0:
-                    lo = ys[:, self.lower_idxs]
-                    # encourage y >= 0.5
+                if len(valid_lower) > 0:
+                    lo = ys[:, valid_lower]
                     penalties.append(F.relu(0.5 - lo).mean())
+
                 if len(penalties) > 0:
                     pos_sup = sum(penalties) / len(penalties)
                     pos_sup = pos_sup * float(getattr(self, 'pos_supervision_weight', 0.05))
