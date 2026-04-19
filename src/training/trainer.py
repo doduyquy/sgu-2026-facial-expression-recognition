@@ -253,7 +253,13 @@ class Trainer:
 
             # (no target) use raw entropy directly for both train and val
 
+            # extract aux losses first
             div_loss = aux_losses.get("landmark_diversity", torch.tensor(0.0, device=self.device))
+            entropy_loss = aux_losses.get(
+                "landmark_entropy",
+                aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
+            )
+            overlap_loss = aux_losses.get("landmark_overlap", torch.tensor(0.0, device=self.device))
             try:
                 # scale all landmark auxiliary losses by batch confidence (detached)
                 # scale = (1 - conf); multiply div/overlap/entropy to emphasize hard batches
@@ -267,11 +273,6 @@ class Trainer:
                 entropy_loss = entropy_loss * scale
             except Exception:
                 pass
-            entropy_loss = aux_losses.get(
-                "landmark_entropy",
-                aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
-            )
-            overlap_loss = aux_losses.get("landmark_overlap", torch.tensor(0.0, device=self.device))
             # (entropy regularization removed) keep raw value if needed elsewhere
             heatmaps_now, _ = self.model.get_landmark_outputs()
             if heatmaps_now is not None:
