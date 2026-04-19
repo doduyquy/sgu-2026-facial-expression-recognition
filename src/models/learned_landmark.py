@@ -135,12 +135,6 @@ class LearnedLandmarkBranch(nn.Module):
                     print("NaN in coords")
             except Exception:
                 pass
-            try:
-                print("attn.shape:", tuple(attn.shape))
-                print("coords.shape:", tuple(coords.shape))
-                print("keypoints:", keypoints)
-            except Exception:
-                pass
         except Exception:
             pass
 
