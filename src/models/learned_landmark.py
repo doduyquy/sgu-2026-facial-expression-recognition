@@ -9,7 +9,7 @@ class LearnedLandmarkBranch(nn.Module):
         in_channels=1024,
         landmark_num_points=8,
         landmark_tau=0.07,
-        diversity_margin=0.4,
+        diversity_margin=0.2,
         kp_proj_dim=64,
         feature_dropout_p=0.3,
         head_dropout_p=0.1,
@@ -50,8 +50,9 @@ class LearnedLandmarkBranch(nn.Module):
         # optional light positional supervision: indices expected in normalized y
         # upper_idxs: keypoint indices that should stay in upper-face (y <= 0.5)
         # lower_idxs: keypoint indices that should stay in lower-face (y >= 0.5)
-        self.upper_idxs = []
-        self.lower_idxs = []
+        # sensible defaults for FER keypoint grouping (can be overridden by config)
+        self.upper_idxs = [0, 1, 2]
+        self.lower_idxs = [3, 4, 5, 6, 7]
         self.pos_supervision_weight = 0.05
 
     def set_training_progress(self, progress):

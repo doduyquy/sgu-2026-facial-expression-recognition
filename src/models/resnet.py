@@ -272,8 +272,16 @@ class ResNet50(nn.Module):
 
         x3 = self.layer3(x)
         feat3 = torch.flatten(self.avgpool(x3), 1)
+        try:
+            feat3 = F.normalize(feat3, dim=1)
+        except Exception:
+            pass
         x4 = self.layer4(x3)
         feat4 = torch.flatten(self.avgpool(x4), 1)
+        try:
+            feat4 = F.normalize(feat4, dim=1)
+        except Exception:
+            pass
 
         if not self.use_learned_landmark_branch:
             feat = torch.cat([feat3, feat4], dim=1)

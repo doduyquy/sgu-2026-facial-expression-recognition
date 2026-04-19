@@ -36,10 +36,8 @@ class Trainer:
         self.path_save_ckpt = save_dir
         # Tuned defaults to avoid over-constraint (Sunset suggestions)
         self.landmark_diversity_lambda = config['training'].get('landmark_diversity_lambda', 0.25)
-        self.landmark_entropy_lambda = config['training'].get(
-            'landmark_entropy_lambda',
-            config['training'].get('landmark_sparsity_lambda', 0.1),
-        )
+        # keep entropy off by default for low-res FER unless explicitly enabled
+        self.landmark_entropy_lambda = config['training'].get('landmark_entropy_lambda', 0.0)
         # keep edge_align disabled by default
         self.landmark_edge_align_lambda = config['training'].get('landmark_edge_align_lambda', 0.0)
         # per-keypoint edge consistency - disabled by default for SOTA simplicity
@@ -55,25 +53,28 @@ class Trainer:
         self.landmark_target_entropy = config['training'].get('landmark_target_entropy', 2.0)
         # auxiliary classification head weight for landmark features (lighter default)
         self.landmark_aux_cls_lambda = config['training'].get('landmark_aux_cls_lambda', 0.05)
-        # optional positional supervision (upper/lower face guidance)
-        self.landmark_pos_sup_lambda = config['training'].get('landmark_pos_sup_lambda', 0.05)
+        # optional positional supervision (upper/lower face guidance) - off by default
+        self.landmark_pos_sup_lambda = config['training'].get('landmark_pos_sup_lambda', 0.0)
         # heatmap overlap penalty default
         self.landmark_overlap_lambda = config['training'].get('landmark_overlap_lambda', 0.05)
-        # auxiliary logits consistency (KL) weight (lighter default)
-        self.landmark_aux_consistency_lambda = config['training'].get('landmark_aux_consistency_lambda', 0.05)
+        # auxiliary logits consistency (KL) weight: disabled by default (can destabilize)
+        self.landmark_aux_consistency_lambda = config['training'].get('landmark_aux_consistency_lambda', 0.0)
         # focal loss removed to avoid conflict with SCN; use base criterion only
         # === SCN (light) ===
         self.use_scn = config['training'].get('use_scn', True)
-        # default warmup: small fixed epochs to enable SCN earlier (helps noisy FER)
-        self.scn_warmup_epochs = int(config['training'].get('scn_warmup_epochs', 5))
+        # default warmup: disabled by default, SCN controlled by phase schedule
+        self.scn_warmup_epochs = int(config['training'].get('scn_warmup_epochs', 0))
         self.scn_alpha = float(config['training'].get('scn_alpha', 1.0))
-        # stronger ranking influence by default for FER
+        # ranking influence tuned for FER (raise to emphasize hard/easy separation)
         self.scn_rank_lambda = float(config['training'].get('scn_rank_lambda', 0.2))
         self.scn_min_weight = float(config['training'].get('scn_min_weight', 0.2))
-        # margin for ranking loss (increase for difficult FER samples)
+        # margin for ranking loss
         self.scn_margin = float(config['training'].get('scn_margin', 0.2))
         # runtime flags (set by fit staging)
         self._runtime_use_scn = None
+        # mixup defaults
+        self.mixup_alpha = float(config['training'].get('mixup_alpha', 0.2))
+        self._runtime_use_mixup = False
 
     @staticmethod
     def _extract_logits(outputs):
@@ -120,7 +121,8 @@ class Trainer:
         # ranking loss: use percentile split (e.g., 30% hardest) to be robust
         sorted_conf, idx = torch.sort(conf)
         B = logits.size(0)
-        k = max(1, int(0.3 * B))
+        # use a smaller percentile split and a minimum of 2 for stability on small batches
+        k = max(2, int(0.2 * B))
         hard_idx = idx[:k]
         easy_idx = idx[k:]
         # safe computation in small batches: fallback to zero when empty
@@ -136,7 +138,8 @@ class Trainer:
         margin = float(getattr(self, 'scn_margin', 0.1))
         # start ranking after SCN warmup (scale with config)
         ranking_start = int(getattr(self, 'scn_warmup_epochs', 0))
-        if getattr(self, '_current_epoch', 0) > ranking_start:
+        # use >= so that a zero warmup enables ranking immediately
+        if getattr(self, '_current_epoch', 0) >= ranking_start:
             ranking_loss = F.relu(easy_loss - hard_loss + margin)
         else:
             ranking_loss = torch.tensor(0.0, device=self.device)
@@ -186,6 +189,20 @@ class Trainer:
             images, labels = images.to(self.device), labels.to(self.device)
 
             self.optimizer.zero_grad()
+
+            # MixUp: disabled by default in FER pipeline (SCN preferred)
+            mixup_active = bool(getattr(self, '_runtime_use_mixup', False)) and self.model.training
+            if mixup_active:
+                alpha = float(getattr(self, 'mixup_alpha', 0.2))
+                if alpha > 0.0:
+                    lam = float(np.random.beta(alpha, alpha))
+                else:
+                    lam = 1.0
+                perm = torch.randperm(images.size(0), device=images.device)
+                images = (lam * images) + ((1.0 - lam) * images[perm])
+                labels_a = labels
+                labels_b = labels[perm]
+
             outputs = self.model(images)
             logits = self._extract_logits(outputs)
 
@@ -201,31 +218,48 @@ class Trainer:
             # determine effective runtime flag for SCN (set by fit phases if present)
             runtime_use_scn = getattr(self, '_runtime_use_scn', self.use_scn)
 
-            # apply SCN-light after warmup epochs if enabled by runtime flag
-            if runtime_use_scn and getattr(self, '_current_epoch', 0) >= getattr(self, 'scn_warmup_epochs', 0):
+            # If mixup is active, compute mixup-style CE and skip SCN ranking (SCN needs hard labels)
+            if mixup_active:
                 try:
-                    cls_loss, scn_logs = self._scn_loss(logits, labels)
-                    # accumulate scn logs for epoch-level summary
-                    try:
-                        _scn_acc["scn_weight_mean"].append(scn_logs.get("scn_weight_mean", 0.0))
-                        _scn_acc["scn_conf_mean"].append(scn_logs.get("scn_conf_mean", 0.0))
-                        _scn_acc["scn_rank_loss"].append(scn_logs.get("scn_rank_loss", 0.0))
-                    except Exception:
-                        pass
+                    cls_loss = lam * F.cross_entropy(logits, labels_a) + (1.0 - lam) * F.cross_entropy(logits, labels_b)
+                    scn_logs = None
                 except Exception:
-                    # fallback to base criterion
                     cls_loss = self._base_criterion(logits, labels)
+                    scn_logs = None
             else:
-                # use base criterion when SCN not active
-                cls_loss = self._base_criterion(logits, labels)
+                # apply SCN-light after warmup epochs if enabled by runtime flag
+                if runtime_use_scn and getattr(self, '_current_epoch', 0) >= getattr(self, 'scn_warmup_epochs', 0):
+                    try:
+                        cls_loss, scn_logs = self._scn_loss(logits, labels)
+                        # accumulate scn logs for epoch-level summary
+                        try:
+                            _scn_acc["scn_weight_mean"].append(scn_logs.get("scn_weight_mean", 0.0))
+                            _scn_acc["scn_conf_mean"].append(scn_logs.get("scn_conf_mean", 0.0))
+                            _scn_acc["scn_rank_loss"].append(scn_logs.get("scn_rank_loss", 0.0))
+                        except Exception:
+                            pass
+                    except Exception:
+                        # fallback to base criterion
+                        cls_loss = self._base_criterion(logits, labels)
+                else:
+                    # use base criterion when SCN not active
+                    cls_loss = self._base_criterion(logits, labels)
             aux_losses = self._extract_aux_losses(outputs)
 
             # (no target) use raw entropy directly for both train and val
 
             div_loss = aux_losses.get("landmark_diversity", torch.tensor(0.0, device=self.device))
             try:
-                # scale diversity by (1 - mean_confidence) so hard batches push landmarks harder
-                div_loss = div_loss * (1.0 - conf_batch_mean)
+                # scale all landmark auxiliary losses by batch confidence (detached)
+                # scale = (1 - conf); multiply div/overlap/entropy to emphasize hard batches
+                scale = (1.0 - conf_batch_mean).detach()
+                try:
+                    scale = torch.clamp(scale, 0.5, 1.5)
+                except Exception:
+                    scale = torch.tensor(max(0.5, min(1.5, float(scale))), device=self.device)
+                div_loss = div_loss * scale
+                overlap_loss = overlap_loss * scale
+                entropy_loss = entropy_loss * scale
             except Exception:
                 pass
             entropy_loss = aux_losses.get(
@@ -340,6 +374,11 @@ class Trainer:
                     # if any issue with augment or TF, skip augment consistency for this batch
                     pass
             loss.backward()
+            try:
+                # gradient clipping to stabilize training when combining SCN and landmark auxes
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
+            except Exception:
+                pass
             self.optimizer.step()
 
             running_loss += loss.item() * images.size(0)
@@ -453,11 +492,11 @@ class Trainer:
                     pass
 
             # apply 3-phase staged lambda schedule tuned for noisy FER datasets
-            # Phase 1: very early (0-20%): keep base learning but allow light regularization
-            # Phase 2: (20-70%): enable SCN and light landmark signals so landmarks learn while backbone still adapts
-            # Phase 3: (70-100%): refinement with stronger landmark regularizers
+            # Phase 1: very early (0-20%): SCN OFF, MixUp OFF
+            # Phase 2: (20-70%): SCN ON, stronger landmark signals
+            # Phase 3: (70-100%): heavy refinement for landmark branch
             if progress <= 0.2:
-                # Phase 1 (0-20%): mostly base classification, minimal landmarks
+                # Phase 1 (0-20%): conservative — no MixUp, SCN off
                 self._runtime_diversity_lambda = 0.0
                 self._runtime_entropy_lambda = 0.0
                 self._runtime_overlap_lambda = 0.0
@@ -466,26 +505,32 @@ class Trainer:
                 self._runtime_aux_cls_lambda = 0.0
                 self._runtime_aux_consistency_lambda = 0.0
                 self._runtime_use_scn = False
+                self._runtime_use_mixup = False
+                self._runtime_phase = 1
             elif progress <= 0.7:
-                # Phase 2 (20-70%): enable SCN early and provide light landmark guidance
-                self._runtime_diversity_lambda = 0.05
-                self._runtime_entropy_lambda = 0.02
-                self._runtime_overlap_lambda = 0.02
-                self._runtime_augment_lambda = 0.0
-                self._runtime_edge_consistency_lambda = 0.0
-                self._runtime_aux_cls_lambda = 0.02
-                self._runtime_aux_consistency_lambda = 0.0
-                self._runtime_use_scn = True
-            else:
-                # Phase 3 (70-100%): Refinement — stronger diversity and aux cls
-                self._runtime_diversity_lambda = 0.15
-                self._runtime_entropy_lambda = 0.0
-                self._runtime_overlap_lambda = 0.05
+                # Phase 2 (20-70%): enable SCN and stronger landmark auxiliaries
+                self._runtime_diversity_lambda = 0.2
+                self._runtime_entropy_lambda = 0.005
+                self._runtime_overlap_lambda = 0.08
                 self._runtime_augment_lambda = 0.0
                 self._runtime_edge_consistency_lambda = 0.0
                 self._runtime_aux_cls_lambda = 0.05
                 self._runtime_aux_consistency_lambda = 0.0
                 self._runtime_use_scn = True
+                self._runtime_use_mixup = False
+                self._runtime_phase = 2
+            else:
+                # Phase 3 (70-100%): strong refinement — increase landmark lambdas
+                self._runtime_diversity_lambda = 0.35
+                self._runtime_entropy_lambda = 0.01
+                self._runtime_overlap_lambda = 0.12
+                self._runtime_augment_lambda = 0.0
+                self._runtime_edge_consistency_lambda = 0.0
+                self._runtime_aux_cls_lambda = 0.05
+                self._runtime_aux_consistency_lambda = 0.0
+                self._runtime_use_scn = True
+                self._runtime_use_mixup = False
+                self._runtime_phase = 3
 
             train_loss, train_acc = self.train_one_epoch()
             val_loss, val_acc = self.validate()
