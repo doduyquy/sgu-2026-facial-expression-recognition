@@ -141,11 +141,21 @@ class LearnedLandmarkBranch(nn.Module):
             loss_per_sample = F.relu(margin - d_masked).mean(dim=1)
             return loss_per_sample.mean()
         except Exception:
-            # safe fallback
-            flat = attn.view(bsz, keypoints, -1)
-            flat = flat / flat.norm(dim=-1, keepdim=True).clamp(min=1e-6)
-            gram = torch.bmm(flat, flat.transpose(1, 2))
-            eye = torch.eye(keypoints, device=attn.device, dtype=attn.dtype).unsqueeze(0)
+            # safe fallback: sanitize attention maps and compute fallback on CPU if GPU ops fail
+            try:
+                flat = attn.view(bsz, keypoints, -1)
+                if not flat.is_floating_point():
+                    flat = flat.float()
+                if not torch.isfinite(flat).all():
+                    flat = torch.nan_to_num(flat, nan=0.0, posinf=1.0, neginf=0.0)
+                flat = flat / flat.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+                gram = torch.bmm(flat, flat.transpose(1, 2))
+            except Exception:
+                flat_cpu = attn.detach().cpu().view(bsz, keypoints, -1)
+                flat_cpu = torch.nan_to_num(flat_cpu, nan=0.0, posinf=1.0, neginf=0.0)
+                flat_cpu = flat_cpu / flat_cpu.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+                gram = torch.bmm(flat_cpu, flat_cpu.transpose(1, 2)).to(attn.device)
+            eye = torch.eye(keypoints, device=gram.device, dtype=gram.dtype).unsqueeze(0)
             return (gram - eye).pow(2).mean()
 
     @staticmethod
