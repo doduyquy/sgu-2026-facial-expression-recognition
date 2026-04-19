@@ -7,10 +7,10 @@ class LearnedLandmarkBranch(nn.Module):
     def __init__(
     self,
     in_channels=1024,
-    landmark_num_points=8,
+    landmark_num_points=6,
     landmark_tau=0.07,
     diversity_margin=0.2,
-    kp_proj_dim=32,
+    kp_proj_dim=64,
         feature_dropout_p=0.3,
         head_dropout_p=0.1,
         edge_guidance_beta=1.0,
@@ -47,12 +47,20 @@ class LearnedLandmarkBranch(nn.Module):
             self.kp_proj = nn.Linear(in_channels, self.kp_proj_dim)
         except Exception:
             self.kp_proj = None
+        # per-keypoint gating to weight keypoints by importance
+        try:
+            if self.kp_proj is not None:
+                self.kp_gate = nn.Linear(self.kp_proj_dim, 1)
+            else:
+                self.kp_gate = None
+        except Exception:
+            self.kp_gate = None
         # optional light positional supervision: indices expected in normalized y
         # upper_idxs: keypoint indices that should stay in upper-face (y <= 0.5)
         # lower_idxs: keypoint indices that should stay in lower-face (y >= 0.5)
         # sensible defaults for FER keypoint grouping (can be overridden by config)
         self.upper_idxs = [0, 1, 2]
-        self.lower_idxs = [3, 4, 5, 6, 7]
+        self.lower_idxs = [3, 4, 5]
         self.pos_supervision_weight = 0.05
 
     def set_training_progress(self, progress):
@@ -253,13 +261,31 @@ class LearnedLandmarkBranch(nn.Module):
         global_attn = attn.mean(dim=1, keepdim=True)
         feat_global = (feat_map * global_attn).sum(dim=[2, 3])  # (B, C)
 
-        # concat flattened per-keypoint features and global pooled -> (B, K*kp_proj_dim + C)
-        feat_k = torch.cat([feat_k_flat, feat_global], dim=1)
-        # Feature fusion: avoid destructive global L2 normalization which removes useful scale info
+        # Feature fusion with keypoint gating when kp_proj exists
+        if getattr(self, 'kp_proj', None) is not None and 'feat_k_reduced' in locals():
+            # feat_k_reduced: (B, K, D)
+            try:
+                if getattr(self, 'kp_gate', None) is not None:
+                    gate_logits = self.kp_gate(feat_k_reduced)  # (B, K, 1)
+                    gate_logits = gate_logits.squeeze(-1)
+                    gate = torch.softmax(gate_logits, dim=1)  # (B, K)
+                    fused_k = (gate.unsqueeze(-1) * feat_k_reduced).sum(dim=1)  # (B, D)
+                else:
+                    # fallback: average pooling across keypoints
+                    fused_k = feat_k_reduced.mean(dim=1)
+            except Exception:
+                fused_k = feat_k_reduced.mean(dim=1)
+
+            # concat fused per-keypoint vector with global pooled feature
+            feat_k = torch.cat([fused_k, feat_global], dim=1)
+        else:
+            # no per-keypoint projection available: fall back to concatenation
+            feat_k = torch.cat([feat_k_flat, feat_global], dim=1)
+
+        # normalize fused feature using layer-norm (preserve scale relations across dims)
         try:
             feat_k = F.layer_norm(feat_k, feat_k.shape[1:])
         except Exception:
-            # fallback: leave features as-is
             pass
         feat_k = F.dropout(feat_k, p=self.feature_dropout_p, training=self.training)
 

@@ -47,6 +47,8 @@ class Trainer:
         self.landmark_edge_tv_lambda = config['training'].get('landmark_edge_tv_lambda', 0.0)
         # augment consistency disabled by default (expensive / can harm alignment)
         self.landmark_augment_consistency_lambda = config['training'].get('landmark_augment_consistency_lambda', 0.0)
+        # coordinate-level consistency (coords(T(x)) vs T(coords(x))) lightweight
+        self.landmark_consistency_lambda = config['training'].get('landmark_consistency_lambda', 0.0)
         # probability to run augment-consistency per batch (to save compute). Disabled by default.
         self.landmark_augment_consistency_prob = config['training'].get('landmark_augment_consistency_prob', 0.0)
         # Target entropy for attention maps; regularize toward this value (abs diff)
@@ -173,6 +175,7 @@ class Trainer:
         edge_consistency_lambda = getattr(self, '_runtime_edge_consistency_lambda', self.landmark_edge_consistency_lambda)
         # augment consistency intentionally disabled to avoid destabilizing landmarks on small images
         augment_lambda = 0.0
+        consistency_lambda = getattr(self, '_runtime_landmark_consistency_lambda', self.landmark_consistency_lambda)
         aux_cls_lambda = getattr(self, '_runtime_aux_cls_lambda', self.landmark_aux_cls_lambda)
         pos_sup_lambda = getattr(self, '_runtime_pos_sup_lambda', self.landmark_pos_sup_lambda)
         # convert lambdas to tensors to avoid dtype/interop issues when combining with torch tensors
@@ -181,6 +184,7 @@ class Trainer:
         overlap_lambda_t = torch.tensor(float(overlap_lambda), device=self.device)
         edge_consistency_lambda_t = torch.tensor(float(edge_consistency_lambda), device=self.device)
         augment_lambda_t = torch.tensor(float(augment_lambda), device=self.device)
+        consistency_lambda_t = torch.tensor(float(consistency_lambda), device=self.device)
         aux_cls_lambda_t = torch.tensor(float(aux_cls_lambda), device=self.device)
 
         for images, labels in self.train_loader:
@@ -266,8 +270,8 @@ class Trainer:
             overlap_loss = aux_losses.get("landmark_overlap", torch.tensor(0.0, device=self.device))
             try:
                 # scale all landmark auxiliary losses by batch confidence (detached)
-                # scale = (1 - conf); multiply div/overlap/entropy to emphasize hard batches
-                scale = (1.0 - conf_batch_mean).detach()
+                # stronger SCN-style scaling: (1 - conf)^2 to focus hard batches
+                scale = ((1.0 - conf_batch_mean) ** 2).detach()
                 try:
                     scale = torch.clamp(scale, 0.5, 1.5)
                 except Exception:
@@ -372,6 +376,29 @@ class Trainer:
 
                             augment_consistency_loss = F.l1_loss(heatmaps_aug, transformed, reduction='mean')
                             loss = loss + (augment_lambda * augment_consistency_loss)
+
+                            # Coordinate-level consistency (lightweight): compare coords from transformed
+                            try:
+                                # compute soft-argmax coords from transformed heatmaps
+                                flat_t = transformed.view(bsz, transformed.size(1), -1)
+                                flat_t = flat_t / flat_t.sum(dim=-1, keepdim=True).clamp(min=1e-6)
+                                xs_t = torch.linspace(0, 1, W, device=transformed.device, dtype=transformed.dtype)
+                                ys_t = torch.linspace(0, 1, H, device=transformed.device, dtype=transformed.dtype)
+                                grid_y_t, grid_x_t = torch.meshgrid(ys_t, xs_t, indexing='ij')
+                                grid_x_t = grid_x_t.reshape(-1)
+                                grid_y_t = grid_y_t.reshape(-1)
+                                x_t = (flat_t * grid_x_t).sum(dim=-1)
+                                y_t = (flat_t * grid_y_t).sum(dim=-1)
+                                coords_transformed = torch.stack([x_t, y_t], dim=-1)
+                                # coords_aug from model forward earlier
+                                if coords_aug is not None:
+                                    try:
+                                        consistency_loss = F.mse_loss(coords_transformed, coords_aug, reduction='mean')
+                                        loss = loss + (consistency_lambda_t * consistency_loss)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
                 except Exception:
                     # if any issue with augment or TF, skip augment consistency for this batch
                     pass
@@ -500,11 +527,11 @@ class Trainer:
                     pass
 
             # apply 3-phase staged lambda schedule tuned for noisy FER datasets
-            # Phase 1: very early (0-20%): SCN OFF, MixUp OFF
+            # Phase 1: very early (0-20%): SCN OFF, MixUp ON
             # Phase 2: (20-70%): SCN ON, stronger landmark signals
             # Phase 3: (70-100%): heavy refinement for landmark branch
             if progress <= 0.2:
-                # Phase 1 (0-20%): conservative — no MixUp, SCN off
+                # Phase 1 (0-20%): conservative — 
                 self._runtime_diversity_lambda = 0.0
                 self._runtime_entropy_lambda = 0.0
                 self._runtime_overlap_lambda = 0.0
@@ -513,7 +540,7 @@ class Trainer:
                 self._runtime_aux_cls_lambda = 0.0
                 self._runtime_aux_consistency_lambda = 0.0
                 self._runtime_use_scn = False
-                self._runtime_use_mixup = False
+                self._runtime_use_mixup = True
                 self._runtime_phase = 1
             elif progress <= 0.7:
                 # Phase 2 (20-70%): enable SCN and stronger landmark auxiliaries
