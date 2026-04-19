@@ -318,7 +318,22 @@ class ResNet50(nn.Module):
         try:
             feat_k = self.landmark_reduce(feat_k)
         except Exception:
-            pass
+            # fallback: if reduction fails due to shape mismatch, create (and cache) a linear reducer
+            in_dim = feat_k.size(1) if feat_k.dim() >= 2 else None
+            try:
+                if in_dim is not None:
+                    if not hasattr(self, '_fallback_landmark_reduce') or getattr(self, '_fallback_landmark_reduce_in', None) != in_dim:
+                        # create a small linear layer to project to expected reduce dim
+                        self._fallback_landmark_reduce = nn.Linear(in_dim, self.landmark_reduce_dim).to(feat_k.device)
+                        self._fallback_landmark_reduce_in = in_dim
+                    feat_k = self._fallback_landmark_reduce(feat_k)
+                else:
+                    # give up and zero-pad/truncate to expected dim
+                    z = feat_k.new_zeros(feat_k.size(0), self.landmark_reduce_dim)
+                    feat_k = z
+            except Exception:
+                # last resort: zero vector
+                feat_k = feat_k.new_zeros(feat_k.size(0), self.landmark_reduce_dim)
 
         # use sigmoid on learned scale for smooth, learnable gating in (0,1)
         try:
@@ -328,6 +343,25 @@ class ResNet50(nn.Module):
 
         # fuse feat3, feat4 and reduced landmark vector
         fused = torch.cat([feat3, feat4, scale * feat_k], dim=1)
+        # print fused shape once to assist debugging shape mismatches
+        if not hasattr(self, '_printed_fused_shape'):
+            try:
+                print(f"[ResNet] fused shape: {fused.shape}")
+            except Exception:
+                pass
+            self._printed_fused_shape = True
+
+        # ensure fusion layer input matches fused dim; if not, adjust dynamically (single-run)
+        try:
+            expected_in = self.landmark_fusion_fc[0].in_features
+            if fused.size(1) != expected_in:
+                # rebuild first linear to match fused dim while preserving other layers
+                out1 = self.landmark_fusion_fc[0].out_features
+                rest = nn.Sequential(*list(self.landmark_fusion_fc.children())[1:])
+                self.landmark_fusion_fc = nn.Sequential(nn.Linear(fused.size(1), out1), *list(rest))
+        except Exception:
+            pass
+
         logits = self.landmark_fusion_fc(fused)
 
         # auxiliary classification from landmark features

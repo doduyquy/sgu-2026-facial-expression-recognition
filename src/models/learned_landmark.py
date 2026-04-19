@@ -124,17 +124,24 @@ class LearnedLandmarkBranch(nn.Module):
 
         # coords: (B, K, 2)
         # --- Debug instrumentation per user request: check NaN and shapes ---
+        # Debugging: print NaN warnings at most once to avoid log spam
         try:
-            try:
-                if torch.isnan(attn).any():
-                    print("NaN in attn")
-            except Exception:
-                pass
-            try:
-                if torch.isnan(coords).any():
-                    print("NaN in coords")
-            except Exception:
-                pass
+            if not hasattr(self, '_warned_nan'):
+                warned = False
+                try:
+                    if torch.isnan(attn).any():
+                        print("[LearnedLandmark] NaN detected in attn")
+                        warned = True
+                except Exception:
+                    pass
+                try:
+                    if torch.isnan(coords).any():
+                        print("[LearnedLandmark] NaN detected in coords")
+                        warned = True
+                except Exception:
+                    pass
+                if warned:
+                    self._warned_nan = True
         except Exception:
             pass
 
