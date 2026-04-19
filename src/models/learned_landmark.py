@@ -255,8 +255,12 @@ class LearnedLandmarkBranch(nn.Module):
 
         # concat flattened per-keypoint features and global pooled -> (B, K*kp_proj_dim + C)
         feat_k = torch.cat([feat_k_flat, feat_global], dim=1)
-        # normalize fused landmark features to avoid backbone domination
-        feat_k = F.normalize(feat_k, dim=1)
+        # Feature fusion: avoid destructive global L2 normalization which removes useful scale info
+        try:
+            feat_k = F.layer_norm(feat_k, feat_k.shape[1:])
+        except Exception:
+            # fallback: leave features as-is
+            pass
         feat_k = F.dropout(feat_k, p=self.feature_dropout_p, training=self.training)
 
         # No edge consistency on low-res FER (unreliable)
@@ -289,42 +293,62 @@ class LearnedLandmarkBranch(nn.Module):
         # Positional supervision: lightly nudge some keypoints to expected vertical halves
         pos_sup = attn.new_tensor(0.0)
         try:
-            if len(self.upper_idxs) > 0 or len(self.lower_idxs) > 0:
-                # coords: (B, K, 2) with y in second dim
-                ys = coords[..., 1]
-                b_k = ys.shape
-                # defensive checks to avoid CUDA device-side asserts from OOB indices
-                K_actual = ys.shape[1] if len(ys.shape) > 1 else 0
-                # debug info if mismatch
-                try:
-                    if max(self.upper_idxs) >= K_actual or max(self.lower_idxs) >= K_actual:
-                        print(f"[landmark pos_sup] Warning: idx out-of-bounds detected. K_actual={K_actual}, upper_idxs={self.upper_idxs}, lower_idxs={self.lower_idxs}")
-                except Exception:
-                    pass
+            # respect explicit opt-out: if model-level pos weight is <= 0 skip entirely
+            model_pos_weight = float(getattr(self, 'pos_supervision_weight', 0.0) or 0.0)
+            if model_pos_weight <= 0.0:
+                # skip computing positional supervision (avoids spurious warnings)
+                pos_sup = attn.new_tensor(0.0)
+            else:
+                if len(self.upper_idxs) > 0 or len(self.lower_idxs) > 0:
+                    # coords: (B, K, 2) with y in second dim
+                    ys = coords[..., 1]
+                    b_k = ys.shape
+                    # defensive checks to avoid CUDA device-side asserts from OOB indices
+                    K_actual = ys.shape[1] if len(ys.shape) > 1 else 0
 
-                # filter valid indices
-                valid_upper = [i for i in self.upper_idxs if 0 <= i < K_actual]
-                valid_lower = [i for i in self.lower_idxs if 0 <= i < K_actual]
+                    # If user-supplied idx lists assume a larger K (common mismatch),
+                    # auto-resolve by splitting available K into upper/lower halves.
+                    try:
+                        if (len(self.upper_idxs) + len(self.lower_idxs)) > 0 and (
+                            max(self.upper_idxs or [0]) >= K_actual or max(self.lower_idxs or [0]) >= K_actual
+                        ):
+                            # compute a safe split for the current K_actual
+                            mid = K_actual // 2
+                            new_upper = list(range(0, mid))
+                            new_lower = list(range(mid, K_actual))
+                            print(f"[landmark pos_sup] Info: index mismatch detected. Auto-splitting K={K_actual} -> upper={new_upper}, lower={new_lower}")
+                            upper_idxs_use = new_upper
+                            lower_idxs_use = new_lower
+                        else:
+                            upper_idxs_use = list(self.upper_idxs)
+                            lower_idxs_use = list(self.lower_idxs)
+                    except Exception:
+                        upper_idxs_use = list(self.upper_idxs)
+                        lower_idxs_use = list(self.lower_idxs)
 
-                penalties = []
-                if len(valid_upper) > 0:
-                    up = ys[:, valid_upper]
-                    penalties.append(F.relu(up - 0.5).mean())
-                if len(valid_lower) > 0:
-                    lo = ys[:, valid_lower]
-                    penalties.append(F.relu(0.5 - lo).mean())
+                    # filter valid indices as final safety net
+                    valid_upper = [i for i in upper_idxs_use if 0 <= i < K_actual]
+                    valid_lower = [i for i in lower_idxs_use if 0 <= i < K_actual]
 
-                if len(penalties) > 0:
-                    pos_sup = sum(penalties) / len(penalties)
-                    pos_sup = pos_sup * float(getattr(self, 'pos_supervision_weight', 0.05))
+                    penalties = []
+                    if len(valid_upper) > 0:
+                        up = ys[:, valid_upper]
+                        penalties.append(F.relu(up - 0.5).mean())
+                    if len(valid_lower) > 0:
+                        lo = ys[:, valid_lower]
+                        penalties.append(F.relu(0.5 - lo).mean())
+
+                    if len(penalties) > 0:
+                        pos_sup = sum(penalties) / len(penalties)
+                        pos_sup = pos_sup * float(model_pos_weight)
         except Exception:
             pos_sup = attn.new_tensor(0.0)
 
         # Keep only lightweight, non-toxic auxiliaries for low-res FER
         aux = {
             "landmark_diversity": self._diversity_loss(attn, coords=coords),
-            # use peak-based loss instead of raw entropy to encourage sharp attention
-            "landmark_entropy": peak_loss,
+            # disable entropy/peak auxiliary for small noisy FER images (no GT)
+            "landmark_entropy": attn.new_tensor(0.0),
             # heatmap overlap penalty
             "landmark_overlap": overlap_loss,
             # light positional supervision penalty (upper/lower guidance)

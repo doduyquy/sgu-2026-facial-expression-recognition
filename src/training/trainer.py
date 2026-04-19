@@ -66,10 +66,10 @@ class Trainer:
         self.scn_warmup_epochs = int(config['training'].get('scn_warmup_epochs', 0))
         self.scn_alpha = float(config['training'].get('scn_alpha', 1.0))
         # ranking influence tuned for FER (raise to emphasize hard/easy separation)
-        self.scn_rank_lambda = float(config['training'].get('scn_rank_lambda', 0.2))
+        self.scn_rank_lambda = float(config['training'].get('scn_rank_lambda', 0.3))
         self.scn_min_weight = float(config['training'].get('scn_min_weight', 0.2))
         # margin for ranking loss
-        self.scn_margin = float(config['training'].get('scn_margin', 0.2))
+        self.scn_margin = float(config['training'].get('scn_margin', 0.4))
         # runtime flags (set by fit staging)
         self._runtime_use_scn = None
         # mixup defaults
@@ -109,10 +109,8 @@ class Trainer:
         with torch.no_grad():
             probs = F.softmax(logits, dim=1)
             conf = probs.gather(1, labels.unsqueeze(1)).squeeze(1)  # (B,)
-            # normalize confidence (relative within batch) then squash (unused)
-            # conf_norm = (conf - conf.mean()) / (conf.std() + 1e-6)
-            # softer weighting: low-conf (hard) -> higher weight, but not overly aggressive
-            weights = (1.0 - conf)
+            # stronger focus on hard samples: square the (1 - conf) factor
+            weights = (1.0 - conf) ** 2
             weights = weights.clamp(min=self.scn_min_weight)
 
         # main weighted CE term
@@ -135,7 +133,7 @@ class Trainer:
         else:
             easy_loss = torch.tensor(0.0, device=self.device)
         # margin to enforce separation
-        margin = float(getattr(self, 'scn_margin', 0.1))
+        margin = float(getattr(self, 'scn_margin', 0.4))
         # start ranking after SCN warmup (scale with config)
         ranking_start = int(getattr(self, 'scn_warmup_epochs', 0))
         # use >= so that a zero warmup enables ranking immediately
@@ -208,6 +206,12 @@ class Trainer:
                 labels_a = labels
                 labels_b = labels[perm]
 
+            # sync runtime pos_sup lambda into model to avoid computing pos_sup when disabled
+            try:
+                if hasattr(self.model, 'pos_supervision_weight'):
+                    self.model.pos_supervision_weight = float(pos_sup_lambda)
+            except Exception:
+                pass
             outputs = self.model(images)
             logits = self._extract_logits(outputs)
 
@@ -290,20 +294,12 @@ class Trainer:
             pos_sup_loss = aux_losses.get("landmark_pos_supervision", torch.tensor(0.0, device=self.device))
             edge_conv_reg = aux_losses.get("landmark_edge_conv_reg", torch.tensor(0.0, device=self.device))
             edge_tv = aux_losses.get("landmark_edge_tv", torch.tensor(0.0, device=self.device))
-            # Compose base loss (classification + landmark auxes) using runtime lambdas
-            # conv/TV regularizers are intentionally excluded from the main loss to avoid over-constraint
-            loss = (
-                cls_loss
-                + (div_lambda_t * div_loss)
-                + (edge_consistency_lambda_t * edge_consistency_loss)
-                + (torch.tensor(float(pos_sup_lambda), device=self.device) * pos_sup_loss)
-            )
-            # include overlap and entropy aux signals (light-weight) to shape heatmaps
+            # Compose simplified loss: classification + diversity + overlap (light)
+            # Keep other regularizers disabled by default to avoid noisy gradients on small FER images
+            loss = cls_loss + (div_lambda_t * div_loss)
             try:
                 if overlap_lambda_t.item() > 0.0:
                     loss = loss + (overlap_lambda_t * overlap_loss)
-                if entropy_lambda_t.item() > 0.0:
-                    loss = loss + (entropy_lambda_t * entropy_loss)
             except Exception:
                 pass
 
@@ -422,6 +418,12 @@ class Trainer:
             for images, labels in self.val_loader:
                 images, labels = images.to(self.device), labels.to(self.device)
 
+                # sync runtime pos_sup lambda into model (validate path)
+                try:
+                    if hasattr(self.model, 'pos_supervision_weight'):
+                        self.model.pos_supervision_weight = float(getattr(self, '_runtime_pos_sup_lambda', self.landmark_pos_sup_lambda))
+                except Exception:
+                    pass
                 outputs = self.model(images)
                 logits = self._extract_logits(outputs)
                 cls_loss = self.criterion(logits, labels)
