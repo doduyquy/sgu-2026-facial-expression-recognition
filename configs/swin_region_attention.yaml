@@ -1,0 +1,38 @@
+# Swin Transformer Region-Aligned Facial Expression Recognition Configuration
+_base_: "base.yaml"
+
+model:
+  name: "swin_region_aligned_fer"
+  embed_dim: 512
+  num_heads: 4
+  num_regions: 6          # Trán, Mắt trái, Mắt phải, Mũi, Miệng, Cằm
+  num_encoder_layers: 2   # Số lớp Transformer Encoder cho Vùng
+  transformer_dropout: 0.2
+  
+  # Freeze backbone trong những epoch đầu để phần Classifier & Region Attention quen việc
+  freeze_backbone_epochs: 15
+
+data:
+  image_size: 48
+  channels: 1
+  batch_size: 64
+
+training:
+  # Swin Transformer cực nhạy cảm với Learning Rate lớn. LR phải nhỏ hơn mạng CNN bình thường.
+  lr: 0.0001
+  finetune_lr: 0.00001
+  epochs: 80
+  
+  # AdamW kết hợp với cosine scheduler là tiêu chuẩn sống còn cho Swin
+  optimizer: "adamw"
+  weight_decay: 0.05
+  label_smoothing: 0.1
+  scheduler: "cosine"
+  use_class_weights: true
+
+env:
+  platform: "kaggle"
+
+kaggle:
+  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
+  root_path: "/kaggle/working/sgu-2026-facial-expression-recognition"
