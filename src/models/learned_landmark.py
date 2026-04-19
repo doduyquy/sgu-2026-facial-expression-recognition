@@ -5,12 +5,12 @@ import torch.nn.functional as F
 
 class LearnedLandmarkBranch(nn.Module):
     def __init__(
-        self,
-        in_channels=1024,
-        landmark_num_points=8,
-        landmark_tau=0.07,
-        diversity_margin=0.2,
-        kp_proj_dim=64,
+    self,
+    in_channels=1024,
+    landmark_num_points=8,
+    landmark_tau=0.07,
+    diversity_margin=0.2,
+    kp_proj_dim=32,
         feature_dropout_p=0.3,
         head_dropout_p=0.1,
         edge_guidance_beta=1.0,

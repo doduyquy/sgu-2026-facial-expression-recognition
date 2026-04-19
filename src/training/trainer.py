@@ -514,9 +514,9 @@ class Trainer:
                 self._runtime_phase = 1
             elif progress <= 0.7:
                 # Phase 2 (20-70%): enable SCN and stronger landmark auxiliaries
-                self._runtime_diversity_lambda = 0.2
-                self._runtime_entropy_lambda = 0.005
-                self._runtime_overlap_lambda = 0.08
+                self._runtime_diversity_lambda = 0.18
+                self._runtime_entropy_lambda = 0.004
+                self._runtime_overlap_lambda = 0.07
                 self._runtime_augment_lambda = 0.0
                 self._runtime_edge_consistency_lambda = 0.0
                 self._runtime_aux_cls_lambda = 0.05
@@ -526,9 +526,9 @@ class Trainer:
                 self._runtime_phase = 2
             else:
                 # Phase 3 (70-100%): strong refinement — increase landmark lambdas
-                self._runtime_diversity_lambda = 0.35
-                self._runtime_entropy_lambda = 0.01
-                self._runtime_overlap_lambda = 0.12
+                self._runtime_diversity_lambda = 0.30
+                self._runtime_entropy_lambda = 0.008
+                self._runtime_overlap_lambda = 0.10
                 self._runtime_augment_lambda = 0.0
                 self._runtime_edge_consistency_lambda = 0.0
                 self._runtime_aux_cls_lambda = 0.05
