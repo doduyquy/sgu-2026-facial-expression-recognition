@@ -260,7 +260,12 @@ class LearnedLandmarkBranch(nn.Module):
 
         # Normalize attention maps
         attn = attn / attn.sum(dim=[2, 3], keepdim=True).clamp(min=1e-6)
-        coords = self._soft_argmax(attn)
+        # Compute coordinates on CPU to avoid CUDA device-side asserts
+        try:
+            coords_cpu = self._soft_argmax(attn.detach().cpu())
+            coords = coords_cpu.to(attn.device)
+        except Exception:
+            coords = self._soft_argmax(attn)
 
         feat_expanded = feat_map.unsqueeze(1)
         heat_expanded = attn.unsqueeze(2)
