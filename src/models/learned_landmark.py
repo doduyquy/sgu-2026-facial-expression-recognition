@@ -116,8 +116,22 @@ class LearnedLandmarkBranch(nn.Module):
 
         # coords: (B, K, 2)
         try:
+            # sanitize coords: ensure float, finite and within [0,1]
+            coords_s = coords
+            if not coords_s.is_floating_point():
+                coords_s = coords_s.float()
+            if not torch.isfinite(coords_s).all():
+                # replace NaN/inf with a safe center value (0.5)
+                coords_s = torch.nan_to_num(coords_s, nan=0.5, posinf=1.0, neginf=0.0)
+            coords_s = coords_s.clamp(0.0, 1.0)
+
             # pairwise distances per sample: (B, K, K)
-            d = torch.cdist(coords, coords, p=2)
+            # try GPU cdist first; on failure, fallback to CPU computation
+            try:
+                d = torch.cdist(coords_s, coords_s, p=2)
+            except Exception:
+                coords_cpu = coords_s.detach().cpu()
+                d = torch.cdist(coords_cpu, coords_cpu, p=2).to(coords.device)
             # mask out diagonal
             mask = ~torch.eye(keypoints, device=d.device, dtype=torch.bool).unsqueeze(0)
             d_masked = d[mask].view(bsz, keypoints * (keypoints - 1))
