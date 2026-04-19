@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torchvision.models as models
 from torchvision.models.swin_transformer import Swin_T_Weights
-from .vgg import VGGFusionSpatialCNN
 
 def drop_path(x, drop_prob: float = 0., training: bool = False):
     """
@@ -57,25 +56,22 @@ class SwinFeatureExtractor(nn.Module):
             self.swin.features[0][0] = new_conv
 
         # Gom feature thành không gian 3x3 (9 tokens cục bộ) tương tự ResNet cũ
-        # Chú ý: Swin features module xuất ra dạng tensor 1D nhúng, torchvision swin trả về NCHW
-        # Nên dùng pooling cho an toàn nếu đầu vào không phải 224x224
-        self.pool = nn.AdaptiveAvgPool2d((3, 3))
+        # Gom feature thành không gian 3x3 đã bị ẩn đi.
+        # Nên dùng pooling cho an toàn nếu đầu vào không phải 256x256
+        # self.pool = nn.AdaptiveAvgPool2d((3, 3))
 
     def forward(self, x):
-        # Resize lên 224x224 (hoặc kích thước phù hợp) vì Swin cần ảnh đủ lớn để chia Window Size (8x8)
-        # Nếu input là 48x48 thì quá nhỏ so với Swin chuẩn. Ta upsample trước khi đưa vào.
-        if x.shape[-1] < 224:
-            x = nn.functional.interpolate(x, size=(224, 224), mode='bicubic', align_corners=False)
+        # Swin_V2_T tốt nhất nên được upsize lên 256x256 (kích thước pretrain mặc định)
+        if x.shape[-1] < 256:
+            x = nn.functional.interpolate(x, size=(256, 256), mode='bicubic', align_corners=False)
             
         # Trích xuất qua mạng Swin
-        x = self.swin.features(x) # [B, 7, 7, 768] (NHWC)
+        x = self.swin.features(x) # [B, 8, 8, 768] (NHWC)
         x = self.swin.norm(x)
-        x = x.permute(0, 3, 1, 2) # chuyển đổi sang thành [B, 768, 7, 7] (NCHW)
         
-        # Adaptive pool về 3x3 để tạo 9 vùng tokens giống với thiết kế trước đây
-        x = self.pool(x)          # [B, 768, 3, 3]
-        x = torch.flatten(x, 2)   # [B, 768, 9]
-        x = x.transpose(1, 2)     # [B, 9, 768]
+        # BỎ AdaptivePool (ép về 9 tokens) -> Trả thẳng 64 tokens chi tiết vào Cross-Attention!
+        # Việc vứt bớt đi thành 3x3 làm Swin mất toàn bộ lợi thế "Vision Transformer" của nó
+        x = torch.flatten(x, 1, 2) # [B, 64, 768]
         return x
 
 # =====================================================================
@@ -147,8 +143,7 @@ class SwinRegionAlignedFER(nn.Module):
         self.dropout_rate = model_cfg.get('transformer_dropout', 0.1)
         num_classes = config['data']['num_classes']
 
-        # ===== 1. Dual Backbone (VGG + Swin Transformer) =====
-        self.vgg_backbone = VGGFusionSpatialCNN(config, channels)
+        # ===== 1. Swin Transformer Backbone =====
         self.swin_backbone = SwinFeatureExtractor(channels)
         
         self.is_frozen = False
@@ -205,10 +200,9 @@ class SwinRegionAlignedFER(nn.Module):
         )
 
     def freeze_backbones(self):
-        for param in self.vgg_backbone.parameters(): param.requires_grad = False
         for param in self.swin_backbone.parameters(): param.requires_grad = False
         self.is_frozen = True
-        print("[SwinRegionAligned] Backbones FROZEN.")
+        print("[SwinRegionAligned] Backbone FROZEN.")
 
     def unfreeze_backbones(self):
         for param in self.parameters(): param.requires_grad = True
@@ -219,12 +213,10 @@ class SwinRegionAlignedFER(nn.Module):
         B = x.shape[0]
 
         # ── 1. Feature Extraction ──
-        vgg_feat = self.vgg_backbone(x)          # [B, 9, 512]
-        
-        swin_feat = self.swin_backbone(x)        # [B, 9, 768]
-        swin_feat = self.proj_swin(swin_feat)    # [B, 9, 512]
+        swin_feat = self.swin_backbone(x)        # [B, 64, 768]
+        swin_feat = self.proj_swin(swin_feat)    # [B, 64, 512]
 
-        visual_features = torch.cat([vgg_feat, swin_feat], dim=1)  # [B, 18, 512]
+        visual_features = swin_feat              # Chỉ dùng Swin features: [B, 64, 512]
 
         # ── 2. Region Tokens ──
         region_tokens = self.region_dict(B)      # [B, 6, 512]

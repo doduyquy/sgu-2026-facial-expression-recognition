@@ -9,8 +9,9 @@ model:
   num_encoder_layers: 2   # Số lớp Transformer Encoder cho Vùng
   transformer_dropout: 0.2
   
-  # Freeze backbone trong những epoch đầu để phần Classifier & Region Attention quen việc
-  freeze_backbone_epochs: 15
+  # Giảm số epoch đóng băng xuống 5. Vì trọng số gốc của Swin là của ImageNet (động vật, phong cảnh...)
+  # chứ KHÔNG phải khuôn mặt. Đóng băng quá lâu sẽ hạn chế độ chính xác.
+  freeze_backbone_epochs: 5
 
 data:
   image_size: 48
