@@ -153,6 +153,13 @@ class LearnedLandmarkBranch(nn.Module):
                 coords_cpu = torch.nan_to_num(coords_cpu, nan=0.5, posinf=1.0, neginf=0.0)
             coords_cpu = coords_cpu.clamp(0.0, 1.0)
 
+            # promote spread term to encourage global coverage (variance of keypoints)
+            try:
+                center_cpu = coords_cpu.mean(dim=1, keepdim=True)  # (B,1,2)
+                spread_cpu = ((coords_cpu - center_cpu) ** 2).sum(dim=-1).mean(dim=1)  # (B,)
+            except Exception:
+                spread_cpu = coords_cpu.new_tensor(0.0)
+
             # move sanitized coords back to original device for fast cdist; if cdist fails, fallback to CPU result
             coords_s = coords_cpu.to(coords.device)
             try:
@@ -166,6 +173,11 @@ class LearnedLandmarkBranch(nn.Module):
             margin = getattr(self, 'diversity_margin', 0.05)
             # use relu(margin - distance) to push points apart when too close
             loss_per_sample = F.relu(margin - d_masked).mean(dim=1)
+            # encourage spread (higher spread reduces the loss)
+            try:
+                loss_per_sample = loss_per_sample - (0.1 * spread_cpu.to(loss_per_sample.device))
+            except Exception:
+                pass
             return loss_per_sample.mean()
         except Exception:
             # safe fallback: sanitize attention maps and compute fallback on CPU if GPU ops fail
@@ -220,7 +232,13 @@ class LearnedLandmarkBranch(nn.Module):
             bias = self.landmark_bias.view(1, keypoints, 1, 1).to(attn_logits.dtype)
             attn_logits = attn_logits + beta * edge_attn + bias
 
-        scaled = attn_logits.view(bsz, keypoints, -1) / max(self.landmark_tau, 1e-6)
+        # temperature schedule: softer early, sharper later to move from exploration -> exploitation
+        try:
+            tau = float(self.landmark_tau) * (1.0 - getattr(self, '_training_progress', 0.0) * 0.5)
+        except Exception:
+            tau = float(getattr(self, 'landmark_tau', 0.07))
+        tau = max(tau, 1e-6)
+        scaled = attn_logits.view(bsz, keypoints, -1) / tau
         attn = torch.softmax(scaled, dim=-1).view(bsz, keypoints, h, w)
 
         # Head dropout: keep conservative by enabling only late in training

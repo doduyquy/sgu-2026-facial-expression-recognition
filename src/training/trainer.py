@@ -165,7 +165,6 @@ class Trainer:
         self._latest_scn_logs = None
 
         # accumulator for scn metrics across batches
-        _scn_acc = {"scn_weight_mean": [], "scn_conf_mean": [], "scn_rank_loss": []}
 
         # runtime lambdas (may be set by fit() for staged schedule)
         div_lambda = getattr(self, '_runtime_diversity_lambda', self.landmark_diversity_lambda)
@@ -173,9 +172,10 @@ class Trainer:
         entropy_lambda = getattr(self, '_runtime_entropy_lambda', self.landmark_entropy_lambda)
         overlap_lambda = getattr(self, '_runtime_overlap_lambda', self.landmark_overlap_lambda)
         edge_consistency_lambda = getattr(self, '_runtime_edge_consistency_lambda', self.landmark_edge_consistency_lambda)
+        # coordinate-level consistency weight
+        consistency_lambda = getattr(self, '_runtime_landmark_consistency_lambda', self.landmark_consistency_lambda)
         # augment consistency intentionally disabled to avoid destabilizing landmarks on small images
         augment_lambda = 0.0
-        consistency_lambda = getattr(self, '_runtime_landmark_consistency_lambda', self.landmark_consistency_lambda)
         aux_cls_lambda = getattr(self, '_runtime_aux_cls_lambda', self.landmark_aux_cls_lambda)
         pos_sup_lambda = getattr(self, '_runtime_pos_sup_lambda', self.landmark_pos_sup_lambda)
         # convert lambdas to tensors to avoid dtype/interop issues when combining with torch tensors
@@ -184,17 +184,14 @@ class Trainer:
         overlap_lambda_t = torch.tensor(float(overlap_lambda), device=self.device)
         edge_consistency_lambda_t = torch.tensor(float(edge_consistency_lambda), device=self.device)
         augment_lambda_t = torch.tensor(float(augment_lambda), device=self.device)
-        consistency_lambda_t = torch.tensor(float(consistency_lambda), device=self.device)
         aux_cls_lambda_t = torch.tensor(float(aux_cls_lambda), device=self.device)
+        consistency_lambda_t = torch.tensor(float(consistency_lambda), device=self.device)
+
+        # accumulator for scn metrics across batches
+        _scn_acc = {"scn_weight_mean": [], "scn_conf_mean": [], "scn_rank_loss": []}
 
         for images, labels in self.train_loader:
             images, labels = images.to(self.device), labels.to(self.device)
-            try:
-                # debug: check label range per user's request
-                print("labels range:", labels.min().item(), labels.max().item())
-            except Exception:
-                pass
-
             self.optimizer.zero_grad()
 
             # MixUp: disabled by default in FER pipeline (SCN preferred)
@@ -216,6 +213,7 @@ class Trainer:
                     self.model.pos_supervision_weight = float(pos_sup_lambda)
             except Exception:
                 pass
+
             outputs = self.model(images)
             logits = self._extract_logits(outputs)
 
@@ -415,8 +413,12 @@ class Trainer:
             corrects += torch.sum(preds == labels.data)
             total += labels.size(0)
 
-        epoch_loss = running_loss / total
-        epoch_acc = corrects.double() / total
+        if total > 0:
+            epoch_loss = running_loss / total
+            epoch_acc = corrects.double() / total
+        else:
+            epoch_loss = 0.0
+            epoch_acc = torch.tensor(0.0)
 
         # finalize SCN logs (mean across batches) if any
         try:
