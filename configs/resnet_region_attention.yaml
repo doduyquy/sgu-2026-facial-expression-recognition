@@ -13,8 +13,9 @@ model:
   attention_type: "cbam"
   attention_kernel_size: 7
 
-  # Bỏ qua hoàn toàn: pretrained_path và freeze_backbone_epochs
-  # vì model được yêu cầu train từ đầu (scratch) 100%.
+  # Transfer Learning Config
+  pretrained_resnet_path: "/kaggle/input/datasets/lhngphc/resnet-0-68/resnet50_12042026_1052_best.pth"
+  freeze_backbone_epochs: 20
 
 data:
   image_size: 48
