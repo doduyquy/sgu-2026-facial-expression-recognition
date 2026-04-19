@@ -32,7 +32,7 @@ training:
   weight_decay: 0.05       # Standard for Transformer + AdamW
   label_smoothing: 0.1
   scheduler: "cosine"
-  use_class_weights: true
+  use_class_weights: false
 
 env:
   platform: "kaggle"
