@@ -61,13 +61,22 @@ def main():
     pretrained_vgg = config['model'].get('pretrained_vgg_path', None)
     pretrained_resnet = config['model'].get('pretrained_resnet_path', None)
     
-    if pretrained_vgg and pretrained_resnet and hasattr(model, 'load_pretrained_backbones'):
-        print("\n" + "="*50)
-        print("[Transfer Learning] Loading pretrained backbones...")
-        print("="*50)
-        model.load_pretrained_backbones(pretrained_vgg, pretrained_resnet, device=device)
-        model.freeze_backbones()
-        print("="*50 + "\n")
+    if hasattr(model, 'load_pretrained_backbones'):
+        if pretrained_vgg and pretrained_resnet:
+            print("\n" + "="*50 + "\n[Transfer Learning] Loading dual pretrained backbones...\n" + "="*50)
+            model.load_pretrained_backbones(pretrained_vgg, pretrained_resnet, device=device)
+            model.freeze_backbones()
+            print("="*50 + "\n")
+        elif pretrained_resnet:
+            print("\n" + "="*50 + "\n[Transfer Learning] Loading ResNet pretrained backbone...\n" + "="*50)
+            model.load_pretrained_backbones(resnet_ckpt_path=pretrained_resnet, device=device)
+            model.freeze_backbones()
+            print("="*50 + "\n")
+        elif pretrained_vgg:
+            print("\n" + "="*50 + "\n[Transfer Learning] Loading VGG pretrained backbone...\n" + "="*50)
+            model.load_pretrained_backbones(vgg_ckpt_path=pretrained_vgg, device=device)
+            model.freeze_backbones()
+            print("="*50 + "\n")
 
 
     # get class_distribution for class_weights (optional)

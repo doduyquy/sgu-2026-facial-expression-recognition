@@ -208,6 +208,28 @@ class ResNetRegionAlignedFER(nn.Module):
             nn.Linear(512, num_classes)
         )
 
+    def load_pretrained_backbones(self, resnet_ckpt_path, device='cpu'):
+        """Load pretrained weights into ResNet component."""
+        res_ckpt = torch.load(resnet_ckpt_path, map_location=device)
+        res_state = res_ckpt['model_state_dict']
+        res_prefixes = ('conv1.', 'bn1.', 'layer2.', 'layer3.', 'layer4.')
+        res_filtered = {k: v for k, v in res_state.items() if k.startswith(res_prefixes)}
+        
+        # Lọc theo shape cho ResNet
+        res_model_state = self.res_backbone.resnet.state_dict()
+        res_compatible = {}
+        res_skipped = []
+        for k, v in res_filtered.items():
+            if k in res_model_state and res_model_state[k].shape == v.shape:
+                res_compatible[k] = v
+            else:
+                res_skipped.append(k)
+        
+        self.res_backbone.resnet.load_state_dict(res_compatible, strict=False)
+        print(f"[ResNetRegionAligned] ResNet loaded: {len(res_compatible)} weights from {resnet_ckpt_path}")
+        if res_skipped:
+            print(f"[ResNetRegionAligned] ResNet skipped (shape mismatch): {res_skipped}")
+
     def freeze_backbones(self):
         """Freeze the backbone for Phase 1."""
         for param in self.res_backbone.parameters(): param.requires_grad = False
