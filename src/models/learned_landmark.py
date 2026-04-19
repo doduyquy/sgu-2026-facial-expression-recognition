@@ -116,21 +116,19 @@ class LearnedLandmarkBranch(nn.Module):
 
         # coords: (B, K, 2)
         try:
-            # sanitize coords: ensure float, finite and within [0,1]
-            coords_s = coords
-            if not coords_s.is_floating_point():
-                coords_s = coords_s.float()
-            if not torch.isfinite(coords_s).all():
-                # replace NaN/inf with a safe center value (0.5)
-                coords_s = torch.nan_to_num(coords_s, nan=0.5, posinf=1.0, neginf=0.0)
-            coords_s = coords_s.clamp(0.0, 1.0)
+            # sanitize coords on CPU to avoid triggering CUDA device-side asserts
+            coords_cpu = coords.detach().cpu()
+            if not coords_cpu.is_floating_point():
+                coords_cpu = coords_cpu.float()
+            if not torch.isfinite(coords_cpu).all():
+                coords_cpu = torch.nan_to_num(coords_cpu, nan=0.5, posinf=1.0, neginf=0.0)
+            coords_cpu = coords_cpu.clamp(0.0, 1.0)
 
-            # pairwise distances per sample: (B, K, K)
-            # try GPU cdist first; on failure, fallback to CPU computation
+            # move sanitized coords back to original device for fast cdist; if cdist fails, fallback to CPU result
+            coords_s = coords_cpu.to(coords.device)
             try:
                 d = torch.cdist(coords_s, coords_s, p=2)
             except Exception:
-                coords_cpu = coords_s.detach().cpu()
                 d = torch.cdist(coords_cpu, coords_cpu, p=2).to(coords.device)
             # mask out diagonal
             mask = ~torch.eye(keypoints, device=d.device, dtype=torch.bool).unsqueeze(0)
@@ -143,18 +141,17 @@ class LearnedLandmarkBranch(nn.Module):
         except Exception:
             # safe fallback: sanitize attention maps and compute fallback on CPU if GPU ops fail
             try:
-                flat = attn.view(bsz, keypoints, -1)
-                if not flat.is_floating_point():
-                    flat = flat.float()
-                if not torch.isfinite(flat).all():
-                    flat = torch.nan_to_num(flat, nan=0.0, posinf=1.0, neginf=0.0)
-                flat = flat / flat.norm(dim=-1, keepdim=True).clamp(min=1e-6)
-                gram = torch.bmm(flat, flat.transpose(1, 2))
-            except Exception:
+                # perform sanitization on CPU to avoid CUDA asserts, then compute gram on device when safe
                 flat_cpu = attn.detach().cpu().view(bsz, keypoints, -1)
-                flat_cpu = torch.nan_to_num(flat_cpu, nan=0.0, posinf=1.0, neginf=0.0)
+                flat_cpu = flat_cpu.float()
+                if not torch.isfinite(flat_cpu).all():
+                    flat_cpu = torch.nan_to_num(flat_cpu, nan=0.0, posinf=1.0, neginf=0.0)
                 flat_cpu = flat_cpu / flat_cpu.norm(dim=-1, keepdim=True).clamp(min=1e-6)
                 gram = torch.bmm(flat_cpu, flat_cpu.transpose(1, 2)).to(attn.device)
+            except Exception:
+                # last-resort safe value
+                eye = torch.eye(keypoints, device=attn.device, dtype=attn.dtype).unsqueeze(0)
+                return (eye - eye).pow(2).mean()
             eye = torch.eye(keypoints, device=gram.device, dtype=gram.dtype).unsqueeze(0)
             return (gram - eye).pow(2).mean()
 
