@@ -68,7 +68,9 @@ class SwinFeatureExtractor(nn.Module):
             x = nn.functional.interpolate(x, size=(224, 224), mode='bicubic', align_corners=False)
             
         # Trích xuất qua mạng Swin
-        x = self.swin.features(x) # [B, 768, 7, 7] với ảnh input 224x224
+        x = self.swin.features(x) # [B, 7, 7, 768] (NHWC)
+        x = self.swin.norm(x)
+        x = x.permute(0, 3, 1, 2) # chuyển đổi sang thành [B, 768, 7, 7] (NCHW)
         
         # Adaptive pool về 3x3 để tạo 9 vùng tokens giống với thiết kế trước đây
         x = self.pool(x)          # [B, 768, 3, 3]
