@@ -61,7 +61,7 @@ class LearnedLandmarkBranch(nn.Module):
         # sensible defaults for FER keypoint grouping (can be overridden by config)
         self.upper_idxs = [0, 1, 2]
         self.lower_idxs = [3, 4, 5]
-        self.pos_supervision_weight = 0.05
+        self.pos_supervision_weight = 0.02
 
     def set_training_progress(self, progress):
         # Strong edge guidance at start, then let attention self-organize later.
@@ -146,27 +146,27 @@ class LearnedLandmarkBranch(nn.Module):
             pass
 
         try:
-            # sanitize coords on CPU to avoid triggering CUDA device-side asserts
-            coords_cpu = coords.detach().cpu()
-            if not coords_cpu.is_floating_point():
-                coords_cpu = coords_cpu.float()
-            if not torch.isfinite(coords_cpu).all():
-                coords_cpu = torch.nan_to_num(coords_cpu, nan=0.5, posinf=1.0, neginf=0.0)
-            coords_cpu = coords_cpu.clamp(0.0, 1.0)
+            # sanitize coords in-place on the same device to preserve gradients and GPU accel
+            coords_s = coords
+            if not coords_s.is_floating_point():
+                coords_s = coords_s.float()
+            if not torch.isfinite(coords_s).all():
+                coords_s = torch.nan_to_num(coords_s, nan=0.5, posinf=1.0, neginf=0.0)
+            coords_s = coords_s.clamp(0.0, 1.0)
 
             # promote spread term to encourage global coverage (variance of keypoints)
             try:
-                center_cpu = coords_cpu.mean(dim=1, keepdim=True)  # (B,1,2)
-                spread_cpu = ((coords_cpu - center_cpu) ** 2).sum(dim=-1).mean(dim=1)  # (B,)
+                center = coords_s.mean(dim=1, keepdim=True)  # (B,1,2)
+                spread = ((coords_s - center) ** 2).sum(dim=-1).mean(dim=1)  # (B,)
             except Exception:
-                spread_cpu = coords_cpu.new_tensor(0.0)
+                spread = coords_s.new_tensor(0.0)
 
-            # move sanitized coords back to original device for fast cdist; if cdist fails, fallback to CPU result
-            coords_s = coords_cpu.to(coords.device)
+            # compute pairwise distances on-device; use safe fallback via broadcasting if torch.cdist fails
             try:
                 d = torch.cdist(coords_s, coords_s, p=2)
             except Exception:
-                d = torch.cdist(coords_cpu, coords_cpu, p=2).to(coords.device)
+                diff = coords_s.unsqueeze(2) - coords_s.unsqueeze(1)
+                d = torch.norm(diff, dim=-1)
             # mask out diagonal
             mask = ~torch.eye(keypoints, device=d.device, dtype=torch.bool).unsqueeze(0)
             d_masked = d[mask].view(bsz, keypoints * (keypoints - 1))
@@ -176,7 +176,7 @@ class LearnedLandmarkBranch(nn.Module):
             loss_per_sample = F.relu(margin - d_masked).mean(dim=1)
             # encourage spread (higher spread reduces the loss)
             try:
-                loss_per_sample = loss_per_sample - (0.1 * spread_cpu.to(loss_per_sample.device))
+                loss_per_sample = loss_per_sample - (0.1 * spread.to(loss_per_sample.device))
             except Exception:
                 pass
             return loss_per_sample.mean()
@@ -240,6 +240,11 @@ class LearnedLandmarkBranch(nn.Module):
             tau = float(getattr(self, 'landmark_tau', 0.07))
         tau = max(tau, 1e-6)
         scaled = attn_logits.view(bsz, keypoints, -1) / tau
+        # stabilize softmax to avoid large-logit explosions (early training)
+        try:
+            scaled = scaled - scaled.max(dim=-1, keepdim=True)[0]
+        except Exception:
+            pass
         attn = torch.softmax(scaled, dim=-1).view(bsz, keypoints, h, w)
 
         # Head dropout: keep conservative by enabling only late in training
@@ -260,12 +265,8 @@ class LearnedLandmarkBranch(nn.Module):
 
         # Normalize attention maps
         attn = attn / attn.sum(dim=[2, 3], keepdim=True).clamp(min=1e-6)
-        # Compute coordinates on CPU to avoid CUDA device-side asserts
-        try:
-            coords_cpu = self._soft_argmax(attn.detach().cpu())
-            coords = coords_cpu.to(attn.device)
-        except Exception:
-            coords = self._soft_argmax(attn)
+        # Compute coordinates on the same device (keep gradients)
+        coords = self._soft_argmax(attn)
 
         feat_expanded = feat_map.unsqueeze(1)
         heat_expanded = attn.unsqueeze(2)
@@ -415,6 +416,7 @@ class LearnedLandmarkBranch(nn.Module):
             "landmark_edge_align": attn.new_tensor(0.0),
             "landmark_edge_conv_reg": attn.new_tensor(0.0),
             "landmark_edge_tv": attn.new_tensor(0.0),
+            "landmark_peak": peak_loss,
         }
 
         return attn, coords, feat_k, aux

@@ -343,13 +343,8 @@ class ResNet50(nn.Module):
 
         # fuse feat3, feat4 and reduced landmark vector
         fused = torch.cat([feat3, feat4, scale * feat_k], dim=1)
-        # print fused shape once to assist debugging shape mismatches
-        if not hasattr(self, '_printed_fused_shape'):
-            try:
-                print(f"[ResNet] fused shape: {fused.shape}")
-            except Exception:
-                pass
-            self._printed_fused_shape = True
+        
+        
 
         # ensure fusion layer input matches fused dim; if not, adjust dynamically (single-run)
         try:
