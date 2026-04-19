@@ -269,15 +269,22 @@ class LearnedLandmarkBranch(nn.Module):
                     gate_logits = self.kp_gate(feat_k_reduced)  # (B, K, 1)
                     gate_logits = gate_logits.squeeze(-1)
                     gate = torch.softmax(gate_logits, dim=1)  # (B, K)
-                    fused_k = (gate.unsqueeze(-1) * feat_k_reduced).sum(dim=1)  # (B, D)
+                    # apply gate per-keypoint but preserve per-keypoint representation
+                    feat_k_weighted = feat_k_reduced * gate.unsqueeze(-1)
                 else:
-                    # fallback: average pooling across keypoints
-                    fused_k = feat_k_reduced.mean(dim=1)
+                    # fallback: keep per-keypoint vectors as-is
+                    feat_k_weighted = feat_k_reduced
             except Exception:
-                fused_k = feat_k_reduced.mean(dim=1)
+                feat_k_weighted = feat_k_reduced
 
-            # concat fused per-keypoint vector with global pooled feature
-            feat_k = torch.cat([fused_k, feat_global], dim=1)
+            # flatten weighted per-keypoint features to (B, K*D) to match expected pre-reduction layout
+            try:
+                feat_k_flat = feat_k_weighted.view(bsz, K * feat_k_weighted.size(-1))
+            except Exception:
+                feat_k_flat = feat_k_reduced.view(bsz, K * self.kp_proj_dim)
+
+            # concat flattened per-keypoint features and global pooled -> (B, K*kp_proj_dim + C)
+            feat_k = torch.cat([feat_k_flat, feat_global], dim=1)
         else:
             # no per-keypoint projection available: fall back to concatenation
             feat_k = torch.cat([feat_k_flat, feat_global], dim=1)

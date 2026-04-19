@@ -549,7 +549,7 @@ class Trainer:
                 self._runtime_overlap_lambda = 0.07
                 self._runtime_augment_lambda = 0.0
                 self._runtime_edge_consistency_lambda = 0.0
-                self._runtime_aux_cls_lambda = 0.05
+                self._runtime_aux_cls_lambda = 0.1
                 self._runtime_aux_consistency_lambda = 0.0
                 self._runtime_use_scn = True
                 self._runtime_use_mixup = False
@@ -561,7 +561,7 @@ class Trainer:
                 self._runtime_overlap_lambda = 0.10
                 self._runtime_augment_lambda = 0.0
                 self._runtime_edge_consistency_lambda = 0.0
-                self._runtime_aux_cls_lambda = 0.05
+                self._runtime_aux_cls_lambda = 0.2
                 self._runtime_aux_consistency_lambda = 0.0
                 self._runtime_use_scn = True
                 self._runtime_use_mixup = False
