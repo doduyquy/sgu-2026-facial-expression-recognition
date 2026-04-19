@@ -87,7 +87,7 @@ class ResNet50(nn.Module):
         landmark_num_heads=1, #Dùng để xác định số head trong multi-head landmark branch (>=1, nếu =1 thì sẽ dùng single-head như trước)
         landmark_kp_proj_dim=64,
         # Optionally upsample input images before backbone (e.g., (96,96) or (112,112))
-        input_upsample=(112, 112),
+        input_upsample=(96, 96),
     ):
         super().__init__()
         self.use_learned_landmark_branch = use_learned_landmark_branch
