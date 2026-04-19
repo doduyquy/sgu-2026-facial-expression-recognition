@@ -544,7 +544,7 @@ class Trainer:
                 self._runtime_use_scn = False
                 self._runtime_use_mixup = True
                 self._runtime_phase = 1
-            elif progress <= 0.4:
+            elif progress <= 0.3:
                 # Phase 2 (20-70%): enable SCN and stronger landmark auxiliaries
                 self._runtime_diversity_lambda = 0.18
                 self._runtime_entropy_lambda = 0.004
