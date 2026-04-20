@@ -503,7 +503,7 @@ class Trainer:
         return epoch_loss, epoch_acc
 
 
-    def fit(self, start_epoch: int = 0, total_epochs: int = None, ckpt_path: str = None, non_interactive: bool = False, resume_mode: str = 'continue'):
+    def fit(self, start_epoch: int = 0, total_epochs: int = None, ckpt_path: str = None, non_interactive: bool = False, resume_mode: str = 'continue', lr_override: float = None):
         """ Fit your model
         Return:
             all_train_loss, all_val_loss
@@ -525,6 +525,15 @@ class Trainer:
                 print(f"Resuming from ckpt: epoch={saved_epoch}, ckpt_epochs={ckpt_epochs}")
             except Exception as e:
                 print(f"Warning: failed to load checkpoint {ckpt_path}: {e}")
+
+            # apply optional LR override after loading checkpoint/optimizer state
+            if lr_override is not None and self.optimizer is not None:
+                try:
+                    for g in self.optimizer.param_groups:
+                        g['lr'] = float(lr_override)
+                    print(f"Applied lr_override={lr_override} to optimizer after ckpt load")
+                except Exception as e:
+                    print(f"Warning: failed to apply lr_override: {e}")
 
         # determine epochs to run
         if total_epochs is None:
@@ -646,8 +655,7 @@ class Trainer:
             get_prior = getattr(self.model, "get_current_prior_strength", None)
             if callable(get_prior):
                 current_prior = get_prior()
-                if current_prior is not None:
-                    print(f"\tlandmark_prior_strength(now): {current_prior:.4f}")
+
 
             # wandb log
             if self.use_wandb:
