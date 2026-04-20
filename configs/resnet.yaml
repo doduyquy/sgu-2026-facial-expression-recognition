@@ -21,7 +21,7 @@ training:
   use_class_weights: False
   class_weight_mode: "sqrt_inverse"
   optimizer: "adam"
-  lr: 0.0003
+  lr: 0.000075
   weight_decay: 0.0001
   scheduler: "reduce_lr_on_plateau"
   lr_factor: 0.5

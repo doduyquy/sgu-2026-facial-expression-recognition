@@ -5,6 +5,8 @@ import torchvision.transforms.functional as TF
 import torch.nn.functional as F
 from datetime import datetime
 from src.utils.logger_wandb import init_wandb, log_image_to_wandb, log_metrics
+from src.utils.checkpoint import save_checkpoint
+import wandb
 
 
 class Trainer:
@@ -615,12 +617,36 @@ class Trainer:
                 best_val_loss = val_loss
                 patience_counter = 0
 
-                torch.save({
-                    "model_state_dict": self.model.state_dict(),
-                    "optimizer_state_dict": self.optimizer.state_dict(),
-                    "epoch": ep
-                }, self.path_save_ckpt)
-                print(f"\t--- Save best at ep {ep+1}, val_loss: {val_loss:.4f}, path: {self.path_save_ckpt} ---")
+                try:
+                    wandb_id = None
+                    try:
+                        if wandb.run is not None:
+                            wandb_id = wandb.run.id
+                    except Exception:
+                        wandb_id = None
+
+                    trainer_runtime = {
+                        "phase": getattr(self, '_runtime_phase', None),
+                        "use_scn": bool(getattr(self, '_runtime_use_scn', self.use_scn)),
+                        "use_mixup": bool(getattr(self, '_runtime_use_mixup', False)),
+                        "diversity_lambda": float(getattr(self, '_runtime_diversity_lambda', self.landmark_diversity_lambda)),
+                        "entropy_lambda": float(getattr(self, '_runtime_entropy_lambda', self.landmark_entropy_lambda)),
+                        "overlap_lambda": float(getattr(self, '_runtime_overlap_lambda', self.landmark_overlap_lambda)),
+                    }
+
+                    save_checkpoint(
+                        self.path_save_ckpt,
+                        self.model,
+                        self.optimizer,
+                        ep,
+                        scheduler=self.scheduler,
+                        epochs_total=self.epochs,
+                        trainer_runtime=trainer_runtime,
+                        wandb_run_id=wandb_id,
+                    )
+                    print(f"\t--- Save best at ep {ep+1}, val_loss: {val_loss:.4f}, path: {self.path_save_ckpt} ---")
+                except Exception as e:
+                    print(f"\t-!- Failed to save checkpoint: {e}")
 
             else:
                 patience_counter += 1
