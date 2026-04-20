@@ -5,7 +5,8 @@ import torchvision.transforms.functional as TF
 import torch.nn.functional as F
 from datetime import datetime
 from src.utils.logger_wandb import init_wandb, log_image_to_wandb, log_metrics
-from src.utils.checkpoint import save_checkpoint
+from src.utils.checkpoint import save_checkpoint, load_checkpoints
+import torch
 import wandb
 
 
@@ -502,24 +503,84 @@ class Trainer:
         return epoch_loss, epoch_acc
 
 
-    def fit(self):
+    def fit(self, start_epoch: int = 0, total_epochs: int = None, ckpt_path: str = None, non_interactive: bool = False, resume_mode: str = 'continue'):
         """ Fit your model
         Return:
             all_train_loss, all_val_loss
         """
         print(f'\n--> Train on {len(self.train_loader.dataset)} samples, validate on {len(self.val_loader.dataset)} samples')
 
+        # If a checkpoint path is provided, try to load model/optimizer/scheduler and adjust resume params
+        saved_epoch = None
+        ckpt_epochs = None
+        wandb_id = None
+        if ckpt_path is not None:
+            try:
+                saved_epoch, ckpt_epochs = load_checkpoints(self.model, self.optimizer, ckpt_path, self.device, scheduler=self.scheduler)
+                try:
+                    ck = torch.load(ckpt_path, map_location=self.device)
+                    wandb_id = ck.get('wandb_run_id', None)
+                except Exception:
+                    wandb_id = None
+                print(f"Resuming from ckpt: epoch={saved_epoch}, ckpt_epochs={ckpt_epochs}")
+            except Exception as e:
+                print(f"Warning: failed to load checkpoint {ckpt_path}: {e}")
+
+        # determine epochs to run
+        if total_epochs is None:
+            total_epochs = ckpt_epochs or self.epochs
+
+        # if ckpt present, compute start_epoch according to resume_mode
+        if saved_epoch is not None:
+            if resume_mode == 'continue':
+                # default: continue after saved epoch
+                if start_epoch <= saved_epoch:
+                    start_epoch = saved_epoch + 1
+            elif resume_mode == 'restart':
+                # load weights but restart epoch counter from 0
+                start_epoch = 0
+            else:
+                # unknown mode: fallback to continue
+                if start_epoch <= saved_epoch:
+                    start_epoch = saved_epoch + 1
+
+            # ensure total_epochs > saved_epoch
+            if total_epochs <= saved_epoch:
+                if non_interactive:
+                    total_epochs = saved_epoch + 1
+                    print(f"Non-interactive: adjusted total_epochs -> {total_epochs}")
+                else:
+                    total_epochs = saved_epoch + 1
+                    print(f"Adjusted total_epochs -> {total_epochs} (was <= saved_epoch)")
+
+        # initialize wandb: resume if possible, else init normally
         if self.use_wandb:
-            init_wandb(config=self.config, run_name=self.run_name)
+            try:
+                if wandb_id is not None:
+                    try:
+                        import wandb as _wandb
+                        _wandb.login(key=os.environ.get('WANDB_API_KEY')) if os.environ.get('WANDB_API_KEY') else None
+                        _wandb.init(project=self.config['logging'].get('project_name', 'FER2013'),
+                                    entity=self.config['logging'].get('wandb_entity', None),
+                                    id=wandb_id, resume='allow', name=self.run_name, config=self.config)
+                        print(f"Resumed WandB run id={wandb_id}")
+                    except Exception:
+                        init_wandb(config=self.config, run_name=self.run_name)
+                else:
+                    init_wandb(config=self.config, run_name=self.run_name)
+            except Exception:
+                print("Warning: WandB init failed; continuing without WandB.")
 
         best_val_loss = float("inf")
         patience_counter = 0
         all_train_loss = []
         all_val_loss = []
 
+        # override self.epochs if a total_epochs was provided
+        self.epochs = int(total_epochs)
         print(f'\n--> Start training in total {self.epochs} epochs with {self.device} device. Start...\n')
 
-        for ep in range(self.epochs):
+        for ep in range(int(start_epoch), self.epochs):
             # expose current epoch for runtime gating (SCN warmup etc.)
             self._current_epoch = ep
             progress = ep / max(self.epochs - 1, 1)
@@ -590,13 +651,23 @@ class Trainer:
 
             # wandb log
             if self.use_wandb:
+                # ensure scalar floats for logging
+                try:
+                    train_acc_val = float(train_acc.item()) if hasattr(train_acc, 'item') else float(train_acc)
+                except Exception:
+                    train_acc_val = float(train_acc)
+                try:
+                    val_acc_val = float(val_acc.item()) if hasattr(val_acc, 'item') else float(val_acc)
+                except Exception:
+                    val_acc_val = float(val_acc)
+
                 log_metrics({
-                    "Epoch": ep + 1,
-                    "Train/Loss": train_loss,
-                    "Train/Accuracy": train_acc,
-                    "Val/Loss": val_loss,
-                    "Val/Accuracy": val_acc,
-                    "Learning_Rate": self.optimizer.param_groups[0]['lr']
+                    "Epoch": int(ep + 1),
+                    "Train/Loss": float(train_loss),
+                    "Train/Accuracy": train_acc_val,
+                    "Val/Loss": float(val_loss),
+                    "Val/Accuracy": val_acc_val,
+                    "Learning_Rate": float(self.optimizer.param_groups[0]['lr'])
                 }, epoch=ep)
             # log SCN internals if present (use epoch-aggregated self._latest_scn_logs)
             if self.use_wandb and getattr(self, '_latest_scn_logs', None) is not None:

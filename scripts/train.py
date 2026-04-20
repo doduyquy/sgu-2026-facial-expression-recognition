@@ -34,6 +34,9 @@ def main():
     # get args 
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
+    parser.add_argument("--ckpt", type=str, default=None, help="Optional checkpoint path to resume from")
+    parser.add_argument("--resume-mode", type=str, default='continue', choices=['continue','restart'],
+                        help="How to resume when loading a checkpoint: 'continue' = start after saved epoch (default), 'restart' = load weights but restart epoch count from 0")
     parser.add_argument("--env", type=str, default="local", choices=["local", "kaggle"])
     args = parser.parse_args()
     # If running on Kaggle, enable CUDA launch blocking for correct stack traces
@@ -113,7 +116,8 @@ def main():
         run_name=run_name,
         save_dir=path_save_ckpt
     )
-    train_losses, val_losses = trainer.fit()
+    # If --ckpt provided, resume training inside Trainer.fit (non-interactive)
+    train_losses, val_losses = trainer.fit(ckpt_path=args.ckpt, non_interactive=True, resume_mode=args.resume_mode)
 
     # evaluate
     print("\n" + "="*51)

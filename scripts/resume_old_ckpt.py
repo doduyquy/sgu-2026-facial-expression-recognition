@@ -25,6 +25,8 @@ def main():
     parser.add_argument("--env", default="local")
     parser.add_argument("--total-epochs", type=int, default=None,
                         help="Override total epochs (if checkpoint lacks epochs_total)")
+    parser.add_argument("--extra-epochs", type=int, default=0,
+                        help="Number of extra epochs to run beyond saved epoch when total-epochs <= saved epoch")
     parser.add_argument("--non-interactive", action='store_true', help="Don't prompt; abort on missing fields")
     parser.add_argument("--save-path", default=None, help="Optional path to save resumed checkpoints")
     args = parser.parse_args()
@@ -124,6 +126,18 @@ def main():
             print("Non-interactive mode and no total epochs available. Aborting.")
             return
     start_epoch = saved_epoch + 1
+
+    # If total_epochs is less than or equal to saved_epoch, try to expand using --extra-epochs
+    try:
+        if int(total_epochs) <= saved_epoch:
+            if args.extra_epochs and int(args.extra_epochs) > 0:
+                total_epochs = int(saved_epoch) + int(args.extra_epochs)
+                print(f"Adjusted total_epochs to {total_epochs} using --extra-epochs={args.extra_epochs}")
+            else:
+                total_epochs = int(saved_epoch) + 1
+                print(f"Warning: total_epochs <= saved_epoch. Setting total_epochs = saved_epoch + 1 = {total_epochs}")
+    except Exception:
+        pass
 
     # WandB resume/init if run id present in checkpoint
     wandb_id = ckpt.get('wandb_run_id', None)
