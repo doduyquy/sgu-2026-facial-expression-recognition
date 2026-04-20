@@ -4,6 +4,11 @@ import torch.nn.functional as F
 from .vgg import VGGFusionSpatialCNN
 from .resnet import ResNet50
 
+try:
+    from transformers import CLIPTokenizer, CLIPTextModel
+except ImportError:
+    CLIPTokenizer, CLIPTextModel = None, None
+
 def drop_path(x, drop_prob: float = 0., training: bool = False):
     """
     Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
@@ -28,6 +33,36 @@ class DropPath(nn.Module):
     def forward(self, x):
         return drop_path(x, self.drop_prob, self.training)
 
+def get_2d_sincos_pos_embed(embed_dim, grid_size=3):
+    """
+    Sinh mã hóa vị trí (Positional Encoding) dạng 2D Sin-Cos cố định.
+    Rất lý tưởng cho Vision Transformer lưới 2 chiều (ví dụ 3x3 grid).
+    """
+    grid_h = torch.arange(grid_size, dtype=torch.float32)
+    grid_w = torch.arange(grid_size, dtype=torch.float32)
+    grid = torch.meshgrid(grid_w, grid_h, indexing='ij')  # tọa độ (w, h)
+    
+    # Kéo phẳng grid [grid_size * grid_size, 2]
+    grid = torch.stack(grid, dim=0).reshape(2, -1)
+    
+    # Tạo omega. Chia embed_dim ra làm 2 mảng (mỗi mảng embed_dim // 2)
+    # Vì mỗi mảng lại có 1 sin, 1 cos nên omega sẽ là embed_dim // 4
+    emb_dim_half = embed_dim // 2
+    omega = torch.arange(emb_dim_half // 2, dtype=torch.float32)
+    omega = omega / (emb_dim_half / 2.0)
+    omega = 1.0 / (10000**omega)  # shape: [embed_dim // 4]
+    
+    # Tính toán cho trục y
+    out_y = torch.einsum('m,d->md', grid[0], omega)
+    emb_y = torch.cat([torch.sin(out_y), torch.cos(out_y)], dim=1)  # [9, 256]
+    
+    # Tính toán cho trục x
+    out_x = torch.einsum('m,d->md', grid[1], omega)
+    emb_x = torch.cat([torch.sin(out_x), torch.cos(out_x)], dim=1)  # [9, 256]
+    
+    # Ghép trục x và y để full 512 embedding => [9, 512]
+    emb = torch.cat([emb_y, emb_x], dim=1)
+    return emb
 
 class ResNet50FeatureExtractor(nn.Module):
     """
@@ -91,6 +126,42 @@ class FacialRegionDictionary(nn.Module):
         # region_ids: [K] → token_embed: [K, D] → expand: [B, K, D]
         tokens = self.token_embed(self.region_ids)  # [K, D]
         return tokens.unsqueeze(0).expand(batch_size, -1, -1)  # [B, K, D]
+
+class CLIPFacialRegionDictionary(nn.Module):
+    def __init__(self, num_regions=6, embed_dim=512, clip_model_name="openai/clip-vit-base-patch32"):
+        super().__init__()
+        self.num_regions = num_regions
+        
+        prompts = [
+            "a photo of a person's forehead conveying eyebrow movement", 
+            "a photo of a person's left eye", 
+            "a photo of a person's right eye", 
+            "a photo of a person's nose", 
+            "a photo of a person's mouth and lips", 
+            "a photo of a person's chin and jawline"
+        ][:num_regions]
+        
+        if CLIPTokenizer is None or CLIPTextModel is None:
+            raise ImportError("Please install transformers to use CLIPFacialRegionDictionary: `pip install transformers`")
+            
+        tokenizer = CLIPTokenizer.from_pretrained(clip_model_name)
+        text_model = CLIPTextModel.from_pretrained(clip_model_name)
+        
+        print(f"--> Initializing CLIP Text Embeddings from: {clip_model_name}")
+        with torch.no_grad():
+            inputs = tokenizer(prompts, padding=True, return_tensors="pt")
+            outputs = text_model(**inputs)
+            text_features = outputs.pooler_output  # [num_regions, clip_dim]
+            
+        self.token_embed = nn.Parameter(text_features, requires_grad=True)
+        
+        self.proj = nn.Identity()
+        if text_features.shape[1] != embed_dim:
+            self.proj = nn.Linear(text_features.shape[1], embed_dim)
+
+    def forward(self, batch_size):
+        tokens = self.proj(self.token_embed) # [K, D]
+        return tokens.unsqueeze(0).expand(batch_size, -1, -1) # [B, K, D]
 
 
 # =====================================================================
@@ -162,10 +233,19 @@ class RegionAlignedFER(nn.Module):
         self.proj_res = nn.Linear(1024, self.embed_dim)
 
         # ===== 2. Facial Region Dictionary =====
-        self.region_dict = FacialRegionDictionary(
-            num_regions=self.num_regions,
-            embed_dim=self.embed_dim
-        )
+        self.use_clip_dictionary = model_cfg.get('use_clip_dictionary', False)
+        if self.use_clip_dictionary:
+            clip_model_name = model_cfg.get('clip_model_name', "openai/clip-vit-base-patch32")
+            self.region_dict = CLIPFacialRegionDictionary(
+                num_regions=self.num_regions,
+                embed_dim=self.embed_dim,
+                clip_model_name=clip_model_name
+            )
+        else:
+            self.region_dict = FacialRegionDictionary(
+                num_regions=self.num_regions,
+                embed_dim=self.embed_dim
+            )
 
         # ===== 3. Semantic-Visual Alignment =====
         self.alignment = SemanticVisualAlignment(
@@ -173,6 +253,11 @@ class RegionAlignedFER(nn.Module):
             num_heads=self.num_heads,
             dropout=self.dropout_rate
         )
+        
+        # Positional Encoding Cố Định 2D (Sin-Cos) cho lưới 3x3 tokens
+        # Sinh 1 ma trận tọa độ, xài chung hệ quy chiếu cho cả VGG và ResNet
+        sincos = get_2d_sincos_pos_embed(self.embed_dim, grid_size=3).unsqueeze(0)  # [1, 9, 512]
+        self.register_buffer('grid_pos_embed', sincos)
 
         # ===== 4. Hyper-visual Representation =====
         # Pool visual features → single vector, rồi broadcast cộng vào Φ_sem
@@ -284,6 +369,10 @@ class RegionAlignedFER(nn.Module):
         res_feat = self.res_backbone(x)          # [B, 9, 1024]
         res_feat = self.proj_res(res_feat)       # [B, 9, 512]
 
+        # Áp dụng chung ma trận vị trí tĩnh (Sin-Cos) cho cả hai backbone
+        vgg_feat = vgg_feat + self.grid_pos_embed
+        res_feat = res_feat + self.grid_pos_embed
+
         # Φ_visual: nối đặc trưng từ cả hai backbone
         visual_features = torch.cat([vgg_feat, res_feat], dim=1)  # [B, 18, 512]
 
@@ -310,6 +399,15 @@ class RegionAlignedFER(nn.Module):
         pooled = encoded.mean(dim=1)             # [B, 512]
         logits = self.classifier(pooled)         # [B, num_classes]
 
+        # ── 7. Orthogonal Loss (Tránh việc tập trung trùng vùng) ──
+        attn_norm = F.normalize(attn_weights, p=2, dim=-1)
+        sim = torch.bmm(attn_norm, attn_norm.transpose(1, 2))  # [B, 6, 6]
+        mask = torch.eye(self.num_regions, device=sim.device).bool()
+        off_diag_sim = sim[:, ~mask]
+        ortho_loss = off_diag_sim.mean()
+
+        if self.training:
+            return logits, ortho_loss
         return logits
 
 
@@ -337,10 +435,17 @@ if __name__ == "__main__":
 
     model = RegionAlignedFER(config, channels=1).to(device)
     out = model(dummy)
-    print(f"Output shape: {out.shape}")  # Expected: [2, 7]
+    
+    if isinstance(out, tuple):
+        logits, ortho_loss = out
+        print(f"Logits shape: {logits.shape}")  # Expected: [2, 7]
+        print(f"Orthogonal Loss: {ortho_loss.item():.4f}")
+        assert logits.shape == (2, 7)
+    else:
+        print(f"Output shape: {out.shape}")  # Expected: [2, 7]
+        assert out.shape == (2, 7)
     
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Total parameters: {total_params:,}")
     
-    assert out.shape == (2, 7), f"Expected (2, 7), got {out.shape}"
     print("\nTest Passed!")

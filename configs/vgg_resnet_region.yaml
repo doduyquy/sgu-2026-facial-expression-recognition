@@ -9,6 +9,12 @@ model:
   num_regions: 6          # Trán, Mắt trái, Mắt phải, Mũi, Miệng, Cằm
   num_encoder_layers: 2   # Số lớp Transformer Encoder
   transformer_dropout: 0.4
+  
+  # CLIP + Region Attention Config
+  use_clip_dictionary: true
+  clip_model_name: "openai/clip-vit-base-patch32"
+  ortho_loss_weight: 0.1
+
 
   # VGG Backbone (giữ Spatial Attention để khớp với checkpoint 69.2%)
   use_aux: false

@@ -41,11 +41,20 @@ class Trainer:
             outputs = self.model(images)
             
             # -------------
-            # [Inception]Vì incpetion trả về tuple của trong lúc training
+            # Check loại tuple trả về
             if isinstance(outputs, tuple):
-                main_out, aux_out = outputs
-                loss = inception_loss(main_out, aux_out, labels, criterion=self.criterion)
-                outputs = main_out # Đặt lại outputs -> tinhs accuracy ở dưới
+                if len(outputs) == 2 and isinstance(outputs[1], torch.Tensor) and outputs[1].dim() == 0:
+                    # Trả về (logits, scalar_aux_loss) -> Orthogonal Loss cho RegionAttention
+                    main_out, aux_loss = outputs
+                    main_loss = self.criterion(main_out, labels)
+                    ortho_weight = self.config.get('model', {}).get('ortho_loss_weight', 0.1)
+                    loss = main_loss + ortho_weight * aux_loss
+                    outputs = main_out
+                else:
+                    # [Inception] Trả về (main_out, aux_out_logits)
+                    main_out, aux_out = outputs
+                    loss = inception_loss(main_out, aux_out, labels, criterion=self.criterion)
+                    outputs = main_out # Đặt lại outputs -> tinhs accuracy ở dưới
             else:
                 loss = self.criterion(outputs, labels)
             # -------------
@@ -59,8 +68,14 @@ class Trainer:
                 # ── SAM Step 2 ──
                 outputs_2 = self.model(images)
                 if isinstance(outputs_2, tuple):
-                    main_out, aux_out = outputs_2
-                    loss_2 = inception_loss(main_out, aux_out, labels, criterion=self.criterion)
+                    if len(outputs_2) == 2 and isinstance(outputs_2[1], torch.Tensor) and outputs_2[1].dim() == 0:
+                        main_out_2, aux_loss_2 = outputs_2
+                        main_loss_2 = self.criterion(main_out_2, labels)
+                        ortho_weight = self.config.get('model', {}).get('ortho_loss_weight', 0.1)
+                        loss_2 = main_loss_2 + ortho_weight * aux_loss_2
+                    else:
+                        main_out_2, aux_out_2 = outputs_2
+                        loss_2 = inception_loss(main_out_2, aux_out_2, labels, criterion=self.criterion)
                 else:
                     loss_2 = self.criterion(outputs_2, labels)
                 
