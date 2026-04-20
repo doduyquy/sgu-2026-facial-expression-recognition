@@ -30,7 +30,7 @@ def main():
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    os.environ.setdefault('WANDB_MODE', 'offline')
+    os.environ.setdefault('WANDB_MODE', 'online')
 
     config = load_config(args.config, args.env)
 
@@ -68,6 +68,15 @@ def main():
                     for g in optimizer.param_groups:
                         g['lr'] = lr
                     print(f"Set optimizer lr from ckpt to {lr}")
+    else:
+        # No optimizer_state_dict key - still try to set lr from checkpoint if possible
+        og = ckpt.get('optimizer_state_dict', {}).get('param_groups', None)
+        if og and len(og) > 0 and optimizer is not None:
+            lr = og[0].get('lr', None)
+            if lr is not None:
+                for g in optimizer.param_groups:
+                    g['lr'] = lr
+                print(f"Set optimizer lr from ckpt to {lr} (no optimizer_state_dict load)")
     if 'scheduler_state_dict' in ckpt and scheduler is not None:
         try:
             scheduler.load_state_dict(ckpt['scheduler_state_dict'])
@@ -75,6 +84,16 @@ def main():
             print(f"Warning: failed to load scheduler state: {e}")
     else:
         if scheduler is not None:
+            # try to approximate scheduler resume: set last_epoch to saved_epoch
+            try:
+                saved_epoch_tmp = int(ckpt.get('epoch', 0))
+                if hasattr(scheduler, 'last_epoch'):
+                    scheduler.last_epoch = saved_epoch_tmp
+                    print(f"Set scheduler.last_epoch = {saved_epoch_tmp} (approx resume)")
+                else:
+                    print("Scheduler has no attribute 'last_epoch' to set; continuing without full restore.")
+            except Exception:
+                pass
             # prompt user whether to continue without scheduler or abort
             if not args.non_interactive:
                 ans = input("Checkpoint missing scheduler_state_dict. Continue without restoring scheduler? [y/N]: ")
