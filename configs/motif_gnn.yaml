@@ -20,7 +20,8 @@ model:
 
   # -- Regularization --
   dropout: 0.3
-  pool_loss_weight: 0.001  # Giảm để tránh sụp đổ cụm sớm
+  pool_loss_weight: 0.001       # trọng số của toàn cục pool_loss
+  align_loss_weight: 0.1        # (Option C) Trọng số ép Semantic Alignment
 
 data:
   image_size: 48
@@ -30,12 +31,12 @@ data:
 training:
   lr: 0.001
   finetune_lr: 0.0001
-  epochs: 100
+  epochs: 300
   optimizer: "adamw"
   weight_decay: 0.0001
   label_smoothing: 0.1
   scheduler: "cosine"
-  use_class_weights: false
+  use_class_weights: true
   patience: 20
 
 env:

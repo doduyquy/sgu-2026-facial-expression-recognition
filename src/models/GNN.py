@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from .region_attention import CLIPFacialRegionDictionary
 
 
 def build_graph_feature_map(images: torch.Tensor) -> torch.Tensor:
@@ -101,59 +102,54 @@ class GCNLayer(nn.Module):
 
 class SubGraphPooling(nn.Module):
     """
-    Gom K node → S subgraph (tương tự DiffPool nhưng nhẹ hơn).
-    Học ma trận gán S = softmax(MLP(nodes)) để assign mỗi node
-    về 1 trong num_subgraphs cluster đại diện.
-
-    Đồng thời trả về entropy regularization loss:
-        L_ent = mean( sum_k{ -S_ik * log(S_ik) } )
-    để buộc assignment sắc nét hơn.
+    Semantic-Guided Hierarchical Gom cụm (Option C).
+    Sử dụng CLIP Text Embeddings làm Mỏ Neo (Anchors) để kéo Patch vào đúng cụm ngữ nghĩa mặt người (Mắt, Mũi, Miệng...).
     """
-    def __init__(self, in_dim: int, num_subgraphs: int):
+    def __init__(self, in_dim: int, num_subgraphs: int, tau: float = 0.05, align_loss_weight: float = 0.1):
         super().__init__()
         self.num_subgraphs = num_subgraphs
-        self.assign_net = nn.Sequential(
-            nn.BatchNorm1d(in_dim), # Ổn định đặc trưng trước khi phân cụm
-            nn.Linear(in_dim, in_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(in_dim, num_subgraphs)
-        )
+        self.tau = tau
+        self.align_loss_weight = align_loss_weight
+        
+        # Mỏ neo ngôn ngữ từ CLIP
+        self.region_dict = CLIPFacialRegionDictionary(num_regions=num_subgraphs, embed_dim=in_dim)
 
     def forward(self, nodes: torch.Tensor, A: torch.Tensor):
-        """
-        nodes: [B, T, D]
-        A: [B, T, T]
-        Returns:
-            subgraphs: [B, K, D]     — feature của mỗi subgraph
-            pooled_A: [B, K, K]      — Hierarchical Adjacency Matrix
-            pool_loss: scalar tensor — entropy regularization
-        """
         B, T, D = nodes.shape
-        # Batch norm yêu cầu [B, D, T]
-        nodes_bn = nodes.transpose(1, 2)
-        nodes_bn = self.assign_net[0](nodes_bn)
-        nodes_bn = nodes_bn.transpose(1, 2)
         
-        # Ma trận gán [B, T, K]
-        S = self.assign_net[1:](nodes_bn)
-        S = F.softmax(S, dim=-1)
+        # [B, K, D] - Lấy Semantic Embeddings (Vector Chữ)
+        keys = self.region_dict(B) 
+        
+        # Tính ma trận gán cụm S bằng Semantic Cosine Similarity
+        nodes_norm = F.normalize(nodes, p=2, dim=-1)
+        keys_norm  = F.normalize(keys, p=2, dim=-1)
+        
+        # S: [B, T, K] - Soft-assignment dựa trên Semantic Alignment
+        logits = torch.bmm(nodes_norm, keys_norm.transpose(1, 2)) / self.tau
+        S = F.softmax(logits, dim=-1)
 
-        # Pool(Feature Pooling): [B, K, T] x [B, T, D] = [B, K, D]
+        # Pool Đặc trưng (Feature Pooling dựa trên S): [B, K, D]
         subgraphs_sum = torch.bmm(S.transpose(1, 2), nodes)
-        
-        # Chia cho kích thước của subgraph (MEAN pooling) để chuẩn hoá độ lớn feature
-        cluster_sizes = S.sum(dim=1, keepdim=True).transpose(1, 2) + 1e-8 # [B, K, 1]
+        cluster_sizes = S.sum(dim=1, keepdim=True).transpose(1, 2) + 1e-8
         subgraphs = subgraphs_sum / cluster_sizes
 
-        # Pool 構造 (Topology Pooling / Hierarchical Graph): A_pooled = S^T * A * S -> [B, K, K]
+        # Pool Topology (S^T A S) -> [B, K, K]
         pooled_A = torch.bmm(S.transpose(1, 2), torch.bmm(A, S))
-        # Chuẩn hoá row-stochastic cho đồ thị mới
         pooled_A = F.normalize(pooled_A, p=1, dim=-1)
 
-        # Entropy loss: khuyến khích assignment dứt khoát
+        # Mất mát 1: Entropy Loss (khuyến khích cụm sắc nét)
         eps = 1e-8
-        entropy = -(S * (S + eps).log()).sum(dim=-1)  # [B, T]
-        pool_loss = entropy.mean()
+        entropy = -(S * (S + eps).log()).sum(dim=-1).mean()
+        
+        # Mất mát 2: Semantic Alignment Loss (Option C)
+        # Ép vector trung bình của cụm hình ảnh phải hội tụ về đúng vector chữ của CLIP
+        subgraphs_norm = F.normalize(subgraphs, p=2, dim=-1) # [B, K, D]
+        # Khoảng cách Cosine chỉ lấy cặp thuận (Cụm K so với Text K)
+        mean_sim = (subgraphs_norm * keys_norm).sum(dim=-1).mean()
+        align_loss = 1.0 - mean_sim
+        
+        # Tổng hợp Loss
+        pool_loss = entropy + self.align_loss_weight * align_loss
 
         return subgraphs, pooled_A, pool_loss
 
@@ -211,8 +207,9 @@ class MotifGNN(nn.Module):
         self.gcn1 = GCNLayer(self.hidden_dim, self.hidden_dim)
         self.gcn2 = GCNLayer(self.hidden_dim, self.hidden_dim)
 
-        # ── SubGraph Pooling ──
-        self.subgraph_pool = SubGraphPooling(self.hidden_dim, self.num_subgraphs)
+        # ── Semantic-Guided SubGraph Pooling ──
+        align_weight = model_cfg.get('align_loss_weight', 0.1)
+        self.subgraph_pool = SubGraphPooling(self.hidden_dim, self.num_subgraphs, tau=self.tau, align_loss_weight=align_weight)
 
         # ── Inter-subgraph GCN (thay thế Self-Attention) ──
         self.subgraph_gcn = GCNLayer(self.hidden_dim, self.hidden_dim)
