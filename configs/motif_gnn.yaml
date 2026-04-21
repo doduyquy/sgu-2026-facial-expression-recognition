@@ -11,6 +11,8 @@ model:
 
   # -- GCN --
   hidden_dim: 128         # chiều ẩn của GCN và SubGraph
+  alpha: 0.5              # Trọng số kết hợp Hybrid Adjacency (0.5 = 50% Spatial + 50% Feature)
+  spatial_sigma: 2.0      # Độ cong của Gaussian Kernel cho khoảng cách không gian
 
   # -- SubGraph Pooling --
   num_subgraphs: 6        # số subgraph: Trán, Mắt trái, Mắt phải, Mũi, Miệng, Cằm

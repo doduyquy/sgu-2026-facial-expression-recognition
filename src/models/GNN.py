@@ -52,35 +52,47 @@ def extract_patch_nodes(feat_map: torch.Tensor, window_size: int, stride: int) -
     nodes = unfolded.transpose(1, 2).contiguous()
     return nodes  # [B, T, ws*ws*3]
 
+def precompute_spatial_A(H_img: int, W_img: int, ws: int, stride: int, sigma: float = 2.0, device='cpu') -> torch.Tensor:
+    """
+    Tính trước ma trận kề không gian cố định dựa trên Gaussian Kernel.
+    """
+    H_grid = (H_img - ws) // stride + 1
+    W_grid = (W_img - ws) // stride + 1
+    N = H_grid * W_grid
+    
+    # Tạo toạ độ lưới cho từng patch
+    y, x = torch.meshgrid(torch.arange(H_grid, device=device), torch.arange(W_grid, device=device), indexing='ij')
+    coords = torch.stack([y.flatten(), x.flatten()], dim=1).float() # [N, 2]
+    
+    # Tính bình phương khoảng cách Euclidean và áp dụng Gaussian Kernel
+    dist_sq = torch.cdist(coords, coords, p=2).pow(2)
+    A_spatial = torch.exp(-dist_sq / (2 * sigma**2))
+    
+    # Row-normalize để thành ma trận xác suất chuyển trạng thái (stochastic)
+    A_spatial = A_spatial / A_spatial.sum(dim=-1, keepdim=True)
+    return A_spatial # [N, N]
+
 #graph layer
 
 class GCNLayer(nn.Module):
     """
-    Graph Convolutional Layer đơn giản:
-        H' = A_hat * H * W
-    A_hat được tính bằng Cosine Similarity giữa các node (soft adjacency).
+    Graph Convolutional Layer nhận ma trận A từ ngoài truyền vào.
+    H' = Norm(H + ReLU(A * H * W))
     """
     def __init__(self, in_dim: int, out_dim: int):
         super().__init__()
         self.linear = nn.Linear(in_dim, out_dim, bias=False)
         self.norm   = nn.LayerNorm(out_dim)
 
-    def forward(self, nodes: torch.Tensor) -> torch.Tensor:
+    def forward(self, nodes: torch.Tensor, A: torch.Tensor) -> torch.Tensor:
         """
         nodes: [B, T, in_dim]
+        A: [B, T, T] (hoặc [T, T] nếu xài chung broadcast được)
         Returns: [B, T, out_dim]
         """
-        # --- Xây dựng adjacency mềm bằng cosine similarity ---
-        nodes_norm = F.normalize(nodes, p=2, dim=-1)           # [B, T, D] # Chuẩn hóa vector
-        A = torch.bmm(nodes_norm, nodes_norm.transpose(1, 2))  # [B, T, T] # Tính ma trận tương đồng
-        
-        # Thêm nhiệt độ tau để làm sắc nét sự tập trung (tránh hiện tượng mọi node bị trộn đều thành 1)
-        tau = 0.05
-        A = F.softmax(A / tau, dim=-1)                         # Row-stochastic # Softmax để tính trọng số
-
         # --- Kết tập thông tin từ hàng xóm + Linear ---
-        agg = torch.bmm(A, nodes)                              # [B, T, in_dim] # Kết tập thông tin
-        out = self.linear(agg)                                 # [B, T, out_dim] # Linear để tăng chiều dữ liệu
+        agg = torch.matmul(A, nodes)                           # [B, T, in_dim]
+        out = self.linear(agg)                                 # [B, T, out_dim]
         
         # Thêm residual connection (Bảo toàn đặc trưng gốc của node)
         out = self.norm(nodes + F.relu(out))
@@ -107,12 +119,14 @@ class SubGraphPooling(nn.Module):
             nn.Linear(in_dim, num_subgraphs)
         )
 
-    def forward(self, nodes: torch.Tensor):
+    def forward(self, nodes: torch.Tensor, A: torch.Tensor):
         """
         nodes: [B, T, D]
+        A: [B, T, T]
         Returns:
-            subgraphs: [B, num_subgraphs, D]  — feature của mỗi subgraph
-            pool_loss: scalar tensor          — entropy regularization
+            subgraphs: [B, K, D]     — feature của mỗi subgraph
+            pooled_A: [B, K, K]      — Hierarchical Adjacency Matrix
+            pool_loss: scalar tensor — entropy regularization
         """
         B, T, D = nodes.shape
         # Batch norm yêu cầu [B, D, T]
@@ -124,19 +138,24 @@ class SubGraphPooling(nn.Module):
         S = self.assign_net[1:](nodes_bn)
         S = F.softmax(S, dim=-1)
 
-        # Pool: [B, K, T] x [B, T, D] = [B, K, D]
+        # Pool(Feature Pooling): [B, K, T] x [B, T, D] = [B, K, D]
         subgraphs_sum = torch.bmm(S.transpose(1, 2), nodes)
         
         # Chia cho kích thước của subgraph (MEAN pooling) để chuẩn hoá độ lớn feature
         cluster_sizes = S.sum(dim=1, keepdim=True).transpose(1, 2) + 1e-8 # [B, K, 1]
         subgraphs = subgraphs_sum / cluster_sizes
 
+        # Pool 構造 (Topology Pooling / Hierarchical Graph): A_pooled = S^T * A * S -> [B, K, K]
+        pooled_A = torch.bmm(S.transpose(1, 2), torch.bmm(A, S))
+        # Chuẩn hoá row-stochastic cho đồ thị mới
+        pooled_A = F.normalize(pooled_A, p=1, dim=-1)
+
         # Entropy loss: khuyến khích assignment dứt khoát
         eps = 1e-8
         entropy = -(S * (S + eps).log()).sum(dim=-1)  # [B, T]
         pool_loss = entropy.mean()
 
-        return subgraphs, pool_loss
+        return subgraphs, pooled_A, pool_loss
 
 
 #MotifGNN
@@ -167,6 +186,15 @@ class MotifGNN(nn.Module):
         self.num_subgraphs = model_cfg.get('num_subgraphs', 6)  # 6 vùng mặt
         self.dropout_rate  = model_cfg.get('dropout', 0.3)
         self.pool_loss_weight = model_cfg.get('pool_loss_weight', 0.01)
+        self.alpha         = model_cfg.get('alpha', 0.5)
+        self.tau           = model_cfg.get('tau', 0.05)
+        sigma = model_cfg.get('spatial_sigma', 2.0)
+
+        # Precompute Spatial Adjacency Matrix
+        self.register_buffer(
+            'A_spatial',
+            precompute_spatial_A(self.image_size, self.image_size, self.window_size, self.stride, sigma)
+        )
 
         # patch_dim = window_size * window_size * 3  (x, y, intensity)
         in_channels = 3  # luôn là 3 vì ta tạo feat_map [x, y, intensity]
@@ -186,14 +214,8 @@ class MotifGNN(nn.Module):
         # ── SubGraph Pooling ──
         self.subgraph_pool = SubGraphPooling(self.hidden_dim, self.num_subgraphs)
 
-        # ── Inter-subgraph Self-Attention ──
-        self.subgraph_attn = nn.MultiheadAttention(
-            embed_dim=self.hidden_dim,
-            num_heads=model_cfg.get('num_heads', 4),
-            dropout=self.dropout_rate,
-            batch_first=True
-        )
-        self.attn_norm = nn.LayerNorm(self.hidden_dim)
+        # ── Inter-subgraph GCN (thay thế Self-Attention) ──
+        self.subgraph_gcn = GCNLayer(self.hidden_dim, self.hidden_dim)
 
         # ── Classifier ──
         self.classifier = nn.Sequential(
@@ -235,27 +257,42 @@ class MotifGNN(nn.Module):
     # ----------------------------------------------------------
     # Step 2: GCN encoding
     # ----------------------------------------------------------
-    def _encode_graph(self, nodes: torch.Tensor) -> torch.Tensor:
+    def _encode_graph(self, nodes: torch.Tensor):
         """
         nodes: [B, T, patch_dim]
-        Returns: [B, T, hidden_dim]
+        Returns: 
+           h: [B, T, hidden_dim]
+           A: [B, T, T] — ma trận kề cấp pixel (layer cuối của block này)
         """
         h = self.input_proj(nodes)   # [B, T, hidden_dim]
-        h = self.gcn1(h)             # [B, T, hidden_dim]
-        h = self.gcn2(h)             # [B, T, hidden_dim]
-        return h
+        
+        # Lớp GCN 1
+        nodes_norm = F.normalize(h, p=2, dim=-1)
+        A_feat1 = F.softmax(torch.bmm(nodes_norm, nodes_norm.transpose(1, 2)) / self.tau, dim=-1)
+        A1 = self.alpha * self.A_spatial.unsqueeze(0) + (1 - self.alpha) * A_feat1
+        h = self.gcn1(h, A1)             # [B, T, hidden_dim]
+        
+        # Lớp GCN 2
+        nodes_norm2 = F.normalize(h, p=2, dim=-1)
+        A_feat2 = F.softmax(torch.bmm(nodes_norm2, nodes_norm2.transpose(1, 2)) / self.tau, dim=-1)
+        A2 = self.alpha * self.A_spatial.unsqueeze(0) + (1 - self.alpha) * A_feat2
+        h = self.gcn2(h, A2)             # [B, T, hidden_dim]
+        
+        return h, A2
 
     # ----------------------------------------------------------
     # Step 3: SubGraph pooling
     # ----------------------------------------------------------
-    def _pool_subgraphs(self, h: torch.Tensor):
+    def _pool_subgraphs(self, h: torch.Tensor, A: torch.Tensor):
         """
         h: [B, T, hidden_dim]
+        A: [B, T, T]
         Returns:
             subgraphs: [B, num_subgraphs, hidden_dim]
+            pooled_A: [B, num_subgraphs, num_subgraphs]
             pool_loss: scalar
         """
-        return self.subgraph_pool(h)
+        return self.subgraph_pool(h, A)
 
     # ----------------------------------------------------------
     # Forward
@@ -273,14 +310,13 @@ class MotifGNN(nn.Module):
         nodes = self._pixel_to_nodes(x)            # [B, T, patch_dim]
 
         # ── 2. GCN ──
-        h = self._encode_graph(nodes)              # [B, T, hidden_dim]
+        h, A = self._encode_graph(nodes)           # [B, T, hidden_dim], [B, T, T]
 
-        # ── 3. SubGraph Pooling ──
-        subgraphs, pool_loss = self._pool_subgraphs(h)  # [B, S, hidden_dim]
+        # ── 3. SubGraph Pooling (Hierarchical Graph) ──
+        subgraphs, pooled_A, pool_loss = self._pool_subgraphs(h, A)  # [B, K, D], [B, K, K]
 
-        # ── 4. Inter-SubGraph Self-Attention ──
-        sg_attn, _ = self.subgraph_attn(subgraphs, subgraphs, subgraphs)
-        subgraphs = self.attn_norm(subgraphs + sg_attn)  # residual
+        # ── 4. Inter-SubGraph GCN ──
+        subgraphs = self.subgraph_gcn(subgraphs, pooled_A) # [B, K, D]
 
         # ── 5. Global pooling over subgraphs ──
         graph_repr = subgraphs.mean(dim=1)         # [B, hidden_dim]
