@@ -207,7 +207,59 @@ class SemanticVisualAlignment(nn.Module):
 
 
 # =====================================================================
-# 3. Model chính: RegionAlignedFER
+# 3. Sub-Graph Fusion (Upper/Lower Face Division)
+# =====================================================================
+class SubGraphFusion(nn.Module):
+    """
+    SubGraph Fusion cho Facial Regions.
+    Chia 6 vùng thành 2 graph nhỏ hoàn toàn độc lập trong Self-Attention:
+    - Upper-face (Indices 0,1,2,3): Trán, Mắt trái, Mắt phải, Mũi
+    - Lower-face (Indices 4,5): Miệng, Cằm
+    """
+    def __init__(self, embed_dim, num_heads, dropout=0.3):
+        super().__init__()
+        # Self Attention cho từng đồ thị con
+        self.upper_attn = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, batch_first=True)
+        self.lower_attn = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, batch_first=True)
+        
+        self.norm_upper = nn.LayerNorm(embed_dim)
+        self.norm_lower = nn.LayerNorm(embed_dim)
+        
+        # Feed-Forward chung sau khi nối
+        self.ffn = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(embed_dim * 2, embed_dim)
+        )
+        self.norm_out = nn.LayerNorm(embed_dim)
+        self.drop_path = DropPath(dropout if dropout > 0. else 0.)
+        
+    def forward(self, x):
+        # x shape: [B, 6, D]
+        upper_nodes = x[:, :4, :] # [B, 4, D]
+        lower_nodes = x[:, 4:, :] # [B, 2, D]
+        
+        # Self Attention trong nội bộ cụm (Tránh mắt làm nhiễu miệng và ngược lại)
+        upper_out, _ = self.upper_attn(upper_nodes, upper_nodes, upper_nodes)
+        lower_out, _ = self.lower_attn(lower_nodes, lower_nodes, lower_nodes)
+        
+        # Residual + Norm
+        upper_fused = self.norm_upper(upper_nodes + self.drop_path(upper_out))
+        lower_fused = self.norm_lower(lower_nodes + self.drop_path(lower_out))
+        
+        # Nối lại
+        fused = torch.cat([upper_fused, lower_fused], dim=1) # [B, 6, D]
+        
+        # FFN kết hợp
+        ffn_out = self.ffn(fused)
+        out = self.norm_out(fused + self.drop_path(ffn_out))
+        
+        return out
+
+
+# =====================================================================
+# 4. Model chính: RegionAlignedFER
 # =====================================================================
 class RegionAlignedFER(nn.Module):
 
@@ -271,19 +323,29 @@ class RegionAlignedFER(nn.Module):
             nn.Dropout(self.dropout_rate) # Add dropout here
         )
 
-        # ===== 5. Transformer Encoder =====
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=self.embed_dim,
-            nhead=self.num_heads,
-            dim_feedforward=self.embed_dim * 2,
-            dropout=self.dropout_rate,
-            batch_first=True,
-            activation='gelu'
-        )
-        self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layer,
-            num_layers=self.num_layers
-        )
+        # ===== 5. Transformer / SubGraph Encoder =====
+        self.fusion_type = model_cfg.get('fusion_type', 'transformer')
+        
+        if self.fusion_type == 'subgraph':
+            self.transformer_encoder = nn.Sequential(*[
+                SubGraphFusion(embed_dim=self.embed_dim, num_heads=self.num_heads, dropout=self.dropout_rate)
+                for _ in range(self.num_layers)
+            ])
+            print("--> Loaded SubGraph Fusion Architecture (Upper/Lower Face decoupled)")
+        else:
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=self.embed_dim,
+                nhead=self.num_heads,
+                dim_feedforward=self.embed_dim * 2,
+                dropout=self.dropout_rate,
+                batch_first=True,
+                activation='gelu'
+            )
+            self.transformer_encoder = nn.TransformerEncoder(
+                encoder_layer,
+                num_layers=self.num_layers
+            )
+            print("--> Loaded Standard Transformer Architecture")
 
         # Positional Encoding cho region tokens
         self.pos_embed = nn.Parameter(

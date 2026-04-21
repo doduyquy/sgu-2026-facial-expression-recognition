@@ -12,6 +12,7 @@ model:
   
   # CLIP + Region Attention Config
   use_clip_dictionary: true
+  fusion_type: "subgraph" # Kích hoạt chia đồ thị Upper-Face & Lower-Face
   clip_model_name: "openai/clip-vit-base-patch32"
   ortho_loss_weight: 0.005 # Hạ thấp để tránh ép các vùng bị đẩy ra rìa
 
