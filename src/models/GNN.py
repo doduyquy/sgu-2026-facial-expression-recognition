@@ -101,6 +101,7 @@ class SubGraphPooling(nn.Module):
         super().__init__()
         self.num_subgraphs = num_subgraphs
         self.assign_net = nn.Sequential(
+            nn.BatchNorm1d(in_dim), # Ổn định đặc trưng trước khi phân cụm
             nn.Linear(in_dim, in_dim),
             nn.ReLU(inplace=True),
             nn.Linear(in_dim, num_subgraphs)
@@ -113,8 +114,14 @@ class SubGraphPooling(nn.Module):
             subgraphs: [B, num_subgraphs, D]  — feature của mỗi subgraph
             pool_loss: scalar tensor          — entropy regularization
         """
+        B, T, D = nodes.shape
+        # Batch norm yêu cầu [B, D, T]
+        nodes_bn = nodes.transpose(1, 2)
+        nodes_bn = self.assign_net[0](nodes_bn)
+        nodes_bn = nodes_bn.transpose(1, 2)
+        
         # Ma trận gán [B, T, K]
-        S = self.assign_net(nodes)
+        S = self.assign_net[1:](nodes_bn)
         S = F.softmax(S, dim=-1)
 
         # Pool: [B, K, T] x [B, T, D] = [B, K, D]
@@ -209,10 +216,20 @@ class MotifGNN(nn.Module):
         x: [B, channels, H, W]
         Returns nodes: [B, T, patch_dim]
         """
-        # Nếu grayscale → chuẩn hóa về [0,1] nếu cần (giả sử đã được DataLoader norm)
         feat_map = build_graph_feature_map(x)               # [B, 3, H, W]
-        nodes    = extract_patch_nodes(feat_map, self.window_size, self.stride)  # [B, T, patch_dim]
-        nodes    = F.normalize(nodes, p=2, dim=-1)           # L2-normalize
+        nodes    = extract_patch_nodes(feat_map, self.window_size, self.stride)  # [B, T, 75]
+        
+        # Tách tọa độ và cường độ để chuẩn bừa độc lập
+        # 0:25 (x), 25:50 (y), 50:75 (intensity)
+        ws2 = self.window_size * self.window_size
+        coords = nodes[:, :, :2*ws2]
+        intens = nodes[:, :, 2*ws2:]
+        
+        # Chuẩn hóa cường độ (L2 nhắm vào tương phản patch)
+        intens = F.normalize(intens, p=2, dim=-1)
+        
+        # Ghép lại - tọa độ giữ nguyên [0, 1] để GCN biết vị trí tương đối
+        nodes = torch.cat([coords, intens], dim=-1)
         return nodes
 
     # ----------------------------------------------------------

@@ -18,7 +18,7 @@ model:
 
   # -- Regularization --
   dropout: 0.3
-  pool_loss_weight: 0.01  # trọng số của entropy pooling loss
+  pool_loss_weight: 0.001  # Giảm để tránh sụp đổ cụm sớm
 
 data:
   image_size: 48
@@ -33,7 +33,7 @@ training:
   weight_decay: 0.0001
   label_smoothing: 0.1
   scheduler: "cosine"
-  use_class_weights: true
+  use_class_weights: false
   patience: 20
 
 env:
