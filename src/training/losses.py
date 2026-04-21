@@ -14,11 +14,28 @@ class FocalLoss(nn.Module):
         self.label_smoothing = label_smoothing
 
     def forward(self, inputs, targets):
-        # inputs: [B, C], targets: [B]
-        ce_loss = F.cross_entropy(inputs, targets, weight=self.weight, reduction='none', label_smoothing=self.label_smoothing)
-        pt = torch.exp(-ce_loss)  # pt is the probability of the true class
+        # Lấy xác suất đúng của class mục tiêu (pt) CHUẨN XÁC, không bị nhiễu bởi label_smoothing hay class_weights
+        log_probs = F.log_softmax(inputs, dim=-1)
+        pt = torch.exp(log_probs.gather(1, targets.unsqueeze(1)).squeeze(1))
+        
+        # Tính Cross Entropy phân bổ rải rác (chưa tính trung bình)
+        ce_loss = F.cross_entropy(
+            inputs, targets, 
+            weight=self.weight, 
+            reduction='none', 
+            label_smoothing=self.label_smoothing
+        )
+        
+        # Focal weights
         focal_loss = ((1 - pt) ** self.gamma) * ce_loss
-        return focal_loss.mean()
+        
+        # Trả về kết quả CHUẨN theo style của PyTorch với Weight
+        if self.weight is not None:
+            # Pytorch CrossEntropyLoss (reduction='mean') sẽ chia tổng loss cho TỔNG weight của mẻ batch
+            batch_weights = self.weight.gather(0, targets)
+            return focal_loss.sum() / batch_weights.sum().clamp(min=1e-8)
+        else:
+            return focal_loss.mean()
 
 # Loss -> auxiliary (training)
 def inception_loss(main_out, aux_out, targets,
