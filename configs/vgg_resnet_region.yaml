@@ -3,7 +3,7 @@
 _base_: "base.yaml"
 
 device:
-  n_gpu: 1
+  n_gpu: 2
 
 model:
   name: "region_aligned_fer"
