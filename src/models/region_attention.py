@@ -259,6 +259,10 @@ class RegionAlignedFER(nn.Module):
         sincos = get_2d_sincos_pos_embed(self.embed_dim, grid_size=3).unsqueeze(0)  # [1, 9, 512]
         self.register_buffer('grid_pos_embed', sincos)
 
+        # Type Embeddings để phân biệt VGG và ResNet khi nối lại
+        self.vgg_type_embed = nn.Parameter(torch.randn(1, 1, self.embed_dim) * 0.02)
+        self.res_type_embed = nn.Parameter(torch.randn(1, 1, self.embed_dim) * 0.02)
+
         # ===== 4. Hyper-visual Representation =====
         # Pool visual features → single vector, rồi broadcast cộng vào Φ_sem
         self.visual_proj = nn.Sequential(
@@ -289,10 +293,10 @@ class RegionAlignedFER(nn.Module):
         # ===== 6. Classification Head =====
         self.classifier = nn.Sequential(
             nn.LayerNorm(self.embed_dim),
-            nn.Dropout(0.5), # Keep this high
+            nn.Dropout(0.3), # Lowered from 0.5
             nn.Linear(self.embed_dim, 512),
             nn.GELU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.2), # Lowered from 0.3
             nn.Linear(512, num_classes)
         )
 
@@ -369,9 +373,9 @@ class RegionAlignedFER(nn.Module):
         res_feat = self.res_backbone(x)          # [B, 9, 1024]
         res_feat = self.proj_res(res_feat)       # [B, 9, 512]
 
-        # Áp dụng chung ma trận vị trí tĩnh (Sin-Cos) cho cả hai backbone
-        vgg_feat = vgg_feat + self.grid_pos_embed
-        res_feat = res_feat + self.grid_pos_embed
+        # Áp dụng chung ma trận vị trí tĩnh (Sin-Cos) cộng thêm Type Embedding cho từng backbone
+        vgg_feat = vgg_feat + self.grid_pos_embed + self.vgg_type_embed
+        res_feat = res_feat + self.grid_pos_embed + self.res_type_embed
 
         # Φ_visual: nối đặc trưng từ cả hai backbone
         visual_features = torch.cat([vgg_feat, res_feat], dim=1)  # [B, 18, 512]
@@ -408,6 +412,10 @@ class RegionAlignedFER(nn.Module):
 
         if self.training:
             return logits, ortho_loss
+            
+        if hasattr(self, 'return_attn') and self.return_attn:
+            return logits, attn_weights
+            
         return logits
 
 

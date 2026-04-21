@@ -13,7 +13,7 @@ model:
   # CLIP + Region Attention Config
   use_clip_dictionary: true
   clip_model_name: "openai/clip-vit-base-patch32"
-  ortho_loss_weight: 0.1
+  ortho_loss_weight: 0.005 # Hạ thấp để tránh ép các vùng bị đẩy ra rìa
 
 
   # VGG Backbone (giữ Spatial Attention để khớp với checkpoint 69.2%)

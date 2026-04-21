@@ -31,6 +31,7 @@ class Trainer:
         self.model.train()
 
         running_loss = 0.0
+        running_ortho = 0.0
         corrects = 0
         total = 0
 
@@ -50,6 +51,7 @@ class Trainer:
                     ortho_weight = self.config.get('model', {}).get('ortho_loss_weight', 0.1)
                     loss = main_loss + ortho_weight * aux_loss
                     outputs = main_out
+                    running_ortho += aux_loss.item() * images.size(0)
                 else:
                     # [Inception] Trả về (main_out, aux_out_logits)
                     main_out, aux_out = outputs
@@ -93,8 +95,9 @@ class Trainer:
 
         epoch_loss = running_loss / total
         epoch_acc = corrects.double() / total
+        epoch_ortho = (running_ortho / total) if running_ortho > 0 else 0.0
 
-        return epoch_loss, epoch_acc
+        return epoch_loss, epoch_acc, epoch_ortho
 
 
     def validate(self):
@@ -161,7 +164,7 @@ class Trainer:
                     patience_counter = 0
                     print(f"[Trainer] Rebuilt optimizer & scheduler with finetune_lr={finetune_lr} and reset patience.")
 
-            train_loss, train_acc = self.train_one_epoch()
+            train_loss, train_acc, train_ortho_loss = self.train_one_epoch()
             val_loss, val_acc = self.validate()
 
             all_train_loss.append(train_loss)
@@ -169,7 +172,7 @@ class Trainer:
 
             print(
                 f"Epoch {ep+1}/{self.epochs} - "
-                f"loss: {train_loss:.4f} - accuracy: {train_acc.item():.4f} - "
+                f"loss: {train_loss:.4f} (ortho: {train_ortho_loss:.4f}) - accuracy: {train_acc.item():.4f} - "
                 f"val_loss: {val_loss:.4f} - val_accuracy: {val_acc.item():.4f}"
             )
 
