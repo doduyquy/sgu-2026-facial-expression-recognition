@@ -26,12 +26,22 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> Non
         for images, labels in tqdm(test_loader, desc="Evaluate test set..."):
             images, labels = images.to(device), labels.to(device)
             
-            outputs = model(images)
+            # --- Test Time Augmentation (TTA) - Horizontal Flip ---
+            out_orig = model(images)
+            images_flipped = torch.flip(images, dims=[3])
+            out_flipped = model(images_flipped)
+            
             attn_weights_batch = None
-            if isinstance(outputs, tuple) and len(outputs) == 2:
-                logits, attn_weights_batch = outputs
+            if isinstance(out_orig, tuple) and len(out_orig) == 2:
+                logits_orig, attn_weights_batch = out_orig
+                logits_flipped, _ = out_flipped
+                # Average predictions for TTA Boost
+                logits = (logits_orig + logits_flipped) / 2.0
             else:
-                logits = outputs
+                logits_orig = out_orig
+                logits_flipped = out_flipped
+                logits = (logits_orig + logits_flipped) / 2.0
+            # ------------------------------------------------------
                 
             _, preds = torch.max(logits, 1)
             

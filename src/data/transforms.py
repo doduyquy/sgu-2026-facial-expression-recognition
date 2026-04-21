@@ -56,6 +56,9 @@ def build_transform(config, split="train") -> Compose:
             v2.ToImage(),
             v2.ToDtype(torch.float32, scale=True),
             v2.Normalize(mean=mean, std=std),
+            
+            # Thêm Random Erasing (Cutout) chống overfitting & ép Region Attention
+            v2.RandomErasing(p=0.4, scale=(0.02, 0.15), value='random'),
         ]
 
     else:

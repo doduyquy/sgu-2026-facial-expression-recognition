@@ -14,7 +14,7 @@ model:
   use_clip_dictionary: true
   fusion_type: "subgraph" # Kích hoạt chia đồ thị Upper-Face & Lower-Face
   clip_model_name: "openai/clip-vit-base-patch32"
-  ortho_loss_weight: 0.005 # Hạ thấp để tránh ép các vùng bị đẩy ra rìa
+  ortho_loss_weight: 0.015 # Tăng nhẹ để phân tách vùng tốt hơn
 
 
   # VGG Backbone (giữ Spatial Attention để khớp với checkpoint 69.2%)
@@ -39,14 +39,15 @@ data:
   batch_size: 64
 
 training:
-  lr: 0.0001           # Lower base LR for SAM stability
-  finetune_lr: 0.00002 # Slightly higher fine-tune LR to allow SAM to explore
+  loss: "focal"        # Dùng Focal Loss trị các class khó
+  lr: 0.0001
+  finetune_lr: 0.00002
   epochs: 100
   optimizer: "sam"
   base_optimizer: "adamw"
   sam_rho: 0.05
-  weight_decay: 0.05       # Standard for Transformer + AdamW
-  label_smoothing: 0.1
+  weight_decay: 0.08       # Tăng penalty chống overfit
+  label_smoothing: 0.2     # Tăng label smoothing để giảm độ tin cậy của nhiễu
   scheduler: "cosine"
   use_class_weights: true
 
