@@ -73,12 +73,17 @@ class GCNLayer(nn.Module):
         # --- Xây dựng adjacency mềm bằng cosine similarity ---
         nodes_norm = F.normalize(nodes, p=2, dim=-1)           # [B, T, D] # Chuẩn hóa vector
         A = torch.bmm(nodes_norm, nodes_norm.transpose(1, 2))  # [B, T, T] # Tính ma trận tương đồng
-        A = F.softmax(A, dim=-1)                               # Row-stochastic # Softmax để tính trọng số
+        
+        # Thêm nhiệt độ tau để làm sắc nét sự tập trung (tránh hiện tượng mọi node bị trộn đều thành 1)
+        tau = 0.05
+        A = F.softmax(A / tau, dim=-1)                         # Row-stochastic # Softmax để tính trọng số
 
         # --- Kết tập thông tin từ hàng xóm + Linear ---
-        agg = torch.bmm(A, nodes)                              # [B, T, in_dim] # Kết tập thông tin từ hàng xóm
+        agg = torch.bmm(A, nodes)                              # [B, T, in_dim] # Kết tập thông tin
         out = self.linear(agg)                                 # [B, T, out_dim] # Linear để tăng chiều dữ liệu
-        out = self.norm(F.relu(out))
+        
+        # Thêm residual connection (Bảo toàn đặc trưng gốc của node)
+        out = self.norm(nodes + F.relu(out))
         return out
 
 
@@ -113,7 +118,11 @@ class SubGraphPooling(nn.Module):
         S = F.softmax(S, dim=-1)
 
         # Pool: [B, K, T] x [B, T, D] = [B, K, D]
-        subgraphs = torch.bmm(S.transpose(1, 2), nodes)
+        subgraphs_sum = torch.bmm(S.transpose(1, 2), nodes)
+        
+        # Chia cho kích thước của subgraph (MEAN pooling) để chuẩn hoá độ lớn feature
+        cluster_sizes = S.sum(dim=1, keepdim=True).transpose(1, 2) + 1e-8 # [B, K, 1]
+        subgraphs = subgraphs_sum / cluster_sizes
 
         # Entropy loss: khuyến khích assignment dứt khoát
         eps = 1e-8
