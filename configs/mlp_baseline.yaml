@@ -17,4 +17,4 @@ training:
   loss: "cross_entropy"
 
 logging:
-  use_wandb: false
+  use_wandb: true
