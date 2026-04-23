@@ -15,19 +15,20 @@ seed:
 graph:
   connectivity: 8         # 4 hoặc 8
   normalize_pixels: true  # normalize về [0, 1]
-  node_features:
+  node_feature_names:
     - "intensity"
     - "x_norm"
     - "y_norm"
   # Mở rộng sau: "gx", "gy", "grad_mag", "contrast"
-  edge_features:
+  edge_static_feature_names:
     - "dx"
     - "dy"
     - "dist"
+  edge_dynamic_feature_names:
     - "delta_intensity"
     - "intensity_similarity"
   intensity_similarity_alpha: 1.0
-  save_image_in_graph: false
+  chunk_size: 500
 
 model:
   name: "mlp_baseline"   # key trong MODEL_REGISTRY
@@ -57,11 +58,12 @@ env:
 kaggle:
   data_path: "/kaggle/input/datasets/doduyquynii/fer13-split"
   root_path: "/kaggle/working/sgu-2026-facial-expression-recognition"
-  # Thay YOUR_GRAPH_CACHE_DATASET bằng tên dataset .pt trên Kaggle của bạn
-  # VD: "/kaggle/input/fer2013-graph-cache"
-  graph_cache_path: "/kaggle/input/YOUR_GRAPH_CACHE_DATASET"
+  # Graph repository mới (canonical format — chunks + shared graph)
+  # Upload artifacts/graph_repo/ lên Kaggle, đặt tên dataset "fer-graph-repo"
+  graph_repo_path: "/kaggle/input/fer-graph-repo/graph_repo"
 
 local:
-  data_path: "data/fer13-split"
+  data_path: "data"
   root_path: "."
-  graph_cache_path: "outputs/graph_cache"
+  # Graph repository mới (build bằng scripts/build_graph_repository.py)
+  graph_repo_path: "artifacts/graph_repo"
