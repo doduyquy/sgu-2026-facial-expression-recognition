@@ -9,6 +9,7 @@ Hỗ trợ:
     - 3 phase staged schedule (tùy chọn)
 """
 import os
+import sys
 from pathlib import Path
 import torch
 import numpy as np
@@ -16,6 +17,18 @@ from tqdm import tqdm
 from typing import Dict
 
 from src.evaluation.metrics import compute_classification_metrics
+
+
+def flush_stdio() -> None:
+    """Flush stdout/stderr trước khi vòng lặp DataLoader bắt đầu."""
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    try:
+        sys.stderr.flush()
+    except Exception:
+        pass
 
 
 class Trainer:
@@ -130,8 +143,12 @@ class Trainer:
         Train model, early stop theo val_macro_f1.
         Returns: all_train_metrics, all_val_metrics (list of dicts)
         """
-        print(f"\n--> Train: {len(self.train_loader.dataset)} | Val: {len(self.val_loader.dataset)}")
-        print(f"--> Start training: {self.epochs} epochs | device: {self.device}\n")
+        print(
+            f"\n--> Train: {len(self.train_loader.dataset)} | Val: {len(self.val_loader.dataset)}",
+            flush=True,
+        )
+        print(f"--> Start training: {self.epochs} epochs | device: {self.device}\n", flush=True)
+        flush_stdio()
 
         if self.use_wandb:
             from src.utils.logger_wandb import init_wandb

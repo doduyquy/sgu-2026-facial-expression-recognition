@@ -37,6 +37,23 @@ from src.evaluation.evaluator import evaluate_and_show
 
 # -----------------------------------------------------------------------
 
+def flush_stdio() -> None:
+    """
+    Flush stdout/stderr trước khi DataLoader workers được tạo.
+
+    Trên Linux/Kaggle, khi dùng multiprocessing kiểu fork, worker có thể kế thừa
+    stdout buffer chưa flush của process cha và làm một số log đầu chương trình
+    bị in lặp lại.
+    """
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    try:
+        sys.stderr.flush()
+    except Exception:
+        pass
+
 def resolve_device() -> torch.device:
     """
     Chọn device an toàn cho môi trường Kaggle/local.
@@ -71,7 +88,7 @@ def resolve_device() -> torch.device:
     return torch.device("cuda")
 
 def main():
-    print("\n\t\t--> GNN FER-2013 Training <--\n")
+    print("\n\t\t--> GNN FER-2013 Training <--\n", flush=True)
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="mlp_baseline",
@@ -89,7 +106,7 @@ def main():
 
     # ── Device ──
     device = resolve_device()
-    print(f"--- Device: {device}")
+    print(f"--- Device: {device}", flush=True)
 
     # ── Config ──
     config = load_config(args.config, args.env)
@@ -107,11 +124,12 @@ def main():
     # CLI override co uu tien cao hon env.yaml
     if args.graph_repo_path is not None:
         graph_repo_path = args.graph_repo_path
-        print(f"--- graph_repo_path : {graph_repo_path}  [CLI override]")
+        print(f"--- graph_repo_path : {graph_repo_path}  [CLI override]", flush=True)
     else:
-        print(f"--- graph_repo_path : {graph_repo_path}  [from env.yaml]")
+        print(f"--- graph_repo_path : {graph_repo_path}  [from env.yaml]", flush=True)
 
-    print(f"--- root_path       : {root_path}")
+    print(f"--- root_path       : {root_path}", flush=True)
+    flush_stdio()
 
     # ── DataLoaders từ graph repository ──
     train_loader, val_loader, test_loader, input_dim = build_dataloader(
@@ -125,8 +143,8 @@ def main():
         config=config,
         input_dim=input_dim,
     )
-    print(f"--- Model: {config['model']['name']} | input_dim={input_dim}")
-    print(f"--- Params: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"--- Model: {config['model']['name']} | input_dim={input_dim}", flush=True)
+    print(f"--- Params: {sum(p.numel() for p in model.parameters()):,}", flush=True)
 
     # ── Loss / Optimizer / Scheduler ──
     criterion = build_loss(config=config)
@@ -152,6 +170,7 @@ def main():
         run_name=run_name,
         save_dir=ckpt_path,
     )
+    flush_stdio()
     trainer.fit()
 
     # ── Evaluate trên test set với best checkpoint ──
