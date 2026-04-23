@@ -42,12 +42,16 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="mlp_baseline",
-                        help="Tên file config (không có .yaml), vd: mlp_baseline")
+                        help="Ten file config (khong co .yaml), vd: mlp_baseline")
     parser.add_argument("--env", type=str, default="kaggle",
                         choices=["local", "kaggle"])
     parser.add_argument("--dataloader_mode", type=str, default="graph_vector",
                         choices=["graph_vector", "resolved"],
                         help="graph_vector: MLP baseline | resolved: GNN (future)")
+    parser.add_argument("--graph_repo_path", type=str, default=None,
+                        help="Override graph_repo_path tu env.yaml. "
+                             "Dung khi path tren Kaggle khac voi gia tri mac dinh trong config. "
+                             "Vi du: /kaggle/input/datasets/username/fer-graph-repo/artifacts/graph_repo")
     args = parser.parse_args()
 
     # ── Device ──
@@ -59,12 +63,18 @@ def main():
     config["dataloader_mode"] = args.dataloader_mode
     set_seed(config["seed"].get("random_seed", 42))
 
-    # ── Paths từ flat-merged env config ──
+    # ── Paths ──
     root_path       = config.get("root_path", ".")
     graph_repo_path = config.get("graph_repo_path", "artifacts/graph_repo")
 
+    # CLI override co uu tien cao hon env.yaml
+    if args.graph_repo_path is not None:
+        graph_repo_path = args.graph_repo_path
+        print(f"--- graph_repo_path : {graph_repo_path}  [CLI override]")
+    else:
+        print(f"--- graph_repo_path : {graph_repo_path}  [from env.yaml]")
+
     print(f"--- root_path       : {root_path}")
-    print(f"--- graph_repo_path : {graph_repo_path}")
 
     # ── DataLoaders từ graph repository ──
     train_loader, val_loader, test_loader, input_dim = build_dataloader(
