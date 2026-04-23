@@ -94,7 +94,8 @@ def plot_attention_heatmap_grid(images, true_labels, pred_labels, attns, title, 
             img = img.squeeze(0)
         elif img.ndim == 3 and img.shape[0] == 3:
             img = np.transpose(img, (1, 2, 0))
-
+ 
+ 
         # 2. Attention Heatmap
         if attn.shape == (6, 18):
             vgg = attn[:, :9]
