@@ -1,75 +1,110 @@
+"""
+Dataloader factory cho GNN FER-2013.
+
+Hỗ trợ 2 chế độ (tự động detect từ file có trong graph_cache_dir):
+    1. Vector cache  (*_vectors.pt)  → RAM nhỏ (~1 MB), dùng cho MLP Baseline
+    2. Graph cache   (*_graphs.pt)   → RAM lớn (~24 GB), dùng cho GCN tương lai
+
+Tương lai: thêm build_pyg_dataloader() cho GCN/GraphSAGE.
+"""
 import os
 from torch.utils.data import DataLoader
-from .dataset import FER2013
-from .transforms import build_transform
 
-def build_dataloader(config, data_path):
-    """ Dataloader: Group dataset into batch (mini-batch) 
-    Args: 
-        config: config for data, dataloader (Q cho ca config goc)
-        data_path: path to fer13-split dir
-    Return: 
-        train_loader, val_loader, test_loader
+
+def _detect_cache_mode(cache_dir: str) -> str:
     """
-    # transform
-    trans_train = build_transform(config, "train")
-    trans_val = build_transform(config, "val")
-    trans_test = build_transform(config, "test")
+    Phát hiện loại cache trong thư mục.
+    Ưu tiên vector cache (nhẹ hơn) nếu có cả 2.
+    """
+    has_vector = os.path.exists(os.path.join(cache_dir, "train_vectors.pt"))
+    has_graph  = os.path.exists(os.path.join(cache_dir, "train_graphs.pt"))
 
-    # build dataset
-    data_train = FER2013(data_path=data_path, split="train", transforms=trans_train)
-    data_val = FER2013(data_path=data_path, split="val", transforms=trans_val)
-    data_test = FER2013(data_path=data_path, split="test", transforms=trans_test)
-
-    # batch the dataset
-    train_loader = DataLoader(
-        data_train, 
-        batch_size=config['data']['batch_size'],
-        num_workers=config['data'].get('num_workers', 2),
-        pin_memory=True, # push data to cache (-> send to GPU)
-        shuffle=True)
-    val_loader = DataLoader(
-        data_val, 
-        batch_size=config['data']['batch_size'], 
-        num_workers=config['data'].get('num_workers', 2),
-        pin_memory=True, # push data to cache (-> send to GPU)
-        shuffle=False)
-    test_loader = DataLoader(
-        data_test, 
-        batch_size=config['data']['batch_size'], 
-        num_workers=config['data'].get('num_workers', 2),
-        pin_memory=True, # push data to cache (-> send to GPU)
-        shuffle=False)
-    
-    return train_loader, val_loader, test_loader
+    if has_vector:
+        return "vector"
+    elif has_graph:
+        return "graph"
+    else:
+        raise FileNotFoundError(
+            f"\n[ERROR] Không tìm thấy cache trong: {cache_dir}\n"
+            f"  Kaggle : Add dataset .pt vào notebook, set graph_cache_path trong base.yaml.\n"
+            f"  Local  : Chạy scripts/build_vector_cache.py (KHUYẾN NGHỊ)\n"
+            f"           hoặc scripts/build_graph_cache.py  (tốn ~24GB RAM)\n"
+        )
 
 
+def build_dataloader(config: dict, graph_cache_dir: str):
+    """
+    Build DataLoader từ cache files trong graph_cache_dir.
+
+    Args:
+        config:          full config dict (từ load_config)
+        graph_cache_dir: thư mục chứa *_vectors.pt hoặc *_graphs.pt
+
+    Returns:
+        train_loader, val_loader, test_loader, input_dim
+    """
+    mode = _detect_cache_mode(graph_cache_dir)
+    print(f"--- Cache mode: [{mode}]  ←  {graph_cache_dir}")
+
+    batch_size  = config["training"].get("batch_size", 128)
+    num_workers = config.get("num_workers", config["data"].get("num_workers", 0))
+
+    if mode == "vector":
+        return _build_from_vector_cache(graph_cache_dir, batch_size, num_workers)
+    else:
+        return _build_from_graph_cache(graph_cache_dir, config, batch_size, num_workers)
 
 
-if __name__ == "__main__":
+# ────────────────────────────────────────────────────────────────────────────
+#  Mode 1: Vector cache (khuyến nghị cho MLP Baseline)
+# ────────────────────────────────────────────────────────────────────────────
 
-    import os, sys
-    # go back to root directory
-    # sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))) 
-    from src.utils.config import load_config
+def _build_from_vector_cache(cache_dir, batch_size, num_workers):
+    from src.data.vector_cache_dataset import VectorCacheDataset
 
-    config = load_config(model='vgg19', env='kaggle')
-    
+    train_ds = VectorCacheDataset(os.path.join(cache_dir, "train_vectors.pt"))
+    val_ds   = VectorCacheDataset(os.path.join(cache_dir, "val_vectors.pt"))
+    test_ds  = VectorCacheDataset(os.path.join(cache_dir, "test_vectors.pt"))
 
-    data_path = "./dataset/fer13-split"
+    input_dim = train_ds.get_input_dim()
 
-    print("Create dataloader for train | val | test ...")
-    train_loader, val_loader, test_loader = build_dataloader(config, data_path)
+    print(f"--- Train: {len(train_ds)} | Val: {len(val_ds)} | Test: {len(test_ds)}")
+    print(f"--- Input dim (graph vector): {input_dim}")
 
-    # test 1: get batch from train_loader
-    images, labels = next(iter(train_loader))
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
+                              num_workers=num_workers, pin_memory=True)
+    val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False,
+                              num_workers=num_workers, pin_memory=True)
+    test_loader  = DataLoader(test_ds,  batch_size=batch_size, shuffle=False,
+                              num_workers=num_workers, pin_memory=True)
 
-    print("--> Check one batch from train loader <--")
-    print("     - Batch tensor image, expect: (32, 1, 48, 48) ||", images.shape) # becase batch_size in VGG19 override batch_size in base
-    print("     - Batch tensor label, expect: (64) ||", labels.shape)     # torch.Size([64])
-    print("     - Image dtype, expect: float32 ||", images.dtype)     # float32
-    print("     - Label dtype, REQUIRED: int64 ||", labels.dtype)     # int64 (Nếu là int8 thì model ko chạy đc)
-    print("     - Max pixel, expect:  ~1.0 ||", images.max().item())  # Quanh quẩn ~1.0
-    print("     - Min pixel, expect: ~-1.0 ||", images.min().item())  # Quanh quẩn ~ -1.0
+    return train_loader, val_loader, test_loader, input_dim
 
-    print(labels)
+
+# ────────────────────────────────────────────────────────────────────────────
+#  Mode 2: Graph cache (dùng khi cần full PixelGraph cho GCN tương lai)
+# ────────────────────────────────────────────────────────────────────────────
+
+def _build_from_graph_cache(cache_dir, config, batch_size, num_workers):
+    from src.data.graph_vector_dataset import GraphVectorDataset
+    from src.features.graph_vectorizer import GraphVectorizer
+
+    vectorizer = GraphVectorizer(use_mean=True, use_std=True, use_max=True)
+
+    train_ds = GraphVectorDataset(os.path.join(cache_dir, "train_graphs.pt"), vectorizer)
+    val_ds   = GraphVectorDataset(os.path.join(cache_dir, "val_graphs.pt"),   vectorizer)
+    test_ds  = GraphVectorDataset(os.path.join(cache_dir, "test_graphs.pt"),  vectorizer)
+
+    input_dim = train_ds.get_input_dim()
+
+    print(f"--- Train: {len(train_ds)} | Val: {len(val_ds)} | Test: {len(test_ds)}")
+    print(f"--- Input dim (graph vector): {input_dim}")
+
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
+                              num_workers=num_workers, pin_memory=True)
+    val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False,
+                              num_workers=num_workers, pin_memory=True)
+    test_loader  = DataLoader(test_ds,  batch_size=batch_size, shuffle=False,
+                              num_workers=num_workers, pin_memory=True)
+
+    return train_loader, val_loader, test_loader, input_dim

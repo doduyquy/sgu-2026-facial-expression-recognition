@@ -1,0 +1,14 @@
+name: fer-graph
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy
+  - pandas
+  - tqdm
+  - pytorch
+  - cpuonly
+# conda env create -f environment.yml
+# conda env update -f environment.yml --prune

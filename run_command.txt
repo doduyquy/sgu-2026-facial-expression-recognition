@@ -1,30 +1,39 @@
-# For unit test (file test):
-1. Go to root dir (sgu-2026-fer)
-2. Run in module type
-    e.g: python -m src.data.dataloader
+============================================================
+GNN FER-2013 — Run Commands
+============================================================
 
-#--- Train ---
-# Local
-python scripts/train.py --config vgg19 --env local
+# ── BƯỚC 1: Build VECTOR cache (KHUYẾN NGHỊ — chỉ ~1MB RAM) ─────
+python scripts/build_vector_cache.py \
+  --train_csv data/fer13-split/train.csv \
+  --val_csv   data/fer13-split/val.csv \
+  --test_csv  data/fer13-split/test.csv \
+  --save_dir  outputs/vector_cache
 
-# Kaggle
-!python -m scripts/train.py --config vgg19 --env kaggle
+# ── BƯỚC 2: Train MLP baseline ────────────────────────────────────
+python -m scripts.train --config mlp_baseline --env local
+python -m scripts.train --config mlp_baseline --env kaggle
 
+# ── (Tuỳ chọn) Build FULL graph cache (GCN tương lai — ~24GB RAM!) ──
+python scripts/build_graph_cache.py \
+  --train_csv data/fer13-split/train.csv \
+  --val_csv   data/fer13-split/val.csv \
+  --test_csv  data/fer13-split/test.csv \
+  --save_dir  outputs/graph_cache
 
-# --- Run ---
-# Nghĩa là khi run, ta cần truyền tên file config vào, và truyền môi trường chạy
-# và chạy ở dạng module (-m)
-# NOTE: Dứng ở dir gốc: sgu-2026-facial-expression-recognition/
+# ── (Tuỳ chọn) Kiểm tra graph cache ─────────────────────────────
+python scripts/check_graph_cache.py \
+  --graph_path outputs/graph_cache/train_graphs.pt \
+  --index 0
 
-python -m scripts/prepare_data.py --config base --env local
+# ── Check toàn bộ pipeline ────────────────────────────────────────
+python scripts/check_pipeline.py
 
-python -m scripts/train.py --config simple_cnn --env local
-# or
-python -m scripts/train.py --config vgg19 --env local
-# or
-python -m scripts/train.py --config resnet34 --env kaggle
-
-python -m scripts/evaluate.py --config vgg19 --checkpoint outputs/checkpoints/vgg19_best.pth
-
-python -m scripts/analyze_errors.py --config vgg19 --checkpoint outputs/checkpoints/vgg19_best.pth
-
+============================================================
+# Dataloader tự detect:
+#   *_vectors.pt  → Vector cache (MLP baseline, ~1MB, KHUYẾN NGHỊ)
+#   *_graphs.pt   → Graph cache  (GCN tương lai, ~24GB RAM)
+#
+# Kaggle: Upload vector cache (~1MB) làm dataset input
+#         Đổi graph_cache_path trong base.yaml
+# Local : Để ở outputs/vector_cache/ (đã là default)
+============================================================
