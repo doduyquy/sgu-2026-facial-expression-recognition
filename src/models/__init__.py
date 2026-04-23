@@ -9,8 +9,10 @@ from .dual_fusion import VGGResNetAttentionFusion
 from .region_attention import RegionAlignedFER
 from .resnet_region_attention import ResNetRegionAlignedFER
 from .swin_region_attention import SwinRegionAlignedFER
-from .GNN import MotifGNN
+from .GraphNN import MotifGNN
 # from .vit_ea_6x6 import VisionTransformerEA_6x6
+
+
 
 
 """Hi, guy, tạo model mới thì:
