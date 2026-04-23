@@ -4,10 +4,16 @@
 
 data:
   name: "fer13-split"
+  mode: "graph_vector"
   num_classes: 7    # angry, disgust, fear, happy, neutral, sad, surprise
   image_size: 48
   batch_size: 128
   num_workers: 2    # Kaggle: 2 | Windows local: 0
+  num_subgraphs: 16
+  subgraph_radius: 1
+  seed_stride: 4
+  max_candidates: 64
+  max_nodes_per_subgraph: null
 
 seed:
   random_seed: 42

@@ -64,10 +64,13 @@ class Trainer:
 
         for batch in tqdm(self.train_loader, desc="Train", leave=False):
             x = batch["x"].to(self.device)
+            mask = batch.get("mask")
+            if mask is not None:
+                mask = mask.to(self.device)
             y = batch["y"].to(self.device)
 
             self.optimizer.zero_grad()
-            logits = self.model(x)
+            logits = self.model(x, mask=mask) if mask is not None else self.model(x)
             loss = self.criterion(logits, y)
             loss.backward()
             self.optimizer.step()
@@ -95,9 +98,12 @@ class Trainer:
 
         for batch in tqdm(self.val_loader, desc="Val", leave=False):
             x = batch["x"].to(self.device)
+            mask = batch.get("mask")
+            if mask is not None:
+                mask = mask.to(self.device)
             y = batch["y"].to(self.device)
 
-            logits = self.model(x)
+            logits = self.model(x, mask=mask) if mask is not None else self.model(x)
             loss = self.criterion(logits, y)
 
             running_loss += loss.item() * x.size(0)

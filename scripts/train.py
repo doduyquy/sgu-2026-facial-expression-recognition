@@ -37,6 +37,39 @@ from src.evaluation.evaluator import evaluate_and_show
 
 # -----------------------------------------------------------------------
 
+def resolve_device() -> torch.device:
+    """
+    Chọn device an toàn cho môi trường Kaggle/local.
+
+    Với một số runtime Kaggle, `torch.cuda.is_available()` vẫn trả về True
+    dù GPU quá cũ so với binary PyTorch hiện tại (ví dụ Tesla P100 = sm_60,
+    nhưng wheel chỉ hỗ trợ sm_70+). Khi đó cần fallback CPU sớm để tránh
+    crash ở bước forward đầu tiên.
+    """
+    if not torch.cuda.is_available():
+        return torch.device("cpu")
+
+    try:
+        major, minor = torch.cuda.get_device_capability(0)
+        current_arch = f"sm_{major}{minor}"
+        supported_arches = set(torch.cuda.get_arch_list())
+
+        if supported_arches and current_arch not in supported_arches:
+            device_name = torch.cuda.get_device_name(0)
+            print(
+                "[WARN] CUDA runtime detected but GPU is incompatible with the current "
+                "PyTorch build.\n"
+                f"       GPU             : {device_name} ({current_arch})\n"
+                f"       Supported archs : {', '.join(sorted(supported_arches))}\n"
+                "       Fallback device : cpu"
+            )
+            return torch.device("cpu")
+    except Exception as exc:
+        print(f"[WARN] Cannot validate CUDA compatibility ({exc}). Fallback to CPU.")
+        return torch.device("cpu")
+
+    return torch.device("cuda")
+
 def main():
     print("\n\t\t--> GNN FER-2013 Training <--\n")
 
@@ -45,9 +78,9 @@ def main():
                         help="Ten file config (khong co .yaml), vd: mlp_baseline")
     parser.add_argument("--env", type=str, default="kaggle",
                         choices=["local", "kaggle"])
-    parser.add_argument("--dataloader_mode", type=str, default="graph_vector",
-                        choices=["graph_vector", "resolved"],
-                        help="graph_vector: MLP baseline | resolved: GNN (future)")
+    parser.add_argument("--dataloader_mode", type=str, default=None,
+                        help="Override dataloader mode tu config: "
+                             "graph_vector | subgraph_descriptor | resolved")
     parser.add_argument("--graph_repo_path", type=str, default=None,
                         help="Override graph_repo_path tu env.yaml. "
                              "Dung khi path tren Kaggle khac voi gia tri mac dinh trong config. "
@@ -55,12 +88,16 @@ def main():
     args = parser.parse_args()
 
     # ── Device ──
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = resolve_device()
     print(f"--- Device: {device}")
 
     # ── Config ──
     config = load_config(args.config, args.env)
-    config["dataloader_mode"] = args.dataloader_mode
+    config["dataloader_mode"] = (
+        args.dataloader_mode
+        if args.dataloader_mode is not None
+        else config.get("data", {}).get("mode", "graph_vector")
+    )
     set_seed(config["seed"].get("random_seed", 42))
 
     # ── Paths ──

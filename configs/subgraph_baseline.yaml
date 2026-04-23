@@ -1,0 +1,27 @@
+# Config cho baseline mới: bag-of-subgraph descriptors + MLP encoder
+
+data:
+  mode: "subgraph_descriptor"
+  num_subgraphs: 16
+  subgraph_radius: 1
+  seed_stride: 4
+  max_candidates: 64
+  max_nodes_per_subgraph: null
+
+model:
+  name: "subgraph_mlp_baseline"
+  hidden_dims: [64, 32]
+  dropout: 0.2
+
+training:
+  batch_size: 64
+  epochs: 20
+  patience: 8
+  lr: 0.001
+  weight_decay: 0.0001
+  optimizer: "adam"
+  scheduler: "reduce_lr_on_plateau"
+  loss: "cross_entropy"
+
+logging:
+  use_wandb: false

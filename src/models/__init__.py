@@ -1,4 +1,5 @@
 from src.models.mlp_baseline import MLPBaseline
+from src.models.subgraph_mlp_baseline import SubgraphMLPBaseline
 
 """
 Hi, tạo model mới thì:
@@ -15,6 +16,12 @@ Roadmap:
 
 MODEL_REGISTRY = {
     "mlp_baseline": lambda config, input_dim, **kw: MLPBaseline(
+        input_dim=input_dim,
+        num_classes=config["data"].get("num_classes", 7),
+        hidden_dims=tuple(config["model"].get("hidden_dims", [64, 32])),
+        dropout=config["model"].get("dropout", 0.2),
+    ),
+    "subgraph_mlp_baseline": lambda config, input_dim, **kw: SubgraphMLPBaseline(
         input_dim=input_dim,
         num_classes=config["data"].get("num_classes", 7),
         hidden_dims=tuple(config["model"].get("hidden_dims", [64, 32])),

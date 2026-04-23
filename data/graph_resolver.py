@@ -87,6 +87,9 @@ class GraphResolver:
             edge_feature_names=edge_feature_names,
             metadata={
                 **sample.metadata,
+                "height": sample.height,
+                "width": sample.width,
+                "usage": sample.usage,
                 "resolved": True,
             },
         )

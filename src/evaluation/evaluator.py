@@ -36,9 +36,12 @@ def evaluate_and_show(model, test_loader, device, save_dir: str) -> dict:
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="Evaluating test set"):
             x = batch["x"].to(device)
+            mask = batch.get("mask")
+            if mask is not None:
+                mask = mask.to(device)
             y = batch["y"].to(device)
 
-            logits = model(x)
+            logits = model(x, mask=mask) if mask is not None else model(x)
             preds = torch.argmax(logits, dim=1)
 
             all_trues.extend(y.cpu().numpy().tolist())

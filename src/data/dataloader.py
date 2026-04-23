@@ -3,11 +3,12 @@ src/data/dataloader.py — DataLoader factory dùng canonical graph repository.
 
 Đọc từ graph repository (chunks), không bao giờ đọc từ CSV hay *_graphs.pt kiểu cũ.
 
-Hỗ trợ 2 chế độ đầu vào cho downstream:
-    1. "graph_vector"  — flatten node_features → vector → MLP Baseline
-    2. "resolved"      — full ResolvedPixelGraph → GNN (future)
+Hỗ trợ 3 chế độ đầu vào cho downstream:
+    1. "graph_vector"         — flatten node_features → vector → MLP Baseline
+    2. "subgraph_descriptor"  — bag of subgraph descriptors → Subgraph MLP Baseline
+    3. "resolved"             — full ResolvedPixelGraph → GNN (future)
 
-Cả 2 chế độ đều đọc từ ChunkedGraphDataset trỏ vào graph_repo_path.
+Cả 3 chế độ đều đọc từ ChunkedGraphDataset / graph repository.
 """
 
 from __future__ import annotations
@@ -28,8 +29,8 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from data.chunked_graph_dataset import ChunkedGraphDataset
-from data.graph_repository import GraphRepositoryReader
 from data.graph_types import PixelGraphSample
+from src.data.subgraph_dataset import SubgraphDescriptorDataset
 
 
 # ===========================================================================
@@ -70,6 +71,10 @@ def build_dataloader(
         return _build_graph_vector_loaders(
             graph_repo_path, config, batch_size, num_workers
         )
+    elif mode == "subgraph_descriptor":
+        return _build_subgraph_descriptor_loaders(
+            graph_repo_path, config, batch_size, num_workers
+        )
     elif mode == "resolved":
         return _build_resolved_loaders(
             graph_repo_path, config, batch_size, num_workers
@@ -77,7 +82,7 @@ def build_dataloader(
     else:
         raise ValueError(
             f"dataloader_mode không hợp lệ: {mode!r}. "
-            f"Chọn 'graph_vector' hoặc 'resolved'."
+            f"Chọn 'graph_vector', 'subgraph_descriptor' hoặc 'resolved'."
         )
 
 
@@ -163,6 +168,59 @@ def _build_resolved_loaders(
         test_ds, batch_size=batch_size, shuffle=False,
         num_workers=num_workers, pin_memory=False,
         collate_fn=_identity_collate,
+    )
+    return train_loader, val_loader, test_loader, input_dim
+
+
+# ===========================================================================
+# Mode 2: Subgraph Descriptor Baseline
+# Resolved graph -> candidate subgraphs -> descriptors [K, D]
+# ===========================================================================
+
+def _build_subgraph_descriptor_loaders(
+    repo_path: str,
+    config: dict,
+    batch_size: int,
+    num_workers: int,
+) -> Tuple[DataLoader, DataLoader, DataLoader, int]:
+    """
+    Build loaders for the subgraph-first baseline.
+    """
+    data_cfg = config.get("data", {})
+    dataset_kwargs = {
+        "num_subgraphs": data_cfg.get("num_subgraphs", 16),
+        "subgraph_radius": data_cfg.get("subgraph_radius", 1),
+        "seed_stride": data_cfg.get("seed_stride", 4),
+        "max_candidates": data_cfg.get("max_candidates", 64),
+        "max_nodes_per_subgraph": data_cfg.get("max_nodes_per_subgraph"),
+    }
+
+    train_ds = SubgraphDescriptorDataset(repo_path=repo_path, split="train", **dataset_kwargs)
+    val_ds = SubgraphDescriptorDataset(repo_path=repo_path, split="val", **dataset_kwargs)
+    test_ds = SubgraphDescriptorDataset(repo_path=repo_path, split="test", **dataset_kwargs)
+
+    input_dim = train_ds.input_dim
+
+    print(f"--- Train: {len(train_ds)} | Val: {len(val_ds)} | Test: {len(test_ds)}")
+    print(f"--- Input dim (subgraph descriptor): {input_dim}")
+    print(
+        f"--- Subgraph config: K={dataset_kwargs['num_subgraphs']} | "
+        f"radius={dataset_kwargs['subgraph_radius']} | "
+        f"stride={dataset_kwargs['seed_stride']} | "
+        f"max_candidates={dataset_kwargs['max_candidates']}"
+    )
+
+    train_loader = DataLoader(
+        train_ds, batch_size=batch_size, shuffle=True,
+        num_workers=num_workers, pin_memory=True,
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers, pin_memory=True,
+    )
+    test_loader = DataLoader(
+        test_ds, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers, pin_memory=True,
     )
     return train_loader, val_loader, test_loader, input_dim
 
