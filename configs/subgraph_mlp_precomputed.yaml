@@ -1,0 +1,32 @@
+# Config cho MLP baseline trên precomputed subgraph dataset
+# Nhanh hơn subgraph_baseline.yaml vì không sinh subgraph online
+# Chạy: python -m scripts.train --config subgraph_mlp_precomputed --env local
+
+data:
+  mode: "precomputed_subgraph_graph"
+  num_classes: 7
+  batch_size: 128
+  num_workers: 2
+
+subgraph:
+  num_subgraphs: 32
+  descriptor_dim: null    # tự detect từ file .pt
+  knn_k: 4
+
+model:
+  name: "subgraph_mlp_baseline"
+  hidden_dims: [128, 64]
+  dropout: 0.2
+
+training:
+  batch_size: 128
+  epochs: 50
+  patience: 12
+  lr: 0.001
+  weight_decay: 0.0001
+  optimizer: "adam"
+  scheduler: "reduce_lr_on_plateau"
+  loss: "cross_entropy"
+
+logging:
+  use_wandb: true

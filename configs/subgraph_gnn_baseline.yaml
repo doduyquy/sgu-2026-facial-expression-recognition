@@ -1,0 +1,36 @@
+# Config cho GNN baseline trên subgraph-level graph
+# Dùng cùng dataset precomputed với subgraph_mlp_precomputed
+# Chạy: python -m scripts.train --config subgraph_gnn_baseline --env local
+
+data:
+  mode: "precomputed_subgraph_graph"
+  num_classes: 7
+  batch_size: 64
+  num_workers: 2
+  # Đường dẫn dataset precomputed — ghi đè trong env.yaml nếu cần
+  # subgraph_dataset_path sẽ được resolve tự động từ env.yaml
+  # (local: artifacts/subgraph_graph_dataset | kaggle: /kaggle/input/...)
+
+subgraph:
+  num_subgraphs: 32
+  descriptor_dim: null    # tự detect từ file .pt
+  knn_k: 4
+
+model:
+  name: "subgraph_gnn_baseline"
+  hidden_dims: [128, 64]
+  dropout: 0.2
+  gnn_layers: 2
+
+training:
+  batch_size: 64
+  epochs: 50
+  patience: 12
+  lr: 0.001
+  weight_decay: 0.0001
+  optimizer: "adam"
+  scheduler: "reduce_lr_on_plateau"
+  loss: "cross_entropy"
+
+logging:
+  use_wandb: true

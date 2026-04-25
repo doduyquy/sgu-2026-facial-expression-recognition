@@ -31,6 +31,7 @@ if str(ROOT_DIR) not in sys.path:
 from data.chunked_graph_dataset import ChunkedGraphDataset
 from data.graph_types import PixelGraphSample
 from src.data.subgraph_dataset import SubgraphDescriptorDataset
+from src.data.precomputed_subgraph_graph_dataset import PrecomputedSubgraphGraphDataset
 
 
 # ===========================================================================
@@ -79,10 +80,21 @@ def build_dataloader(
         return _build_resolved_loaders(
             graph_repo_path, config, batch_size, num_workers
         )
+    elif mode == "precomputed_subgraph_graph":
+        # dataset_path được resolve từ subgraph_dataset_path trong config
+        subgraph_dataset_path = config.get(
+            "subgraph_dataset_path",
+            "artifacts/subgraph_graph_dataset",
+        )
+        model_name = config.get("model", {}).get("name", "subgraph_mlp_baseline")
+        use_gnn = "gnn" in model_name
+        return _build_precomputed_loaders(
+            subgraph_dataset_path, config, batch_size, num_workers, use_gnn=use_gnn
+        )
     else:
         raise ValueError(
             f"dataloader_mode không hợp lệ: {mode!r}. "
-            f"Chọn 'graph_vector', 'subgraph_descriptor' hoặc 'resolved'."
+            f"Chọn 'graph_vector', 'subgraph_descriptor', 'resolved' hoặc 'precomputed_subgraph_graph'."
         )
 
 
@@ -278,6 +290,110 @@ class GraphVectorDatasetFromRepo(Dataset):
             node_feature_dim = sample.num_node_features
             self._input_dim = self._vectorizer.infer_output_dim(node_feature_dim)
         return self._input_dim
+
+
+# ===========================================================================
+# Mode 4: Precomputed Subgraph Graph (MLP + GNN shared dataset)
+# ===========================================================================
+
+def _build_precomputed_loaders(
+    dataset_path: str,
+    config: dict,
+    batch_size: int,
+    num_workers: int,
+    use_gnn: bool = False,
+) -> Tuple[DataLoader, DataLoader, DataLoader, int]:
+    """
+    Build DataLoaders từ precomputed subgraph-level graph dataset.
+
+    Dùng cùng dataset cho cả SubgraphMLPBaseline và SubgraphGNNBaseline.
+    Khi use_gnn=True, dùng collate_fn_gnn để batch edge_index đúng cách.
+    """
+    from pathlib import Path as _Path
+
+    dp = _Path(dataset_path)
+
+    def _pt(split: str) -> str:
+        return str(dp / f"{split}_subgraph_graph.pt")
+
+    train_ds = PrecomputedSubgraphGraphDataset(_pt("train"))
+    val_ds   = PrecomputedSubgraphGraphDataset(_pt("val"))
+    test_ds  = PrecomputedSubgraphGraphDataset(_pt("test"))
+
+    input_dim = train_ds.input_dim
+
+    print(f"--- Subgraph dataset : {dataset_path}")
+    print(f"--- Train: {len(train_ds)} | Val: {len(val_ds)} | Test: {len(test_ds)}")
+    print(f"--- Input dim (descriptor): {input_dim}  |  K={train_ds.num_subgraphs}")
+    print(f"--- Collate mode: {'GNN (pad edge_index)' if use_gnn else 'MLP (default)'}")
+
+    collate = _collate_fn_gnn if use_gnn else None
+
+    train_loader = DataLoader(
+        train_ds, batch_size=batch_size, shuffle=True,
+        num_workers=num_workers, pin_memory=True,
+        collate_fn=collate,
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers, pin_memory=True,
+        collate_fn=collate,
+    )
+    test_loader = DataLoader(
+        test_ds, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers, pin_memory=True,
+        collate_fn=collate,
+    )
+    return train_loader, val_loader, test_loader, input_dim
+
+
+def _collate_fn_gnn(batch):
+    """
+    Custom collate_fn cho GNN mode.
+
+    Vì mỗi sample có edge_index kích thước khác nhau [2, E_i],
+    cần pad thành tensor đồng nhất [B, 2, E_max] và tạo edge_valid mask [B, E_max].
+
+    Output dict keys:
+        x          : [B, K, D]
+        mask       : [B, K]
+        edge_index : [B, 2, E_max]  — padded với 0
+        edge_attr  : [B, E_max, 1]  — padded với 0
+        edge_valid : [B, E_max]     — 1=valid, 0=pad
+        centers    : [B, K, 2]
+        y          : [B]
+    """
+    xs      = torch.stack([s["x"]       for s in batch])   # [B, K, D]
+    masks   = torch.stack([s["mask"]    for s in batch])   # [B, K]
+    centers = torch.stack([s["centers"] for s in batch])   # [B, K, 2]
+    ys      = torch.stack([s["y"]       for s in batch])   # [B]
+
+    edge_indices = [s["edge_index"] for s in batch]   # list of [2, E_i]
+    edge_attrs   = [s["edge_attr"]  for s in batch]   # list of [E_i, 1]
+
+    E_max = max(ei.shape[1] for ei in edge_indices) if edge_indices else 0
+
+    B = len(batch)
+    edge_index_pad = torch.zeros(B, 2, max(E_max, 1), dtype=torch.long)
+    edge_attr_pad  = torch.zeros(B, max(E_max, 1), 1,  dtype=torch.float32)
+    edge_valid     = torch.zeros(B, max(E_max, 1),      dtype=torch.float32)
+
+    for i, (ei, ea) in enumerate(zip(edge_indices, edge_attrs)):
+        e = ei.shape[1]
+        if e > 0:
+            edge_index_pad[i, :, :e] = ei
+            edge_attr_pad[i, :e, :]  = ea
+            edge_valid[i, :e]        = 1.0
+
+    return {
+        "x"          : xs,
+        "mask"       : masks,
+        "edge_index" : edge_index_pad,
+        "edge_attr"  : edge_attr_pad,
+        "edge_valid" : edge_valid,
+        "centers"    : centers,
+        "y"          : ys,
+    }
 
 
 # ===========================================================================

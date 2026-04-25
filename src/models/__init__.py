@@ -1,5 +1,6 @@
 from src.models.mlp_baseline import MLPBaseline
 from src.models.subgraph_mlp_baseline import SubgraphMLPBaseline
+from src.models.subgraph_gnn_baseline import SubgraphGNNBaseline
 
 """
 Hi, tạo model mới thì:
@@ -8,10 +9,11 @@ Hi, tạo model mới thì:
     3. Tạo file configs/model_name.yaml để set config cho nó.
 
 Roadmap:
-    - mlp_baseline:  graph vector + MLP (hiện tại)
-    - gcn:           GCN trên full pixel graph
-    - graphsage:     GraphSAGE trên full pixel graph
-    - subgraph_mlp:  subgraph descriptor + MLP
+    - mlp_baseline:            graph vector + MLP (hiện tại)
+    - subgraph_mlp_baseline:   subgraph descriptor + MLP (precomputed)
+    - subgraph_gnn_baseline:   subgraph descriptor + GraphSAGE GNN (precomputed)
+    - gcn:                     GCN trên full pixel graph (future)
+    - graphsage:               GraphSAGE trên full pixel graph (future)
 """
 
 MODEL_REGISTRY = {
@@ -26,6 +28,13 @@ MODEL_REGISTRY = {
         num_classes=config["data"].get("num_classes", 7),
         hidden_dims=tuple(config["model"].get("hidden_dims", [64, 32])),
         dropout=config["model"].get("dropout", 0.2),
+    ),
+    "subgraph_gnn_baseline": lambda config, input_dim, **kw: SubgraphGNNBaseline(
+        input_dim=input_dim,
+        num_classes=config["data"].get("num_classes", 7),
+        hidden_dims=tuple(config["model"].get("hidden_dims", [128, 64])),
+        dropout=config["model"].get("dropout", 0.2),
+        gnn_layers=config["model"].get("gnn_layers", 2),
     ),
 }
 

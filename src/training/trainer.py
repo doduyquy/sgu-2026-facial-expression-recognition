@@ -77,13 +77,10 @@ class Trainer:
 
         for batch in tqdm(self.train_loader, desc="Train", leave=False):
             x = batch["x"].to(self.device)
-            mask = batch.get("mask")
-            if mask is not None:
-                mask = mask.to(self.device)
             y = batch["y"].to(self.device)
 
             self.optimizer.zero_grad()
-            logits = self.model(x, mask=mask) if mask is not None else self.model(x)
+            logits = self._forward_batch(batch, x)
             loss = self.criterion(logits, y)
             loss.backward()
             self.optimizer.step()
@@ -111,12 +108,9 @@ class Trainer:
 
         for batch in tqdm(self.val_loader, desc="Val", leave=False):
             x = batch["x"].to(self.device)
-            mask = batch.get("mask")
-            if mask is not None:
-                mask = mask.to(self.device)
             y = batch["y"].to(self.device)
 
-            logits = self.model(x, mask=mask) if mask is not None else self.model(x)
+            logits = self._forward_batch(batch, x)
             loss = self.criterion(logits, y)
 
             running_loss += loss.item() * x.size(0)
@@ -133,6 +127,33 @@ class Trainer:
             "macro_f1": metrics["macro_f1"],
             "weighted_f1": metrics["weighted_f1"],
         }
+
+    # ------------------------------------------------------------------
+    #  Dispatch helper
+    # ------------------------------------------------------------------
+
+    def _forward_batch(self, batch: dict, x: torch.Tensor) -> torch.Tensor:
+        """
+        Dispatch forward theo loại batch:
+          - GNN batch : có 'edge_index' và 'edge_valid' → model(x, edge_index, edge_valid, mask)
+          - MLP batch : có 'mask'                       → model(x, mask=mask)
+          - Plain      : chỉ có 'x'                      → model(x)
+        """
+        if "edge_index" in batch and "edge_valid" in batch:
+            # GNN mode
+            edge_index = batch["edge_index"].to(self.device)   # [B, 2, E]
+            edge_valid = batch["edge_valid"].to(self.device)   # [B, E]
+            mask = batch.get("mask")
+            if mask is not None:
+                mask = mask.to(self.device)
+            return self.model(x, edge_index=edge_index, edge_valid=edge_valid, mask=mask)
+        elif "mask" in batch:
+            # MLP subgraph mode
+            mask = batch["mask"].to(self.device)
+            return self.model(x, mask=mask)
+        else:
+            # Plain MLP mode
+            return self.model(x)
 
     # ------------------------------------------------------------------
     #  fit

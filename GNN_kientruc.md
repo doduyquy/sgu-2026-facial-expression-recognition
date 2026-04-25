@@ -1,458 +1,644 @@
-Cây thư mục hiện tại
-project/
-│
-├── configs/
-│   └── graph_config.py
-│
-├── data/
-│   ├── fer_split_dataset.py
-│   ├── graph_cache_dataset.py
-│   └── graph_vector_dataset.py
-│
-├── features/
-│   └── graph_vectorizer.py
-│
-├── graph/
-│   ├── structures.py
-│   └── image_to_graph.py
-│
-├── models/
-│   └── mlp_baseline.py
-│
-├── training/
-│   └── trainer_mlp_baseline.py
-│
-├── utils/
-│   └── metrics.py
-│
-└── scripts/
-    ├── build_graph_cache.py
-    ├── check_graph_cache.py
-    └── train_graph_baseline.py
-Chức năng từng thư mục
-configs/
-
-Chứa các cấu hình cho bước graph hóa.
-
-data/
-
-Chứa các dataset class:
+# GNN / FER Project Architecture Notes
 
-đọc CSV gốc FER split
-đọc graph cache .pt
-chuyển graph thành vector để train baseline
-features/
+## 1. Mục tiêu của file này
 
-Chứa các module trích đặc trưng ở mức graph.
+File này dùng như một bản ghi chú nhanh để:
 
-graph/
+- nhận biết dự án đang chạy theo luồng nào
+- biết mỗi thư mục / file đang làm gì
+- phân biệt file đang dùng thật, file hỗ trợ, file cũ và file đang trống
 
-Chứa phần biểu diễn graph và code graph hóa ảnh.
+## 2. Bức tranh tổng thể của project
 
-models/
+Hiện tại project đi theo hướng biểu diễn ảnh FER-2013 thành **pixel graph** rồi huấn luyện các baseline đơn giản trước:
 
-Chứa mô hình baseline.
+1. CSV FER-2013
+2. parse thành `RawSample`
+3. build `SharedGraphStructure` dùng chung cho mọi ảnh
+4. build `PixelGraphSample` cho từng ảnh
+5. lưu theo dạng **graph repository chia chunk**
+6. đọc repository bằng `ChunkedGraphDataset`
+7. chuyển sang một trong 3 mode:
+   - `graph_vector`: graph-level vector -> `MLPBaseline`
+   - `subgraph_descriptor`: bag of subgraph descriptors -> `SubgraphMLPBaseline`
+   - `resolved`: full graph để dành cho GNN về sau
+8. train / validate / evaluate
 
-training/
+Nói ngắn gọn: **pipeline mới của project xoay quanh canonical graph repository**, không còn lấy CSV trực tiếp ở bước train chính.
 
-Chứa train loop và eval loop.
+## 3. Luồng chạy chính nên nhớ
 
-utils/
+### 3.1 Build dữ liệu graph
 
-Chứa metric hỗ trợ.
+File chính:
 
-scripts/
+- `scripts/build_graph_repository.py`
 
-Chứa các script chạy chính.
+Luồng:
 
-Giải thích từng file
-configs/graph_config.py
+- đọc `train.csv`, `val.csv`, `test.csv`
+- dùng `data/raw_fer_dataset.py` để parse dữ liệu thô
+- dùng `data/shared_graph_builder.py` tạo graph structure dùng chung
+- dùng `data/canonical_graph_builder.py` tạo graph sample cho từng ảnh
+- dùng `data/graph_repository.py` để lưu thành repo dạng chunk
 
-Chức năng
-Định nghĩa cấu hình graph hóa ảnh FER-2013.
+Kết quả:
 
-Hiện tại đang quản lý
+- `artifacts/graph_repo/shared/shared_graph.pt`
+- `artifacts/graph_repo/train/chunk_*.pt`
+- `artifacts/graph_repo/val/chunk_*.pt`
+- `artifacts/graph_repo/test/chunk_*.pt`
+- `artifacts/graph_repo/manifest.pt`
 
-image_size = 48
-connectivity = 8
-normalize_pixels = True
-node_features = ["intensity", "x_norm", "y_norm"]
-edge_features = ["dx", "dy", "dist", "delta_intensity", "intensity_similarity"]
+### 3.2 Train model
 
-Ý nghĩa
+File chính:
 
-Đây là nơi bạn chỉnh cấu hình baseline.
-Sau này muốn mở rộng lên gx, gy, grad_mag, contrast thì sửa ở đây hoặc trong script build.
-graph/structures.py
+- `scripts/train.py`
 
-Chức năng
-Định nghĩa dataclass PixelGraph.
+Luồng:
 
-Nó lưu
+- load config từ `src/utils/config.py`
+- lấy `graph_repo_path` theo `configs/env.yaml`
+- build dataloader từ `src/data/dataloader.py`
+- tạo model từ `src/models/__init__.py`
+- tạo loss / optimizer / scheduler
+- train bằng `src/training/trainer.py`
+- load best checkpoint
+- evaluate bằng `src/evaluation/evaluator.py`
 
-graph_id
-label
-split
-usage
-height, width
-node_features
-edge_index
-edge_attr
-image (optional)
-metadata
+### 3.3 Evaluate / inspect
 
-Ý nghĩa
+File đang dùng tốt:
 
-Đây là object chuẩn đại diện cho 1 ảnh đã graph hóa.
-Toàn bộ pipeline sau này sẽ dựa trên object này.
-data/fer_split_dataset.py
+- `src/evaluation/evaluator.py`: evaluate test set, in classification report, lưu confusion matrix
+- `scripts/inspect_graph_repository.py`: kiểm tra graph repo, shape, feature names, sample resolve
+- `scripts/build_shared_graph.py`: build riêng shared graph nếu cần debug topology
 
-Chức năng
-Đọc từng file:
+## 4. Phân loại nhanh các nhóm file
 
-train.csv
-val.csv
-test.csv
+### 4.1 Nhóm đang là core pipeline mới
 
-Nhiệm vụ
+- `data/*.py` trong các file `raw_*`, `graph_*`, `chunked_graph_dataset.py`, `canonical_graph_builder.py`, `shared_graph_builder.py`
+- `src/data/dataloader.py`
+- `src/features/graph_vectorizer.py`
+- `src/models/mlp_baseline.py`
+- `src/models/subgraph_mlp_baseline.py`
+- `src/training/*`
+- `src/evaluation/*`
+- `configs/base.yaml`, `configs/mlp_baseline.yaml`, `configs/subgraph_baseline.yaml`, `configs/env.yaml`
+- `scripts/build_graph_repository.py`
+- `scripts/train.py`
+- `scripts/inspect_graph_repository.py`
 
-đọc emotion
-parse pixels
-reshape ảnh về 48x48
-trả sample gồm:
-id
-image
-label
-usage
-split
+### 4.2 Nhóm legacy / tương thích ngược
 
-Ý nghĩa
+Đây là các file thuộc pipeline cũ kiểu `PixelGraph` đầy đủ hoặc cache `.pt` cũ:
 
-Đây là cầu nối từ dữ liệu CSV gốc sang numpy image.
-graph/image_to_graph.py
+- `src/graph/*`
+- `src/data/fer_split_dataset.py`
+- `src/data/graph_cache_dataset.py`
+- `src/data/graph_vector_dataset.py`
+- `src/data/vector_cache_dataset.py`
+- `scripts/build_graph_cache.py`
+- `scripts/build_vector_cache.py`
+- `scripts/check_graph_cache.py`
 
-Chức năng
-Chuyển một ảnh 48x48 thành PixelGraph.
+Các file này vẫn có ích để tham khảo hoặc debug, nhưng **không phải trục chính của pipeline hiện tại**.
 
-Nhiệm vụ chính
+### 4.3 Nhóm tài liệu / note / notebook
 
-normalize ảnh về 0..1
-build node_features
-build edge_index
-build edge_attr
-trả về PixelGraph
+- `README.md`: mô tả tổng quan, nhưng một phần cấu trúc trong đó đã cũ so với code hiện tại
+- `Doanchat.md`: ghi chú trao đổi / phân tích
+- `BanThietKeHeThong/*.md`: tài liệu thiết kế hệ thống, hướng phát triển, motif, baseline
+- `notebooks/*.ipynb`: EDA, demo training, phân tích các backbone CNN
+- `Kaggle_GNN_MLP_Baseline_sgu-2026-gnn-fer.ipynb`: notebook chạy trên Kaggle
 
-Hiện tại baseline node features
+### 4.4 Nhóm đang trống hoặc chưa hoàn thiện
 
-intensity
-x_norm
-y_norm
+- `GNN_kientruc.md`: trước khi bổ sung thì trống
+- `scripts/evaluate.py`: đang trống
+- `scripts/prepare_data.py`: đang trống
+- `scripts/analyze_errors.py`: gần như trống
+- `tests/test_dataset.py`: trống
+- `tests/test_models.py`: trống
+- `tests/test_trainer.py`: trống
+- `tests/test_whatyouwant.py`: trống
 
-Hiện tại baseline edge features
+## 5. Chức năng từng thư mục
 
-dx
-dy
-dist
-delta_intensity
-intensity_similarity
+## `configs/`
 
-Điểm quan trọng
+### `configs/base.yaml`
 
-Code đã viết theo kiểu mở rộng được.
-Sau này thêm gx, gy, grad_mag, contrast không cần viết lại toàn bộ.
-scripts/build_graph_cache.py
+Config gốc của toàn bộ project:
 
-Chức năng
-Script build graph cache cho toàn bộ dataset.
+- dữ liệu
+- feature graph
+- model mặc định
+- training mặc định
+- logging
+- path local / kaggle cơ bản
 
-Input
+### `configs/mlp_baseline.yaml`
 
-train.csv
-val.csv
-test.csv
+Ghi đè config cho baseline:
 
-Output
+- `model.name = mlp_baseline`
+- tăng hidden dims
+- training cho MLP baseline
 
-train_graphs.pt
-val_graphs.pt
-test_graphs.pt
+### `configs/subgraph_baseline.yaml`
 
-Ý nghĩa
+Config cho baseline bag-of-subgraphs:
 
-Đây là bước chạy đầu tiên sau khi có CSV.
-Nó biến dữ liệu ảnh gốc thành dữ liệu graph cache để tái sử dụng.
-scripts/check_graph_cache.py
+- `data.mode = subgraph_descriptor`
+- cấu hình số subgraph, radius, stride
+- `model.name = subgraph_mlp_baseline`
 
-Chức năng
-Kiểm tra nhanh 1 file graph cache.
+### `configs/env.yaml`
 
-Nó làm gì
+Tách cấu hình môi trường:
 
-load file .pt
-in thông tin graph
-in shape của:
-node_features
-edge_index
-edge_attr
-kiểm tra NaN
-in vài node đầu
-in vài edge đầu
+- `local`: `graph_repo_path`, `root_path`, `num_workers`
+- `kaggle`: path dataset và repo trên Kaggle
 
-Ý nghĩa
+### `configs/graph_config.py`
 
-Dùng để debug graph hóa đã đúng chưa trước khi train.
-data/graph_cache_dataset.py
+Dataclass config chuẩn cho pipeline graph mới:
 
-Chức năng
-Đọc file .pt graph cache.
+- kích thước ảnh
+- connectivity
+- node feature names
+- static / dynamic edge feature names
+- chunk size
+- version của graph config
 
-Output
+Đây là **source of truth** cho builder/repository mới.
 
-mỗi sample trả:
-{"graph": PixelGraph}
+## `data/`
 
-Ý nghĩa
+Thư mục này là lớp dữ liệu chuẩn của pipeline mới.
 
-Đây là dataset tầng trung gian để load graph đã build.
-features/graph_vectorizer.py
+### `data/raw_types.py`
 
-Chức năng
-Biến 1 PixelGraph thành 1 vector graph-level cố định.
+Định nghĩa `RawSample`:
 
-Baseline hiện tại
+- sample thô đọc từ CSV
+- chứa `image`, `label`, `split`, `usage`
 
-lấy mean(node_features)
-lấy std(node_features)
-lấy max(node_features)
-rồi nối lại
+### `data/raw_fer_dataset.py`
 
-Nếu node_features.shape = [2304, 3]
-thì output sẽ là:
+Dataset đọc file CSV FER-2013:
 
-3 + 3 + 3 = 9 chiều
+- parse cột `pixels`
+- convert thành ảnh `48x48`
+- trả về `RawSample`
+- có hàm thống kê phân bố lớp
 
-Ý nghĩa
+### `data/graph_types.py`
 
-Đây là baseline đơn giản nhất để test graph có tín hiệu không.
-data/graph_vector_dataset.py
+Định nghĩa 3 kiểu dữ liệu quan trọng:
 
-Chức năng
-Kết hợp:
+- `SharedGraphStructure`: topology dùng chung
+- `PixelGraphSample`: feature riêng từng ảnh
+- `ResolvedPixelGraph`: graph đầy đủ sau khi merge shared + sample
 
-GraphCacheDataset
-GraphVectorizer
+Đây là file rất quan trọng vì nó định nghĩa contract dữ liệu toàn pipeline.
 
-để tạo dataset cuối cho baseline MLP.
+### `data/shared_graph_builder.py`
 
-Output mỗi sample
+Build graph structure dùng chung cho mọi ảnh:
 
-x: graph vector
-y: label
+- build `edge_index`
+- build static edge attrs như `dx`, `dy`, `dist`
 
-Ý nghĩa
+### `data/canonical_graph_builder.py`
 
-Đây là dataset mà model baseline sẽ ăn trực tiếp.
-models/mlp_baseline.py
+Build graph sample cho từng ảnh:
 
-Chức năng
-Mô hình baseline MLP cho graph-level vector.
+- normalize pixel
+- build node features như `intensity`, `x_norm`, `y_norm`
+- build dynamic edge attrs như `delta_intensity`, `intensity_similarity`
 
-Kiến trúc hiện tại
+### `data/graph_repository.py`
 
-input: 9
-hidden: 64
-hidden: 32
-output: 7
+Đọc / ghi canonical graph repository:
 
-Ý nghĩa
+- `GraphRepositoryWriter`: ghi shared graph + chunk theo split
+- `GraphRepositoryReader`: đọc repo, load chunk, duyệt split, đọc manifest
 
-Đây là baseline sanity check.
-Nó chưa phải GNN.
-Mục đích là xác nhận graph cache và feature pipeline chạy ổn.
-utils/metrics.py
+### `data/graph_resolver.py`
 
-Chức năng
-Tính metric phân loại.
+Merge:
 
-Hiện tại có
+- `SharedGraphStructure`
+- `PixelGraphSample`
 
-accuracy
-macro F1
-weighted F1
-confusion matrix
+thành:
 
-Ý nghĩa
+- `ResolvedPixelGraph`
 
-Dùng cho train/val/test evaluation.
-training/trainer_mlp_baseline.py
+File này là điểm nối duy nhất để reconstruct full graph cho downstream.
 
-Chức năng
-Chứa:
+### `data/chunked_graph_dataset.py`
 
-train_one_epoch
-evaluate
+Dataset chính của pipeline mới:
 
-Nhiệm vụ
+- đọc graph repo theo chunk
+- cache chunk kiểu lazy
+- có thể trả về raw sample hoặc resolved graph
 
-forward
-loss
-backward
-optimizer step
-tính metric
+File này là nền của train / subgraph / future GNN.
 
-Ý nghĩa
+### `data/__init__.py`
 
-Đây là train loop tách riêng để code sạch hơn.
-scripts/train_graph_baseline.py
+File package marker, không có logic đáng kể.
 
-Chức năng
-Script train baseline MLP từ graph cache.
+## `src/data/`
 
-Pipeline
+Trong `src/data/` hiện có cả file mới lẫn file legacy.
 
-load train_graphs.pt, val_graphs.pt, test_graphs.pt
-vectorize graph thành graph-level vector
-train MLP
-chọn best theo val macro F1
-evaluate trên test
-lưu best checkpoint
-lưu test_metrics.txt
+### `src/data/dataloader.py`
 
-Ý nghĩa
+Factory build dataloader theo 3 mode:
 
-Đây là script train baseline hiện tại của project.
-Luồng chạy hiện tại của project
+- `graph_vector`
+- `subgraph_descriptor`
+- `resolved`
 
-Thứ tự đúng nên là:
+Ngoài ra còn có `GraphVectorDatasetFromRepo` để vectorize trực tiếp từ graph repository.
 
-Bước 1 — Chuẩn bị dữ liệu CSV
+Đây là file bridge giữa repository mới và training.
 
-Bạn cần có:
+### `src/data/subgraph_dataset.py`
 
-data/train.csv
-data/val.csv
-data/test.csv
+Biến mỗi `ResolvedPixelGraph` thành:
 
-Mỗi file có các cột tối thiểu:
+- túi `K` subgraph descriptors
+- `mask`
+- `label`
 
-emotion
-pixels
-Usage (nếu có)
-Bước 2 — Build graph cache
+Dùng cho baseline `SubgraphMLPBaseline`.
 
-Chạy:
+### `src/data/fer_split_dataset.py`
 
-python scripts/build_graph_cache.py \
-  --train_csv data/train.csv \
-  --val_csv data/val.csv \
-  --test_csv data/test.csv \
-  --save_dir artifacts/graph_cache
+Dataset CSV kiểu cũ, dùng cho pipeline cũ trước canonical repository.
 
-Kết quả
+### `src/data/graph_cache_dataset.py`
 
-artifacts/graph_cache/
-  train_graphs.pt
-  val_graphs.pt
-  test_graphs.pt
-Bước 3 — Kiểm tra graph cache
+Đọc file graph cache `.pt` kiểu cũ chứa list `PixelGraph`.
 
-Ví dụ kiểm tra train:
+### `src/data/graph_vector_dataset.py`
 
-python scripts/check_graph_cache.py \
-  --graph_path artifacts/graph_cache/train_graphs.pt \
-  --index 0
+Dataset cũ:
 
-Bạn nên kiểm tra
+- đọc `GraphCacheDataset`
+- vectorize graph thành tensor đầu vào cho MLP
 
-node_features.shape == (2304, 3)
-edge_index.shape[0] == 2
-edge_attr.shape[0] == edge_index.shape[1]
-không có NaN
-label đúng
-split đúng
-Bước 4 — Train baseline MLP
+### `src/data/vector_cache_dataset.py`
 
-Chạy:
+Dataset đọc vector cache `.pt` đã tính sẵn.
 
-python scripts/train_graph_baseline.py \
-  --train_graphs artifacts/graph_cache/train_graphs.pt \
-  --val_graphs artifacts/graph_cache/val_graphs.pt \
-  --test_graphs artifacts/graph_cache/test_graphs.pt \
-  --save_dir artifacts/baseline_mlp \
-  --epochs 30 \
-  --batch_size 128 \
-  --lr 1e-3
+### `src/data/emotions_dict.py`
 
-Kết quả
+Ánh xạ id lớp cảm xúc -> tên cảm xúc.
 
-artifacts/baseline_mlp/
-  best_model.pt
-  test_metrics.txt
-Trạng thái hiện tại của pipeline
+### `src/data/__init__.py`
 
-Hiện tại project của bạn đang có 2 phần hoàn chỉnh:
+File package marker.
 
-Phần 1 — Graph hóa ảnh FER-2013
+## `src/features/`
 
-Đã có:
+### `src/features/graph_vectorizer.py`
 
-đọc CSV split
-parse ảnh 48x48
-build PixelGraph
-lưu graph cache
-Phần 2 — Baseline classification rất nhẹ
+Chuyển node features của một graph thành graph-level vector cố định bằng:
 
-Đã có:
+- mean
+- std
+- max
 
-load graph cache
-vector hóa graph bằng mean/std/max
-train MLP phân loại 7 emotion
-Những gì chưa có ở thời điểm hiện tại
+Đây là feature extractor của `MLPBaseline`.
 
-Hiện tại chưa triển khai các phần sau:
+## `src/models/`
 
-candidate subgraph generation
-subgraph descriptor extraction
-motif bank building
-motif matching
-top-k subgraph selection
-bag-of-subgraphs classifier
-GCN / GraphSAGE full graph baseline
-prototype consistency loss
+### `src/models/__init__.py`
 
-Tức là project hiện đang dừng ở:
-Graph hóa + baseline MLP graph-level
+Model registry:
 
-Mục tiêu bước tiếp theo
+- map tên model -> class khởi tạo
+- hiện đang đăng ký:
+  - `mlp_baseline`
+  - `subgraph_mlp_baseline`
 
-Bước tiếp theo hợp lý nhất sau baseline hiện tại là một trong 2 hướng:
+### `src/models/mlp_baseline.py`
 
-Hướng 1
+Baseline đơn giản:
 
-Làm Baseline 2: GCN / GraphSAGE trên full graph
+- input là vector graph-level
+- backbone là MLP nhiều tầng
+- output logits 7 lớp
 
-Hướng 2
+### `src/models/subgraph_mlp_baseline.py`
 
-Bắt đầu đúng hướng nghiên cứu chính:
-Candidate Subgraph Generation
+Baseline cho túi subgraph descriptors:
 
-Với đề tài của bạn, mình khuyên nên đi:
-Candidate Subgraph Generation trước, vì đó mới là bước mở đầu thật sự cho motif pipeline.
+- encode từng descriptor bằng shared MLP
+- masked mean pooling theo số subgraph hợp lệ
+- classifier ra logits
 
-Tóm tắt cực ngắn
+## `src/training/`
 
-Hiện tại project có thể hiểu là:
+### `src/training/trainer.py`
 
-configs/graph_config.py: cấu hình graph hóa
-data/fer_split_dataset.py: đọc CSV FER split
-graph/structures.py: dataclass PixelGraph
-graph/image_to_graph.py: ảnh → graph
-scripts/build_graph_cache.py: build .pt graph cache
-scripts/check_graph_cache.py: kiểm tra graph cache
-data/graph_cache_dataset.py: load graph cache
-features/graph_vectorizer.py: graph → vector
-data/graph_vector_dataset.py: dataset cho baseline
-models/mlp_baseline.py: MLP classifier
-training/trainer_mlp_baseline.py: train/eval loop
-utils/metrics.py: metric
-scripts/train_graph_baseline.py: train baseline hoàn chỉnh
+Trainer chính:
+
+- `train_one_epoch`
+- `validate`
+- `fit`
+- early stopping theo `val_macro_f1`
+- save best checkpoint
+- log WandB nếu bật
+
+### `src/training/losses.py`
+
+Factory loss:
+
+- chủ yếu đang dùng `CrossEntropyLoss`
+- có helper `inception_loss`
+
+### `src/training/optimizer.py`
+
+Factory optimizer và scheduler:
+
+- Adam / SGD
+- `ReduceLROnPlateau`, `StepLR`, `CosineAnnealingLR`
+
+### `src/training/__init__.py`
+
+File package marker.
+
+## `src/evaluation/`
+
+### `src/evaluation/metrics.py`
+
+Tính:
+
+- accuracy
+- macro F1
+- weighted F1
+- confusion matrix
+- classification report
+
+và có hàm vẽ confusion matrix.
+
+### `src/evaluation/evaluator.py`
+
+Chạy evaluate trên test loader:
+
+- forward model
+- gom nhãn thật / dự đoán
+- in báo cáo
+- lưu confusion matrix
+
+### `src/evaluation/error_analysis.py`
+
+Hiện đang trống, vai trò dự kiến là phân tích lỗi / trực quan hóa mẫu đúng sai.
+
+### `src/evaluation/__init__.py`
+
+File package marker.
+
+## `src/utils/`
+
+### `src/utils/config.py`
+
+Load và merge config:
+
+- `base.yaml`
+- model yaml
+- `env.yaml`
+
+Lưu ý: file này vẫn còn hơi mang dấu vết pipeline cũ trong ví dụ minh họa, nhưng đang được `scripts/train.py` dùng thật.
+
+### `src/utils/checkpoint.py`
+
+Save / load checkpoint model + optimizer.
+
+### `src/utils/logger_wandb.py`
+
+Khởi tạo và log lên WandB:
+
+- run config
+- metrics
+- image
+- artifact model
+
+### `src/utils/seed.py`
+
+Set random seed cho Python / NumPy / Torch.
+
+### `src/utils/visualization.py`
+
+Các hàm vẽ:
+
+- loss curves
+- prediction grid
+
+Phù hợp cho notebook hoặc error analysis.
+
+### `src/utils/data_stats.py`
+
+Thống kê phân bố lớp từ CSV.
+
+## `src/graph/`
+
+Đây là cụm **pipeline graph cũ / legacy**, vẫn hữu ích để tham khảo.
+
+### `src/graph/graph_config.py`
+
+Dataclass config cũ cho `ImageGraphBuilder`.
+
+### `src/graph/structures.py`
+
+Định nghĩa `PixelGraph` kiểu cũ:
+
+- chứa full graph trong một object numpy
+
+### `src/graph/image_to_graph.py`
+
+Builder cũ:
+
+- nhận ảnh
+- build luôn full `PixelGraph`
+- không tách shared / dynamic như pipeline mới
+
+### `src/graph/subgraph_generator.py`
+
+Sinh candidate subgraph từ `ResolvedPixelGraph`:
+
+- chọn seed nodes
+- BFS theo radius
+- trích local subgraph
+
+File này đang được pipeline `subgraph_descriptor` dùng thật.
+
+### `src/graph/subgraph_descriptor.py`
+
+Biến subgraph thành vector descriptor cố định:
+
+- thống kê node features
+- thống kê edge features
+- số node, số edge, density
+
+Đây là phần quan trọng của baseline subgraph.
+
+### `src/graph/io.py`
+
+Hàm save / load graph kiểu cũ.
+
+### `src/graph/__init__.py`
+
+Package marker.
+
+## `scripts/`
+
+### File đang là đường chạy chính
+
+#### `scripts/build_graph_repository.py`
+
+Script quan trọng nhất để build repo graph mới từ CSV.
+
+#### `scripts/train.py`
+
+Entry point huấn luyện hiện tại.
+
+#### `scripts/inspect_graph_repository.py`
+
+Script kiểm tra repo graph sau khi build.
+
+#### `scripts/build_shared_graph.py`
+
+Build riêng shared graph, tiện khi debug cấu trúc graph.
+
+### File hỗ trợ / kiểm tra / legacy
+
+#### `scripts/build_graph_cache.py`
+
+Pipeline cũ:
+
+- build full `PixelGraph`
+- lưu `train_graphs.pt`, `val_graphs.pt`, `test_graphs.pt`
+
+#### `scripts/build_vector_cache.py`
+
+Pipeline cũ tối ưu RAM:
+
+- build graph vector trực tiếp
+- lưu vector cache `.pt`
+
+#### `scripts/check_graph_cache.py`
+
+Kiểm tra nhanh nội dung một graph cache `.pt` kiểu cũ.
+
+#### `scripts/check_pipeline.py`
+
+Script kiểm tra tổng hợp nhiều thành phần, nhưng hiện đang bám nhiều giả định cũ:
+
+- kiểm tra `graph_cache_path`
+- dùng `src.graph.*`
+- không hoàn toàn khớp với pipeline canonical repository mới
+
+Vì vậy file này nên xem là script kiểm thử tham khảo hơn là chuẩn chính thức.
+
+### File đang trống / chưa dùng
+
+#### `scripts/evaluate.py`
+
+Đang trống.
+
+#### `scripts/prepare_data.py`
+
+Đang trống.
+
+#### `scripts/analyze_errors.py`
+
+Hầu như chưa có nội dung thực tế.
+
+## `tests/`
+
+Hiện tại các file test:
+
+- `tests/test_dataset.py`
+- `tests/test_models.py`
+- `tests/test_trainer.py`
+- `tests/test_whatyouwant.py`
+
+đều đang trống hoặc chưa có nội dung kiểm thử hữu ích.
+
+Có nghĩa là project hiện **chưa có unit test hoàn chỉnh** cho pipeline mới.
+
+## `BanThietKeHeThong/`
+
+Thư mục tài liệu thiết kế:
+
+- `BanThietKeHeThong.md`: tổng quan thiết kế
+- `Graph_Node_Edge.md`: ghi chú về node/edge
+- `Motif.md`: ý tưởng motif
+- `HuongPhatTrienBaseline.md`: hướng baseline
+- `BanThietKeR1_R2.md`: kế hoạch theo phase
+- `TrainWithMotif.md`: hướng train với motif
+- `TrienKhaiKyThuat.md`, `TrienKhaiKyThuatVer2.md`: chi tiết kỹ thuật
+
+Đây là phần tài liệu phục vụ hiểu định hướng hơn là code chạy trực tiếp.
+
+## `notebooks/`
+
+Chủ yếu phục vụ:
+
+- EDA
+- demo training
+- phân tích backbone CNN
+- xem kết quả đánh giá
+
+Không phải nơi chứa pipeline chính để production/train chuẩn.
+
+## 6. File nào cần nhớ nhất
+
+Nếu chỉ cần nhớ các file quan trọng nhất để hiểu project, ưu tiên đọc theo thứ tự:
+
+1. `scripts/train.py`
+2. `src/data/dataloader.py`
+3. `data/chunked_graph_dataset.py`
+4. `data/graph_types.py`
+5. `data/graph_repository.py`
+6. `data/shared_graph_builder.py`
+7. `data/canonical_graph_builder.py`
+8. `data/graph_resolver.py`
+9. `src/features/graph_vectorizer.py`
+10. `src/models/__init__.py`
+11. `src/models/mlp_baseline.py`
+12. `src/models/subgraph_mlp_baseline.py`
+13. `src/training/trainer.py`
+14. `src/evaluation/evaluator.py`
+15. `configs/base.yaml`
+16. `configs/subgraph_baseline.yaml`
+17. `configs/mlp_baseline.yaml`
+
+## 7. Kết luận ngắn
+
+Hiện trạng codebase có thể hiểu như sau:
+
+- **trục chính hiện tại**: canonical graph repository + MLP baseline + subgraph baseline
+- **trục cũ còn tồn tại**: full `PixelGraph` cache và vector cache
+- **GNN full graph thực thụ**: chưa triển khai xong, mới dừng ở `resolved` mode để chuẩn bị cho bước sau
+- **test và một số script phụ**: còn thiếu hoặc chưa hoàn thiện
+
+Nếu sau này muốn tiếp tục cập nhật file này, nên giữ nguyên cách chia:
+
+- luồng chính
+- thư mục
+- từng file
+- file legacy / file trống
+
+để nhìn vào là biết ngay project đang ở đâu.
