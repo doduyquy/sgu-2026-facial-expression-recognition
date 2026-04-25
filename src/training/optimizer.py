@@ -3,14 +3,17 @@ import torch.optim.lr_scheduler as lr_scheduler
 
 def build_optimizer(model, config):
     train_cfg = config.get('training', {})
-    opt_name = train_cfg.get('optimizer', 'adam').lower()
-    lr = train_cfg.get('lr', 0.001)
-    weight_decay = train_cfg.get('weight_decay', 0.0001)
+    opt_cfg = config.get('optimizer', {}) or {}
+    opt_name = opt_cfg.get('name', train_cfg.get('optimizer', 'adam')).lower()
+    lr = opt_cfg.get('lr', train_cfg.get('lr', 0.001))
+    weight_decay = opt_cfg.get('weight_decay', train_cfg.get('weight_decay', 0.0001))
 
     params = model.parameters()
 
     if opt_name == 'adam':
         return optim.Adam(params, lr=lr, weight_decay=weight_decay)
+    elif opt_name == 'adamw':
+        return optim.AdamW(params, lr=lr, weight_decay=weight_decay)
     elif opt_name == 'sgd':
         gamma = train_cfg.get('gamma', 0.9) 
         return optim.SGD(params, lr=lr, weight_decay=weight_decay, momentum=gamma)
@@ -21,30 +24,43 @@ def build_optimizer(model, config):
 
 def build_scheduler(optimizer, config):
     """Learning rate scheduler for model plateau | step | cosine"""
-    scheduler_name = config['training'].get('scheduler', 'reduce_lr_on_plateau')
-    if scheduler_name == 'none':
+    train_cfg = config.get('training', {})
+    sched_cfg = config.get('scheduler', {}) or {}
+    scheduler_name = sched_cfg.get('name', train_cfg.get('scheduler', 'reduce_lr_on_plateau'))
+    scheduler_name_norm = str(scheduler_name).lower()
+    if scheduler_name_norm == 'none':
         return None
 
-    elif scheduler_name == 'reduce_lr_on_plateau':
+    elif scheduler_name_norm in {'reduce_lr_on_plateau', 'reducelronplateau'}:
         # reduce when val loss stopping reduce
-        factor = config['training'].get('lr_factor', 0.5) # split a half when reduce
-        patience = config['training'].get('lr_patience', 3) # after 3 epochs, loss not decrease -> split lr
-        print(f"--> [Scheduler] ReduceLROnPlateau (factor={factor}, patience={patience})")
+        factor = sched_cfg.get('factor', train_cfg.get('lr_factor', 0.5))
+        patience = sched_cfg.get('patience', train_cfg.get('lr_patience', 3))
+        mode = sched_cfg.get('mode', 'min')
+        min_lr = sched_cfg.get('min_lr', 0.0)
+        monitor = sched_cfg.get('monitor', train_cfg.get('monitor', 'val_loss'))
+        print(
+            f"--> [Scheduler] ReduceLROnPlateau "
+            f"(mode={mode}, monitor={monitor}, factor={factor}, patience={patience})"
+        )
         
-        return lr_scheduler.ReduceLROnPlateau(
+        scheduler = lr_scheduler.ReduceLROnPlateau(
             optimizer,
-            mode='min',
+            mode=mode,
             factor=factor,
             patience=patience,
+            min_lr=min_lr,
         )
-    elif scheduler_name == 'step':
+        scheduler.monitor_key = monitor
+        scheduler.monitor_mode = mode
+        return scheduler
+    elif scheduler_name_norm == 'step':
         # decay(decrease) every n epochs
         step_size = config['training'].get('lr_step_size', 10)  
         gamma = config['training'].get('lr_gamma', 0.1)         # Decrease 1/10
         print(f"--> [Scheduler] StepLR (step_size={step_size}, gamma={gamma})")
         return lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
 
-    elif scheduler_name == 'cosine':
+    elif scheduler_name_norm == 'cosine':
         # decay with cosine
         T_max = config['training'].get('epochs', 101) 
         print(f"--> [Scheduler] CosineAnnealingLR (T_max={T_max})")

@@ -12,7 +12,7 @@ from src.evaluation.metrics import compute_classification_metrics, plot_confusio
 from src.utils.visualization import plot_prediction_grid
 
 EMOTION_NAMES = [
-    "Angry", "Disgust", "Fear", "Happy", "Neutral", "Sad", "Surprise"
+    "Angry", "Disgust", "Fear", "Happy", "Sad", "Surprise", "Neutral"
 ]
 
 
@@ -23,19 +23,23 @@ def _forward_batch(model, batch: dict, device) -> torch.Tensor:
       - MLP batch : model(x, mask=mask)
       - Plain     : model(x)
     """
-    x = batch["x"].to(device)
+    batch = {
+        key: value.to(device) if torch.is_tensor(value) else value
+        for key, value in batch.items()
+    }
+    x = batch["x"]
+
+    if {"motif_score_vector", "match_scores", "matched_class"}.issubset(batch.keys()):
+        return model(batch)
 
     if "edge_index" in batch and "edge_valid" in batch:
-        edge_index = batch["edge_index"].to(device)
-        edge_valid = batch["edge_valid"].to(device)
+        edge_index = batch["edge_index"]
+        edge_valid = batch["edge_valid"]
         mask = batch.get("mask")
-        if mask is not None:
-            mask = mask.to(device)
         return model(x, edge_index=edge_index, edge_valid=edge_valid, mask=mask)
 
     mask = batch.get("mask")
     if mask is not None:
-        mask = mask.to(device)
         return model(x, mask=mask)
 
     return model(x)
@@ -158,7 +162,7 @@ def evaluate_and_show(model, test_loader, device, save_dir: str, config: dict | 
 
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="Evaluating test set"):
-            y = batch["y"].to(device)
+            y = batch.get("y", batch.get("label")).to(device)
             logits = _forward_batch(model, batch, device)
             preds = torch.argmax(logits, dim=1)
 

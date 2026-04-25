@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 import torch
 import numpy as np
+from collections import Counter
 from tqdm import tqdm
 from typing import Dict
 
@@ -53,7 +54,7 @@ class Trainer:
         self.model       = model.to(device)
         self.train_loader = train_loader
         self.val_loader   = val_loader
-        self.criterion    = criterion
+        self.criterion    = criterion.to(device) if hasattr(criterion, "to") else criterion
         self.optimizer    = optimizer
         self.scheduler    = scheduler
         self.device       = device
@@ -61,10 +62,18 @@ class Trainer:
         self.save_dir     = save_dir
 
         self.epochs     = config["training"].get("epochs", 30)
-        self.patience   = config["training"].get("patience", 10)
+        self.patience   = config["training"].get(
+            "early_stopping_patience",
+            config["training"].get("patience", 10),
+        )
         self.model_name = config["model"].get("name", "mlp_baseline")
         self.use_wandb  = config["logging"].get("use_wandb", False)
         self.config     = config
+        self.num_classes = config.get("model", {}).get(
+            "num_classes",
+            config.get("data", {}).get("num_classes", 7),
+        )
+        self.grad_clip_norm = config["training"].get("grad_clip_norm")
 
     # ------------------------------------------------------------------
     #  Core loops
@@ -73,83 +82,132 @@ class Trainer:
     def train_one_epoch(self) -> Dict:
         self.model.train()
         running_loss = 0.0
+        running_cls_loss = 0.0
+        running_motif_loss = 0.0
         y_true, y_pred = [], []
 
         for batch in tqdm(self.train_loader, desc="Train", leave=False):
-            x = batch["x"].to(self.device)
-            y = batch["y"].to(self.device)
+            batch = self._move_batch_to_device(batch)
+            x = batch["x"]
+            y = self._get_labels(batch)
 
             self.optimizer.zero_grad()
             logits = self._forward_batch(batch, x)
-            loss = self.criterion(logits, y)
+            loss_out = self._compute_loss(logits, y, batch)
+            loss = loss_out["loss"] if isinstance(loss_out, dict) else loss_out
             loss.backward()
+            if self.grad_clip_norm is not None and self.grad_clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), float(self.grad_clip_norm))
             self.optimizer.step()
 
             running_loss += loss.item() * x.size(0)
+            if isinstance(loss_out, dict):
+                running_cls_loss += float(loss_out.get("cls_loss", loss).detach().item()) * x.size(0)
+                running_motif_loss += float(loss_out.get("motif_loss", loss.new_tensor(0.0)).detach().item()) * x.size(0)
             preds = torch.argmax(logits, dim=1)
             y_true.extend(y.cpu().numpy().tolist())
             y_pred.extend(preds.detach().cpu().numpy().tolist())
 
         epoch_loss = running_loss / len(self.train_loader.dataset)
         metrics = compute_classification_metrics(y_true, y_pred)
+        pred_count = np.bincount(np.array(y_pred, dtype=np.int64), minlength=self.num_classes).tolist()
 
-        return {
+        out = {
             "loss": epoch_loss,
             "accuracy": metrics["accuracy"],
             "macro_f1": metrics["macro_f1"],
             "weighted_f1": metrics["weighted_f1"],
+            "pred_count": pred_count,
         }
+        if running_cls_loss > 0 or running_motif_loss > 0:
+            out["cls_loss"] = running_cls_loss / len(self.train_loader.dataset)
+            out["motif_loss"] = running_motif_loss / len(self.train_loader.dataset)
+        return out
 
     @torch.no_grad()
     def validate(self) -> Dict:
         self.model.eval()
         running_loss = 0.0
+        running_cls_loss = 0.0
+        running_motif_loss = 0.0
         y_true, y_pred = [], []
 
         for batch in tqdm(self.val_loader, desc="Val", leave=False):
-            x = batch["x"].to(self.device)
-            y = batch["y"].to(self.device)
+            batch = self._move_batch_to_device(batch)
+            x = batch["x"]
+            y = self._get_labels(batch)
 
             logits = self._forward_batch(batch, x)
-            loss = self.criterion(logits, y)
+            loss_out = self._compute_loss(logits, y, batch)
+            loss = loss_out["loss"] if isinstance(loss_out, dict) else loss_out
 
             running_loss += loss.item() * x.size(0)
+            if isinstance(loss_out, dict):
+                running_cls_loss += float(loss_out.get("cls_loss", loss).detach().item()) * x.size(0)
+                running_motif_loss += float(loss_out.get("motif_loss", loss.new_tensor(0.0)).detach().item()) * x.size(0)
             preds = torch.argmax(logits, dim=1)
             y_true.extend(y.cpu().numpy().tolist())
             y_pred.extend(preds.cpu().numpy().tolist())
 
         epoch_loss = running_loss / len(self.val_loader.dataset)
         metrics = compute_classification_metrics(y_true, y_pred)
+        pred_count = np.bincount(np.array(y_pred, dtype=np.int64), minlength=self.num_classes).tolist()
 
-        return {
+        out = {
             "loss": epoch_loss,
             "accuracy": metrics["accuracy"],
             "macro_f1": metrics["macro_f1"],
             "weighted_f1": metrics["weighted_f1"],
+            "pred_count": pred_count,
         }
+        if running_cls_loss > 0 or running_motif_loss > 0:
+            out["cls_loss"] = running_cls_loss / len(self.val_loader.dataset)
+            out["motif_loss"] = running_motif_loss / len(self.val_loader.dataset)
+        return out
 
     # ------------------------------------------------------------------
     #  Dispatch helper
     # ------------------------------------------------------------------
 
+    def _move_batch_to_device(self, batch):
+        if not isinstance(batch, dict):
+            return batch
+        return {
+            key: value.to(self.device) if torch.is_tensor(value) else value
+            for key, value in batch.items()
+        }
+
+    def _get_labels(self, batch: dict) -> torch.Tensor:
+        y = batch.get("y", batch.get("label"))
+        if y is None:
+            raise KeyError("Batch must contain 'y' or 'label'")
+        return y.to(self.device).long()
+
+    def _compute_loss(self, logits: torch.Tensor, y: torch.Tensor, batch: dict):
+        try:
+            return self.criterion(logits, y, batch=batch)
+        except TypeError:
+            return self.criterion(logits, y)
+
     def _forward_batch(self, batch: dict, x: torch.Tensor) -> torch.Tensor:
         """
         Dispatch forward theo loại batch:
+          - Motif batch: có motif_score_vector/match_scores → model(batch)
           - GNN batch : có 'edge_index' và 'edge_valid' → model(x, edge_index, edge_valid, mask)
           - MLP batch : có 'mask'                       → model(x, mask=mask)
           - Plain      : chỉ có 'x'                      → model(x)
         """
-        if "edge_index" in batch and "edge_valid" in batch:
+        if {"motif_score_vector", "match_scores", "matched_class"}.issubset(batch.keys()):
+            return self.model(batch)
+        elif "edge_index" in batch and "edge_valid" in batch:
             # GNN mode
-            edge_index = batch["edge_index"].to(self.device)   # [B, 2, E]
-            edge_valid = batch["edge_valid"].to(self.device)   # [B, E]
+            edge_index = batch["edge_index"]   # [B, 2, E]
+            edge_valid = batch["edge_valid"]   # [B, E]
             mask = batch.get("mask")
-            if mask is not None:
-                mask = mask.to(self.device)
             return self.model(x, edge_index=edge_index, edge_valid=edge_valid, mask=mask)
         elif "mask" in batch:
             # MLP subgraph mode
-            mask = batch["mask"].to(self.device)
+            mask = batch["mask"]
             return self.model(x, mask=mask)
         else:
             # Plain MLP mode
@@ -179,7 +237,12 @@ class Trainer:
         if str(ckpt_parent) not in ("", "."):
             os.makedirs(ckpt_parent, exist_ok=True)
 
-        best_val_macro_f1 = -1.0
+        monitor_key = self.config.get("training", {}).get(
+            "monitor",
+            self.config.get("scheduler", {}).get("monitor", "val_macro_f1"),
+        )
+        monitor_mode = self.config.get("scheduler", {}).get("mode", "max")
+        best_monitor = -float("inf") if monitor_mode == "max" else float("inf")
         patience_counter  = 0
         all_train = []
         all_val   = []
@@ -196,11 +259,19 @@ class Trainer:
                 f"loss: {train_m['loss']:.4f}  acc: {train_m['accuracy']:.4f}  macro_f1: {train_m['macro_f1']:.4f} | "
                 f"val_loss: {val_m['loss']:.4f}  val_acc: {val_m['accuracy']:.4f}  val_macro_f1: {val_m['macro_f1']:.4f}"
             )
+            if "cls_loss" in train_m or "motif_loss" in train_m:
+                print(
+                    f"          cls_loss: {train_m.get('cls_loss', 0.0):.4f}  "
+                    f"motif_loss: {train_m.get('motif_loss', 0.0):.4f} | "
+                    f"val_cls_loss: {val_m.get('cls_loss', 0.0):.4f}  "
+                    f"val_motif_loss: {val_m.get('motif_loss', 0.0):.4f}"
+                )
+            print(f"          val pred_count: {val_m.get('pred_count')}")
 
             # WandB log
             if self.use_wandb:
                 from src.utils.logger_wandb import log_metrics
-                log_metrics({
+                payload = {
                     "Epoch": ep + 1,
                     "Train/Loss": train_m["loss"],
                     "Train/Accuracy": train_m["accuracy"],
@@ -209,26 +280,41 @@ class Trainer:
                     "Val/Accuracy": val_m["accuracy"],
                     "Val/MacroF1": val_m["macro_f1"],
                     "Learning_Rate": self.optimizer.param_groups[0]["lr"],
-                }, epoch=ep)
+                }
+                if "cls_loss" in train_m:
+                    payload["Train/ClsLoss"] = train_m["cls_loss"]
+                    payload["Val/ClsLoss"] = val_m.get("cls_loss", 0.0)
+                if "motif_loss" in train_m:
+                    payload["Train/MotifLoss"] = train_m["motif_loss"]
+                    payload["Val/MotifLoss"] = val_m.get("motif_loss", 0.0)
+                for class_id, count in enumerate(val_m.get("pred_count", [])):
+                    payload[f"Val/PredCount/class_{class_id}"] = count
+                log_metrics(payload, epoch=ep)
 
             # LR scheduler
             if self.scheduler is not None:
                 if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                    self.scheduler.step(val_m["loss"])
+                    self.scheduler.step(self._monitor_value(val_m, getattr(self.scheduler, "monitor_key", monitor_key)))
                 else:
                     self.scheduler.step()
 
-            # Early stopping — best by val_macro_f1
-            if val_m["macro_f1"] > best_val_macro_f1:
-                best_val_macro_f1 = val_m["macro_f1"]
+            current_monitor = self._monitor_value(val_m, monitor_key)
+            improved = current_monitor > best_monitor if monitor_mode == "max" else current_monitor < best_monitor
+            if improved:
+                best_monitor = current_monitor
                 patience_counter  = 0
                 torch.save({
                     "model_state_dict":    self.model.state_dict(),
                     "optimizer_state_dict": self.optimizer.state_dict(),
                     "epoch":               ep,
-                    "best_val_macro_f1":   best_val_macro_f1,
+                    "best_monitor":        best_monitor,
+                    "monitor_key":         monitor_key,
+                    "best_val_macro_f1":   val_m["macro_f1"],
                 }, self.save_dir)
-                print(f"\t--- Saved best  ep={ep+1}  val_macro_f1={best_val_macro_f1:.4f}  -> {self.save_dir}")
+                print(
+                    f"\t--- Saved best  ep={ep+1}  {monitor_key}={best_monitor:.4f}  "
+                    f"val_macro_f1={val_m['macro_f1']:.4f}  -> {self.save_dir}"
+                )
             else:
                 patience_counter += 1
                 print(f"\t-!- No improvement: {patience_counter}/{self.patience}")
@@ -237,3 +323,21 @@ class Trainer:
                     break
 
         return all_train, all_val
+
+    def _monitor_value(self, val_m: Dict, monitor_key: str) -> float:
+        key = str(monitor_key)
+        aliases = {
+            "val_loss": "loss",
+            "loss": "loss",
+            "val_macro_f1": "macro_f1",
+            "macro_f1": "macro_f1",
+            "val_acc": "accuracy",
+            "val_accuracy": "accuracy",
+            "accuracy": "accuracy",
+            "val_weighted_f1": "weighted_f1",
+            "weighted_f1": "weighted_f1",
+        }
+        metric_key = aliases.get(key, key.replace("val_", ""))
+        if metric_key not in val_m:
+            raise KeyError(f"Monitor metric {monitor_key!r} not found in val metrics: {list(val_m.keys())}")
+        return float(val_m[metric_key])

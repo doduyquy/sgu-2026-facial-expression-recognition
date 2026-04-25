@@ -1,6 +1,8 @@
 from src.models.mlp_baseline import MLPBaseline
 from src.models.subgraph_mlp_baseline import SubgraphMLPBaseline
 from src.models.subgraph_gnn_baseline import SubgraphGNNBaseline
+from src.models.motif_guided_mlp import MotifGuidedMLP
+from src.models.motif_guided_gnn import MotifGuidedGNN
 
 """
 Hi, tạo model mới thì:
@@ -35,6 +37,27 @@ MODEL_REGISTRY = {
         hidden_dims=tuple(config["model"].get("hidden_dims", [128, 64])),
         dropout=config["model"].get("dropout", 0.2),
         gnn_layers=config["model"].get("gnn_layers", 2),
+    ),
+    "motif_guided_mlp": lambda config, input_dim, **kw: MotifGuidedMLP(
+        input_dim=input_dim,
+        hidden_dim=config["model"].get("hidden_dim", 128),
+        num_classes=config["model"].get("num_classes", config["data"].get("num_classes", 7)),
+        dropout=config["model"].get("dropout", 0.3),
+        use_motif_score_vector=config["model"].get("use_motif_score_vector", True),
+        use_match_score_weighting=config["model"].get("use_match_score_weighting", True),
+    ),
+    "motif_guided_gnn": lambda config, input_dim, **kw: MotifGuidedGNN(
+        input_dim=input_dim,
+        hidden_dim=config["model"].get("hidden_dim", 128),
+        gnn_hidden_dim=config["model"].get("gnn_hidden_dim", config["model"].get("hidden_dim", 128)),
+        num_layers=config["model"].get("num_layers", 2),
+        num_classes=config["model"].get("num_classes", config["data"].get("num_classes", 7)),
+        dropout=config["model"].get("dropout", 0.3),
+        use_edge_attr=config["model"].get("use_edge_attr", False),
+        edge_attr_dim=config["model"].get("edge_attr_dim", 3),
+        use_motif_score_vector=config["model"].get("use_motif_score_vector", True),
+        use_match_score_weighting=config["model"].get("use_match_score_weighting", True),
+        pooling=config["model"].get("pooling", "motif_attention"),
     ),
 }
 

@@ -32,6 +32,7 @@ from data.chunked_graph_dataset import ChunkedGraphDataset
 from data.graph_types import PixelGraphSample
 from src.data.subgraph_dataset import SubgraphDescriptorDataset
 from src.data.precomputed_subgraph_graph_dataset import PrecomputedSubgraphGraphDataset
+from src.data.motif_filtered_dataset import MotifFilteredDataset
 
 
 # ===========================================================================
@@ -94,10 +95,21 @@ def build_dataloader(
         return _build_precomputed_loaders(
             subgraph_dataset_path, config, batch_size, num_workers, use_gnn=use_gnn
         )
+    elif mode == "motif_filtered":
+        data_cfg = config.get("data", {})
+        motif_filtered_dataset_path = config.get(
+            "motif_filtered_dataset_path",
+            data_cfg.get("motif_filtered_dataset_path", "artifacts/motif_filtered_dataset_v1"),
+        )
+        print(f"--- Motif-filtered dataset: {motif_filtered_dataset_path}")
+        return _build_motif_filtered_loaders(
+            motif_filtered_dataset_path, config, batch_size, num_workers
+        )
     else:
         raise ValueError(
             f"dataloader_mode không hợp lệ: {mode!r}. "
-            f"Chọn 'graph_vector', 'subgraph_descriptor', 'resolved' hoặc 'precomputed_subgraph_graph'."
+            f"Chọn 'graph_vector', 'subgraph_descriptor', 'resolved', "
+            f"'precomputed_subgraph_graph' hoặc 'motif_filtered'."
         )
 
 
@@ -398,6 +410,104 @@ def _collate_fn_gnn(batch):
         "centers"    : centers,
         "y"          : ys,
         "graph_id"   : graph_ids,
+    }
+
+
+# ===========================================================================
+# Mode 5: Motif-filtered image-level dataset
+# ===========================================================================
+
+def _build_motif_filtered_loaders(
+    dataset_path: str,
+    config: dict,
+    batch_size: int,
+    num_workers: int,
+) -> Tuple[DataLoader, DataLoader, DataLoader, int]:
+    """Build DataLoaders from precomputed motif-filtered samples."""
+    data_cfg = config.get("data", {})
+    pin_memory = bool(data_cfg.get("pin_memory", True))
+
+    train_ds = MotifFilteredDataset(dataset_path, "train")
+    val_ds = MotifFilteredDataset(dataset_path, "val")
+    test_ds = MotifFilteredDataset(dataset_path, "test")
+    input_dim = train_ds.input_dim
+
+    print(f"--- Motif-filtered dataset : {dataset_path}")
+    print(f"--- Train: {len(train_ds)} | Val: {len(val_ds)} | Test: {len(test_ds)}")
+    print(f"--- Input dim (descriptor): {input_dim}  |  K={train_ds.num_subgraphs}")
+
+    train_loader = DataLoader(
+        train_ds, batch_size=batch_size, shuffle=True,
+        num_workers=num_workers, pin_memory=pin_memory,
+        collate_fn=collate_fn_motif_filtered,
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers, pin_memory=pin_memory,
+        collate_fn=collate_fn_motif_filtered,
+    )
+    test_loader = DataLoader(
+        test_ds, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers, pin_memory=pin_memory,
+        collate_fn=collate_fn_motif_filtered,
+    )
+    return train_loader, val_loader, test_loader, input_dim
+
+
+def collate_fn_motif_filtered(batch):
+    """
+    Collate motif-filtered samples.
+
+    Preferred path has fixed E = top_k * knn_k. If any split contains variable
+    E, this function pads edges and emits edge_valid.
+    """
+    xs = torch.stack([s["x"] for s in batch])
+    masks = torch.stack([s["mask"] for s in batch])
+    centers = torch.stack([s["centers"] for s in batch])
+    match_scores = torch.stack([s["match_scores"] for s in batch])
+    matched_class = torch.stack([s["matched_class"] for s in batch])
+    matched_motif_id = torch.stack([s["matched_motif_id"] for s in batch])
+    matched_disc_score = torch.stack([s["matched_disc_score"] for s in batch])
+    motif_score_vector = torch.stack([s["motif_score_vector"] for s in batch])
+    labels = torch.stack([s["label"] for s in batch])
+    graph_ids = torch.tensor([int(s["graph_id"]) for s in batch], dtype=torch.long)
+
+    edge_indices = [s["edge_index"] for s in batch]
+    edge_attrs = [s["edge_attr"] for s in batch]
+    e_sizes = [int(ei.shape[1]) for ei in edge_indices]
+    edge_attr_dim = int(edge_attrs[0].shape[1]) if edge_attrs and edge_attrs[0].ndim == 2 else 0
+
+    if len(set(e_sizes)) == 1:
+        edge_index = torch.stack(edge_indices)
+        edge_attr = torch.stack(edge_attrs)
+        edge_valid = torch.ones(len(batch), e_sizes[0], dtype=torch.bool)
+    else:
+        E_max = max(e_sizes) if e_sizes else 0
+        edge_index = torch.zeros(len(batch), 2, E_max, dtype=torch.long)
+        edge_attr = torch.zeros(len(batch), E_max, edge_attr_dim, dtype=torch.float32)
+        edge_valid = torch.zeros(len(batch), E_max, dtype=torch.bool)
+        for i, (ei, ea) in enumerate(zip(edge_indices, edge_attrs)):
+            e = int(ei.shape[1])
+            if e > 0:
+                edge_index[i, :, :e] = ei
+                edge_attr[i, :e, :] = ea
+                edge_valid[i, :e] = True
+
+    return {
+        "graph_id": graph_ids,
+        "x": xs,
+        "mask": masks,
+        "edge_index": edge_index,
+        "edge_attr": edge_attr,
+        "edge_valid": edge_valid,
+        "centers": centers,
+        "match_scores": match_scores,
+        "matched_class": matched_class,
+        "matched_motif_id": matched_motif_id,
+        "matched_disc_score": matched_disc_score,
+        "motif_score_vector": motif_score_vector,
+        "label": labels,
+        "y": labels,
     }
 
 

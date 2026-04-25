@@ -97,7 +97,8 @@ def main():
                         choices=["local", "kaggle"])
     parser.add_argument("--dataloader_mode", type=str, default=None,
                         help="Override dataloader mode tu config: "
-                             "graph_vector | subgraph_descriptor | resolved")
+                             "graph_vector | subgraph_descriptor | resolved | "
+                             "precomputed_subgraph_graph | motif_filtered")
     parser.add_argument("--graph_repo_path", type=str, default=None,
                         help="Override graph_repo_path tu env.yaml. "
                              "Dung khi path tren Kaggle khac voi gia tri mac dinh trong config. "
@@ -106,6 +107,13 @@ def main():
                         help="Override subgraph_dataset_path tu env.yaml. "
                              "Dung cho mode precomputed_subgraph_graph khi dataset tren Kaggle "
                              "nam o path khac gia tri mac dinh trong config.")
+    parser.add_argument("--motif_filtered_dataset_path", type=str, default=None,
+                        help="Override motif_filtered_dataset_path tu env.yaml. "
+                             "Dung cho mode motif_filtered tren local/Kaggle.")
+    parser.add_argument("--epochs", type=int, default=None,
+                        help="Override training.epochs de sanity-test nhanh.")
+    parser.add_argument("--no_wandb", action="store_true",
+                        help="Tat WandB cho local smoke test.")
     args = parser.parse_args()
 
     # ── Device ──
@@ -121,6 +129,12 @@ def main():
     )
     if args.subgraph_dataset_path is not None:
         config["subgraph_dataset_path"] = args.subgraph_dataset_path
+    if args.motif_filtered_dataset_path is not None:
+        config["motif_filtered_dataset_path"] = args.motif_filtered_dataset_path
+    if args.epochs is not None:
+        config.setdefault("training", {})["epochs"] = int(args.epochs)
+    if args.no_wandb:
+        config.setdefault("logging", {})["use_wandb"] = False
     set_seed(config["seed"].get("random_seed", 42))
 
     # ── Paths ──
@@ -138,6 +152,14 @@ def main():
     if subgraph_dataset_path is not None:
         source = "CLI override" if args.subgraph_dataset_path is not None else "from env.yaml"
         print(f"--- subgraph_dataset_path : {subgraph_dataset_path}  [{source}]", flush=True)
+
+    motif_filtered_dataset_path = config.get(
+        "motif_filtered_dataset_path",
+        config.get("data", {}).get("motif_filtered_dataset_path"),
+    )
+    if motif_filtered_dataset_path is not None:
+        source = "CLI override" if args.motif_filtered_dataset_path is not None else "from config/env"
+        print(f"--- motif_filtered_dataset_path : {motif_filtered_dataset_path}  [{source}]", flush=True)
 
     print(f"--- root_path       : {root_path}", flush=True)
     flush_stdio()

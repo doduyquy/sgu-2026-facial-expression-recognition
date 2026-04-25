@@ -34,7 +34,6 @@ def plot_confusion_matrix(y_true, y_pred, class_names=None, acc=None, save_path=
     """Plot confusion matrix với matplotlib."""
     from sklearn.metrics import confusion_matrix
     import matplotlib.pyplot as plt
-    import seaborn as sns
 
     cm = confusion_matrix(y_true, y_pred)
 
@@ -42,10 +41,24 @@ def plot_confusion_matrix(y_true, y_pred, class_names=None, acc=None, save_path=
         class_names = [str(i) for i in range(cm.shape[0])]
 
     fig, ax = plt.subplots(figsize=(9, 7))
-    sns.heatmap(
-        cm, annot=True, fmt="d", cmap="Blues",
-        xticklabels=class_names, yticklabels=class_names, ax=ax,
-    )
+    try:
+        import seaborn as sns
+        sns.heatmap(
+            cm, annot=True, fmt="d", cmap="Blues",
+            xticklabels=class_names, yticklabels=class_names, ax=ax,
+        )
+    except Exception:
+        im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        ax.set_xticks(np.arange(len(class_names)))
+        ax.set_yticks(np.arange(len(class_names)))
+        ax.set_xticklabels(class_names, rotation=45, ha="right")
+        ax.set_yticklabels(class_names)
+        threshold = cm.max() / 2.0 if cm.size else 0
+        for i in range(cm.shape[0]):
+            for j in range(cm.shape[1]):
+                color = "white" if cm[i, j] > threshold else "black"
+                ax.text(j, i, str(cm[i, j]), ha="center", va="center", color=color)
     title = "Confusion Matrix"
     if acc is not None:
         title += f"  (Acc: {acc * 100:.2f}%)"
