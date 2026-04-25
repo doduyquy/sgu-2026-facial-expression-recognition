@@ -40,7 +40,7 @@ scheduler:
   min_lr: 0.000001
 
 training:
-  epochs: 80
+  epochs: 100
   early_stopping_patience: 15
   monitor: val_macro_f1
   grad_clip_norm: 5.0
