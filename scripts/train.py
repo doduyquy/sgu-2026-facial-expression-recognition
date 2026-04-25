@@ -190,7 +190,7 @@ def main():
     print("=" * 55)
     load_checkpoints(model, optimizer, ckpt_path, device)
 
-    eval_dir = os.path.join(root_path, "outputs", "figures")
+    eval_dir = os.path.join(root_path, "outputs", "figures", config["model"]["name"], run_name)
     os.makedirs(eval_dir, exist_ok=True)
     evaluate_and_show(model, test_loader, device, eval_dir)
 

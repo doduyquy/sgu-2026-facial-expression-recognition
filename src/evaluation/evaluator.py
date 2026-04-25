@@ -14,6 +14,31 @@ EMOTION_NAMES = [
 ]
 
 
+def _forward_batch(model, batch: dict, device) -> torch.Tensor:
+    """
+    Dispatch forward giống Trainer:
+      - GNN batch : model(x, edge_index, edge_valid, mask)
+      - MLP batch : model(x, mask=mask)
+      - Plain     : model(x)
+    """
+    x = batch["x"].to(device)
+
+    if "edge_index" in batch and "edge_valid" in batch:
+        edge_index = batch["edge_index"].to(device)
+        edge_valid = batch["edge_valid"].to(device)
+        mask = batch.get("mask")
+        if mask is not None:
+            mask = mask.to(device)
+        return model(x, edge_index=edge_index, edge_valid=edge_valid, mask=mask)
+
+    mask = batch.get("mask")
+    if mask is not None:
+        mask = mask.to(device)
+        return model(x, mask=mask)
+
+    return model(x)
+
+
 def evaluate_and_show(model, test_loader, device, save_dir: str) -> dict:
     """
     Chạy evaluation trên test set, plot confusion matrix và in kết quả.
@@ -35,13 +60,8 @@ def evaluate_and_show(model, test_loader, device, save_dir: str) -> dict:
 
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="Evaluating test set"):
-            x = batch["x"].to(device)
-            mask = batch.get("mask")
-            if mask is not None:
-                mask = mask.to(device)
             y = batch["y"].to(device)
-
-            logits = model(x, mask=mask) if mask is not None else model(x)
+            logits = _forward_batch(model, batch, device)
             preds = torch.argmax(logits, dim=1)
 
             all_trues.extend(y.cpu().numpy().tolist())
