@@ -52,32 +52,54 @@ def extract_patch_nodes(feat_map: torch.Tensor, window_size: int, stride: int) -
     nodes = unfolded.transpose(1, 2).contiguous()
     return nodes  # [B, T, ws*ws*3]
 
+
+def precompute_spatial_A(
+    H_img: int,
+    W_img: int,
+    ws: int,
+    stride: int,
+    sigma: float = 2.0,
+    device='cpu'
+) -> torch.Tensor:
+    """
+    Tính trước adjacency không gian cố định giữa các patch.
+    Patch gần nhau trên lưới ảnh sẽ có trọng số kết nối lớn hơn.
+    """
+    H_grid = (H_img - ws) // stride + 1
+    W_grid = (W_img - ws) // stride + 1
+
+    y, x = torch.meshgrid(
+        torch.arange(H_grid, device=device),
+        torch.arange(W_grid, device=device),
+        indexing='ij'
+    )
+    coords = torch.stack([y.flatten(), x.flatten()], dim=1).float()  # [T, 2]
+
+    dist_sq = torch.cdist(coords, coords, p=2).pow(2)
+    A_spatial = torch.exp(-dist_sq / (2 * sigma**2))
+    A_spatial = A_spatial / (A_spatial.sum(dim=-1, keepdim=True) + 1e-8)
+    return A_spatial  # [T, T]
+
 #graph layer
 
 class GCNLayer(nn.Module):
     """
-    Graph Convolutional Layer đơn giản:
+    Graph Convolutional Layer:
         H' = A_hat * H * W
-    A_hat được tính bằng Cosine Similarity giữa các node (soft adjacency).
+    A_hat được truyền từ ngoài vào để hỗ trợ hybrid adjacency.
     """
     def __init__(self, in_dim: int, out_dim: int):
         super().__init__()
         self.linear = nn.Linear(in_dim, out_dim, bias=False)
         self.norm   = nn.LayerNorm(out_dim)
+        
 
-    def forward(self, nodes: torch.Tensor) -> torch.Tensor:
+    def forward(self, nodes: torch.Tensor, A: torch.Tensor) -> torch.Tensor:
         """
         nodes: [B, T, in_dim]
+        A:     [B, T, T]
         Returns: [B, T, out_dim]
         """
-        # --- Xây dựng adjacency mềm bằng cosine similarity ---
-        nodes_norm = F.normalize(nodes, p=2, dim=-1)           # [B, T, D] # Chuẩn hóa vector
-        A = torch.bmm(nodes_norm, nodes_norm.transpose(1, 2))  # [B, T, T] # Tính ma trận tương đồng
-        
-        # Thêm nhiệt độ tau để làm sắc nét sự tập trung (tránh hiện tượng mọi node bị trộn đều thành 1)
-        tau = 0.05
-        A = F.softmax(A / tau, dim=-1)                         # Row-stochastic # Softmax để tính trọng số
-
         # --- Kết tập thông tin từ hàng xóm + Linear ---
         agg = torch.bmm(A, nodes)                              # [B, T, in_dim] # Kết tập thông tin
         out = self.linear(agg)                                 # [B, T, out_dim] # Linear để tăng chiều dữ liệu
@@ -160,6 +182,20 @@ class MotifGNN(nn.Module):
         self.num_subgraphs = model_cfg.get('num_subgraphs', 6)  # 6 vùng mặt
         self.dropout_rate  = model_cfg.get('dropout', 0.3)
         self.pool_loss_weight = model_cfg.get('pool_loss_weight', 0.01)
+        self.alpha         = model_cfg.get('alpha', 0.5)
+        self.tau           = model_cfg.get('tau', 0.05)
+        self.spatial_sigma = model_cfg.get('spatial_sigma', 2.0)
+
+        self.register_buffer(
+            'A_spatial',
+            precompute_spatial_A(
+                self.image_size,
+                self.image_size,
+                self.window_size,
+                self.stride,
+                self.spatial_sigma
+            )
+        )
 
         # patch_dim = window_size * window_size * 3  (x, y, intensity)
         in_channels = 3  # luôn là 3 vì ta tạo feat_map [x, y, intensity]
@@ -199,7 +235,8 @@ class MotifGNN(nn.Module):
         )
 
         print(f"--> MotifGNN | window={self.window_size} stride={self.stride} "
-              f"hidden={self.hidden_dim} subgraphs={self.num_subgraphs}")
+              f"hidden={self.hidden_dim} subgraphs={self.num_subgraphs} "
+              f"alpha={self.alpha} tau={self.tau} sigma={self.spatial_sigma}")
 
     # ----------------------------------------------------------
     # Step 1: Pixel → Graph nodes
@@ -218,15 +255,43 @@ class MotifGNN(nn.Module):
     # ----------------------------------------------------------
     # Step 2: GCN encoding
     # ----------------------------------------------------------
-    def _encode_graph(self, nodes: torch.Tensor) -> torch.Tensor:
+    def _encode_graph(self, nodes: torch.Tensor, return_adjacency: bool = False):
         """
         nodes: [B, T, patch_dim]
         Returns: [B, T, hidden_dim]
         """
         h = self.input_proj(nodes)   # [B, T, hidden_dim]
-        h = self.gcn1(h)             # [B, T, hidden_dim]
-        h = self.gcn2(h)             # [B, T, hidden_dim]
+        A1, A1_cos = self._build_hybrid_A(h, return_cos=True)
+        h = self.gcn1(h, A1)         # [B, T, hidden_dim]
+
+        A2, A2_cos = self._build_hybrid_A(h, return_cos=True)
+        h = self.gcn2(h, A2)         # [B, T, hidden_dim]
+
+        if return_adjacency:
+            return h, {
+                "A1_hybrid": A1,
+                "A1_cos": A1_cos,
+                "A2_hybrid": A2,
+                "A2_cos": A2_cos,
+            }
         return h
+
+    def _build_hybrid_A(self, nodes: torch.Tensor, return_cos: bool = False):
+        """
+        A_hybrid = alpha * A_spatial + (1 - alpha) * A_cos
+        A_spatial: cố định theo vị trí patch.
+        A_cos: học động theo feature hiện tại của node.
+        """
+        nodes_norm = F.normalize(nodes, p=2, dim=-1)
+        A_cos = torch.bmm(nodes_norm, nodes_norm.transpose(1, 2))
+        A_cos = F.softmax(A_cos / self.tau, dim=-1)
+
+        A_spatial = self.A_spatial.unsqueeze(0).expand(nodes.size(0), -1, -1)
+        A = self.alpha * A_spatial + (1 - self.alpha) * A_cos
+        A = A / (A.sum(dim=-1, keepdim=True) + 1e-8)
+        if return_cos:
+            return A, A_cos
+        return A
 
     # ----------------------------------------------------------
     # Step 3: SubGraph pooling
