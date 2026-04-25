@@ -56,27 +56,29 @@ def build_dataloader(
     -------
     train_loader, val_loader, test_loader, input_dim
     """
-    # Validate repo exists
-    _validate_repo(graph_repo_path)
-
     mode       = config.get("dataloader_mode", "graph_vector")
     batch_size = config.get("training", {}).get("batch_size",
                  config.get("data", {}).get("batch_size", 128))
     num_workers = config.get("num_workers",
                   config.get("data", {}).get("num_workers", 0))
 
-    print(f"--- Graph repo     : {graph_repo_path}")
     print(f"--- Dataloader mode: [{mode}]")
 
     if mode == "graph_vector":
+        _validate_repo(graph_repo_path)
+        print(f"--- Graph repo     : {graph_repo_path}")
         return _build_graph_vector_loaders(
             graph_repo_path, config, batch_size, num_workers
         )
     elif mode == "subgraph_descriptor":
+        _validate_repo(graph_repo_path)
+        print(f"--- Graph repo     : {graph_repo_path}")
         return _build_subgraph_descriptor_loaders(
             graph_repo_path, config, batch_size, num_workers
         )
     elif mode == "resolved":
+        _validate_repo(graph_repo_path)
+        print(f"--- Graph repo     : {graph_repo_path}")
         return _build_resolved_loaders(
             graph_repo_path, config, batch_size, num_workers
         )
@@ -86,6 +88,7 @@ def build_dataloader(
             "subgraph_dataset_path",
             "artifacts/subgraph_graph_dataset",
         )
+        print(f"--- Precomputed dataset: {subgraph_dataset_path}")
         model_name = config.get("model", {}).get("name", "subgraph_mlp_baseline")
         use_gnn = "gnn" in model_name
         return _build_precomputed_loaders(

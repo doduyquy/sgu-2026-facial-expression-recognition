@@ -102,6 +102,10 @@ def main():
                         help="Override graph_repo_path tu env.yaml. "
                              "Dung khi path tren Kaggle khac voi gia tri mac dinh trong config. "
                              "Vi du: /kaggle/input/datasets/username/fer-graph-repo/artifacts/graph_repo")
+    parser.add_argument("--subgraph_dataset_path", type=str, default=None,
+                        help="Override subgraph_dataset_path tu env.yaml. "
+                             "Dung cho mode precomputed_subgraph_graph khi dataset tren Kaggle "
+                             "nam o path khac gia tri mac dinh trong config.")
     args = parser.parse_args()
 
     # ── Device ──
@@ -115,6 +119,8 @@ def main():
         if args.dataloader_mode is not None
         else config.get("data", {}).get("mode", "graph_vector")
     )
+    if args.subgraph_dataset_path is not None:
+        config["subgraph_dataset_path"] = args.subgraph_dataset_path
     set_seed(config["seed"].get("random_seed", 42))
 
     # ── Paths ──
@@ -127,6 +133,11 @@ def main():
         print(f"--- graph_repo_path : {graph_repo_path}  [CLI override]", flush=True)
     else:
         print(f"--- graph_repo_path : {graph_repo_path}  [from env.yaml]", flush=True)
+
+    subgraph_dataset_path = config.get("subgraph_dataset_path")
+    if subgraph_dataset_path is not None:
+        source = "CLI override" if args.subgraph_dataset_path is not None else "from env.yaml"
+        print(f"--- subgraph_dataset_path : {subgraph_dataset_path}  [{source}]", flush=True)
 
     print(f"--- root_path       : {root_path}", flush=True)
     flush_stdio()
