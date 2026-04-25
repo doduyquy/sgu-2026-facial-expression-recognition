@@ -7,6 +7,8 @@ dataset
 # Outputs
 *.pth
 *.pt
+artifacts/
+outputs/
 
 # WandB
 wandb/

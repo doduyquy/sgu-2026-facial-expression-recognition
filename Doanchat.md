@@ -1,729 +1,255 @@
-đánh giá đi, tôi thấy train rất lâu
-Đúng, train đang quá lâu và bất thường.
+Bạn nói đúng. Sau khi lục lại các file thiết kế, điểm ban đầu không phải “bỏ pixel để giảm chi phí”, mà là:
 
-Theo log, train có 449 batch/epoch, nhưng sau 5 giờ 26 phút mới chạy tới batch 163/449, tức mới khoảng 36% của epoch 1. Ước tính 1 epoch mất khoảng 15 giờ, gần như không thể train nhiều epoch được.
+Vì ảnh FER-2013 chỉ 48×48, grayscale, rất ít thông tin, nên phải giữ pixel-level graph làm nền, rồi dùng motif để nâng ngữ nghĩa và giảm đồ thị có kiểm soát, chứ không được bỏ mất tín hiệu pixel quá sớm.
 
-Nguyên nhân lớn nhất: hiện tại mỗi ảnh đang dùng graph dạng:
+Trong file thiết kế, động cơ đã ghi rất rõ: FER-2013 là ảnh nhỏ 48×48, grayscale, dữ liệu nhiễu, dễ mất chi tiết cục bộ nếu gom thô; nếu mỗi pixel là một node thì graph có 2304 node, lớn và thô, nên node/edge thiết kế kém sẽ làm graph “lớn nhưng nghèo thông tin”, còn motif cổ điển dễ ra pattern sáng-tối thay vì pattern biểu cảm.
 
-2304 nodes
-17860 edges
-node_features: [2304, 3]
-edge_attr_dynamic: [17860, 2]
+Chốt lại: không nên hiểu là “bỏ full graph”
 
-Tức là mỗi ảnh FER 48×48 được graph hóa thành 2304 node, rồi còn sinh / đọc subgraph candidate trong quá trình train. Với batch train 449 steps, nếu mỗi batch mất ~2 phút thì chắc chắn bottleneck nằm ở data loading / subgraph generation / đọc chunk .pt lớn, không phải MLP đơn thuần.
+Hướng đúng ban đầu là:
 
-Đánh giá nhanh:
+Không bỏ full pixel graph.
+Không train trực tiếp full pixel graph.
+Mà dùng full pixel graph làm không gian gốc để sinh và kiểm chứng motif.
 
-Không nên tiếp tục train bản này.
-Bản này đang đúng về mặt ý tưởng nghiên cứu, nhưng chưa đúng về mặt pipeline thực nghiệm.
+Tức là full graph 2304 node vẫn phải tồn tại ở vai trò:
 
-Hướng xử lý nên làm ngay:
+1. nguồn thông tin gốc
+2. nơi sinh candidate subgraphs
+3. nơi truy vết motif/exemplar về pixel
+4. nền để giải thích motif nằm ở đâu trên ảnh
 
-Cache candidate subgraphs trước, không sinh trong __getitem__ hoặc trong training loop.
+Còn việc train không dùng toàn bộ 2304 node chỉ là để tránh chi phí và nhiễu, không phải vì pixel không quan trọng.
 
-Dataset train nên đọc thẳng dạng:
+Tài liệu cũng chốt mục tiêu không phải đưa trực tiếp full graph vào GNN, mà là: biến ảnh thành pixel interaction graph, tìm motif đặc trưng từng emotion, dùng motif chọn subgraphs giàu thông tin cảm xúc, rồi học biểu diễn ảnh từ tập subgraphs đó.
 
-image_id -> [K, D] descriptor
-label
+Vấn đề bạn lo là hợp lý: top-k hiện tại đang hơi “cắt mạnh”
 
-thay vì mỗi lần resolve graph 2304 node + 17860 edge.
+Pipeline hiện tại của bạn:
 
-Tạm giảm mạnh:
-
-num_candidates / K: 16 hoặc 32
-subgraph_size: nhỏ
-batch_size: 32 hoặc 64
-num_workers: 2 hoặc 4
-
-Chạy sanity benchmark:
-
-time 100 batches dataloader only
-time 100 forward only
-
-để biết chậm do data hay model.
-
-Baseline MLP hiện tại nên train theo hướng:
-
-precomputed descriptor [K, D] -> MLP -> mean/max pooling -> classifier
-
-Không nên đụng lại full graph trong lúc train.
-
-Kết luận: ý tưởng subgraph-first đúng, nhưng bản hiện tại đang bị “online graph processing quá nặng”. Phải chuyển sang offline preprocessing + cached descriptor dataset rồi mới train được nghiêm túc.
-giờ phải làm sao
-Làm theo hướng này: dừng train hiện tại, đừng cố chờ hết epoch.
-
-Việc cần làm ngay
-
-Bước 1 — Xác định bottleneck
-Chạy test nhỏ:
-
-import time
-
-start = time.time()
-for i, batch in enumerate(train_loader):
-    if i == 50:
-        break
-print("Dataloader 50 batches:", time.time() - start)
-
-Nếu đoạn này đã lâu → lỗi nằm ở Dataset / subgraph generation / đọc graph chunk.
-
-Bước 2 — Không sinh subgraph khi train nữa
-
-Hiện tại pipeline đang kiểu:
-
-train -> load graph 2304 nodes -> resolve edge -> generate subgraph -> descriptor -> MLP
-
-Phải đổi thành:
-
-offline preprocessing -> lưu descriptor [K, D]
-train -> load descriptor [K, D] -> MLP
-
-Tức là tạo trước:
-
-train_subgraph_desc.pt
-val_subgraph_desc.pt
-test_subgraph_desc.pt
-
-Mỗi sample chỉ còn:
-
-{
-  "graph_id": id,
-  "x": Tensor[K, D],
-  "mask": Tensor[K],
-  "label": int
-}
-
-Bước 3 — Viết script preprocess riêng
-
-Tạo file:
-
-scripts/precompute_subgraph_descriptors.py
-
-Script này làm một lần:
-
-đọc graph repo
-generate candidate subgraphs
-convert thành descriptor [K, D]
-lưu ra .pt
-
-Sau đó train không được gọi lại subgraph_generator.py nữa.
-
-Bước 4 — Sửa Dataset
-
-Tạo dataset mới:
-
-src/data/precomputed_subgraph_dataset.py
-
-Dataset chỉ load file .pt, không resolve graph, không sinh subgraph.
-
-Bước 5 — Train baseline lại
-
-Config mới nên là:
-
-data:
-  mode: precomputed_subgraph
-  train_path: /kaggle/input/.../train_subgraph_desc.pt
-  val_path: /kaggle/input/.../val_subgraph_desc.pt
-  test_path: /kaggle/input/.../test_subgraph_desc.pt
-
-subgraph:
-  num_candidates: 32
-  descriptor_dim: ...
-
-Kết luận ngắn gọn:
-
-Không sửa model trước.
-Không tăng GPU trước.
-Không chuyển sang GNN trước.
-
-Phải sửa data pipeline:
-online graph/subgraph -> offline cached descriptor.
-
-Đây là việc quan trọng nhất hiện tại.
-không có cách nào đẩy nhanh quá trình train à, vậy là giờ phải chuẩn bị subgraph trước rồi mới đưa train à
-Có cách đẩy nhanh, nhưng cách đúng nhất vẫn là chuẩn bị subgraph/descriptor trước rồi mới train.
-
-Vì hiện tại mỗi batch có thể đang làm lại quá nhiều việc:
-
-load graph 2304 node
-+ load 17860 edge
-+ resolve graph
-+ sinh candidate subgraph
-+ tính descriptor
-+ đưa vào MLP
-
-Trong khi MLP chỉ là phần nhẹ. Phần nặng nằm trước model.
-
-Có thể đẩy nhanh tạm thời
-
-Bạn có thể thử:
-
-num_workers: 2 hoặc 4
-pin_memory: true
-persistent_workers: true
-prefetch_factor: 2
-
-Giảm:
-
-num_candidates: 16 hoặc 32
-subgraph_size: 8 hoặc 12
-batch_size: 16 hoặc 32
-
-Tắt bớt debug/log/visualize trong __getitem__.
-
-Nhưng các cách này chỉ giúp nhanh hơn một phần, không giải quyết gốc.
-
-Cách nên làm
-
-Đúng, nên chuyển thành:
-
-Bước 1: Precompute subgraph trước
-graph repo -> candidate subgraphs -> descriptor [K, D] -> lưu .pt
-
-Sau đó train:
-
-descriptor [K, D] -> MLP encoder -> pooling -> classifier
-
-Lúc này train mới giống CNN/MLP bình thường, không còn xử lý graph nặng trong từng batch.
-
-Kết luận
-
-Hiện tại không nên hiểu là “train MLP lâu”, mà là:
-
-train đang kiêm luôn preprocessing graph
-
-Vì vậy hướng đúng là:
-
-offline subgraph preprocessing trước
-online training sau
-
-Nên làm bản precomputed subgraph baseline trước. Sau khi nó train nhanh và có kết quả, mới tính tiếp GNN/motif/attention.
-vậy subgraph nên tạo trước thế nào
-
-Nên tạo trước theo dạng descriptor dataset, không lưu nguyên subgraph node/edge quá nặng.
-
-Pipeline nên là:
-
-PixelGraph [2304 nodes, 17860 edges]
-        ↓
-chọn candidate subgraphs
-        ↓
-mỗi subgraph → descriptor vector D chiều
-        ↓
-mỗi ảnh → Tensor [K, D]
-        ↓
-lưu .pt
-        ↓
-train MLP
-
-Hiện graph của bạn rất nặng: mỗi ảnh có 2304 node và 17860 edge, nên nếu train vẫn xử lý trực tiếp graph/subgraph thì rất chậm.
-
-1. Mỗi ảnh nên lưu gì?
-
-Ví dụ mỗi sample lưu:
-
-{
-    "graph_id": 0,
-    "label": 3,
-    "x": Tensor[K, D],
-    "mask": Tensor[K],
-}
-
-Trong đó:
-
-K = số subgraph candidate giữ lại, ví dụ 32
-D = số đặc trưng mô tả mỗi subgraph
-x = [K, D]
-mask = [K], dùng nếu ảnh nào thiếu candidate
-2. Descriptor của một subgraph nên gồm gì?
-
-Ban đầu nên dùng descriptor nhẹ, ví dụ:
-
-mean_intensity
-std_intensity
-min_intensity
-max_intensity
-mean_x
-mean_y
-bbox_width
-bbox_height
-edge_density
-mean_delta_intensity
-mean_similarity
-subgraph_size
-
-Tức là mỗi subgraph không lưu toàn bộ node/edge nữa, mà nén thành một vector nhỏ.
-
-Ví dụ:
-
-1 subgraph → vector D=12
-1 ảnh → 32 subgraph → [32, 12]
-
-So với graph gốc:
-
-[2304, 3] node + [17860, 5] edge
-
-thì nhẹ hơn rất nhiều.
-
-3. Chọn subgraph trước như thế nào?
-
-Ở baseline đầu tiên, chưa cần motif phức tạp. Nên chọn theo cơ chế đơn giản:
-
-Cách 1 — Patch/grid-based subgraph
-
-Chia ảnh 48×48 thành các vùng nhỏ:
-
-6×6 patch
-8×8 patch
-12×12 patch
-
-Mỗi patch là một subgraph.
-
-Ví dụ dùng patch 8×8:
-
-48×48 → 6×6 = 36 subgraphs
-
-Sau đó chọn top-K vùng có thông tin mạnh nhất.
-
-Cách 2 — Top-K theo độ biến thiên
-
-Tính score cho mỗi patch:
-
-score = std_intensity + mean_edge_delta
-
-Vùng nào có biên, tương phản, thay đổi mạnh thì giữ lại.
-
-Ví dụ mắt, miệng, lông mày thường có biến thiên lớn hơn vùng nền mặt phẳng.
-
-4. Bản nên làm ngay
-
-Theo tôi, bản ổn nhất hiện tại là:
-
-patch_size = 8
-stride = 8
-K = 32
-descriptor_dim ≈ 12–16
-
-Tạo file:
-
-train_subgraph_desc.pt
-val_subgraph_desc.pt
-test_subgraph_desc.pt
-
-Sau đó train chỉ đọc:
-
-x: [B, 32, D]
-label: [B]
-
-Model:
-
-shared MLP encoder
-→ masked mean pooling
-→ classifier
-5. Kết luận
-
-Đúng hướng nên là:
-
-Không train trực tiếp từ graph gốc nữa.
-Tạo subgraph descriptor trước.
-Train MLP trên [K, D].
-
-Bản đầu tiên chưa cần “motif thật sự”. Nó là candidate subgraph baseline trước. Sau khi train nhanh rồi, mới cải tiến sang:
-
-top-K thông minh hơn
-attention chọn subgraph
-motif mining
-GNN trên subgraph-level
-bây giờ dùng GNN triển khai luôn thì tốc độ có nhanh không
-Không. Dùng GNN ngay thường còn chậm hơn, nếu bạn vẫn đưa full graph vào train:
-
-mỗi ảnh = 2304 nodes + 17860 edges
-
-GNN phải message passing qua edge, nên nặng hơn MLP descriptor rất nhiều.
-
-Cụ thể:
-
-MLP descriptor:
-[B, K, D] ví dụ [64, 32, 12]  → rất nhẹ
-
-GNN full pixel graph:
-[B, 2304 nodes, 17860 edges]  → rất nặng
-
-Vì vậy nếu hỏi GNN có làm train nhanh hơn không? thì câu trả lời là:
-
-Không, nếu dùng full pixel graph.
-Có thể chấp nhận được, nếu dùng graph đã rút gọn.
-
-Hướng đúng là:
-
-Pixel graph 2304 node
-→ chọn/cụm thành subgraph/region/motif trước
-→ tạo graph mức subgraph
-→ GNN trên 32–64 node/subgraph
-
-Tức là GNN nên đặt ở tầng sau:
-
-subgraph descriptor [K, D]
-→ coi mỗi subgraph là 1 node
-→ nối quan hệ giữa các subgraph
+full pixel graph
+→ 64 candidate descriptors
+→ motif matching
+→ top-32 selected subgraphs
 → GNN
-→ classifier
 
-Ví dụ:
+Nó chạy được và có kết quả tốt hơn baseline, nhưng đúng là có rủi ro:
 
-1 ảnh = 32 subgraph nodes
-edge giữa các subgraph = khoảng cách / similarity / overlap
+Full 2304 node
+→ bị giảm còn 64 candidate
+→ bị nén thành descriptor 41 chiều
+→ bị chọn cứng top-32
 
-Lúc đó GNN mới hợp lý.
+Như vậy có thể mất các tín hiệu nhỏ nhưng quan trọng. Với ảnh 48×48, một vài pixel ở khóe miệng, mí mắt, lông mày có thể mang thông tin cảm xúc; nếu candidate/top-k bỏ qua thì mô hình không còn cơ hội học.
 
-Kết luận:
+Trong file kỹ thuật, candidate subgraph được gọi là bước bắt buộc trước motif để giảm bài toán từ full graph sang cấu trúc con, nhưng bản đầu chỉ nên dùng radius-bounded local subgraphs, seed theo stride, giới hạn radius/max_nodes/max_candidates để tránh bùng nổ. Điều này nghĩa là candidate là xấp xỉ có ràng buộc, không phải thay thế hoàn toàn cho full graph.
 
-Không nên dùng GNN trực tiếp trên 2304 pixel-node ngay.
-Nên precompute subgraph trước.
-Sau đó có 2 baseline:
-1. MLP trên [K, D]
-2. GNN trên graph subgraph-level
+Ý tưởng thầy của bạn nên được hiểu thế này
 
-Thứ tự nên làm:
+Tôi sẽ diễn giải lại cho đúng hơn:
 
-B1: Precompute subgraph descriptor
-B2: Train MLP baseline
-B3: Từ descriptor đó tạo subgraph-level graph
-B4: Train GNN baseline
+Ảnh 48×48 ít thông tin
+→ mỗi pixel là một node để không bỏ chi tiết sớm
+→ từ full pixel graph tìm các substructure/motif có tính cảm xúc
+→ gom motif theo từng emotion
+→ dùng các motif đó tạo tập subgraphs đại diện cho ảnh
+→ train ở mức ảnh
 
-GNN không thay thế bước chuẩn bị subgraph. Nó nên dùng sau khi đã giảm graph.
-tôi không đưa full graph vào train, ý tôi là bỏ qua mấy bước trước ,nhảy  đến triển nhảy subgraph, motif và đem đi GNN train luôn
-Được, có thể nhảy thẳng sang GNN, nhưng không nên “bỏ qua” bước tạo subgraph/motif. Chính xác hơn là:
+Vậy bản hiện tại mới đạt:
 
-Không train full pixel graph
-Nhưng vẫn phải có bước tạo graph rút gọn trước
+Descriptor-based motif-guided selection
 
-Tức pipeline nên là:
+Còn bản sát ý thầy hơn phải là:
 
-ảnh 48×48
-→ tạo subgraph/motif candidate
-→ mỗi subgraph thành 1 node
-→ nối edge giữa các subgraph
-→ GNN train
+Pixel-preserving motif discovery
 
-Hiện ảnh gốc của bạn có 2304 node và 17860 edge, nên nếu không rút gọn thì rất nặng.
+Khác nhau ở chỗ:
 
-Nên làm GNN kiểu nào?
+Bản hiện tại:
+motif chủ yếu sống trong không gian descriptor [41]
 
-Không phải:
+Bản sát ý thầy:
+motif phải truy ngược được về tập pixel nodes, edges, vùng ảnh, exemplar subgraphs
 
-pixel node → GNN
+Tài liệu motif cũng nói rất rõ: nếu vẫn giữ hướng pixel-level graph 2304 node, motif không thể là frequent subgraph thô; nó phải là class-discriminative prototype subgraph, tức là một subgraph cục bộ phổ biến trong emotion đó, khác với emotion khác, và được match mềm như prototype.
 
-Mà là:
+Vậy hiện tại nên đánh giá ra sao?
 
-subgraph node → GNN
+Tôi đánh giá lại công bằng hơn:
 
-Ví dụ mỗi ảnh tạo:
+Pipeline hiện tại: đúng hướng MVP.
+Nhưng chưa đủ pixel-preserving.
 
-K = 32 subgraph
-mỗi subgraph = 1 node
-node feature = descriptor của subgraph
-edge = quan hệ giữa các subgraph
+Điểm đúng:
 
-Khi đó input GNN là:
+giữ pixel graph ban đầu
+không train full graph trực tiếp
+có motif bank theo emotion
+có motif matching
+train image-level, không train subgraph-level
 
-x: [32, D]
-edge_index: [2, E]
-label: emotion
+Điểm chưa đủ:
 
-Nhẹ hơn rất nhiều so với:
+candidate generator có thể không phủ hết pixel evidence
+descriptor làm mất cấu trúc pixel nội bộ
+top-k hard selection có thể bỏ mất chi tiết yếu nhưng quan trọng
+motif bank chưa lưu đủ exemplar/node indices/edge structure để chứng minh motif thật sự là pixel subgraph
 
-x: [2304, 3]
-edge_index: [2, 17860]
-Vậy có cần MLP baseline không?
+Đặc biệt, file Graph_Node_Edge nhấn mạnh ở pixel graph, câu hỏi sống còn không phải “có graph được không”, mà là mỗi node đại diện cho điều gì ngoài một giá trị xám và edge đo loại quan hệ gì. Intensity đơn lẻ quá yếu, nên node cần intensity, position, gradient, gradient magnitude, local contrast để giữ raw appearance, geometry, local structure và robustness với lighting.
 
-Không bắt buộc. Nhưng nếu bỏ MLP baseline thì rủi ro là bạn không biết:
+Không nên chuyển quá sớm sang CNN feature
 
-GNN tốt vì graph relation thật sự tốt
-hay chỉ vì descriptor subgraph đã đủ mạnh
+Bạn cũng đúng khi lo “đi vào học đặc trưng” quá sớm có thể lệch mục tiêu.
 
-Nếu thời gian gấp, có thể đi thẳng:
+Trong file Node/Edge, CNN micro-feature được ghi là hướng nâng cao: nó giúp node có chút ngữ nghĩa learned feature, nhưng nếu nhúng CNN quá mạnh từ đầu thì triết lý graph mining sẽ bị loãng, motif có thể thành motif của learned feature chứ không còn rõ là motif pixel-structure.
 
-Subgraph-level GNN baseline
+Vì vậy, trước mắt không nên nhảy ngay sang CNN feature. Nên sửa motif pipeline để giữ pixel evidence tốt hơn.
 
-Nhưng tôi vẫn khuyên tối thiểu làm song song:
+Hướng chỉnh đúng hơn: không bỏ top-k, nhưng top-k phải mềm hơn và có coverage
 
-MLP baseline trên [K, D]
-GNN baseline trên cùng [K, D] + edge_index
+Top-k không sai. Tài liệu vẫn nói motif matching sẽ giữ top-k subgraphs có match tốt nhất. Nhưng top-k hiện tại cần nâng từ:
 
-Vì cùng dữ liệu, chỉ khác model, dễ chứng minh GNN có giá trị.
+hard top-k theo score
 
-Cách triển khai đúng lúc này
+thành:
 
-Làm dataset mới:
+motif set selection có coverage + diversity + pixel preservation
 
-{
-    "graph_id": int,
-    "x": Tensor[K, D],              # node feature của subgraph
-    "edge_index": Tensor[2, E],     # quan hệ giữa các subgraph
-    "edge_attr": Tensor[E, A],      # optional
-    "label": int
-}
+Cụ thể nên sửa theo 4 ý:
 
-Edge giữa subgraph có thể tạo đơn giản trước:
+1. Candidate phủ rộng hơn:
+   tăng hoặc đảm bảo mỗi vùng ảnh đều có candidate.
+   Không để chỉ các vùng score cao ban đầu được đi tiếp.
 
-1. spatial edge: subgraph gần nhau thì nối
-2. similarity edge: descriptor giống nhau thì nối
-3. compatibility edge: vùng khác nhau nhưng có quan hệ biểu cảm thì nối, để sau
+2. Motif lưu lại pixel evidence:
+   mỗi motif không chỉ có prototype vector,
+   mà lưu exemplar graph_id, node_indices, center, bbox, edge_index_subgraph.
 
-Bản đầu tiên nên dùng:
+3. Selection không chỉ top score:
+   chọn theo score + diversity + coverage.
+   Tránh 32 subgraphs đều nằm quanh miệng hoặc một vùng sáng.
 
-K = 32
-node feature = descriptor 12–16 chiều
-edge = k-nearest neighbor theo khoảng cách tâm subgraph
-GNN = GCN hoặc GraphSAGE
-Kết luận
+4. Dataset train giữ trace về full graph:
+   motif_filtered sample nên có selected_indices/node_indices/bbox,
+   để sau này visual và kiểm tra có bỏ mất mắt/miệng/lông mày không.
 
-Ý của bạn làm được:
-
-Bỏ full graph train
-Nhảy sang subgraph/motif-level GNN
-
-Nhưng không thể bỏ bước tạo subgraph. Chỉ là bước đó nên chạy offline trước, rồi GNN train trên graph rút gọn:
-
-ảnh → 32 subgraph nodes → GNN
-
-Đây là hướng hợp lý hơn MLP nếu mục tiêu nghiên cứu của bạn là Graph/Motif cho FER-2013.
-tôi muốn triển khai song song 2 này luôn xem sao
-MLP baseline trên [K, D]
-GNN baseline trên cùng [K, D] + edge_index
-Mình sẽ chốt thành một thiết kế triển khai song song, ưu tiên không phá pipeline hiện tại: cùng một bộ dữ liệu precomputed [K, D], tách ra hai model MLP và GNN để so sánh công bằng.
-
-Đã suy nghĩ trong giây lát
-
-Được. Hướng này rất hợp lý.
-
-Ta sẽ triển khai theo mô hình:
-
-Graph repo / ảnh FER
-        ↓
-Precompute subgraph-level dataset
-        ↓
-Mỗi ảnh có:
-    x: [K, D]
-    edge_index: [2, E]
-    edge_attr: optional
-    label
-        ↓
-Chạy song song:
-    1. MLP baseline: dùng x [K, D]
-    2. GNN baseline: dùng x [K, D] + edge_index
-
-Vì graph gốc hiện tại quá lớn: 2304 node, 17860 edge mỗi ảnh, train trực tiếp sẽ rất lâu.
-
-Cấu trúc cần triển khai
-1. Precompute dataset chung
-
-Tạo file:
-
-scripts/precompute_subgraph_graph_dataset.py
-
-Output:
-
-train_subgraph_graph.pt
-val_subgraph_graph.pt
-test_subgraph_graph.pt
-
-Mỗi sample:
-
-{
-    "graph_id": int,
-    "label": int,
-
-    # dùng cho cả MLP và GNN
-    "x": Tensor[K, D],
-    "mask": Tensor[K],
-
-    # dùng riêng cho GNN
-    "edge_index": Tensor[2, E],
-    "edge_attr": Tensor[E, A],
-}
-
-Ví dụ ban đầu:
-
-K: 32
-D: 12 hoặc 16
-edge_type: spatial_knn
-knn_k: 4
-2. MLP baseline
-
-Model:
-
-x [B, K, D]
-→ shared MLP
-→ masked mean pooling
-→ classifier
-
-File:
-
-src/models/subgraph_mlp_baseline.py
-
-Input:
-
-batch["x"]
-batch["mask"]
-
-Không dùng edge_index.
-
-3. GNN baseline
-
-Model:
-
-x [K, D]
-edge_index [2, E]
-→ GraphSAGE / GCN
-→ global mean pooling
-→ classifier
-
-File:
-
-src/models/subgraph_gnn_baseline.py
-
-Input:
-
-batch["x"]
-batch["edge_index"]
-batch["batch"]
-
-Nếu chưa dùng PyTorch Geometric, có thể triển khai GraphSAGE nhẹ bằng PyTorch thuần, nhưng nếu repo cho phép thì dùng PyG sẽ sạch hơn.
-
-Edge giữa các subgraph tạo thế nào?
-
-Bản đầu tiên nên dùng spatial KNN.
-
-Mỗi subgraph có tâm:
-
-center_x, center_y
-
-Nối mỗi subgraph với k subgraph gần nhất:
-
-edge i → j nếu j nằm trong top-k gần i nhất
-
-Edge attribute có thể gồm:
-
-distance
-similarity
-delta_mean_intensity
-
-Bản đơn giản:
-
-edge_attr = [distance]
-Thứ tự làm
-B1. Viết precompute subgraph dataset
-B2. Lưu x [K, D] + edge_index
-B3. Viết Dataset loader đọc .pt
-B4. Train MLP baseline
-B5. Train GNN baseline trên đúng dataset đó
-B6. So sánh acc/loss/time
-
-Điểm quan trọng: MLP và GNN dùng cùng một x [K, D], nên khi so sánh mới công bằng.
-
-Config nên có
-data:
-  mode: subgraph_precomputed
-  train_path: /kaggle/input/.../train_subgraph_graph.pt
-  val_path: /kaggle/input/.../val_subgraph_graph.pt
-  test_path: /kaggle/input/.../test_subgraph_graph.pt
-
-subgraph:
-  num_candidates: 32
-  descriptor_dim: 16
-  edge_builder: spatial_knn
-  knn_k: 4
-
-model:
-  name: subgraph_mlp_baseline
-  hidden_dim: 128
-  num_classes: 7
-
-GNN config:
-
-model:
-  name: subgraph_gnn_baseline
-  gnn_type: graphsage
-  hidden_dim: 128
-  num_layers: 2
-  num_classes: 7
-Kết luận
-
-Nên triển khai song song như này:
-
-Dataset chung:
-    subgraph-level graph
-
-Model 1:
-    MLP bỏ qua edge
-
-Model 2:
-    GNN dùng edge
-
-Đây là hướng tốt nhất hiện tại vì vừa giải quyết train chậm, vừa có cơ sở nghiên cứu để chứng minh:
-
-Subgraph descriptor có hiệu quả không?
-Quan hệ giữa subgraph qua GNN có giúp tốt hơn MLP không?
-
-Đã xem. File này đang mô tả đúng hiện trạng project, nhưng để triển khai song song MLP + GNN trên subgraph-level thì còn thiếu một tầng rất quan trọng.
-
-Hiện tại pipeline của bạn vẫn là:
-
-graph repo
-→ ChunkedGraphDataset
-→ subgraph_descriptor
-→ SubgraphMLPBaseline
-
-Tức là mới có MLP trên bag of subgraph descriptors, còn GNN subgraph-level chưa có. File cũng ghi rõ hiện project mới có mlp_baseline và subgraph_mlp_baseline, còn GNN full graph chỉ mới chuẩn bị qua resolved mode, chưa triển khai xong.
-
-Bạn cần thêm 4 phần:
-
-1. scripts/precompute_subgraph_graph_dataset.py
-2. src/data/precomputed_subgraph_graph_dataset.py
-3. src/models/subgraph_gnn_baseline.py
-4. configs/subgraph_gnn_baseline.yaml
-
-Cấu trúc mới nên là:
-
-graph repo
-→ precompute subgraph graph dataset
-→ lưu .pt:
-    x: [K, D]
-    mask: [K]
-    edge_index: [2, E]
-    edge_attr: [E, A]
-    label
-→ train MLP hoặc GNN
-
-MLP dùng:
-
-x, mask
-
-GNN dùng:
-
-x, edge_index, edge_attr
-
-Điểm cần sửa trong file kiến trúc: mục data.mode hiện có:
-
-graph_vector
-subgraph_descriptor
-resolved
-
-Nên thêm mode mới:
-
-precomputed_subgraph_graph
-
-Và giải thích:
-
-mode này đọc dataset đã tạo sẵn ở mức subgraph, dùng chung cho MLP và GNN.
-
-Kết luận: file hiện tại ổn để nắm project, nhưng chưa đủ cho bước tiếp theo. Bạn không nên sửa trực tiếp subgraph_descriptor hiện tại để train GNN, mà nên thêm nhánh mới:
-
-SubgraphGraphDataset
-
-Nhánh này sẽ là nền chung để chạy:
-
-SubgraphMLPBaseline
-SubgraphGNNBaselines
+Như vậy bạn vẫn giảm graph để train được, nhưng không phản bội mục tiêu pixel-level.
+
+Chốt hướng sửa narrative
+
+Câu đúng để trình bày với thầy là:
+
+Vì FER-2013 chỉ 48×48, em không bỏ pixel-level graph. Full graph 2304 node vẫn là biểu diễn gốc để giữ chi tiết cục bộ. Tuy nhiên, em không train trực tiếp trên toàn bộ graph vì chi phí lớn và dễ nhiễu. Em dùng motif như một cơ chế chọn lọc có giám sát: từ full pixel graph sinh các local subgraphs, học emotion-specific discriminative prototype motifs, sau đó chọn một tập subgraphs đại diện cho ảnh. Điểm cần cải tiến tiếp theo là làm selection có coverage/diversity và lưu lại node-level evidence để đảm bảo motif vẫn bám vào pixel structure, không chỉ là descriptor vector.
+
+Đây là kết luận quan trọng:
+
+Không bỏ pixel.
+Không train full graph mù.
+Motif phải là cầu nối giữa pixel-level detail và image-level classification.
+
+Bản hiện tại đã chứng minh motif có ích. Nhưng để sát mục tiêu ban đầu hơn, bước tiếp theo nên là Pixel-preserving Motif V2: motif bank và motif-filtered dataset phải giữ lại cấu trúc pixel subgraph thật, không chỉ giữ descriptor.
+
+## Bộ lệnh PowerShell chạy Pixel-preserving Motif V2
+
+Dưới đây là bộ lệnh đúng cho PowerShell. Copy từng block chạy lần lượt.
+
+### 1. Precompute Pixel Candidate Subgraphs
+
+```powershell
+conda run -n fer-graph python scripts/precompute_pixel_candidate_subgraphs.py `
+  --repo_root artifacts/graph_repo `
+  --out_dir artifacts/pixel_candidate_subgraphs_v2 `
+  --max_candidates 128 `
+  --seed_stride 4 `
+  --radii 1 2 `
+  --coverage_grid 4 4
+```
+
+```powershell
+conda run -n fer-graph python scripts/inspect_pixel_candidate_subgraphs.py `
+  --data_dir artifacts/pixel_candidate_subgraphs_v2
+```
+
+### 2. Build Pixel Motif Bank
+
+```powershell
+conda run -n fer-graph python scripts/build_pixel_motif_bank.py `
+  --input_dir artifacts/pixel_candidate_subgraphs_v2 `
+  --out_dir artifacts/pixel_motif_bank_v2 `
+  --num_motifs_per_class 16 `
+  --max_subgraphs_per_class 50000 `
+  --alpha 0.5 `
+  --seed 42 `
+  --num_exemplars 5
+```
+
+```powershell
+conda run -n fer-graph python scripts/inspect_pixel_motif_bank.py `
+  --motif_bank_path artifacts/pixel_motif_bank_v2/pixel_motif_bank.pt
+```
+
+### 3. Precompute Pixel Motif Dataset
+
+```powershell
+conda run -n fer-graph python scripts/precompute_pixel_motif_dataset.py `
+  --candidate_dir artifacts/pixel_candidate_subgraphs_v2 `
+  --motif_bank_path artifacts/pixel_motif_bank_v2/pixel_motif_bank.pt `
+  --out_dir artifacts/pixel_motif_dataset_v2 `
+  --top_k 32 `
+  --knn_k 4 `
+  --beta 0.5 `
+  --gamma 0.25 `
+  --eta 0.05 `
+  --diversity_sigma 0.12
+```
+
+```powershell
+conda run -n fer-graph python scripts/inspect_pixel_motif_dataset.py `
+  --data_dir artifacts/pixel_motif_dataset_v2
+```
+
+```powershell
+conda run -n fer-graph python scripts/audit_pixel_motif_dataset.py `
+  --data_dir artifacts/pixel_motif_dataset_v2 `
+  --splits train val test
+```
+
+### 4. Visualize một sample
+
+```powershell
+conda run -n fer-graph python scripts/visualize_pixel_motif_evidence.py `
+  --data_dir artifacts/pixel_motif_dataset_v2 `
+  --split test `
+  --index 0
+```
+
+### 5. Train local nhanh 1 epoch
+
+```powershell
+conda run -n fer-graph python -m scripts.train `
+  --config pixel_motif_guided_gnn `
+  --env local `
+  --pixel_motif_dataset_path artifacts/pixel_motif_dataset_v2 `
+  --epochs 1 `
+  --no_wandb
+```
+
+### 6. Train local full
+
+```powershell
+conda run -n fer-graph python -m scripts.train `
+  --config pixel_motif_guided_gnn `
+  --env local `
+  --pixel_motif_dataset_path artifacts/pixel_motif_dataset_v2
+```
+
+### MLP sanity nếu cần
+
+```powershell
+conda run -n fer-graph python -m scripts.train `
+  --config pixel_motif_guided_mlp `
+  --env local `
+  --pixel_motif_dataset_path artifacts/pixel_motif_dataset_v2 `
+  --epochs 1 `
+  --no_wandb
+```
