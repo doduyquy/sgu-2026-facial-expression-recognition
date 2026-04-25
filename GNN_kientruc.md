@@ -117,9 +117,6 @@ Các file này vẫn có ích để tham khảo hoặc debug, nhưng **không ph
 ### 4.4 Nhóm đang trống hoặc chưa hoàn thiện
 
 - `GNN_kientruc.md`: trước khi bổ sung thì trống
-- `scripts/evaluate.py`: đang trống
-- `scripts/prepare_data.py`: đang trống
-- `scripts/analyze_errors.py`: gần như trống
 - `tests/test_dataset.py`: trống
 - `tests/test_models.py`: trống
 - `tests/test_trainer.py`: trống
@@ -551,19 +548,10 @@ Script kiểm tra tổng hợp nhiều thành phần, nhưng hiện đang bám n
 
 Vì vậy file này nên xem là script kiểm thử tham khảo hơn là chuẩn chính thức.
 
-### File đang trống / chưa dùng
+### File script rỗng / chưa dùng
 
-#### `scripts/evaluate.py`
-
-Đang trống.
-
-#### `scripts/prepare_data.py`
-
-Đang trống.
-
-#### `scripts/analyze_errors.py`
-
-Hầu như chưa có nội dung thực tế.
+Các placeholder `scripts/evaluate.py`, `scripts/prepare_data.py`, `scripts/analyze_errors.py`
+đã được xoá khi dọn thư mục `scripts`.
 
 ## `tests/`
 

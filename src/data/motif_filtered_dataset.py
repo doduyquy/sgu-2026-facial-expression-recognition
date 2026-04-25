@@ -28,7 +28,7 @@ class MotifFilteredDataset(Dataset):
         if not self.path.exists():
             raise FileNotFoundError(
                 f"[MotifFilteredDataset] Missing file: {self.path}\n"
-                f"  Run scripts/precompute_motif_filtered_dataset.py first."
+                f"  Run scripts/legacy_motif_v1/precompute_motif_filtered_dataset.py first."
             )
 
         try:
