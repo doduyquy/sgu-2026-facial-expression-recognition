@@ -180,6 +180,8 @@ def _stage_motif_dataset(args, candidate_dir: Path, motif_bank_dir: Path, pixel_
         str(args.eta),
         "--diversity_sigma",
         str(args.diversity_sigma),
+        "--edge_attr_mode",
+        str(args.edge_attr_mode),
     ]
     _run(cmd)
     _run([sys.executable, "scripts/inspect_pixel_motif_dataset.py", "--data_dir", str(pixel_motif_dir)])
@@ -234,6 +236,7 @@ def main() -> None:
     p.add_argument("--gamma", type=float, default=0.25)
     p.add_argument("--eta", type=float, default=0.05)
     p.add_argument("--diversity_sigma", type=float, default=0.12)
+    p.add_argument("--edge_attr_mode", choices=["spatial", "rich"], default="spatial")
     args = p.parse_args()
 
     out_root = Path(args.out_root)

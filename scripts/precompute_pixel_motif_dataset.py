@@ -18,7 +18,14 @@ if str(ROOT_DIR) not in sys.path:
 from src.motif.motif_scoring import check_finite_tensor
 from src.motif_v2.io import load_pixel_motif_bank
 from src.motif_v2.matching import greedy_select_with_coverage
-from src.motif_v2.topology import build_directed_knn_edges
+from src.motif_v2.topology import (
+    RICH_MOTIF_EDGE_ATTR_NAMES,
+    build_directed_knn_edges,
+    build_directed_knn_rich_edges,
+)
+
+
+SPATIAL_MOTIF_EDGE_ATTR_NAMES = ["dx", "dy", "dist"]
 
 
 def _torch_load(path: Path):
@@ -54,6 +61,7 @@ def _process_split(
     eta: float,
     diversity_sigma: float,
     max_nodes: int,
+    edge_attr_mode: str,
 ) -> List[dict]:
     path = candidate_dir / f"{split}_pixel_candidates.pt"
     if not path.exists():
@@ -83,7 +91,20 @@ def _process_split(
             diversity_sigma=diversity_sigma,
             mask=sample.get("mask"),
         )
-        edge_index, edge_attr = build_directed_knn_edges(selected["centers"], knn_k=knn_k)
+        if edge_attr_mode == "rich":
+            edge_index, edge_attr = build_directed_knn_rich_edges(
+                centers=selected["centers"],
+                bbox=selected["bbox"],
+                descriptors=selected["x"],
+                match_scores=selected["match_scores"],
+                matched_class=selected["matched_class"],
+                matched_motif_id=selected["matched_motif_id"],
+                matched_disc_score=selected["matched_disc_score"],
+                coverage_cell=selected["coverage_cell"],
+                knn_k=knn_k,
+            )
+        else:
+            edge_index, edge_attr = build_directed_knn_edges(selected["centers"], knn_k=knn_k)
         node_indices, node_mask = _pad_selected_nodes(
             selected["selected_indices"],
             topologies=topologies,
@@ -151,6 +172,12 @@ def main() -> None:
     p.add_argument("--gamma", type=float, default=0.25)
     p.add_argument("--eta", type=float, default=0.05)
     p.add_argument("--diversity_sigma", type=float, default=0.12)
+    p.add_argument(
+        "--edge_attr_mode",
+        choices=["spatial", "rich"],
+        default="spatial",
+        help="spatial keeps [dx,dy,dist]; rich adds bbox/descriptor/motif relation features.",
+    )
     p.add_argument("--splits", nargs="+", default=["train", "val", "test"])
     args = p.parse_args()
 
@@ -185,8 +212,15 @@ def main() -> None:
             eta=args.eta,
             diversity_sigma=args.diversity_sigma,
             max_nodes=max_nodes,
+            edge_attr_mode=args.edge_attr_mode,
         )
         split_counts[split] = len(samples)
+
+    edge_attr_names = (
+        RICH_MOTIF_EDGE_ATTR_NAMES
+        if args.edge_attr_mode == "rich"
+        else SPATIAL_MOTIF_EDGE_ATTR_NAMES
+    )
 
     meta = {
         "descriptor_dim": bank.descriptor_dim,
@@ -196,6 +230,9 @@ def main() -> None:
         "gamma": float(args.gamma),
         "eta": float(args.eta),
         "diversity_sigma": float(args.diversity_sigma),
+        "edge_attr_mode": args.edge_attr_mode,
+        "edge_attr_names": list(edge_attr_names),
+        "edge_attr_dim": len(edge_attr_names),
         "num_classes": bank.num_classes,
         "class_names": bank.emotion_names,
         "candidate_dir": str(candidate_dir),
