@@ -38,6 +38,15 @@ EMOTION_DICT = {
     6: "neutral",
 }
 
+REGION_NAMES = [
+    "forehead",
+    "left_eye",
+    "right_eye",
+    "nose",
+    "mouth",
+    "chin",
+]
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -108,12 +117,8 @@ def get_subgraph_assignments(model, images):
     nodes = model._pixel_to_nodes(images)
     h, adj = model._encode_graph(nodes, return_adjacency=True)
 
-    assign_logits = model.subgraph_pool.assign_net(h)
-    S = F.softmax(assign_logits, dim=-1)
-
-    subgraphs_sum = torch.bmm(S.transpose(1, 2), h)
-    cluster_sizes = S.sum(dim=1, keepdim=True).transpose(1, 2) + 1e-8
-    subgraphs = subgraphs_sum / cluster_sizes
+    region_prior = getattr(model, "region_prior", None)
+    subgraphs, _, S = model.subgraph_pool(h, region_prior)
 
     sg_attn, _ = model.subgraph_attn(subgraphs, subgraphs, subgraphs)
     subgraphs = model.attn_norm(subgraphs + sg_attn)
@@ -222,7 +227,8 @@ def save_assignment_figure(
         green = (prob * 220).to(torch.uint8).reshape(-1).tolist()
         blue = ((1.0 - prob) * 255).to(torch.uint8).reshape(-1).tolist()
         heat_img.putdata(list(zip(red, green, blue)))
-        paste_panel(next_panel + k, heat_img, f"S{k} prob")
+        region_name = REGION_NAMES[k] if k < len(REGION_NAMES) else f"S{k}"
+        paste_panel(next_panel + k, heat_img, f"{region_name} prob")
 
     canvas.save(out_path)
 
