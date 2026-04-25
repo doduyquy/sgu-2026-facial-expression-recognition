@@ -19,13 +19,18 @@ def inception_loss(main_out, aux_out, targets, criterion=nn.CrossEntropyLoss(), 
     return main_loss + aux_weight * aux_loss
 
 
-def compute_class_weights(class_counts, normalize_mean: bool = True) -> torch.Tensor:
-    """FER-style inverse-frequency weights, optionally normalized to mean 1."""
+def compute_class_weights(
+    class_counts,
+    normalize_mean: bool = True,
+    power: float = 1.0,
+) -> torch.Tensor:
+    """FER-style inverse-frequency weights, optionally softened by a power."""
     counts = torch.tensor(class_counts, dtype=torch.float32)
     if (counts <= 0).any():
         raise ValueError(f"class_counts must be positive, got {class_counts}")
     total = counts.sum()
     weights = total / (len(counts) * counts)
+    weights = weights.pow(float(power))
     if normalize_mean:
         weights = weights / weights.mean().clamp_min(1e-8)
     return weights
@@ -168,7 +173,8 @@ def _maybe_class_weights(loss_cfg: dict, class_weights=None) -> Optional[torch.T
     if not loss_cfg.get("use_class_weights", False):
         return None
     counts = loss_cfg.get("class_counts", FER2013_TRAIN_COUNTS)
-    return compute_class_weights(counts, normalize_mean=True)
+    power = float(loss_cfg.get("class_weight_power", 1.0))
+    return compute_class_weights(counts, normalize_mean=True, power=power)
 
 
 def build_loss(config, class_weights=None):
@@ -183,7 +189,10 @@ def build_loss(config, class_weights=None):
 
     if loss_name in {"weighted_ce", "weighted_cross_entropy"}:
         if weights is None:
-            weights = compute_class_weights(loss_cfg.get("class_counts", FER2013_TRAIN_COUNTS))
+            weights = compute_class_weights(
+                loss_cfg.get("class_counts", FER2013_TRAIN_COUNTS),
+                power=loss_cfg.get("class_weight_power", 1.0),
+            )
         return WeightedCrossEntropy(class_weights=weights, label_smoothing=label_smoothing)
 
     if loss_name == "focal":
@@ -195,7 +204,10 @@ def build_loss(config, class_weights=None):
 
     if loss_name == "weighted_focal":
         if weights is None:
-            weights = compute_class_weights(loss_cfg.get("class_counts", FER2013_TRAIN_COUNTS))
+            weights = compute_class_weights(
+                loss_cfg.get("class_counts", FER2013_TRAIN_COUNTS),
+                power=loss_cfg.get("class_weight_power", 1.0),
+            )
         return FocalLoss(
             gamma=loss_cfg.get("gamma", 2.0),
             alpha=weights,
@@ -204,8 +216,19 @@ def build_loss(config, class_weights=None):
 
     if loss_name == "weighted_ce_motif":
         if weights is None:
-            weights = compute_class_weights(loss_cfg.get("class_counts", FER2013_TRAIN_COUNTS))
+            weights = compute_class_weights(
+                loss_cfg.get("class_counts", FER2013_TRAIN_COUNTS),
+                power=loss_cfg.get("class_weight_power", 1.0),
+            )
         cls_loss = WeightedCrossEntropy(class_weights=weights, label_smoothing=label_smoothing)
+        return CombinedMotifLoss(
+            cls_loss=cls_loss,
+            lambda_motif=loss_cfg.get("lambda_motif", 0.1),
+            margin=loss_cfg.get("margin", 0.2),
+        )
+
+    if loss_name in {"ce_motif", "cross_entropy_motif"}:
+        cls_loss = WeightedCrossEntropy(class_weights=None, label_smoothing=label_smoothing)
         return CombinedMotifLoss(
             cls_loss=cls_loss,
             lambda_motif=loss_cfg.get("lambda_motif", 0.1),

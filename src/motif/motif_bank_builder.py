@@ -30,6 +30,8 @@ def _torch_load(path: Path):
 def load_train_descriptors(input_dir: str | Path) -> List[dict]:
     """Load only train_subgraph_graph.pt to avoid data leakage."""
     path = Path(input_dir) / "train_subgraph_graph.pt"
+    if path.name != "train_subgraph_graph.pt":
+        raise AssertionError(f"Motif bank must be built from train split only, got {path}")
     if not path.exists():
         raise FileNotFoundError(f"Missing train split: {path}")
     samples = _torch_load(path)
@@ -283,6 +285,7 @@ def build_motif_bank(
     torch.manual_seed(int(seed))
 
     samples = load_train_descriptors(input_dir)
+    input_train_file = str(Path(input_dir) / "train_subgraph_graph.pt")
     raw_counts = [0 for _ in range(num_classes)]
     for sample in samples:
         raw_counts[int(sample["label"])] += 1
@@ -350,6 +353,7 @@ def build_motif_bank(
             "kmeans_batch_size": int(kmeans_batch_size),
             "oversample_factor": int(oversample_factor),
             "built_from_split": "train",
+            "input_train_file": input_train_file,
             "descriptor_transform": "standardize",
             "descriptor_mean": descriptor_mean.tolist(),
             "descriptor_std": descriptor_std.tolist(),

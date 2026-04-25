@@ -15,12 +15,14 @@ model:
   dropout: 0.3
   use_edge_attr: false
   use_motif_score_vector: true
+  use_match_score_feature: true
   use_match_score_weighting: true
   pooling: motif_attention
 
 loss:
   name: weighted_ce_motif
   use_class_weights: true
+  class_weight_power: 1.0
   class_counts: [3995, 436, 4097, 7215, 4830, 3171, 4965]
   lambda_motif: 0.1
   margin: 0.2

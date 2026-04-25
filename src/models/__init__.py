@@ -44,6 +44,7 @@ MODEL_REGISTRY = {
         num_classes=config["model"].get("num_classes", config["data"].get("num_classes", 7)),
         dropout=config["model"].get("dropout", 0.3),
         use_motif_score_vector=config["model"].get("use_motif_score_vector", True),
+        use_match_score_feature=config["model"].get("use_match_score_feature", True),
         use_match_score_weighting=config["model"].get("use_match_score_weighting", True),
     ),
     "motif_guided_gnn": lambda config, input_dim, **kw: MotifGuidedGNN(
@@ -56,6 +57,7 @@ MODEL_REGISTRY = {
         use_edge_attr=config["model"].get("use_edge_attr", False),
         edge_attr_dim=config["model"].get("edge_attr_dim", 3),
         use_motif_score_vector=config["model"].get("use_motif_score_vector", True),
+        use_match_score_feature=config["model"].get("use_match_score_feature", True),
         use_match_score_weighting=config["model"].get("use_match_score_weighting", True),
         pooling=config["model"].get("pooling", "motif_attention"),
     ),

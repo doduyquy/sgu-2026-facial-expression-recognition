@@ -30,6 +30,7 @@ class MotifGuidedMLP(nn.Module):
         num_classes: int = 7,
         dropout: float = 0.3,
         use_motif_score_vector: bool = True,
+        use_match_score_feature: bool = True,
         use_match_score_weighting: bool = True,
     ) -> None:
         super().__init__()
@@ -37,9 +38,10 @@ class MotifGuidedMLP(nn.Module):
         self.hidden_dim = int(hidden_dim)
         self.num_classes = int(num_classes)
         self.use_motif_score_vector = bool(use_motif_score_vector)
+        self.use_match_score_feature = bool(use_match_score_feature)
         self.use_match_score_weighting = bool(use_match_score_weighting)
 
-        node_input_dim = self.input_dim + 1 + self.num_classes
+        node_input_dim = self.input_dim + (1 if self.use_match_score_feature else 0) + self.num_classes
         self.node_encoder = nn.Sequential(
             nn.Linear(node_input_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -105,7 +107,11 @@ class MotifGuidedMLP(nn.Module):
         class_idx = matched_class.clamp(min=0, max=self.num_classes - 1)
         class_one_hot = F.one_hot(class_idx, num_classes=self.num_classes).to(dtype=x.dtype)
         class_one_hot = class_one_hot * mask.unsqueeze(-1).to(dtype=x.dtype)
-        node_input = torch.cat([x, match_scores.unsqueeze(-1), class_one_hot], dim=-1)
+        node_parts = [x]
+        if self.use_match_score_feature:
+            node_parts.append(match_scores.unsqueeze(-1))
+        node_parts.append(class_one_hot)
+        node_input = torch.cat(node_parts, dim=-1)
 
         z = self.node_encoder(node_input)
         z = z * mask.unsqueeze(-1).to(dtype=z.dtype)

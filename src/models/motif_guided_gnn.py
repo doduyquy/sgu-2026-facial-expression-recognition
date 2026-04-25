@@ -85,6 +85,7 @@ class MotifGuidedGNN(nn.Module):
         use_edge_attr: bool = False,
         edge_attr_dim: int = 3,
         use_motif_score_vector: bool = True,
+        use_match_score_feature: bool = True,
         use_match_score_weighting: bool = True,
         pooling: str = "motif_attention",
     ) -> None:
@@ -93,10 +94,11 @@ class MotifGuidedGNN(nn.Module):
         self.hidden_dim = int(gnn_hidden_dim or hidden_dim)
         self.num_classes = int(num_classes)
         self.use_motif_score_vector = bool(use_motif_score_vector)
+        self.use_match_score_feature = bool(use_match_score_feature)
         self.use_match_score_weighting = bool(use_match_score_weighting)
         self.pooling = pooling
 
-        node_input_dim = self.input_dim + 1 + self.num_classes
+        node_input_dim = self.input_dim + (1 if self.use_match_score_feature else 0) + self.num_classes
         self.node_encoder = nn.Sequential(
             nn.Linear(node_input_dim, self.hidden_dim),
             nn.LayerNorm(self.hidden_dim),
@@ -112,11 +114,12 @@ class MotifGuidedGNN(nn.Module):
                     use_edge_attr=use_edge_attr,
                     edge_attr_dim=edge_attr_dim,
                 )
-                for _ in range(max(1, int(num_layers)))
+                for _ in range(max(0, int(num_layers)))
             ]
         )
 
-        self.attn = nn.Linear(self.hidden_dim + 1, 1)
+        attn_dim = self.hidden_dim + (1 if self.use_match_score_weighting else 0)
+        self.attn = nn.Linear(attn_dim, 1)
         final_dim = self.hidden_dim + (self.num_classes if self.use_motif_score_vector else 0)
         self.classifier = nn.Sequential(
             nn.Linear(final_dim, hidden_dim),
@@ -196,7 +199,11 @@ class MotifGuidedGNN(nn.Module):
         class_idx = matched_class.clamp(min=0, max=self.num_classes - 1)
         class_one_hot = F.one_hot(class_idx, num_classes=self.num_classes).to(dtype=x.dtype)
         class_one_hot = class_one_hot * mask.unsqueeze(-1).to(dtype=x.dtype)
-        node_input = torch.cat([x, match_scores.unsqueeze(-1), class_one_hot], dim=-1)
+        node_parts = [x]
+        if self.use_match_score_feature:
+            node_parts.append(match_scores.unsqueeze(-1))
+        node_parts.append(class_one_hot)
+        node_input = torch.cat(node_parts, dim=-1)
 
         h = self.node_encoder(node_input)
         h = h * mask.unsqueeze(-1).to(dtype=h.dtype)
@@ -204,7 +211,10 @@ class MotifGuidedGNN(nn.Module):
             h = layer(h, edge_index, edge_valid, mask, edge_attr=edge_attr)
 
         if self.pooling == "motif_attention":
-            attn_in = torch.cat([h, match_scores.unsqueeze(-1)], dim=-1)
+            if self.use_match_score_weighting:
+                attn_in = torch.cat([h, match_scores.unsqueeze(-1)], dim=-1)
+            else:
+                attn_in = h
             attn_scores = self.attn(attn_in).squeeze(-1)
             weights = _masked_softmax(attn_scores, mask, dim=1).unsqueeze(-1)
             h_graph = (h * weights).sum(dim=1)
