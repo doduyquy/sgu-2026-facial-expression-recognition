@@ -49,8 +49,8 @@ def build_dataloader(
     ----------
     config         : full config dict (từ load_config)
     graph_repo_path: đường dẫn đến thư mục gốc của graph repository.
-                     Local  : "artifacts/graph_repo_v2"
-                     Kaggle : "/kaggle/input/fer-graph-repo-v2/graph_repo_v2"
+                     Local  : "artifacts/graph_repo"
+                     Kaggle : "/kaggle/input/fer-graph-repo/graph_repo"
 
     Returns
     -------
@@ -86,7 +86,7 @@ def build_dataloader(
         # dataset_path được resolve từ subgraph_dataset_path trong config
         subgraph_dataset_path = config.get(
             "subgraph_dataset_path",
-            "artifacts/subgraph_graph_dataset_v2",
+            "artifacts/subgraph_graph_dataset",
         )
         print(f"--- Precomputed dataset: {subgraph_dataset_path}")
         model_name = config.get("model", {}).get("name", "subgraph_mlp_baseline")
@@ -418,7 +418,7 @@ def _validate_repo(repo_path: str) -> None:
             f"      --train_csv data/train.csv \\\n"
             f"      --val_csv   data/val.csv \\\n"
             f"      --test_csv  data/test.csv \\\n"
-            f"      --repo_root artifacts/graph_repo_v2\n\n"
-            f"  Kaggle : Upload artifacts/graph_repo_v2/ lên Kaggle dataset 'fer-graph-repo-v2',\n"
-            f"           set graph_repo_path: '/kaggle/input/fer-graph-repo-v2/graph_repo_v2' trong env.yaml.\n"
+            f"      --repo_root artifacts/graph_repo\n\n"
+            f"  Kaggle : Upload artifacts/graph_repo/ lên Kaggle dataset 'fer-graph-repo',\n"
+            f"           set graph_repo_path: '/kaggle/input/fer-graph-repo/graph_repo' trong env.yaml.\n"
         )

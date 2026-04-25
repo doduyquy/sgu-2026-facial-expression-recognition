@@ -68,11 +68,11 @@ kaggle:
   data_path: "/kaggle/input/datasets/doduyquynii/fer13-split"
   root_path: "/kaggle/working/sgu-2026-facial-expression-recognition"
   # Graph repository v2 (canonical format — chunks + shared graph, node_features = 7 dims)
-  # Upload artifacts/graph_repo_v2/ lên Kaggle, đặt tên dataset "fer-graph-repo-v2"
-  graph_repo_path: "/kaggle/input/fer-graph-repo-v2/graph_repo_v2"
+  # Upload artifacts/graph_repo/ lên Kaggle, đặt tên dataset "fer-graph-repo"
+  graph_repo_path: "/kaggle/input/fer-graph-repo/graph_repo"
 
 local:
   data_path: "data"
   root_path: "."
   # Graph repository v2 (build bằng scripts/build_graph_repository.py)
-  graph_repo_path: "artifacts/graph_repo_v2"
+  graph_repo_path: "artifacts/graph_repo"

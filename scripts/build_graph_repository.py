@@ -19,14 +19,14 @@ Usage
         --train_csv data/fer13-split/train.csv \\
         --val_csv   data/fer13-split/val.csv \\
         --test_csv  data/fer13-split/test.csv \\
-        --repo_root artifacts/graph_repo_v2
+        --repo_root artifacts/graph_repo
 
     # With custom chunk size and 4-connectivity
     python scripts/build_graph_repository.py \\
         --train_csv data/fer13-split/train.csv \\
         --val_csv   data/fer13-split/val.csv \\
         --test_csv  data/fer13-split/test.csv \\
-        --repo_root artifacts/graph_repo_v2 \\
+        --repo_root artifacts/graph_repo \\
         --chunk_size 1000 \\
         --connectivity 4
 """
@@ -76,8 +76,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--train_csv",    required=True,  help="Path to train.csv")
     p.add_argument("--val_csv",      required=True,  help="Path to val.csv")
     p.add_argument("--test_csv",     required=True,  help="Path to test.csv")
-    p.add_argument("--repo_root",    default="artifacts/graph_repo_v2",
-                   help="Output repository root (default: artifacts/graph_repo_v2)")
+    p.add_argument("--repo_root",    default="artifacts/graph_repo",
+                   help="Output repository root (default: artifacts/graph_repo)")
     p.add_argument("--chunk_size",   type=int, default=500,
                    help="Samples per chunk file (default: 500)")
     p.add_argument("--connectivity", type=int, default=8, choices=[4, 8],
@@ -223,7 +223,7 @@ def main() -> None:
     elapsed_total = time.perf_counter() - t_total
     log.info("═" * 60)
     log.info("Repository built in %.1f s → %s", elapsed_total, args.repo_root)
-    log.info("Ready to upload artifacts/graph_repo_v2/ to Kaggle as a dataset.")
+    log.info("Ready to upload artifacts/graph_repo/ to Kaggle as a dataset.")
 
 
 if __name__ == "__main__":

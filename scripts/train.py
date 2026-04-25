@@ -4,8 +4,8 @@ scripts/train.py — Entry point huấn luyện GNN FER-2013.
 Đọc từ canonical graph repository (chunks), không dùng *_graphs.pt kiểu cũ.
 
 Kaggle workflow:
-    1. Upload artifacts/graph_repo_v2/ lên Kaggle (dataset: fer-graph-repo-v2)
-    2. Set graph_repo_path trong env.yaml → /kaggle/input/fer-graph-repo-v2/graph_repo_v2
+    1. Upload artifacts/graph_repo/ lên Kaggle (dataset: fer-graph-repo)
+    2. Set graph_repo_path trong env.yaml → /kaggle/input/fer-graph-repo/graph_repo
     3. Chạy: python -m scripts.train --config mlp_baseline --env kaggle
 
 Local workflow:
@@ -101,7 +101,7 @@ def main():
     parser.add_argument("--graph_repo_path", type=str, default=None,
                         help="Override graph_repo_path tu env.yaml. "
                              "Dung khi path tren Kaggle khac voi gia tri mac dinh trong config. "
-                             "Vi du: /kaggle/input/fer-graph-repo-v2/graph_repo_v2")
+                             "Vi du: /kaggle/input/fer-graph-repo/graph_repo")
     parser.add_argument("--subgraph_dataset_path", type=str, default=None,
                         help="Override subgraph_dataset_path tu env.yaml. "
                              "Dung cho mode precomputed_subgraph_graph khi dataset tren Kaggle "
@@ -125,7 +125,7 @@ def main():
 
     # ── Paths ──
     root_path       = config.get("root_path", ".")
-    graph_repo_path = config.get("graph_repo_path", "artifacts/graph_repo_v2")
+    graph_repo_path = config.get("graph_repo_path", "artifacts/graph_repo")
 
     # CLI override co uu tien cao hon env.yaml
     if args.graph_repo_path is not None:

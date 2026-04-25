@@ -13,7 +13,7 @@ Checks
 Usage
 -----
     python scripts/inspect_graph_repository.py
-    python scripts/inspect_graph_repository.py --repo_root artifacts/graph_repo_v2
+    python scripts/inspect_graph_repository.py --repo_root artifacts/graph_repo
     python scripts/inspect_graph_repository.py --split train --chunk 0
 """
 
@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Inspect a canonical graph repository."
     )
-    p.add_argument("--repo_root", default="artifacts/graph_repo_v2",
+    p.add_argument("--repo_root", default="artifacts/graph_repo",
                    help="Repository root directory")
     p.add_argument("--split",     default=None,
                    help="Inspect a specific split (default: all splits)")

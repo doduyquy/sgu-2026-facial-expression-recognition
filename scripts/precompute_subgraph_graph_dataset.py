@@ -8,10 +8,10 @@ OPTIMIZATION KEY:
     → Nhanh hơn bản gốc ~50-100x.
 
 Usage (PowerShell):
-    python scripts/precompute_subgraph_graph_dataset.py --repo_root artifacts/graph_repo_v2 --out_dir artifacts/subgraph_graph_dataset_v2
+    python scripts/precompute_subgraph_graph_dataset.py --repo_root artifacts/graph_repo --out_dir artifacts/subgraph_graph_dataset
 
     # Debug nhanh:
-    python scripts/precompute_subgraph_graph_dataset.py --repo_root artifacts/graph_repo_v2 --out_dir artifacts/subgraph_graph_dataset_debug --num_subgraphs 16 --max_candidates 32 --splits train
+    python scripts/precompute_subgraph_graph_dataset.py --repo_root artifacts/graph_repo --out_dir artifacts/subgraph_graph_dataset_debug --num_subgraphs 16 --max_candidates 32 --splits train
 """
 
 from __future__ import annotations
@@ -343,8 +343,8 @@ def _process_split(
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--repo_root",        default="artifacts/graph_repo_v2")
-    p.add_argument("--out_dir",          default="artifacts/subgraph_graph_dataset_v2")
+    p.add_argument("--repo_root",        default="artifacts/graph_repo")
+    p.add_argument("--out_dir",          default="artifacts/subgraph_graph_dataset")
     p.add_argument("--num_subgraphs",    type=int, default=32)
     p.add_argument("--subgraph_radius",  type=int, default=1)
     p.add_argument("--seed_stride",      type=int, default=4)

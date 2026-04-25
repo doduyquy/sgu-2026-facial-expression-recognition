@@ -77,7 +77,7 @@ class GraphConfig:
 
     # ---- Repository ----------------------------------------------------------
     chunk_size: int = 500          # samples per chunk file
-    repo_root: str = "artifacts/graph_repo_v2"
+    repo_root: str = "artifacts/graph_repo"
 
     # ---- Traceability --------------------------------------------------------
     version: str = GRAPH_CONFIG_VERSION
@@ -150,7 +150,7 @@ class GraphConfig:
                                               "intensity_similarity"]),
             intensity_similarity_alpha=g.get("intensity_similarity_alpha", 1.0),
             chunk_size=r.get("chunk_size", 500),
-            repo_root=r.get("repo_root", "artifacts/graph_repo_v2"),
+            repo_root=r.get("repo_root", "artifacts/graph_repo"),
             version=g.get("version", GRAPH_CONFIG_VERSION),
         )
 
