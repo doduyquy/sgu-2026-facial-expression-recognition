@@ -8,10 +8,10 @@ OPTIMIZATION KEY:
     → Nhanh hơn bản gốc ~50-100x.
 
 Usage (PowerShell):
-    python scripts/precompute_subgraph_graph_dataset.py --repo_root artifacts/graph_repo --out_dir artifacts/subgraph_graph_dataset
+    python scripts/precompute_subgraph_graph_dataset.py --repo_root artifacts/graph_repo_v2 --out_dir artifacts/subgraph_graph_dataset_v2
 
     # Debug nhanh:
-    python scripts/precompute_subgraph_graph_dataset.py --repo_root artifacts/graph_repo --out_dir artifacts/subgraph_graph_dataset_debug --num_subgraphs 16 --max_candidates 32 --splits train
+    python scripts/precompute_subgraph_graph_dataset.py --repo_root artifacts/graph_repo_v2 --out_dir artifacts/subgraph_graph_dataset_debug --num_subgraphs 16 --max_candidates 32 --splits train
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ if str(ROOT_DIR) not in sys.path:
 from data.graph_repository import GraphRepositoryReader
 from data.graph_resolver import GraphResolver
 from data.graph_types import PixelGraphSample, SharedGraphStructure
+from src.graph.subgraph_descriptor import infer_descriptor_dim
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -75,7 +76,6 @@ def _precompute_topology(
     radius: int,
     max_candidates: int,
     num_subgraphs: int,
-    edge_feat_dim: int,
 ) -> List[Dict]:
     """
     Tính ONCE cho toàn split:
@@ -270,7 +270,7 @@ def _process_split(
     g0 = resolver.resolve(first_raw)
     node_feat_dim = g0.num_node_features
     edge_feat_dim = g0.num_edge_features
-    desc_dim      = 4 * node_feat_dim + 3 + 2 * edge_feat_dim
+    desc_dim      = infer_descriptor_dim(node_feat_dim, edge_feat_dim)
 
     print(f"\n[{split}] samples | desc_dim={desc_dim} | K={num_subgraphs} | knn_k={knn_k}")
     print(f"[{split}] Precomputing topology ONCE ... ", end="", flush=True)
@@ -284,7 +284,6 @@ def _process_split(
         radius=subgraph_radius,
         max_candidates=max_candidates,
         num_subgraphs=num_subgraphs,
-        edge_feat_dim=edge_feat_dim,
     )
     print(f"done in {time.time()-t_topo:.1f}s  ({len(topos)} subgraphs)", flush=True)
 
@@ -344,8 +343,8 @@ def _process_split(
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--repo_root",        default="artifacts/graph_repo")
-    p.add_argument("--out_dir",          default="artifacts/subgraph_graph_dataset")
+    p.add_argument("--repo_root",        default="artifacts/graph_repo_v2")
+    p.add_argument("--out_dir",          default="artifacts/subgraph_graph_dataset_v2")
     p.add_argument("--num_subgraphs",    type=int, default=32)
     p.add_argument("--subgraph_radius",  type=int, default=1)
     p.add_argument("--seed_stride",      type=int, default=4)
@@ -365,6 +364,15 @@ def main():
         print(f"  {k:<20}: {v}")
     print("=" * 60)
 
+    reader = GraphRepositoryReader(args.repo_root)
+    shared = reader.load_shared()
+    shared_cfg = shared.config_dict if isinstance(shared.config_dict, dict) else {}
+    meta_split = args.splits[0]
+    first_sample: PixelGraphSample = next(reader.iter_split(meta_split))
+    resolver = GraphResolver(shared)
+    first_graph = resolver.resolve(first_sample)
+    descriptor_dim = infer_descriptor_dim(first_graph.num_node_features, first_graph.num_edge_features)
+
     t_total = time.time()
     for split in args.splits:
         samples = _process_split(
@@ -381,7 +389,15 @@ def main():
         mb = out_path.stat().st_size / 1024 ** 2
         print(f"  Saved → {out_path}  ({mb:.1f} MB)")
 
-    torch.save(vars(args), out_dir / "meta.pt")
+    meta = {
+        **vars(args),
+        "descriptor_dim": descriptor_dim,
+        "node_feature_names": list(first_graph.node_feature_names),
+        "edge_feature_names": list(first_graph.edge_feature_names),
+        "graph_config_version": shared_cfg.get("version", "unknown"),
+        "graph_config": shared_cfg,
+    }
+    torch.save(meta, out_dir / "meta.pt")
     print(f"\n  Total: {time.time()-t_total:.1f}s  |  DONE.")
 
 

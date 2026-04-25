@@ -13,7 +13,7 @@ Checks
 Usage
 -----
     python scripts/inspect_graph_repository.py
-    python scripts/inspect_graph_repository.py --repo_root artifacts/graph_repo
+    python scripts/inspect_graph_repository.py --repo_root artifacts/graph_repo_v2
     python scripts/inspect_graph_repository.py --split train --chunk 0
 """
 
@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Inspect a canonical graph repository."
     )
-    p.add_argument("--repo_root", default="artifacts/graph_repo",
+    p.add_argument("--repo_root", default="artifacts/graph_repo_v2",
                    help="Repository root directory")
     p.add_argument("--split",     default=None,
                    help="Inspect a specific split (default: all splits)")
@@ -91,6 +91,11 @@ def inspect_shared(shared: SharedGraphStructure) -> None:
 
     cfg_ver = shared.config_dict.get("version", "unknown")
     print(f"  Config version: {cfg_ver}")
+    node_feature_names = shared.config_dict.get("node_feature_names", [])
+    if node_feature_names:
+        print("  Node feats    :")
+        for name in node_feature_names:
+            print(f"    - {name}")
 
 
 def inspect_sample(
@@ -106,13 +111,19 @@ def inspect_sample(
     print(f"  split / usage     : {sample.split!r} / {sample.usage!r}")
     print(f"  node_features     : shape={tuple(sample.node_features.shape)}  dtype={sample.node_features.dtype}")
     print(f"  edge_attr_dynamic : shape={tuple(sample.edge_attr_dynamic.shape)}  dtype={sample.edge_attr_dynamic.dtype}")
-    print(f"  node_feature_names: {sample.node_feature_names}")
+    print("  node_feature_names:")
+    for name in sample.node_feature_names:
+        print(f"    - {name}")
     print(f"  dynamic_feat_names: {sample.dynamic_feature_names}")
 
     has_nan_nf = torch.isnan(sample.node_features).any().item()
     has_nan_ea = torch.isnan(sample.edge_attr_dynamic).any().item()
+    has_inf_nf = torch.isinf(sample.node_features).any().item()
+    has_inf_ea = torch.isinf(sample.edge_attr_dynamic).any().item()
     print(f"  NaN in node_feats : {'YES ✗' if has_nan_nf else 'No ✓'}")
     print(f"  NaN in edge_dyn   : {'YES ✗' if has_nan_ea else 'No ✓'}")
+    print(f"  Inf in node_feats : {'YES ✗' if has_inf_nf else 'No ✓'}")
+    print(f"  Inf in edge_dyn   : {'YES ✗' if has_inf_ea else 'No ✓'}")
 
     # Node feature stats
     nf = sample.node_features
@@ -137,6 +148,8 @@ def inspect_sample(
     print(f"  edge_attr   : {tuple(resolved.edge_attr.shape)}  (static+dynamic)")
     print(f"  edge_feats  : {resolved.edge_feature_names}")
     print(f"  has_nan     : {'YES ✗' if resolved.has_nan() else 'No ✓'}")
+    has_inf_resolved = torch.isinf(resolved.node_features).any().item() or torch.isinf(resolved.edge_attr).any().item()
+    print(f"  has_inf     : {'YES ✗' if has_inf_resolved else 'No ✓'}")
     print(f"  {resolved}")
 
 

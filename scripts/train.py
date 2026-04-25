@@ -4,8 +4,8 @@ scripts/train.py — Entry point huấn luyện GNN FER-2013.
 Đọc từ canonical graph repository (chunks), không dùng *_graphs.pt kiểu cũ.
 
 Kaggle workflow:
-    1. Upload artifacts/graph_repo/ lên Kaggle (dataset: fer-graph-repo)
-    2. Set graph_repo_path trong base.yaml → /kaggle/input/fer-graph-repo/graph_repo
+    1. Upload artifacts/graph_repo_v2/ lên Kaggle (dataset: fer-graph-repo-v2)
+    2. Set graph_repo_path trong env.yaml → /kaggle/input/fer-graph-repo-v2/graph_repo_v2
     3. Chạy: python -m scripts.train --config mlp_baseline --env kaggle
 
 Local workflow:
@@ -101,7 +101,7 @@ def main():
     parser.add_argument("--graph_repo_path", type=str, default=None,
                         help="Override graph_repo_path tu env.yaml. "
                              "Dung khi path tren Kaggle khac voi gia tri mac dinh trong config. "
-                             "Vi du: /kaggle/input/datasets/username/fer-graph-repo/artifacts/graph_repo")
+                             "Vi du: /kaggle/input/fer-graph-repo-v2/graph_repo_v2")
     parser.add_argument("--subgraph_dataset_path", type=str, default=None,
                         help="Override subgraph_dataset_path tu env.yaml. "
                              "Dung cho mode precomputed_subgraph_graph khi dataset tren Kaggle "
@@ -125,7 +125,7 @@ def main():
 
     # ── Paths ──
     root_path       = config.get("root_path", ".")
-    graph_repo_path = config.get("graph_repo_path", "artifacts/graph_repo")
+    graph_repo_path = config.get("graph_repo_path", "artifacts/graph_repo_v2")
 
     # CLI override co uu tien cao hon env.yaml
     if args.graph_repo_path is not None:
@@ -192,7 +192,15 @@ def main():
 
     eval_dir = os.path.join(root_path, "outputs", "figures", config["model"]["name"], run_name)
     os.makedirs(eval_dir, exist_ok=True)
-    evaluate_and_show(model, test_loader, device, eval_dir)
+    # log checkpoint lên wandb
+    evaluate_and_show(model, test_loader, device, eval_dir, config=config)
+
+    if config.get("logging", {}).get("use_wandb", False):
+        try:
+            from src.utils.logger_wandb import save_model_to_wandb
+            save_model_to_wandb(ckpt_path, model_name=run_name)
+        except Exception as exc:
+            print(f"[WARN] Cannot upload checkpoint to WandB: {exc}")
 
     print("\n\t\tDONE!\n")
 

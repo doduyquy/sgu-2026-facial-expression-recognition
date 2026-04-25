@@ -4,8 +4,8 @@ data/canonical_graph_builder.py — Build PixelGraphSample from RawSample + Shar
 Responsibilities
 ----------------
 * Normalize image (raw [0,255] → [0,1])
-* Build node features  (baseline: intensity, x_norm, y_norm)
-  Extensible: gx, gy, grad_mag, contrast
+* Build node features:
+    intensity, x_norm, y_norm, gx, gy, grad_mag, local_contrast
 * Build dynamic edge attributes (delta_intensity, intensity_similarity)
   These depend on per-image pixel values and use the SAME edge ordering
   as SharedGraphStructure.edge_index.
@@ -22,8 +22,7 @@ All heavy numpy work is vectorized (no Python loops over pixels).
 from __future__ import annotations
 
 import logging
-import math
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Tuple
 
 import numpy as np
 import torch
@@ -33,6 +32,83 @@ from data.raw_types import RawSample
 from data.graph_types import PixelGraphSample, SharedGraphStructure
 
 log = logging.getLogger(__name__)
+
+
+def compute_gradients(image_norm: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Compute stable finite-difference gradients from a normalized image.
+
+    Parameters
+    ----------
+    image_norm : np.ndarray [H, W], float32, values in [0, 1]
+
+    Returns
+    -------
+    gx, gy, grad_mag : float32 arrays, all shape [H, W]
+    """
+    if image_norm.ndim != 2:
+        raise ValueError(f"Expected 2D image, got shape {image_norm.shape}")
+
+    img = np.asarray(image_norm, dtype=np.float32)
+    gx = np.zeros_like(img, dtype=np.float32)
+    gy = np.zeros_like(img, dtype=np.float32)
+
+    if img.shape[1] > 1:
+        gx[:, 1:-1] = (img[:, 2:] - img[:, :-2]) * 0.5
+        gx[:, 0] = img[:, 1] - img[:, 0]
+        gx[:, -1] = img[:, -1] - img[:, -2]
+
+    if img.shape[0] > 1:
+        gy[1:-1, :] = (img[2:, :] - img[:-2, :]) * 0.5
+        gy[0, :] = img[1, :] - img[0, :]
+        gy[-1, :] = img[-1, :] - img[-2, :]
+
+    gx = np.clip(gx, -1.0, 1.0).astype(np.float32, copy=False)
+    gy = np.clip(gy, -1.0, 1.0).astype(np.float32, copy=False)
+    grad_mag = np.sqrt(np.clip(gx * gx + gy * gy, a_min=0.0, a_max=None)).astype(np.float32, copy=False)
+    grad_mag = np.clip(grad_mag, 0.0, 1.0).astype(np.float32, copy=False)
+
+    if not np.isfinite(gx).all() or not np.isfinite(gy).all() or not np.isfinite(grad_mag).all():
+        raise ValueError("Non-finite values detected in gradient features")
+
+    return gx, gy, grad_mag
+
+
+def compute_local_contrast(image_norm: np.ndarray, window_size: int = 3) -> np.ndarray:
+    """
+    Compute local contrast as abs(pixel - local_mean) with edge padding.
+
+    Parameters
+    ----------
+    image_norm   : np.ndarray [H, W], float32, values in [0, 1]
+    window_size  : odd kernel size, default 3
+
+    Returns
+    -------
+    np.ndarray [H, W], float32, values in [0, 1]
+    """
+    if image_norm.ndim != 2:
+        raise ValueError(f"Expected 2D image, got shape {image_norm.shape}")
+    if window_size <= 0 or window_size % 2 == 0:
+        raise ValueError(f"window_size must be a positive odd integer, got {window_size}")
+
+    img = np.asarray(image_norm, dtype=np.float32)
+    pad = window_size // 2
+    padded = np.pad(img, pad_width=pad, mode="edge")
+
+    local_sum = np.zeros_like(img, dtype=np.float32)
+    for dy in range(window_size):
+        for dx in range(window_size):
+            local_sum += padded[dy:dy + img.shape[0], dx:dx + img.shape[1]]
+
+    local_mean = local_sum / float(window_size * window_size)
+    contrast = np.abs(img - local_mean).astype(np.float32, copy=False)
+    contrast = np.clip(contrast, 0.0, 1.0).astype(np.float32, copy=False)
+
+    if not np.isfinite(contrast).all():
+        raise ValueError("Non-finite values detected in local_contrast")
+
+    return contrast
 
 
 class CanonicalGraphBuilder:
@@ -109,6 +185,9 @@ class CanonicalGraphBuilder:
         img = image.astype(np.float32)
         if self.config.normalize_pixels:
             img = img / 255.0
+        img = np.clip(img, 0.0, 1.0).astype(np.float32, copy=False)
+        if not np.isfinite(img).all():
+            raise ValueError("Non-finite values detected after image normalization")
         return img
 
     # ------------------------------------------------------------------
@@ -138,7 +217,7 @@ class CanonicalGraphBuilder:
             "gx"         — horizontal Sobel gradient
             "gy"         — vertical Sobel gradient
             "grad_mag"   — gradient magnitude
-            "contrast"   — local contrast (pixel - 3x3 mean)
+            "local_contrast" — abs(pixel - local_mean_3x3)
 
         Adding a new feature: implement a helper _compute_<name> and add
         its key to the dispatch dict below.  No other changes needed.
@@ -162,16 +241,16 @@ class CanonicalGraphBuilder:
             computed["y_norm"] = self._y_norm
 
         if _need("gx") or _need("gy") or _need("grad_mag"):
-            gx, gy = self._compute_gradients(image)
+            gx, gy, grad_mag = compute_gradients(image)
             if _need("gx"):
                 computed["gx"] = gx.ravel()
             if _need("gy"):
                 computed["gy"] = gy.ravel()
             if _need("grad_mag"):
-                computed["grad_mag"] = np.sqrt(gx ** 2 + gy ** 2).ravel().astype(np.float32)
+                computed["grad_mag"] = grad_mag.ravel()
 
-        if _need("contrast"):
-            computed["contrast"] = self._compute_local_contrast(image).ravel()
+        if _need("local_contrast"):
+            computed["local_contrast"] = compute_local_contrast(image, window_size=3).ravel()
 
         # Assemble columns in the declared order
         cols = []
@@ -179,11 +258,14 @@ class CanonicalGraphBuilder:
             if name not in computed:
                 raise ValueError(
                     f"Unknown node feature: {name!r}. "
-                    f"Supported: {list(computed) + ['gx','gy','grad_mag','contrast']}"
+                    f"Supported: {list(computed) + ['gx', 'gy', 'grad_mag', 'local_contrast']}"
                 )
             cols.append(computed[name])
 
-        return np.stack(cols, axis=1).astype(np.float32)   # [N, d]
+        node_features = np.stack(cols, axis=1).astype(np.float32)   # [N, d]
+        if not np.isfinite(node_features).all():
+            raise ValueError("Non-finite values detected in node_features")
+        return node_features
 
     # ------------------------------------------------------------------
     # Dynamic edge attributes
@@ -231,46 +313,7 @@ class CanonicalGraphBuilder:
             M = len(self._src_ids)
             return np.zeros((M, 0), dtype=np.float32)
 
-        return np.stack(cols, axis=1).astype(np.float32)   # [M, D]
-
-    # ------------------------------------------------------------------
-    # Gradient helpers
-    # ------------------------------------------------------------------
-
-    def _compute_gradients(
-        self, image: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Central-difference gradient, vectorized.
-
-        Returns
-        -------
-        gx, gy : float32 arrays of shape (H, W)
-        """
-        gx = np.zeros_like(image, dtype=np.float32)
-        gy = np.zeros_like(image, dtype=np.float32)
-
-        # gx: central difference on x-axis
-        gx[:, 1:-1] = (image[:, 2:] - image[:, :-2]) / 2.0
-        gx[:, 0]    = image[:, 1]  - image[:, 0]
-        gx[:, -1]   = image[:, -1] - image[:, -2]
-
-        # gy: central difference on y-axis
-        gy[1:-1, :] = (image[2:, :] - image[:-2, :]) / 2.0
-        gy[0, :]    = image[1, :]  - image[0, :]
-        gy[-1, :]   = image[-1, :] - image[-2, :]
-
-        return gx, gy
-
-    def _compute_local_contrast(self, image: np.ndarray) -> np.ndarray:
-        """
-        Local contrast = pixel - mean(3×3 patch).
-        Uses numpy convolution-style approach with reflection padding.
-
-        Returns
-        -------
-        float32 (H, W)
-        """
-        from scipy.ndimage import uniform_filter
-        mean_patch = uniform_filter(image.astype(np.float64), size=3).astype(np.float32)
-        return (image - mean_patch).astype(np.float32)
+        edge_attr = np.stack(cols, axis=1).astype(np.float32)   # [M, D]
+        if not np.isfinite(edge_attr).all():
+            raise ValueError("Non-finite values detected in dynamic edge attributes")
+        return edge_attr

@@ -49,8 +49,8 @@ def build_dataloader(
     ----------
     config         : full config dict (từ load_config)
     graph_repo_path: đường dẫn đến thư mục gốc của graph repository.
-                     Local  : "artifacts/graph_repo"
-                     Kaggle : "/kaggle/input/fer-graph-repo/graph_repo"
+                     Local  : "artifacts/graph_repo_v2"
+                     Kaggle : "/kaggle/input/fer-graph-repo-v2/graph_repo_v2"
 
     Returns
     -------
@@ -86,7 +86,7 @@ def build_dataloader(
         # dataset_path được resolve từ subgraph_dataset_path trong config
         subgraph_dataset_path = config.get(
             "subgraph_dataset_path",
-            "artifacts/subgraph_graph_dataset",
+            "artifacts/subgraph_graph_dataset_v2",
         )
         print(f"--- Precomputed dataset: {subgraph_dataset_path}")
         model_name = config.get("model", {}).get("name", "subgraph_mlp_baseline")
@@ -370,6 +370,7 @@ def _collate_fn_gnn(batch):
     masks   = torch.stack([s["mask"]    for s in batch])   # [B, K]
     centers = torch.stack([s["centers"] for s in batch])   # [B, K, 2]
     ys      = torch.stack([s["y"]       for s in batch])   # [B]
+    graph_ids = torch.tensor([int(s["graph_id"]) for s in batch], dtype=torch.long)
 
     edge_indices = [s["edge_index"] for s in batch]   # list of [2, E_i]
     edge_attrs   = [s["edge_attr"]  for s in batch]   # list of [E_i, 1]
@@ -396,6 +397,7 @@ def _collate_fn_gnn(batch):
         "edge_valid" : edge_valid,
         "centers"    : centers,
         "y"          : ys,
+        "graph_id"   : graph_ids,
     }
 
 
@@ -416,7 +418,7 @@ def _validate_repo(repo_path: str) -> None:
             f"      --train_csv data/train.csv \\\n"
             f"      --val_csv   data/val.csv \\\n"
             f"      --test_csv  data/test.csv \\\n"
-            f"      --repo_root artifacts/graph_repo\n\n"
-            f"  Kaggle : Upload artifacts/graph_repo/ lên Kaggle dataset 'fer-graph-repo',\n"
-            f"           set graph_repo_path: '/kaggle/input/fer-graph-repo/graph_repo' trong base.yaml.\n"
+            f"      --repo_root artifacts/graph_repo_v2\n\n"
+            f"  Kaggle : Upload artifacts/graph_repo_v2/ lên Kaggle dataset 'fer-graph-repo-v2',\n"
+            f"           set graph_repo_path: '/kaggle/input/fer-graph-repo-v2/graph_repo_v2' trong env.yaml.\n"
         )

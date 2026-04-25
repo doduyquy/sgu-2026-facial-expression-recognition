@@ -19,14 +19,14 @@ Usage
         --train_csv data/fer13-split/train.csv \\
         --val_csv   data/fer13-split/val.csv \\
         --test_csv  data/fer13-split/test.csv \\
-        --repo_root artifacts/graph_repo
+        --repo_root artifacts/graph_repo_v2
 
     # With custom chunk size and 4-connectivity
     python scripts/build_graph_repository.py \\
         --train_csv data/fer13-split/train.csv \\
         --val_csv   data/fer13-split/val.csv \\
         --test_csv  data/fer13-split/test.csv \\
-        --repo_root artifacts/graph_repo \\
+        --repo_root artifacts/graph_repo_v2 \\
         --chunk_size 1000 \\
         --connectivity 4
 """
@@ -76,8 +76,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--train_csv",    required=True,  help="Path to train.csv")
     p.add_argument("--val_csv",      required=True,  help="Path to val.csv")
     p.add_argument("--test_csv",     required=True,  help="Path to test.csv")
-    p.add_argument("--repo_root",    default="artifacts/graph_repo",
-                   help="Output repository root (default: artifacts/graph_repo)")
+    p.add_argument("--repo_root",    default="artifacts/graph_repo_v2",
+                   help="Output repository root (default: artifacts/graph_repo_v2)")
     p.add_argument("--chunk_size",   type=int, default=500,
                    help="Samples per chunk file (default: 500)")
     p.add_argument("--connectivity", type=int, default=8, choices=[4, 8],
@@ -169,6 +169,10 @@ def _validate_pixel_graph(pg, shared: SharedGraphStructure) -> None:
         raise ValueError(f"graph_id={pg.graph_id}: NaN in node_features")
     if torch.isnan(pg.edge_attr_dynamic).any():
         raise ValueError(f"graph_id={pg.graph_id}: NaN in edge_attr_dynamic")
+    if torch.isinf(pg.node_features).any():
+        raise ValueError(f"graph_id={pg.graph_id}: Inf in node_features")
+    if torch.isinf(pg.edge_attr_dynamic).any():
+        raise ValueError(f"graph_id={pg.graph_id}: Inf in edge_attr_dynamic")
 
 
 # ===========================================================================
@@ -219,7 +223,7 @@ def main() -> None:
     elapsed_total = time.perf_counter() - t_total
     log.info("═" * 60)
     log.info("Repository built in %.1f s → %s", elapsed_total, args.repo_root)
-    log.info("Ready to upload artifacts/graph_repo/ to Kaggle as a dataset.")
+    log.info("Ready to upload artifacts/graph_repo_v2/ to Kaggle as a dataset.")
 
 
 if __name__ == "__main__":

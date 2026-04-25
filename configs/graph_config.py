@@ -18,7 +18,7 @@ from typing import List, Optional
 # Version tag — bump whenever graph structure or feature semantics change.
 # This is embedded in the shared_graph.pt so you can detect stale repos.
 # ---------------------------------------------------------------------------
-GRAPH_CONFIG_VERSION = "1.0.0"
+GRAPH_CONFIG_VERSION = "2.0.0"
 
 
 @dataclass
@@ -48,12 +48,15 @@ class GraphConfig:
     # ---- Normalization -------------------------------------------------------
     normalize_pixels: bool = True  # divide raw [0,255] → [0,1]
 
-    # ---- Node features (baseline: intensity, x_norm, y_norm) -----------------
-    # Extendable: add "gx", "gy", "grad_mag", "contrast" here later.
+    # ---- Node features -------------------------------------------------------
     node_feature_names: List[str] = field(default_factory=lambda: [
         "intensity",
         "x_norm",
         "y_norm",
+        "gx",
+        "gy",
+        "grad_mag",
+        "local_contrast",
     ])
 
     # ---- Static edge features (topology-only, shared across all images) ------
@@ -74,7 +77,7 @@ class GraphConfig:
 
     # ---- Repository ----------------------------------------------------------
     chunk_size: int = 500          # samples per chunk file
-    repo_root: str = "artifacts/graph_repo"
+    repo_root: str = "artifacts/graph_repo_v2"
 
     # ---- Traceability --------------------------------------------------------
     version: str = GRAPH_CONFIG_VERSION
@@ -131,7 +134,15 @@ class GraphConfig:
             normalize_pixels=g.get("normalize_pixels", True),
             node_feature_names=g.get("node_feature_names",
                                      g.get("node_features",
-                                           ["intensity", "x_norm", "y_norm"])),
+                                           [
+                                               "intensity",
+                                               "x_norm",
+                                               "y_norm",
+                                               "gx",
+                                               "gy",
+                                               "grad_mag",
+                                               "local_contrast",
+                                           ])),
             edge_static_feature_names=g.get("edge_static_feature_names",
                                             ["dx", "dy", "dist"]),
             edge_dynamic_feature_names=g.get("edge_dynamic_feature_names",
@@ -139,7 +150,7 @@ class GraphConfig:
                                               "intensity_similarity"]),
             intensity_similarity_alpha=g.get("intensity_similarity_alpha", 1.0),
             chunk_size=r.get("chunk_size", 500),
-            repo_root=r.get("repo_root", "artifacts/graph_repo"),
+            repo_root=r.get("repo_root", "artifacts/graph_repo_v2"),
             version=g.get("version", GRAPH_CONFIG_VERSION),
         )
 
