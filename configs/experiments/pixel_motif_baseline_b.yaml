@@ -1,0 +1,54 @@
+experiment:
+  name: pixel_motif_baseline_b
+  description: "Baseline B: descriptor-only motif-level GNN, best current reference."
+
+data:
+  recipe: pixel_motif_v2
+  csv_root: auto
+  artifact_root: /kaggle/working/artifacts
+  stage: all
+  skip_existing: true
+  smoke: false
+  smoke_samples: 100
+
+  # Fair baseline setting.
+  edge_attr_mode: spatial
+  pixel_motif_dir: /kaggle/working/artifacts/pixel_motif_dataset_v2
+
+  graph:
+    chunk_size: 500
+    connectivity: 8
+
+  candidates:
+    max_candidates: 128
+    seed_stride: 4
+    radii: [1, 2]
+    coverage_grid: [4, 4]
+    log_every: 500
+
+  motif_bank:
+    num_motifs_per_class: 16
+    max_subgraphs_per_class: 50000
+    alpha: 0.5
+    seed: 42
+    num_exemplars: 5
+
+  motif_dataset:
+    top_k: 32
+    knn_k: 4
+    beta: 0.5
+    gamma: 0.25
+    eta: 0.05
+    diversity_sigma: 0.12
+
+training:
+  enabled: true
+  env: kaggle
+  config: pixel_motif_guided_gnn_motif_norm
+  epochs: 100
+  no_wandb: false
+  debug_batch: false
+
+outputs:
+  zip_outputs: true
+  zip_name: pixel_motif_baseline_b_outputs.zip

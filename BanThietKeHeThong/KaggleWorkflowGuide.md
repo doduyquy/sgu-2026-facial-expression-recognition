@@ -1,4 +1,4 @@
-# Kaggle Workflow Guide cho Pixel-preserving Motif V2
+﻿# Kaggle Workflow Guide cho Pixel-preserving Motif V2
 
 File này dùng để nhắc mọi lần code tiếp, debug, hoặc nhờ AI chỉnh sửa project:
 
@@ -7,12 +7,66 @@ Local chỉ dùng để code/test nhỏ.
 Kaggle là nơi build artifact nặng và train model chính.
 ```
 
-Project hiện có 2 notebook Kaggle chính:
+Workflow Kaggle hiện tại chỉ có **1 notebook chính**:
 
-1. `kaggle_build_pixel_motif_dataset_v2.ipynb`
-2. `kaggle_train_pixel_motif_baseline.ipynb`
+```text
+kaggle_pixel_motif_end_to_end.ipynb
+```
 
-Hai notebook này là entrypoint chính khi chạy trên Kaggle. Khi sửa code, cần hiểu notebook nào gọi đến file nào để tránh sửa sai nhánh.
+Notebook này chạy một luồng duy nhất:
+
+```text
+CSV FER-2013
+-> graph_repo
+-> pixel_candidate_subgraphs_v2
+-> pixel_motif_bank_v2
+-> pixel_motif_dataset_v2
+-> debug batch nếu cần
+-> train
+-> evaluate
+-> zip outputs
+```
+
+Hai notebook cũ chỉ còn là legacy reference, không dùng cho experiment chính:
+
+1. `legacy/deprecated_notebooks/kaggle_build_pixel_motif_dataset_v2.ipynb`  # DEPRECATED
+2. `legacy/deprecated_notebooks/kaggle_train_pixel_motif_baseline.ipynb`    # DEPRECATED
+
+Lý do gộp: build dataset ở notebook A rồi publish thành Kaggle Dataset, sau đó notebook B scan `/kaggle/input` rất dễ train nhầm dataset/config. Từ giờ data vừa sinh trong cùng run sẽ được train ngay, không có bước handoff artifact rời.
+
+Nguồn sự thật của mỗi run là experiment config:
+
+```text
+configs/experiments/pixel_motif_baseline_b.yaml
+configs/experiments/hierarchical_motif_gnn_c.yaml
+```
+
+Entrypoint script:
+
+```text
+scripts/run_experiment.py
+```
+
+Pipeline API cố định:
+
+```text
+src/pipeline/artifact_builder.py
+src/pipeline/experiment_runner.py
+```
+
+Nguyên tắc template:
+
+```text
+Muốn thử model mới:
+1. thêm src/models/<model>.py
+2. register model trong src/models/__init__.py
+3. thêm config model nếu cần
+4. thêm/copy một file configs/experiments/<experiment>.yaml
+5. đổi EXPERIMENT trong kaggle_pixel_motif_end_to_end.ipynb
+6. chạy
+```
+
+Không sửa notebook, không sửa runner, không sửa data pipeline nếu chỉ thay model.
 
 ## 0. Bài học bắt buộc khi tạo biến thể dataset/model mới
 
@@ -52,7 +106,7 @@ thì phải kiểm tra đủ 6 điểm sau:
    File cần kiểm tra:
 
    ```text
-   scripts/run_pixel_motif_v2_pipeline.py
+   legacy/scripts/run_pixel_motif_v2_pipeline.py
    scripts/precompute_pixel_motif_dataset.py
    ```
 
@@ -68,7 +122,7 @@ thì phải kiểm tra đủ 6 điểm sau:
    File:
 
    ```text
-   kaggle_build_pixel_motif_dataset_v2.ipynb
+   legacy/deprecated_notebooks/kaggle_build_pixel_motif_dataset_v2.ipynb
    ```
 
    Cần kiểm tra:
@@ -98,7 +152,7 @@ thì phải kiểm tra đủ 6 điểm sau:
    File:
 
    ```text
-   kaggle_train_pixel_motif_baseline.ipynb
+   legacy/deprecated_notebooks/kaggle_train_pixel_motif_baseline.ipynb
    ```
 
    Cần kiểm tra:
@@ -112,7 +166,7 @@ thì phải kiểm tra đủ 6 điểm sau:
 
    ```text
    hierarchical -> configs/hierarchical_motif_gnn.yaml
-   rich         -> configs/pixel_motif_guided_gnn_rich_edges.yaml
+   rich         -> legacy/configs/pixel_motif_guided_gnn_rich_edges.yaml
    spatial      -> configs/pixel_motif_guided_gnn_motif_norm.yaml
    ```
 
@@ -193,12 +247,120 @@ meta.pt và shape edge_attr mới là sự thật.
 Notebook A và Notebook B luôn phải được sửa theo cặp khi thêm biến thể dataset.
 ```
 
-## 1. Notebook A: Build Pixel Motif Dataset
+## 1. Workflow chính: End-to-end Pixel Motif Experiment
 
 File:
 
 ```text
-kaggle_build_pixel_motif_dataset_v2.ipynb
+kaggle_pixel_motif_end_to_end.ipynb
+```
+
+Notebook này chỉ cần Kaggle input chứa CSV:
+
+```text
+train.csv
+val.csv
+test.csv
+```
+
+Không add pixel motif dataset prebuilt vào input cho workflow chính. Notebook sẽ gọi:
+
+```bash
+python -m scripts.run_experiment --config hierarchical_motif_gnn_c
+```
+
+hoặc baseline B:
+
+```bash
+python -m scripts.run_experiment --config pixel_motif_baseline_b
+```
+
+Luồng này tự dùng path vừa build:
+
+```text
+graph_repo_path              = /kaggle/working/artifacts/graph_repo
+pixel_motif_dataset_path     = /kaggle/working/artifacts/pixel_motif_dataset_v2
+```
+
+Vì vậy không còn tình huống train nhầm dataset từ `/kaggle/input`.
+
+### Experiment configs
+
+Baseline B tốt nhất hiện tại:
+
+```text
+configs/experiments/pixel_motif_baseline_b.yaml
+train.config = pixel_motif_guided_gnn_motif_norm
+edge_attr_mode = spatial
+```
+
+Cải tiến C hiện tại:
+
+```text
+configs/experiments/hierarchical_motif_gnn_c.yaml
+train.config = hierarchical_motif_gnn
+edge_attr_mode = spatial
+debug_hierarchical_batch = true
+```
+
+Điểm quan trọng: C vẫn dùng `edge_attr_mode = spatial` ở bản đầu để so sánh công bằng với B. Không bật rich edge trong experiment C đầu tiên.
+
+### Commands
+
+Chạy C end-to-end trên Kaggle:
+
+```bash
+python -m scripts.run_experiment \
+  --config hierarchical_motif_gnn_c
+```
+
+Chạy B end-to-end trên Kaggle:
+
+```bash
+python -m scripts.run_experiment \
+  --config pixel_motif_baseline_b
+```
+
+Smoke test:
+
+```bash
+python -m scripts.run_experiment \
+  --config hierarchical_motif_gnn_c \
+  --smoke \
+  --epochs 1 \
+  --no_wandb
+```
+
+Chỉ build artifact, chưa train:
+
+```bash
+python -m scripts.run_experiment \
+  --config hierarchical_motif_gnn_c \
+  --build_only
+```
+
+Chỉ kiểm tra hierarchical batch/forward/backward qua runner, chưa train full:
+
+```bash
+python -m scripts.run_experiment \
+  --config hierarchical_motif_gnn_c \
+  --debug_only
+```
+
+Train lại từ artifact vừa có trong `/kaggle/working/artifacts`:
+
+```bash
+python -m scripts.run_experiment \
+  --config hierarchical_motif_gnn_c \
+  --train_only
+```
+
+## 2. Legacy Notebook A: Build Pixel Motif Dataset
+
+File:
+
+```text
+legacy/deprecated_notebooks/kaggle_build_pixel_motif_dataset_v2.ipynb
 ```
 
 Mục tiêu:
@@ -280,7 +442,7 @@ Sau khi Notebook A chạy xong:
 Notebook A gọi script điều phối:
 
 ```text
-scripts/run_pixel_motif_v2_pipeline.py
+legacy/scripts/run_pixel_motif_v2_pipeline.py
 ```
 
 Script này gọi lần lượt:
@@ -343,12 +505,12 @@ rm -rf /kaggle/working/artifacts
 rm -rf /kaggle/working/sgu-2026-facial-expression-recognition
 ```
 
-## 2. Notebook B: Train Pixel Motif Baseline
+## 3. Legacy Notebook B: Train Pixel Motif Baseline
 
 File:
 
 ```text
-kaggle_train_pixel_motif_baseline.ipynb
+legacy/deprecated_notebooks/kaggle_train_pixel_motif_baseline.ipynb
 ```
 
 Mục tiêu:
@@ -399,7 +561,7 @@ Mapping config:
 ```text
 hierarchical -> configs/hierarchical_motif_gnn.yaml
 spatial      -> configs/pixel_motif_guided_gnn_motif_norm.yaml
-rich         -> configs/pixel_motif_guided_gnn_rich_edges.yaml
+rich         -> legacy/configs/pixel_motif_guided_gnn_rich_edges.yaml
 ```
 
 Với `MODEL_VARIANT = "hierarchical"` cần add thêm Kaggle Dataset graph repo:
@@ -444,7 +606,7 @@ configs/pixel_motif_guided_gnn_motif_norm.yaml
 Config rich edge:
 
 ```text
-configs/pixel_motif_guided_gnn_rich_edges.yaml
+legacy/configs/pixel_motif_guided_gnn_rich_edges.yaml
 ```
 
 Config hierarchical C:
@@ -456,7 +618,7 @@ configs/hierarchical_motif_gnn.yaml
 Config sanity MLP nếu bật:
 
 ```text
-configs/pixel_motif_guided_mlp_clean.yaml
+legacy/configs/pixel_motif_guided_mlp_clean.yaml
 ```
 
 Các module train liên quan:
@@ -548,7 +710,7 @@ Hai file đó dùng cho ablation / thử nghiệm, không phải baseline chính
 File:
 
 ```text
-configs/pixel_motif_guided_gnn_rich_edges.yaml
+legacy/configs/pixel_motif_guided_gnn_rich_edges.yaml
 ```
 
 Dùng cho dataset:
@@ -643,7 +805,7 @@ configs/*.yaml
 Chỉ cần chạy:
 
 ```text
-kaggle_train_pixel_motif_baseline.ipynb
+legacy/deprecated_notebooks/kaggle_train_pixel_motif_baseline.ipynb
 ```
 
 Không cần build lại dataset.
@@ -727,7 +889,7 @@ motif_dataset
 File:
 
 ```text
-scripts/run_pixel_motif_v2_pipeline.py
+legacy/scripts/run_pixel_motif_v2_pipeline.py
 ```
 
 Các stage:
@@ -753,7 +915,7 @@ Các option quan trọng:
 Ví dụ build full trên Kaggle:
 
 ```bash
-python scripts/run_pixel_motif_v2_pipeline.py \
+python legacy/scripts/run_pixel_motif_v2_pipeline.py \
   --stage all \
   --csv_root /kaggle/input/fer13-split \
   --out_root /kaggle/working/artifacts \
@@ -764,7 +926,7 @@ python scripts/run_pixel_motif_v2_pipeline.py \
 Ví dụ smoke test:
 
 ```bash
-python scripts/run_pixel_motif_v2_pipeline.py \
+python legacy/scripts/run_pixel_motif_v2_pipeline.py \
   --stage all \
   --csv_root /kaggle/input/fer13-split \
   --out_root /kaggle/working/artifacts_smoke \
@@ -777,7 +939,7 @@ python scripts/run_pixel_motif_v2_pipeline.py \
 Ví dụ chỉ build lại rich motif dataset từ candidates và motif bank đã có:
 
 ```bash
-python scripts/run_pixel_motif_v2_pipeline.py \
+python legacy/scripts/run_pixel_motif_v2_pipeline.py \
   --stage motif_dataset \
   --out_root /kaggle/working/artifacts \
   --edge_attr_mode rich
@@ -914,15 +1076,15 @@ Khi yêu cầu AI sửa code, nên nói rõ:
 
 ```text
 Tôi đang chạy project theo workflow Kaggle 2 notebook:
-- kaggle_build_pixel_motif_dataset_v2.ipynb để build artifact
-- kaggle_train_pixel_motif_baseline.ipynb để train
+- legacy/deprecated_notebooks/kaggle_build_pixel_motif_dataset_v2.ipynb để build artifact
+- legacy/deprecated_notebooks/kaggle_train_pixel_motif_baseline.ipynb để train
 
 Baseline chính dùng:
 - configs/pixel_motif_guided_gnn_motif_norm.yaml
 - artifacts/pixel_motif_dataset_v2 hoặc Kaggle Dataset pixel_motif_dataset_v2
 
 Nếu dùng rich edge thì phải nói rõ:
-- configs/pixel_motif_guided_gnn_rich_edges.yaml
+- legacy/configs/pixel_motif_guided_gnn_rich_edges.yaml
 - pixel_motif_dataset_v2_rich_edges
 - edge_attr_dim = 13
 - Notebook A: EDGE_ATTR_MODE = "rich"
@@ -952,3 +1114,5 @@ Nếu sửa topology/matching/motif thì phải nói rõ cần chạy lại Note
 - sửa Notebook A mà quên sửa Notebook B
 - train rich dataset bằng config spatial hoặc ngược lại
 - publish Kaggle Dataset kèm cả `/kaggle/working/artifacts` làm dataset phình lên nhiều GB
+
+
