@@ -14,7 +14,7 @@ data:
   edge_attr_mode: spatial
   motif_bank_dir: /kaggle/working/artifacts/pixel_motif_bank_v3_d2a
   pixel_motif_dir: /kaggle/working/artifacts/pixel_motif_dataset_v3_d2a
-  build_hierarchical_cache: false
+  build_hierarchical_cache: true
 
   graph:
     chunk_size: 500

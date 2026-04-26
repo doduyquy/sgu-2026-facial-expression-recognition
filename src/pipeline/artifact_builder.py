@@ -523,21 +523,35 @@ def load_artifacts_from_input(
     shutil.copytree(src, dst)
     print(f"[load_artifacts] Done.", flush=True)
 
-    # Auto-detect: if V3 hierarchical cache exists in the artifact, prefer it as pixel_motif_dir
+    # Auto-detect the most specific pixel motif dataset available.
+    d2a_dir = dst / "pixel_motif_dataset_v3_d2a"
     v3_dir = dst / "pixel_motif_dataset_v3_hierarchical"
-    if has_hierarchical_cache(v3_dir):
+    v2_dir = dst / "pixel_motif_dataset_v2"
+    if has_pixel_motif_dataset(d2a_dir):
+        pixel_motif_dir = d2a_dir
+        print(f"[load_artifacts] Auto-detected D2A dataset: {d2a_dir}", flush=True)
+    elif has_hierarchical_cache(v3_dir):
         pixel_motif_dir = v3_dir
         print(f"[load_artifacts] Auto-detected V3 hierarchical cache: {v3_dir}", flush=True)
-    else:
-        pixel_motif_dir = dst / "pixel_motif_dataset_v2"
+    elif has_pixel_motif_dataset(v2_dir):
+        pixel_motif_dir = v2_dir
         print(f"[load_artifacts] Using V2 dataset: {pixel_motif_dir}", flush=True)
+    else:
+        raise FileNotFoundError(
+            "Could not find a supported pixel motif dataset in loaded artifacts. "
+            f"Checked: {d2a_dir}, {v3_dir}, {v2_dir}"
+        )
+
+    d2a_bank_dir = dst / "pixel_motif_bank_v3_d2a"
+    v2_bank_dir = dst / "pixel_motif_bank_v2"
+    motif_bank_dir = d2a_bank_dir if has_motif_bank(d2a_bank_dir) else v2_bank_dir
 
     # Return paths using the same schema as resolve_artifact_paths
     return {
         "out_root": dst,
         "graph_repo": dst / "graph_repo",
         "candidate_dir": dst / "pixel_candidate_subgraphs_v2",
-        "motif_bank_dir": dst / "pixel_motif_bank_v2",
+        "motif_bank_dir": motif_bank_dir,
         "pixel_motif_dir": pixel_motif_dir,
     }
 
