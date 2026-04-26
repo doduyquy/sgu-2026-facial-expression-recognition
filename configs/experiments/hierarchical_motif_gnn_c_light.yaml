@@ -1,0 +1,55 @@
+experiment:
+  name: hierarchical_motif_gnn_c_light
+  description: "Ablation C-light: one internal GNN layer with 64-dim output."
+
+data:
+  recipe: pixel_motif_v2
+  csv_root: auto
+  artifact_root: /kaggle/working/artifacts
+  stage: all
+  skip_existing: true
+  smoke: false
+  smoke_samples: 100
+
+  edge_attr_mode: spatial
+  pixel_motif_dir: /kaggle/working/artifacts/pixel_motif_dataset_v3_hierarchical
+  build_hierarchical_cache: false
+
+  graph:
+    chunk_size: 500
+    connectivity: 8
+
+  candidates:
+    max_candidates: 128
+    seed_stride: 4
+    radii: [1, 2]
+    coverage_grid: [4, 4]
+    log_every: 500
+
+  motif_bank:
+    num_motifs_per_class: 16
+    max_subgraphs_per_class: 50000
+    alpha: 0.5
+    seed: 42
+    num_exemplars: 5
+
+  motif_dataset:
+    top_k: 32
+    knn_k: 4
+    beta: 0.5
+    gamma: 0.25
+    eta: 0.05
+    diversity_sigma: 0.12
+
+training:
+  enabled: true
+  env: kaggle
+  config: hierarchical_motif_gnn_c_light
+  epochs: 80
+  no_wandb: false
+  debug_batch: true
+  debug_batch_size: 2
+
+outputs:
+  zip_outputs: true
+  zip_name: hierarchical_motif_gnn_c_light_outputs.zip
