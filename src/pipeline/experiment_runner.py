@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 from src.pipeline.artifact_builder import (
+    build_hierarchical_cache,
     ensure_pixel_motif_artifacts,
     load_artifacts_from_input,
     normalize_data_config,
@@ -203,7 +204,7 @@ def run_experiment(
         if artifact_input_path is None:
             raise ValueError(
                 "--artifact_input_path is required when mode=train_from_artifact.\n"
-                "Example: --artifact_input_path /kaggle/input/fer2013-pixel-motif-v2-spatial-r12-k32-n25/artifacts"
+                "Example: --artifact_input_path /kaggle/input/fer2013-pixel-motif-v2-hierarchial/artifacts"
             )
 
         print(f"artifact   : {artifact_input_path}", flush=True)
@@ -211,6 +212,16 @@ def run_experiment(
 
         # Copy artifact từ input -> working
         paths = load_artifacts_from_input(artifact_input_path, default_out_root)
+
+        # Nếu config yêu cầu V3 cache và chưa có -> build on top of V2
+        if bool(data_cfg.get("build_hierarchical_cache", False)):
+            v2_dir = paths["pixel_motif_dir"]  # V2 vừa copy từ input
+            v3_dir = paths["out_root"] / "pixel_motif_dataset_v3_hierarchical"
+            build_hierarchical_cache(
+                data_cfg_normalized, v2_dir, paths["graph_repo"], v3_dir, skip_existing=True
+            )
+            paths["pixel_motif_dir"] = v3_dir
+            print(f"[pipeline] Using V3 hierarchical cache: {v3_dir}", flush=True)
 
         # Validate manifest
         require_node_indices = bool(train_cfg.get("debug_batch", False))  # C cần node_indices

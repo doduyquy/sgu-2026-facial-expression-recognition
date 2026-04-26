@@ -105,6 +105,27 @@ def has_pixel_motif_dataset(path: Path) -> bool:
     return (path / "meta.pt").exists() and all((path / f"{split}_pixel_motif.pt").exists() for split in SPLITS)
 
 
+def _check_sub_x_cache(path: Path) -> bool:
+    """Check if V3 cache tensors (sub_x, sub_adj) exist in first sample."""
+    try:
+        import torch as _torch
+        pt = path / "train_pixel_motif.pt"
+        if not pt.exists():
+            return False
+        data = _torch.load(pt, map_location="cpu", weights_only=False)
+        if isinstance(data, list) and len(data) > 0:
+            s = data[0]
+            return "sub_x" in s and "sub_adj" in s
+    except Exception:
+        pass
+    return False
+
+
+def has_hierarchical_cache(path: Path) -> bool:
+    """Check if V3 hierarchical cache is complete."""
+    return has_pixel_motif_dataset(path) and _check_sub_x_cache(path)
+
+
 def resolve_stages(stage: str) -> list[str]:
     if stage == "all":
         return list(STAGE_ORDER)
@@ -380,8 +401,10 @@ def write_manifest(
             "descriptor_dim": descriptor_dim,
             "has_node_indices": has_node_indices,
             "has_node_mask": has_node_mask,
-            "has_sub_x_cache": False,
-            "has_sub_adj_cache": False,
+            "has_sub_x_cache": _check_sub_x_cache(pixel_motif_dir),
+            "has_sub_adj_cache": _check_sub_x_cache(pixel_motif_dir),
+            "sub_x_dtype": "float32",
+            "sub_adj_dtype": "uint8",
             "edge_attr_mode": str(data_cfg.get("edge_attr_mode", "spatial")),
         },
         "compatible_models": ["motif_guided_gnn", "hierarchical_motif_gnn"],
@@ -483,6 +506,28 @@ def load_artifacts_from_input(
     }
 
 
+def build_hierarchical_cache(
+    data_cfg: dict[str, Any],
+    pixel_motif_dir: Path,
+    graph_repo: Path,
+    out_dir: Path,
+    skip_existing: bool,
+) -> None:
+    """Precompute V3 hierarchical subgraph tensors (sub_x, sub_adj, sub_node_mask)."""
+    if skip_existing and has_hierarchical_cache(out_dir):
+        print(f"[skip] hierarchical cache exists: {out_dir}", flush=True)
+        return
+    cmd = [
+        sys.executable,
+        "scripts/precompute_hierarchical_motif_dataset.py",
+        "--pixel_motif_dataset_path", str(pixel_motif_dir),
+        "--graph_repo_path", str(graph_repo),
+        "--out_dir", str(out_dir),
+        "--log_every", str(data_cfg.get("log_every", 500)),
+    ]
+    run_command(cmd)
+
+
 def zip_artifacts(out_root: Path, zip_path: Path) -> None:
     """Zip the entire artifacts directory for download/publishing."""
     if not out_root.exists():
@@ -527,6 +572,14 @@ def ensure_pixel_motif_artifacts(
                 paths["pixel_motif_dir"],
                 skip_existing,
             )
+
+    # Optional V3 hierarchical cache — only when build_hierarchical_cache: true in data config
+    if bool(data_cfg.get("build_hierarchical_cache", False)):
+        v2_dir = paths["pixel_motif_dir"]  # source: V2
+        v3_dir = paths["out_root"] / "pixel_motif_dataset_v3_hierarchical"
+        build_hierarchical_cache(data_cfg, v2_dir, paths["graph_repo"], v3_dir, skip_existing)
+        paths["pixel_motif_dir"] = v3_dir  # switch downstream to V3
+        print(f"[pipeline] Using V3 hierarchical cache: {v3_dir}", flush=True)
 
     print_artifact_summary(
         [paths["graph_repo"], paths["candidate_dir"], paths["motif_bank_dir"], paths["pixel_motif_dir"]]

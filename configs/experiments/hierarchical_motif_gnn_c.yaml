@@ -13,7 +13,16 @@ data:
 
   # Keep spatial motif edges for the first fair C-vs-B comparison.
   edge_attr_mode: spatial
-  pixel_motif_dir: /kaggle/working/artifacts/pixel_motif_dataset_v2
+
+  # V2 path (intermediate build): resolved automatically by pipeline.
+  # pixel_motif_dir points to V3 after hierarchical_cache stage.
+  pixel_motif_dir: /kaggle/working/artifacts/pixel_motif_dataset_v3_hierarchical
+
+  # Build V3 hierarchical cache (sub_x/sub_adj precomputed) after V2.
+  # sub_x: float32 [K, Nmax, 7]
+  # sub_adj: uint8  [K, Nmax, Nmax]  (cast to float in dataloader)
+  # sub_node_mask: bool [K, Nmax]
+  build_hierarchical_cache: true
 
   graph:
     chunk_size: 500
