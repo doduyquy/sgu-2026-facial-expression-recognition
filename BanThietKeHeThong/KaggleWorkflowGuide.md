@@ -14,6 +14,163 @@ Project hiện có 2 notebook Kaggle chính:
 
 Hai notebook này là entrypoint chính khi chạy trên Kaggle. Khi sửa code, cần hiểu notebook nào gọi đến file nào để tránh sửa sai nhánh.
 
+## 0. Bài học bắt buộc khi tạo biến thể dataset/model mới
+
+Lỗi đã gặp:
+
+```text
+Đã thêm bản rich edge trong code sinh dữ liệu,
+nhưng ban đầu chưa đồng bộ tên output dataset, config train,
+Notebook A và Notebook B.
+Kết quả là dữ liệu có thể đã là rich nhưng vẫn nằm trong folder tên cũ,
+dễ train nhầm config hoặc publish nhầm artifact.
+```
+
+Từ giờ, hễ tạo một biến thể mới như:
+
+```text
+spatial edge -> rich edge
+top_k 32 -> top_k 48
+radii 1 2 -> radii 1 2 3
+dataset v2 -> dataset v3
+```
+
+thì phải kiểm tra đủ 6 điểm sau:
+
+1. **Tên artifact cuối cùng**
+
+   Ví dụ:
+
+   ```text
+   pixel_motif_dataset_v2              # baseline spatial/old
+   pixel_motif_dataset_v2_rich_edges   # rich edge 13D
+   ```
+
+2. **Script build dataset**
+
+   File cần kiểm tra:
+
+   ```text
+   scripts/run_pixel_motif_v2_pipeline.py
+   scripts/precompute_pixel_motif_dataset.py
+   ```
+
+   Các option phải có và được truyền xuyên suốt:
+
+   ```text
+   --edge_attr_mode spatial|rich
+   --pixel_motif_dir <output_dir>       # nếu cần override tên output
+   ```
+
+3. **Notebook A phải build đúng biến thể**
+
+   File:
+
+   ```text
+   kaggle_build_pixel_motif_dataset_v2.ipynb
+   ```
+
+   Cần kiểm tra:
+
+   ```python
+   EDGE_ATTR_MODE = "rich"     # hoặc "spatial"
+   ```
+
+   Notebook A phải copy đúng thư mục final ra `/kaggle/working`:
+
+   ```text
+   rich    -> /kaggle/working/pixel_motif_dataset_v2_rich_edges
+   spatial -> /kaggle/working/pixel_motif_dataset_v2
+   ```
+
+   Sau khi copy, Notebook A phải xóa artifact trung gian và repo source:
+
+   ```text
+   /kaggle/working/artifacts
+   /kaggle/working/sgu-2026-facial-expression-recognition
+   ```
+
+   Lý do: Kaggle Dataset sẽ gom toàn bộ file còn lại trong `/kaggle/working`.
+
+4. **Notebook B phải train đúng config tương ứng**
+
+   File:
+
+   ```text
+   kaggle_train_pixel_motif_baseline.ipynb
+   ```
+
+   Cần kiểm tra:
+
+   ```python
+   DATASET_VARIANT = "rich"    # hoặc "spatial"
+   ```
+
+   Mapping phải đúng:
+
+   ```text
+   rich    -> configs/pixel_motif_guided_gnn_rich_edges.yaml
+   spatial -> configs/pixel_motif_guided_gnn_motif_norm.yaml
+   ```
+
+5. **Config train phải trỏ đúng dataset và edge_attr_dim**
+
+   Với rich edge:
+
+   ```yaml
+   data:
+     pixel_motif_dataset_path: artifacts/pixel_motif_dataset_v2_rich_edges
+
+   model:
+     use_edge_attr: true
+     edge_attr_dim: 13
+   ```
+
+   Với spatial baseline:
+
+   ```yaml
+   data:
+     pixel_motif_dataset_path: artifacts/pixel_motif_dataset_v2
+
+   model:
+     edge_attr_dim: 3
+   ```
+
+6. **Inspect dataset trước khi train**
+
+   Không tin vào tên folder. Phải kiểm tra nội dung:
+
+   ```bash
+   python scripts/inspect_pixel_motif_dataset.py --data_dir <dataset_path>
+   ```
+
+   Rich edge đúng phải thấy:
+
+   ```text
+   edge_attr: (128, 13)
+   ```
+
+   hoặc trong `meta.pt`:
+
+   ```text
+   edge_attr_mode: rich
+   edge_attr_dim: 13
+   ```
+
+   Spatial baseline đúng phải thấy:
+
+   ```text
+   edge_attr: (128, 3)
+   ```
+
+Nguyên tắc chốt:
+
+```text
+Tên folder chỉ là nhãn.
+meta.pt và shape edge_attr mới là sự thật.
+Notebook A và Notebook B luôn phải được sửa theo cặp khi thêm biến thể dataset.
+```
+
 ## 1. Notebook A: Build Pixel Motif Dataset
 
 File:
@@ -29,7 +186,7 @@ CSV FER-2013
 -> graph_repo
 -> pixel_candidate_subgraphs_v2
 -> pixel_motif_bank_v2
--> pixel_motif_dataset_v2
+-> pixel_motif_dataset_v2 hoặc pixel_motif_dataset_v2_rich_edges
 ```
 
 Notebook này chỉ nên chạy khi thay đổi các phần:
@@ -60,7 +217,8 @@ Notebook sẽ scan `/kaggle/input` để tìm folder chứa đủ 3 file này.
 Output sạch để tạo Kaggle Dataset mới:
 
 ```text
-/kaggle/working/pixel_motif_dataset_v2/
+/kaggle/working/pixel_motif_dataset_v2/ hoặc
+/kaggle/working/pixel_motif_dataset_v2_rich_edges/
   train_pixel_motif.pt
   val_pixel_motif.pt
   test_pixel_motif.pt
@@ -72,7 +230,7 @@ Sau khi Notebook A chạy xong:
 
 1. Save Version / Save & Run All.
 2. Vào output files của notebook.
-3. Tạo Kaggle Dataset mới từ `/kaggle/working/pixel_motif_dataset_v2`.
+3. Tạo Kaggle Dataset mới từ folder final còn lại trong `/kaggle/working`.
 4. Dataset này sẽ là input cho Notebook B.
 
 ### Notebook A gọi đến file nào?
@@ -119,12 +277,27 @@ Artifact trung gian của Notebook A:
 /kaggle/working/artifacts/pixel_candidate_subgraphs_v2/
 /kaggle/working/artifacts/pixel_motif_bank_v2/
 /kaggle/working/artifacts/pixel_motif_dataset_v2/
+/kaggle/working/artifacts/pixel_motif_dataset_v2_rich_edges/  # nếu EDGE_ATTR_MODE=rich
 ```
 
 Artifact cuối cùng cần publish:
 
 ```text
-/kaggle/working/pixel_motif_dataset_v2/
+/kaggle/working/pixel_motif_dataset_v2/              # spatial baseline
+/kaggle/working/pixel_motif_dataset_v2_rich_edges/   # rich edge
+```
+
+Notebook A hiện có biến:
+
+```python
+EDGE_ATTR_MODE = "rich"  # hoặc "spatial"
+```
+
+Sau khi copy final dataset, Notebook A phải cleanup để Kaggle Dataset không gom artifact nặng:
+
+```text
+rm -rf /kaggle/working/artifacts
+rm -rf /kaggle/working/sgu-2026-facial-expression-recognition
 ```
 
 ## 2. Notebook B: Train Pixel Motif Baseline
@@ -138,7 +311,7 @@ kaggle_train_pixel_motif_baseline.ipynb
 Mục tiêu:
 
 ```text
-pixel_motif_dataset_v2
+pixel_motif_dataset_v2 hoặc pixel_motif_dataset_v2_rich_edges
 -> inspect dataset
 -> train MLP sanity nếu cần
 -> train GNN baseline chính
@@ -171,6 +344,19 @@ meta.pt
 
 Notebook sẽ scan `/kaggle/input` để tìm folder chứa đủ các file này.
 
+Notebook B hiện có biến:
+
+```python
+DATASET_VARIANT = "rich"  # hoặc "spatial"
+```
+
+Mapping config:
+
+```text
+rich    -> configs/pixel_motif_guided_gnn_rich_edges.yaml
+spatial -> configs/pixel_motif_guided_gnn_motif_norm.yaml
+```
+
 ### Output Kaggle của Notebook B
 
 Train output nằm ở:
@@ -198,6 +384,12 @@ Config chính:
 
 ```text
 configs/pixel_motif_guided_gnn_motif_norm.yaml
+```
+
+Config rich edge:
+
+```text
+configs/pixel_motif_guided_gnn_rich_edges.yaml
 ```
 
 Config sanity MLP nếu bật:
@@ -281,6 +473,31 @@ configs/pixel_motif_guided_gnn.yaml
 
 Hai file đó dùng cho ablation / thử nghiệm, không phải baseline chính.
 
+### Config rich edge
+
+File:
+
+```text
+configs/pixel_motif_guided_gnn_rich_edges.yaml
+```
+
+Dùng cho dataset:
+
+```text
+pixel_motif_dataset_v2_rich_edges
+```
+
+Điểm bắt buộc:
+
+```yaml
+model:
+  use_edge_attr: true
+  edge_attr_dim: 13
+```
+
+Không train rich dataset bằng config spatial nếu `edge_attr` là 13 chiều.
+Không train spatial dataset bằng config rich nếu `edge_attr` là 3 chiều.
+
 ## 4. Khi sửa gì thì chạy notebook nào?
 
 ### Chỉ sửa model, loss, optimizer, trainer
@@ -310,6 +527,7 @@ Ví dụ:
 ```text
 src/motif_v2/matching.py
 scripts/precompute_pixel_motif_dataset.py
+src/motif_v2/topology.py  # nếu chỉ sửa hàm tạo edge giữa selected subgraphs
 ```
 
 Cần chạy lại Notebook A từ stage:
@@ -411,6 +629,7 @@ python scripts/run_pixel_motif_v2_pipeline.py \
   --stage all \
   --csv_root /kaggle/input/fer13-split \
   --out_root /kaggle/working/artifacts \
+  --edge_attr_mode rich \
   --skip_existing
 ```
 
@@ -421,9 +640,26 @@ python scripts/run_pixel_motif_v2_pipeline.py \
   --stage all \
   --csv_root /kaggle/input/fer13-split \
   --out_root /kaggle/working/artifacts_smoke \
+  --edge_attr_mode rich \
   --smoke \
   --smoke_samples 100 \
   --skip_existing
+```
+
+Ví dụ chỉ build lại rich motif dataset từ candidates và motif bank đã có:
+
+```bash
+python scripts/run_pixel_motif_v2_pipeline.py \
+  --stage motif_dataset \
+  --out_root /kaggle/working/artifacts \
+  --edge_attr_mode rich
+```
+
+Output mặc định:
+
+```text
+spatial -> /kaggle/working/artifacts/pixel_motif_dataset_v2
+rich    -> /kaggle/working/artifacts/pixel_motif_dataset_v2_rich_edges
 ```
 
 ## 6. Lệnh train baseline chính
@@ -445,6 +681,24 @@ Nếu dataset input không có thư mục con `pixel_motif_dataset_v2`, mà file
 ```
 
 Notebook B tự scan và dùng đúng folder tìm được, nên thường không cần sửa tay.
+
+### Lệnh train rich edge
+
+Trên Kaggle:
+
+```bash
+python -m scripts.train \
+  --config pixel_motif_guided_gnn_rich_edges \
+  --env kaggle \
+  --pixel_motif_dataset_path /kaggle/input/<dataset-name>/pixel_motif_dataset_v2_rich_edges \
+  --epochs 100
+```
+
+Nếu dataset input không có thư mục con `pixel_motif_dataset_v2_rich_edges`, mà file `.pt` nằm trực tiếp trong dataset root:
+
+```bash
+--pixel_motif_dataset_path /kaggle/input/<dataset-name>
+```
 
 ## 7. Kết quả baseline hiện tại
 
@@ -500,6 +754,13 @@ Baseline chính dùng:
 - configs/pixel_motif_guided_gnn_motif_norm.yaml
 - artifacts/pixel_motif_dataset_v2 hoặc Kaggle Dataset pixel_motif_dataset_v2
 
+Nếu dùng rich edge thì phải nói rõ:
+- configs/pixel_motif_guided_gnn_rich_edges.yaml
+- pixel_motif_dataset_v2_rich_edges
+- edge_attr_dim = 13
+- Notebook A: EDGE_ATTR_MODE = "rich"
+- Notebook B: DATASET_VARIANT = "rich"
+
 Nếu chỉ sửa model/train thì không được yêu cầu build lại dataset.
 Nếu sửa topology/matching/motif thì phải nói rõ cần chạy lại Notebook A từ stage nào.
 ```
@@ -511,4 +772,7 @@ Nếu sửa topology/matching/motif thì phải nói rõ cần chạy lại Note
 - sửa nhầm motif V1
 - train bằng config ablation thay vì baseline chính
 - quên `normalize_x: true`
-
+- tạo dataset mới nhưng không đổi tên output folder
+- sửa Notebook A mà quên sửa Notebook B
+- train rich dataset bằng config spatial hoặc ngược lại
+- publish Kaggle Dataset kèm cả `/kaggle/working/artifacts` làm dataset phình lên nhiều GB
