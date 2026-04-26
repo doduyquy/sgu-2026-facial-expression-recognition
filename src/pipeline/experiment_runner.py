@@ -223,14 +223,23 @@ def run_experiment(
             paths["pixel_motif_dir"] = v3_dir
             print(f"[pipeline] Using V3 hierarchical cache: {v3_dir}", flush=True)
 
-        # Validate manifest
+        # Validate manifest (optional — warn if manifest.json missing from older artifact uploads)
         require_node_indices = bool(train_cfg.get("debug_batch", False))  # C cần node_indices
-        validate_manifest(
-            paths["out_root"],
-            data_cfg_normalized,
-            require_node_indices=require_node_indices,
-            require_node_mask=require_node_indices,
-        )
+        manifest_path = paths["out_root"] / "manifest.json"
+        if manifest_path.exists():
+            validate_manifest(
+                paths["out_root"],
+                data_cfg_normalized,
+                require_node_indices=require_node_indices,
+                require_node_mask=require_node_indices,
+            )
+        else:
+            print(
+                "[warn] manifest.json not found in artifact root. "
+                "Skipping validation — make sure the artifact was built with the correct config. "
+                "Re-run with mode=build_and_train to regenerate a manifest.",
+                flush=True,
+            )
 
         print(f"graph_repo : {paths['graph_repo']}", flush=True)
         print(f"dataset    : {paths['pixel_motif_dir']}", flush=True)
