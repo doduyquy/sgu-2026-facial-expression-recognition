@@ -1,0 +1,73 @@
+data:
+  mode: pixel_motif
+  pixel_motif_dataset_path: artifacts/pixel_motif_dataset_v2
+  batch_size: 64
+  num_workers: 2
+  pin_memory: true
+  normalize_x: true
+  return_subgraph_tensors: true
+
+model:
+  name: hierarchical_motif_gnn
+  num_classes: 7
+
+  # internal pixel-subgraph encoder
+  internal_input_dim: 7
+  internal_hidden_dim: 64
+  internal_out_dim: 128
+  internal_num_layers: 2
+  internal_dropout: 0.25
+  internal_readout: mean_max
+  internal_use_edge_attr: false
+
+  # original descriptor branch
+  use_descriptor: true
+  descriptor_dim: 41
+
+  # motif metadata features
+  use_match_score_feature: true
+  use_disc_score_feature: true
+  use_matched_class_onehot: true
+
+  # motif-level GNN
+  motif_hidden_dim: 128
+  motif_num_layers: 2
+  motif_dropout: 0.3
+  motif_use_edge_attr: false
+  motif_edge_attr_dim: 3
+  pooling: motif_attention
+  use_motif_score_vector: true
+  use_match_score_weighting: true
+
+loss:
+  name: weighted_ce
+  use_class_weights: true
+  class_weight_power: 0.5
+  class_counts: [3995, 436, 4097, 7215, 4830, 3171, 4965]
+
+optimizer:
+  name: AdamW
+  lr: 0.0005
+  weight_decay: 0.0001
+
+scheduler:
+  name: ReduceLROnPlateau
+  mode: max
+  monitor: val_macro_f1
+  factor: 0.5
+  patience: 5
+  min_lr: 0.000001
+
+training:
+  loss: weighted_ce
+  class_weight_power: 0.5
+  lr: 0.0005
+  weight_decay: 0.0001
+  epochs: 80
+  early_stopping_patience: 15
+  early_stop: 15
+  monitor: val_macro_f1
+  grad_clip_norm: 5.0
+
+logging:
+  use_wandb: true

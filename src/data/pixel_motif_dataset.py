@@ -8,6 +8,75 @@ from typing import Dict, List
 import torch
 from torch.utils.data import Dataset
 
+from data.chunked_graph_dataset import ChunkedGraphDataset
+
+
+def remap_local_edges(node_indices: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+    """Keep full-graph edges whose endpoints are in node_indices and remap them to local ids."""
+    valid_nodes = [int(v) for v in torch.as_tensor(node_indices).long().tolist() if int(v) >= 0]
+    local = {node_id: local_id for local_id, node_id in enumerate(valid_nodes)}
+    if not local or edge_index.numel() == 0:
+        return torch.empty((2, 0), dtype=torch.long)
+
+    src_out: list[int] = []
+    dst_out: list[int] = []
+    for src, dst in zip(edge_index[0].tolist(), edge_index[1].tolist()):
+        src_i = int(src)
+        dst_i = int(dst)
+        if src_i in local and dst_i in local:
+            src_out.append(local[src_i])
+            dst_out.append(local[dst_i])
+    if not src_out:
+        return torch.empty((2, 0), dtype=torch.long)
+    return torch.tensor([src_out, dst_out], dtype=torch.long)
+
+
+def build_subgraph_tensor_from_node_indices(
+    node_features: torch.Tensor,
+    full_adj: torch.Tensor,
+    node_indices: torch.Tensor,
+    node_mask: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Build padded tensors for selected subgraphs from global node ids.
+
+    Returns:
+        sub_x:         [K, Nmax, F]
+        sub_node_mask: [K, Nmax]
+        sub_adj:       [K, Nmax, Nmax]
+    """
+    node_indices = torch.as_tensor(node_indices).long()
+    K, Nmax = node_indices.shape
+    F_dim = int(node_features.shape[1])
+    if node_mask is None:
+        node_mask = node_indices.ge(0)
+    else:
+        node_mask = torch.as_tensor(node_mask).bool() & node_indices.ge(0)
+
+    sub_x = torch.zeros((K, Nmax, F_dim), dtype=node_features.dtype)
+    sub_node_mask = torch.zeros((K, Nmax), dtype=torch.bool)
+    sub_adj = torch.zeros((K, Nmax, Nmax), dtype=torch.float32)
+    for k in range(K):
+        valid = node_mask[k]
+        if not bool(valid.any()):
+            continue
+        nodes = node_indices[k, valid].long()
+        n = int(nodes.numel())
+        sub_x[k, :n] = node_features[nodes]
+        sub_node_mask[k, :n] = True
+        sub_adj[k, :n, :n] = full_adj[nodes][:, nodes].to(dtype=torch.float32)
+    return sub_x, sub_node_mask, sub_adj
+
+
+def pad_selected_subgraphs(
+    node_features: torch.Tensor,
+    full_adj: torch.Tensor,
+    node_indices: torch.Tensor,
+    node_mask: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compatibility wrapper for building padded selected-subgraph tensors."""
+    return build_subgraph_tensor_from_node_indices(node_features, full_adj, node_indices, node_mask=node_mask)
+
 
 class PixelMotifDataset(Dataset):
     """Load pixel-preserving motif dataset V2."""
@@ -19,12 +88,21 @@ class PixelMotifDataset(Dataset):
     }
     _STATS_CACHE: Dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
 
-    def __init__(self, data_dir: str | Path, split: str, normalize_x: bool = False) -> None:
+    def __init__(
+        self,
+        data_dir: str | Path,
+        split: str,
+        normalize_x: bool = False,
+        return_subgraph_tensors: bool = False,
+        graph_repo_path: str | Path | None = None,
+        graph_cache_chunks: int = 1,
+    ) -> None:
         if split not in self.FILENAMES:
             raise ValueError(f"Unknown split {split!r}")
         self.data_dir = Path(data_dir)
         self.split = split
         self.normalize_x = bool(normalize_x)
+        self.return_subgraph_tensors = bool(return_subgraph_tensors)
         self.path = self.data_dir / self.FILENAMES[split]
         if not self.path.exists():
             raise FileNotFoundError(
@@ -40,7 +118,39 @@ class PixelMotifDataset(Dataset):
         s0 = self._samples[0]
         self._num_subgraphs = int(s0["x"].shape[0])
         self._descriptor_dim = int(s0["x"].shape[1])
-        self._max_nodes = int(s0["node_indices"].shape[1])
+        if "node_indices" not in s0 and self.return_subgraph_tensors and "sub_x" not in s0:
+            raise RuntimeError(
+                "[PixelMotifDataset] This artifact does not contain node_indices. "
+                "Rebuild it with scripts/precompute_pixel_motif_dataset.py after generating "
+                "pixel candidates that save candidate_topologies/node_indices."
+            )
+        self._max_nodes = int(s0["node_indices"].shape[1]) if "node_indices" in s0 else int(s0["sub_x"].shape[1])
+        self._graph_ds = None
+        self._full_adj = None
+        if self.return_subgraph_tensors and "sub_x" not in s0:
+            if graph_repo_path is None:
+                raise RuntimeError(
+                    "[PixelMotifDataset] Hierarchical subgraph tensors require graph_repo_path "
+                    "because the current pixel motif artifact stores node_indices but not sub_x/sub_adj."
+                )
+            self._graph_ds = ChunkedGraphDataset(
+                repo_root=graph_repo_path,
+                split=split,
+                resolve=True,
+                cache_chunks=graph_cache_chunks,
+            )
+            if len(self._graph_ds) != len(self._samples):
+                raise RuntimeError(
+                    f"[PixelMotifDataset] graph_repo split size ({len(self._graph_ds)}) does not match "
+                    f"pixel motif split size ({len(self._samples)}) for split={split!r}."
+                )
+            shared = self._graph_ds.shared
+            if shared is None:
+                raise RuntimeError("[PixelMotifDataset] ChunkedGraphDataset(resolve=True) did not expose shared graph.")
+            self._full_adj = torch.zeros((shared.num_nodes, shared.num_nodes), dtype=torch.float32)
+            src = shared.edge_index[0].long()
+            dst = shared.edge_index[1].long()
+            self._full_adj[dst, src] = 1.0
         self._x_mean: torch.Tensor | None = None
         self._x_std: torch.Tensor | None = None
         if self.normalize_x:
@@ -48,7 +158,7 @@ class PixelMotifDataset(Dataset):
         print(
             f"[PixelMotifDataset] Loaded {len(self._samples)} samples from {self.path.name} "
             f"| K={self._num_subgraphs} | D={self._descriptor_dim} | max_nodes={self._max_nodes}"
-            f" | normalize_x={self.normalize_x}"
+            f" | normalize_x={self.normalize_x} | subgraph_tensors={self.return_subgraph_tensors}"
         )
 
     def _load_or_compute_train_stats(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -94,7 +204,7 @@ class PixelMotifDataset(Dataset):
         x = torch.as_tensor(s["x"]).float()
         if self.normalize_x:
             x = (x - self._x_mean) / self._x_std
-        return {
+        item = {
             "graph_id": int(s["graph_id"]),
             "x": x,
             "mask": torch.as_tensor(s["mask"]).bool(),
@@ -114,6 +224,30 @@ class PixelMotifDataset(Dataset):
             "label": label,
             "y": label,
         }
+        if self.return_subgraph_tensors:
+            if "sub_x" in s and "sub_adj" in s:
+                item["sub_x"] = torch.as_tensor(s["sub_x"]).float()
+                item["sub_adj"] = torch.as_tensor(s["sub_adj"]).float()
+                item["sub_node_mask"] = torch.as_tensor(s.get("sub_node_mask", s.get("node_mask"))).bool()
+            else:
+                if self._graph_ds is None or self._full_adj is None:
+                    raise RuntimeError("[PixelMotifDataset] graph_repo is not initialized for subgraph tensors.")
+                graph = self._graph_ds[idx]
+                if int(graph.graph_id) != int(s["graph_id"]):
+                    raise RuntimeError(
+                        f"[PixelMotifDataset] graph_id mismatch at idx={idx}: "
+                        f"pixel_motif={int(s['graph_id'])}, graph_repo={int(graph.graph_id)}"
+                    )
+                sub_x, sub_node_mask, sub_adj = build_subgraph_tensor_from_node_indices(
+                    node_features=graph.node_features.float(),
+                    full_adj=self._full_adj,
+                    node_indices=item["node_indices"],
+                    node_mask=item["node_mask"],
+                )
+                item["sub_x"] = sub_x.float()
+                item["sub_node_mask"] = sub_node_mask.bool()
+                item["sub_adj"] = sub_adj.float()
+        return item
 
     @property
     def input_dim(self) -> int:

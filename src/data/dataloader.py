@@ -114,7 +114,7 @@ def build_dataloader(
         )
         print(f"--- Pixel motif dataset: {pixel_motif_dataset_path}")
         return _build_pixel_motif_loaders(
-            pixel_motif_dataset_path, config, batch_size, num_workers
+            pixel_motif_dataset_path, config, batch_size, num_workers, graph_repo_path=graph_repo_path
         )
     else:
         raise ValueError(
@@ -531,17 +531,45 @@ def _build_pixel_motif_loaders(
     config: dict,
     batch_size: int,
     num_workers: int,
+    graph_repo_path: str | None = None,
 ) -> Tuple[DataLoader, DataLoader, DataLoader, int]:
     data_cfg = config.get("data", {})
+    model_cfg = config.get("model", {})
     pin_memory = bool(data_cfg.get("pin_memory", True))
     normalize_x = bool(data_cfg.get("normalize_x", False))
-    train_ds = PixelMotifDataset(dataset_path, "train", normalize_x=normalize_x)
-    val_ds = PixelMotifDataset(dataset_path, "val", normalize_x=normalize_x)
-    test_ds = PixelMotifDataset(dataset_path, "test", normalize_x=normalize_x)
+    return_subgraph_tensors = bool(
+        data_cfg.get("return_subgraph_tensors", model_cfg.get("name") == "hierarchical_motif_gnn")
+    )
+    graph_cache_chunks = int(data_cfg.get("graph_cache_chunks", 1))
+    train_ds = PixelMotifDataset(
+        dataset_path,
+        "train",
+        normalize_x=normalize_x,
+        return_subgraph_tensors=return_subgraph_tensors,
+        graph_repo_path=graph_repo_path,
+        graph_cache_chunks=graph_cache_chunks,
+    )
+    val_ds = PixelMotifDataset(
+        dataset_path,
+        "val",
+        normalize_x=normalize_x,
+        return_subgraph_tensors=return_subgraph_tensors,
+        graph_repo_path=graph_repo_path,
+        graph_cache_chunks=graph_cache_chunks,
+    )
+    test_ds = PixelMotifDataset(
+        dataset_path,
+        "test",
+        normalize_x=normalize_x,
+        return_subgraph_tensors=return_subgraph_tensors,
+        graph_repo_path=graph_repo_path,
+        graph_cache_chunks=graph_cache_chunks,
+    )
     input_dim = train_ds.input_dim
     print(f"--- Pixel motif dataset : {dataset_path}")
     print(f"--- Train: {len(train_ds)} | Val: {len(val_ds)} | Test: {len(test_ds)}")
     print(f"--- Input dim: {input_dim} | K={train_ds.num_subgraphs} | max_nodes={train_ds.max_nodes}")
+    print(f"--- Internal subgraph tensors: {return_subgraph_tensors}")
     train_loader = DataLoader(
         train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers,
         pin_memory=pin_memory, collate_fn=collate_fn_pixel_motif,
@@ -594,7 +622,7 @@ def collate_fn_pixel_motif(batch):
                 edge_attr[i, :e, :] = ea
                 edge_valid[i, :e] = True
 
-    return {
+    out = {
         "graph_id": graph_ids,
         "x": xs,
         "mask": masks,
@@ -615,6 +643,11 @@ def collate_fn_pixel_motif(batch):
         "label": labels,
         "y": labels,
     }
+    if "sub_x" in batch[0]:
+        out["sub_x"] = torch.stack([s["sub_x"] for s in batch])
+        out["sub_node_mask"] = torch.stack([s["sub_node_mask"] for s in batch])
+        out["sub_adj"] = torch.stack([s["sub_adj"] for s in batch])
+    return out
 
 
 # ===========================================================================

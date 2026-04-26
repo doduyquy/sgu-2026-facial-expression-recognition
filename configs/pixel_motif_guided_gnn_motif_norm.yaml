@@ -14,7 +14,7 @@ model:
   num_layers: 2
   num_classes: 7
   dropout: 0.3
-  use_edge_attr: true
+  use_edge_attr: false
   use_motif_score_vector: true
   use_match_score_feature: true
   use_match_score_weighting: true

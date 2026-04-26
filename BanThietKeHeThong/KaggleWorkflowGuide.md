@@ -33,6 +33,7 @@ spatial edge -> rich edge
 top_k 32 -> top_k 48
 radii 1 2 -> radii 1 2 3
 dataset v2 -> dataset v3
+baseline B -> hierarchical C
 ```
 
 thì phải kiểm tra đủ 6 điểm sau:
@@ -103,15 +104,20 @@ thì phải kiểm tra đủ 6 điểm sau:
    Cần kiểm tra:
 
    ```python
-   DATASET_VARIANT = "rich"    # hoặc "spatial"
+   MODEL_VARIANT = "hierarchical"  # hoặc "spatial" / "rich"
+   DATASET_VARIANT = "spatial"     # hoặc "rich"
    ```
 
    Mapping phải đúng:
 
    ```text
-   rich    -> configs/pixel_motif_guided_gnn_rich_edges.yaml
-   spatial -> configs/pixel_motif_guided_gnn_motif_norm.yaml
+   hierarchical -> configs/hierarchical_motif_gnn.yaml
+   rich         -> configs/pixel_motif_guided_gnn_rich_edges.yaml
+   spatial      -> configs/pixel_motif_guided_gnn_motif_norm.yaml
    ```
+
+   Với `MODEL_VARIANT = "hierarchical"` phải có thêm `graph_repo`, vì model C dựng
+   `sub_x/sub_adj/sub_node_mask` từ `node_indices` + node features thật trong graph repo.
 
 5. **Config train phải trỏ đúng dataset và edge_attr_dim**
 
@@ -161,6 +167,22 @@ thì phải kiểm tra đủ 6 điểm sau:
 
    ```text
    edge_attr: (128, 3)
+   ```
+
+   Hierarchical C cần kiểm tra thêm sample có:
+
+   ```text
+   node_indices
+   node_mask
+   ```
+
+   và Notebook B phải tìm được:
+
+   ```text
+   graph_repo/shared/shared_graph.pt
+   graph_repo/train/chunk_*.pt
+   graph_repo/val/chunk_*.pt
+   graph_repo/test/chunk_*.pt
    ```
 
 Nguyên tắc chốt:
@@ -226,6 +248,26 @@ Output sạch để tạo Kaggle Dataset mới:
   README_KAGGLE_DATASET.txt
 ```
 
+Artifact này phải giữ `node_indices` và `node_mask`. Đây là trace bắt buộc cho
+`HierarchicalMotifGNN`; nếu thiếu thì không được fake center-only, phải rebuild
+candidate/motif dataset để lưu lại node indices.
+
+Nếu muốn Notebook B train hierarchical mà không add dataset `fer-graph-repo`
+riêng, Notebook A có biến:
+
+```python
+PUBLISH_GRAPH_REPO_TOO = True
+```
+
+khi bật sẽ copy thêm:
+
+```text
+/kaggle/working/graph_repo/
+```
+
+Mặc định nên để `False` và dùng graph repo như một Kaggle Dataset riêng để output
+pixel motif không phình quá lớn.
+
 Sau khi Notebook A chạy xong:
 
 1. Save Version / Save & Run All.
@@ -290,7 +332,8 @@ Artifact cuối cùng cần publish:
 Notebook A hiện có biến:
 
 ```python
-EDGE_ATTR_MODE = "rich"  # hoặc "spatial"
+EDGE_ATTR_MODE = "spatial"        # hoặc "rich"
+PUBLISH_GRAPH_REPO_TOO = False    # bật nếu cần publish graph_repo cùng output
 ```
 
 Sau khi copy final dataset, Notebook A phải cleanup để Kaggle Dataset không gom artifact nặng:
@@ -347,15 +390,26 @@ Notebook sẽ scan `/kaggle/input` để tìm folder chứa đủ các file này
 Notebook B hiện có biến:
 
 ```python
-DATASET_VARIANT = "rich"  # hoặc "spatial"
+MODEL_VARIANT = "hierarchical"  # "hierarchical" | "spatial" | "rich"
+DATASET_VARIANT = "spatial"     # "spatial" | "rich"
 ```
 
 Mapping config:
 
 ```text
-rich    -> configs/pixel_motif_guided_gnn_rich_edges.yaml
-spatial -> configs/pixel_motif_guided_gnn_motif_norm.yaml
+hierarchical -> configs/hierarchical_motif_gnn.yaml
+spatial      -> configs/pixel_motif_guided_gnn_motif_norm.yaml
+rich         -> configs/pixel_motif_guided_gnn_rich_edges.yaml
 ```
+
+Với `MODEL_VARIANT = "hierarchical"` cần add thêm Kaggle Dataset graph repo:
+
+```text
+/kaggle/input/fer-graph-repo/graph_repo/
+```
+
+hoặc một dataset bất kỳ có folder `graph_repo` đúng cấu trúc. Notebook B sẽ scan
+`/kaggle/input` để tìm.
 
 ### Output Kaggle của Notebook B
 
@@ -377,6 +431,7 @@ Notebook B gọi:
 
 ```text
 scripts/inspect_pixel_motif_dataset.py
+scripts/debug_hierarchical_batch.py  # chỉ khi MODEL_VARIANT=hierarchical
 scripts/train.py
 ```
 
@@ -390,6 +445,12 @@ Config rich edge:
 
 ```text
 configs/pixel_motif_guided_gnn_rich_edges.yaml
+```
+
+Config hierarchical C:
+
+```text
+configs/hierarchical_motif_gnn.yaml
 ```
 
 Config sanity MLP nếu bật:
@@ -406,6 +467,8 @@ src/data/dataloader.py
 src/models/__init__.py
 src/models/motif_guided_gnn.py
 src/models/motif_guided_mlp.py
+src/models/internal_subgraph_encoder.py
+src/models/hierarchical_motif_gnn.py
 src/training/losses.py
 src/training/optimizer.py
 src/training/trainer.py
@@ -498,6 +561,62 @@ model:
 Không train rich dataset bằng config spatial nếu `edge_attr` là 13 chiều.
 Không train spatial dataset bằng config rich nếu `edge_attr` là 3 chiều.
 
+### Config Hierarchical Motif GNN C
+
+File:
+
+```text
+configs/hierarchical_motif_gnn.yaml
+```
+
+Dùng để so sánh công bằng với baseline B:
+
+```text
+B = descriptor-only motif GNN
+C = internal pixel-subgraph GNN + descriptor + motif metadata + motif-level GNN
+```
+
+Điểm bắt buộc:
+
+```yaml
+data:
+  mode: pixel_motif
+  return_subgraph_tensors: true
+  normalize_x: true
+
+model:
+  name: hierarchical_motif_gnn
+  use_descriptor: true
+  motif_use_edge_attr: false
+  use_motif_score_vector: true
+```
+
+Config này cần cả:
+
+```text
+pixel_motif_dataset_v2/
+graph_repo/
+```
+
+`pixel_motif_dataset_v2` cung cấp descriptor 41D, motif metadata và `node_indices`.
+`graph_repo` cung cấp node features 7D và shared graph adjacency để dựng:
+
+```text
+sub_x:          [B, K, Nmax, 7]
+sub_node_mask:  [B, K, Nmax]
+sub_adj:        [B, K, Nmax, Nmax]
+```
+
+Trước khi train C nên chạy:
+
+```bash
+python -m scripts.debug_hierarchical_batch \
+  --config hierarchical_motif_gnn \
+  --env kaggle \
+  --pixel_motif_dataset_path /kaggle/input/<pixel-dataset>/pixel_motif_dataset_v2 \
+  --graph_repo_path /kaggle/input/fer-graph-repo/graph_repo
+```
+
 ## 4. Khi sửa gì thì chạy notebook nào?
 
 ### Chỉ sửa model, loss, optimizer, trainer
@@ -507,6 +626,8 @@ Ví dụ:
 ```text
 src/models/motif_guided_gnn.py
 src/models/motif_guided_mlp.py
+src/models/internal_subgraph_encoder.py
+src/models/hierarchical_motif_gnn.py
 src/training/losses.py
 src/training/trainer.py
 configs/*.yaml
@@ -699,6 +820,45 @@ Nếu dataset input không có thư mục con `pixel_motif_dataset_v2_rich_edges
 ```bash
 --pixel_motif_dataset_path /kaggle/input/<dataset-name>
 ```
+
+### Lệnh debug/train Hierarchical Motif GNN C
+
+Debug một batch trước:
+
+```bash
+python -m scripts.debug_hierarchical_batch \
+  --config hierarchical_motif_gnn \
+  --env kaggle \
+  --pixel_motif_dataset_path /kaggle/input/<pixel-dataset>/pixel_motif_dataset_v2 \
+  --graph_repo_path /kaggle/input/fer-graph-repo/graph_repo
+```
+
+Train:
+
+```bash
+python -m scripts.train \
+  --config hierarchical_motif_gnn \
+  --env kaggle \
+  --pixel_motif_dataset_path /kaggle/input/<pixel-dataset>/pixel_motif_dataset_v2 \
+  --graph_repo_path /kaggle/input/fer-graph-repo/graph_repo \
+  --epochs 80
+```
+
+Nếu pixel motif files nằm trực tiếp trong dataset root:
+
+```bash
+--pixel_motif_dataset_path /kaggle/input/<pixel-dataset>
+```
+
+Mục tiêu so sánh:
+
+```text
+B: pixel_motif_guided_gnn_motif_norm
+C: hierarchical_motif_gnn
+```
+
+Không bật rich edge khi chạy C lần đầu, để so sánh đúng phần đóng góp của
+internal pixel-subgraph GNN.
 
 ## 7. Kết quả baseline hiện tại
 

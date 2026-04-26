@@ -3,6 +3,7 @@ from src.models.subgraph_mlp_baseline import SubgraphMLPBaseline
 from src.models.subgraph_gnn_baseline import SubgraphGNNBaseline
 from src.models.motif_guided_mlp import MotifGuidedMLP
 from src.models.motif_guided_gnn import MotifGuidedGNN
+from src.models.hierarchical_motif_gnn import HierarchicalMotifGNN
 
 """
 Hi, tạo model mới thì:
@@ -60,6 +61,29 @@ MODEL_REGISTRY = {
         use_match_score_feature=config["model"].get("use_match_score_feature", True),
         use_match_score_weighting=config["model"].get("use_match_score_weighting", True),
         pooling=config["model"].get("pooling", "motif_attention"),
+    ),
+    "hierarchical_motif_gnn": lambda config, input_dim, **kw: HierarchicalMotifGNN(
+        num_classes=config["model"].get("num_classes", config["data"].get("num_classes", 7)),
+        internal_input_dim=config["model"].get("internal_input_dim", 7),
+        internal_hidden_dim=config["model"].get("internal_hidden_dim", 64),
+        internal_out_dim=config["model"].get("internal_out_dim", 128),
+        internal_num_layers=config["model"].get("internal_num_layers", 2),
+        internal_dropout=config["model"].get("internal_dropout", 0.25),
+        internal_readout=config["model"].get("internal_readout", "mean_max"),
+        internal_use_edge_attr=config["model"].get("internal_use_edge_attr", False),
+        use_descriptor=config["model"].get("use_descriptor", True),
+        descriptor_dim=config["model"].get("descriptor_dim", input_dim),
+        use_match_score_feature=config["model"].get("use_match_score_feature", True),
+        use_disc_score_feature=config["model"].get("use_disc_score_feature", True),
+        use_matched_class_onehot=config["model"].get("use_matched_class_onehot", True),
+        motif_hidden_dim=config["model"].get("motif_hidden_dim", 128),
+        motif_num_layers=config["model"].get("motif_num_layers", 2),
+        motif_dropout=config["model"].get("motif_dropout", config["model"].get("dropout", 0.3)),
+        motif_use_edge_attr=config["model"].get("motif_use_edge_attr", False),
+        motif_edge_attr_dim=config["model"].get("motif_edge_attr_dim", config.get("data", {}).get("edge_attr_dim", 3)),
+        pooling=config["model"].get("pooling", "motif_attention"),
+        use_motif_score_vector=config["model"].get("use_motif_score_vector", True),
+        use_match_score_weighting=config["model"].get("use_match_score_weighting", True),
     ),
 }
 
