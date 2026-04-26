@@ -17,6 +17,7 @@ from src.data.graph_vector_dataset import GraphVectorDataset
 from src.data.features.graph_vectorizer import GraphVectorizer
 from src.models.mlp_baseline import MLPBaseline
 from src.training.trainer_graph import train_one_epoch_graph, evaluate_graph
+from src.utils.early_stopping import EarlyStopping
 
 
 def set_seed(seed: int = 42):
@@ -112,6 +113,9 @@ def main():
 
     best_val_macro_f1 = -1.0
     best_ckpt_path = os.path.join(args.save_dir, "best_model.pt")
+    
+    # Initialize Early Stopping
+    early_stopping = EarlyStopping(patience=10, verbose=True, path=best_ckpt_path)
 
     for epoch in range(1, args.epochs + 1):
         print(f"\n===== Epoch {epoch}/{args.epochs} =====")
@@ -133,17 +137,20 @@ def main():
 
         if val_metrics["macro_f1"] > best_val_macro_f1:
             best_val_macro_f1 = val_metrics["macro_f1"]
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "model_state_dict": model.state_dict(),
-                    "best_val_macro_f1": best_val_macro_f1,
-                    "input_dim": input_dim,
-                    "num_classes": num_classes,
-                },
-                best_ckpt_path,
-            )
-            print(f"--> Saved best model to: {best_ckpt_path}")
+            print(f"--> Improved Macro F1: {best_val_macro_f1:.4f}. Saving best model logic handled by early stopping (if monitoring loss).")
+            
+        # Update Early Stopping (Monitoring Val Loss)
+        # We pass extra data to preserve metadata in the checkpoint
+        early_stopping(val_metrics['loss'], model, extra_data={
+            "epoch": epoch,
+            "best_val_macro_f1": best_val_macro_f1,
+            "input_dim": input_dim,
+            "num_classes": num_classes,
+        })
+        
+        if early_stopping.early_stop:
+            print("Early stopping triggered. End of training.")
+            break
 
     print("\n===== Load best model and evaluate on test =====")
     ckpt = torch.load(best_ckpt_path, map_location=device)
