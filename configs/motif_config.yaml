@@ -16,7 +16,7 @@ data:
 
 training:
   epochs: 100
-  learning_rate: 0.001
+  lr: 0.001
   weight_decay: 1e-4
   loss: "motif_combined"
   motif_loss_weight: 0.5

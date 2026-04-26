@@ -4,8 +4,8 @@ import torch.optim.lr_scheduler as lr_scheduler
 def build_optimizer(model, config):
     train_cfg = config.get('training', {})
     opt_name = train_cfg.get('optimizer', 'adam').lower()
-    lr = train_cfg.get('lr', 0.001)
-    weight_decay = train_cfg.get('weight_decay', 0.0001)
+    lr = float(train_cfg.get('lr', train_cfg.get('learning_rate', 0.001)))
+    weight_decay = float(train_cfg.get('weight_decay', 0.0001))
 
     params = model.parameters()
 
@@ -27,8 +27,8 @@ def build_scheduler(optimizer, config):
 
     elif scheduler_name == 'reduce_lr_on_plateau':
         # reduce when val loss stopping reduce
-        factor = config['training'].get('lr_factor', 0.5) # split a half when reduce
-        patience = config['training'].get('lr_patience', 3) # after 3 epochs, loss not decrease -> split lr
+        factor = float(config['training'].get('lr_factor', 0.5)) 
+        patience = int(config['training'].get('lr_patience', 3)) 
         print(f"--> [Scheduler] ReduceLROnPlateau (factor={factor}, patience={patience})")
         
         return lr_scheduler.ReduceLROnPlateau(
@@ -39,8 +39,8 @@ def build_scheduler(optimizer, config):
         )
     elif scheduler_name == 'step':
         # decay(decrease) every n epochs
-        step_size = config['training'].get('lr_step_size', 10)  
-        gamma = config['training'].get('lr_gamma', 0.1)         # Decrease 1/10
+        step_size = int(config['training'].get('lr_step_size', 10))  
+        gamma = float(config['training'].get('lr_gamma', 0.1))         
         print(f"--> [Scheduler] StepLR (step_size={step_size}, gamma={gamma})")
         return lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=gamma)
 
