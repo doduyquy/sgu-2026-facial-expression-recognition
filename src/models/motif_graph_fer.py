@@ -255,12 +255,34 @@ class MotifGraphModel(nn.Module):
         return sim.mean()
 
     def get_landmark_outputs(self):
-        """ Stub for compatibility with Trainer """
-        return None, None
+        """ Return latest motif matching scores for Trainer compatibility """
+        return getattr(self, '_latest_scores', None), getattr(self, '_latest_top_k', None)
 
     def get_aux_losses(self):
-        """ Stub for compatibility with Trainer """
-        return {}
+        """ Compute motif losses for Trainer compatibility """
+        if not hasattr(self, '_latest_scores') or self._latest_scores is None:
+            return {}
+            
+        # We need a MotifConsistencyLoss instance to compute the loss here
+        # or we can compute it directly.
+        from src.training.losses import MotifConsistencyLoss
+        
+        # Initialize loss objects if not exists (using default tau)
+        if not hasattr(self, '_motif_consistency_criterion'):
+            self._motif_consistency_criterion = MotifConsistencyLoss(motifs_per_class=self.motifs_per_class)
+            
+        # Get latest targets (stored during forward)
+        targets = getattr(self, '_latest_targets', None)
+        if targets is None:
+            return {}
+            
+        l_motif = self._motif_consistency_criterion(self._latest_scores, self._latest_top_k, targets)
+        l_div = self.compute_motif_diversity_loss()
+        
+        return {
+            "motif_consistency": l_motif,
+            "motif_diversity": l_div
+        }
         
     def get_landmark_aux_logits(self):
         """ Stub for compatibility with Trainer """
@@ -298,8 +320,12 @@ class MotifGraphModel(nn.Module):
                 
         return torch.stack(subgraphs, dim=1), torch.stack(subgraph_adjs, dim=1), subgraph_centers
 
-    def forward(self, x, return_selection=False):
+    def forward(self, x, return_selection=False, targets=None):
         B = x.shape[0]
+        # Store targets for aux loss calculation if provided
+        if targets is not None:
+            self._latest_targets = targets
+            
         feat_map = self.backbone(x)
         _, _, H, W = feat_map.shape
         
@@ -362,6 +388,10 @@ class MotifGraphModel(nn.Module):
         
         aggregated = torch.sum(selected_embeds * attn_weights, dim=1)
         logits = self.classifier(aggregated)
+        
+        # Store for Trainer access
+        self._latest_scores = scores
+        self._latest_top_k = top_k_idx
         
         if return_selection:
             return logits, top_k_idx, centers, scores

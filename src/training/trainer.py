@@ -207,14 +207,11 @@ class Trainer:
                 labels_a = labels
                 labels_b = labels[perm]
 
-            # sync runtime pos_sup lambda into model to avoid computing pos_sup when disabled
-            try:
-                if hasattr(self.model, 'pos_supervision_weight'):
-                    self.model.pos_supervision_weight = float(pos_sup_lambda)
-            except Exception:
-                pass
-
-            outputs = self.model(images)
+            # Pass labels to forward if model supports it (for internal loss calculation)
+            if hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
+                outputs = self.model(images, targets=labels)
+            else:
+                outputs = self.model(images)
             logits = self._extract_logits(outputs)
 
             # batch confidence used to scale landmark diversity: low-confidence batches
@@ -297,8 +294,15 @@ class Trainer:
             edge_conv_reg = aux_losses.get("landmark_edge_conv_reg", torch.tensor(0.0, device=self.device))
             edge_tv = aux_losses.get("landmark_edge_tv", torch.tensor(0.0, device=self.device))
             # Compose simplified loss: classification + diversity + overlap (light)
-            # Keep other regularizers disabled by default to avoid noisy gradients on small FER images
             loss = cls_loss + (div_lambda_t * div_loss)
+            
+            # Aggregate ALL other auxiliary losses automatically
+            for k, v in aux_losses.items():
+                if k not in ["landmark_diversity", "landmark_entropy", "landmark_sparsity", "landmark_overlap"]:
+                    # Default weight 0.1 for new/unknown aux losses or use config
+                    w = self.config.get('training', {}).get(f'{k}_weight', 0.1)
+                    loss = loss + float(w) * v
+            
             try:
                 if overlap_lambda_t.item() > 0.0:
                     loss = loss + (overlap_lambda_t * overlap_loss)

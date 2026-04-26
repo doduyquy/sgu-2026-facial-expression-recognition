@@ -116,11 +116,15 @@ def build_loss(config, class_weights=None):
                 self.weight = weight
                 self.div_weight = div_weight
             
-            def forward(self, logits, targets, scores, top_k_idx, model=None):
+            def forward(self, logits, targets, scores=None, top_k_idx=None, model=None):
                 l_ce = self.ce(logits, targets)
-                l_motif = self.motif(scores, top_k_idx, targets)
                 
-                loss = l_ce + self.weight * l_motif
+                # Only compute motif loss if scores and top_k_idx are provided
+                if scores is not None and top_k_idx is not None:
+                    l_motif = self.motif(scores, top_k_idx, targets)
+                    loss = l_ce + self.weight * l_motif
+                else:
+                    loss = l_ce
                 
                 # Diversity loss
                 if model is not None and hasattr(model, 'compute_motif_diversity_loss'):
