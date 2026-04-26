@@ -919,7 +919,14 @@ Nếu dùng rich edge thì phải nói rõ:
 - pixel_motif_dataset_v2_rich_edges
 - edge_attr_dim = 13
 - Notebook A: EDGE_ATTR_MODE = "rich"
-- Notebook B: DATASET_VARIANT = "rich"
+- Notebook B: MODEL_VARIANT = "rich", DATASET_VARIANT = "rich"
+
+Nếu dùng HierarchicalMotifGNN C thì phải nói rõ:
+- configs/hierarchical_motif_gnn.yaml
+- pixel_motif_dataset_v2 spatial baseline
+- graph_repo path
+- Notebook B: MODEL_VARIANT = "hierarchical", DATASET_VARIANT = "spatial"
+- chạy scripts/debug_hierarchical_batch.py trước train
 
 Nếu chỉ sửa model/train thì không được yêu cầu build lại dataset.
 Nếu sửa topology/matching/motif thì phải nói rõ cần chạy lại Notebook A từ stage nào.
@@ -932,6 +939,8 @@ Nếu sửa topology/matching/motif thì phải nói rõ cần chạy lại Note
 - sửa nhầm motif V1
 - train bằng config ablation thay vì baseline chính
 - quên `normalize_x: true`
+- quên `return_subgraph_tensors: true` khi train hierarchical
+- train hierarchical mà chưa add graph_repo vào Kaggle input
 - tạo dataset mới nhưng không đổi tên output folder
 - sửa Notebook A mà quên sửa Notebook B
 - train rich dataset bằng config spatial hoặc ngược lại
