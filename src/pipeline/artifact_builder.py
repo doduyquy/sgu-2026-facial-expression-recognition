@@ -7,7 +7,9 @@ another orchestration script.
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -17,6 +19,17 @@ from typing import Any, Iterable
 SPLITS = ["train", "val", "test"]
 STAGE_ORDER = ["graph_repo", "candidates", "motif_bank", "motif_dataset"]
 REQUIRED_CSV_FILES = {"train.csv", "val.csv", "test.csv"}
+
+# Keys in manifest that must match config when loading from artifact.
+_MANIFEST_CHECK_KEYS = {
+    "node_feature_dim": ("graph", "node_feature_dim"),
+    "connectivity": ("graph", "connectivity"),
+    "descriptor_dim": ("motif", "descriptor_dim"),
+    "top_k": ("pixel_motif_dataset", "top_k"),
+    "nmax": ("pixel_motif_dataset", "nmax"),
+    "has_node_indices": ("pixel_motif_dataset", "has_node_indices"),
+    "has_node_mask": ("pixel_motif_dataset", "has_node_mask"),
+}
 
 
 def run_command(cmd: list[str]) -> None:
@@ -259,6 +272,227 @@ def print_artifact_summary(paths: Iterable[Path]) -> None:
             continue
         size = sum(p.stat().st_size for p in path.rglob("*") if p.is_file()) / 1024**2
         print(f"  {path} ({size:.2f} MB)", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Manifest helpers
+# ---------------------------------------------------------------------------
+
+def _probe_nmax(pixel_motif_dir: Path) -> int | None:
+    """Best-effort: read nmax from meta.pt if available."""
+    try:
+        import torch
+        meta_path = pixel_motif_dir / "meta.pt"
+        if not meta_path.exists():
+            return None
+        meta = torch.load(meta_path, map_location="cpu", weights_only=False)
+        if isinstance(meta, dict):
+            return int(meta.get("nmax") or meta.get("Nmax") or 0) or None
+    except Exception:
+        pass
+    return None
+
+
+def _probe_descriptor_dim(pixel_motif_dir: Path) -> int | None:
+    """Best-effort: read descriptor_dim from meta.pt if available."""
+    try:
+        import torch
+        meta_path = pixel_motif_dir / "meta.pt"
+        if not meta_path.exists():
+            return None
+        meta = torch.load(meta_path, map_location="cpu", weights_only=False)
+        if isinstance(meta, dict):
+            return int(meta.get("descriptor_dim") or 0) or None
+    except Exception:
+        pass
+    return None
+
+
+def _check_node_indices(pixel_motif_dir: Path) -> bool:
+    """Check a sample from train_pixel_motif.pt for node_indices key."""
+    try:
+        import torch
+        pt = pixel_motif_dir / "train_pixel_motif.pt"
+        if not pt.exists():
+            return False
+        data = torch.load(pt, map_location="cpu", weights_only=False)
+        if isinstance(data, list) and len(data) > 0:
+            sample = data[0]
+            return "node_indices" in sample
+        if isinstance(data, dict):
+            return "node_indices" in data
+    except Exception:
+        pass
+    return False
+
+
+def _check_node_mask(pixel_motif_dir: Path) -> bool:
+    try:
+        import torch
+        pt = pixel_motif_dir / "train_pixel_motif.pt"
+        if not pt.exists():
+            return False
+        data = torch.load(pt, map_location="cpu", weights_only=False)
+        if isinstance(data, list) and len(data) > 0:
+            sample = data[0]
+            return "node_mask" in sample
+        if isinstance(data, dict):
+            return "node_mask" in data
+    except Exception:
+        pass
+    return False
+
+
+def write_manifest(
+    out_root: Path,
+    data_cfg: dict[str, Any],
+    experiment_name: str,
+    pixel_motif_dir: Path,
+) -> Path:
+    """Write manifest.json after a successful artifact build."""
+    nmax = _probe_nmax(pixel_motif_dir)
+    descriptor_dim = _probe_descriptor_dim(pixel_motif_dir)
+    has_node_indices = _check_node_indices(pixel_motif_dir)
+    has_node_mask = _check_node_mask(pixel_motif_dir)
+
+    manifest = {
+        "artifact_version": "pixel_motif_v2",
+        "experiment_name": experiment_name,
+        "created_from": "csv",
+        "graph": {
+            "image_size": 48,
+            "node_feature_dim": 7,
+            "connectivity": int(data_cfg.get("connectivity", 8)),
+        },
+        "candidate": {
+            "seed_stride": int(data_cfg.get("seed_stride", 4)),
+            "radii": _as_list(data_cfg.get("radii", [1, 2])),
+            "max_candidates": int(data_cfg.get("max_candidates", 128)),
+            "nmax": nmax,
+        },
+        "motif": {
+            "num_motifs_per_class": int(data_cfg.get("num_motifs_per_class", 16)),
+            "descriptor_dim": descriptor_dim,
+        },
+        "pixel_motif_dataset": {
+            "top_k": int(data_cfg.get("top_k", 32)),
+            "nmax": nmax,
+            "descriptor_dim": descriptor_dim,
+            "has_node_indices": has_node_indices,
+            "has_node_mask": has_node_mask,
+            "has_sub_x_cache": False,
+            "has_sub_adj_cache": False,
+            "edge_attr_mode": str(data_cfg.get("edge_attr_mode", "spatial")),
+        },
+        "compatible_models": ["motif_guided_gnn", "hierarchical_motif_gnn"],
+    }
+
+    manifest_path = out_root / "manifest.json"
+    with manifest_path.open("w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+    print(f"[manifest] Written: {manifest_path}", flush=True)
+    return manifest_path
+
+
+def read_manifest(out_root: Path) -> dict[str, Any]:
+    """Read manifest.json from artifact root. Raises FileNotFoundError if missing."""
+    manifest_path = out_root / "manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(
+            f"manifest.json not found in {out_root}. "
+            "Run with mode=build_and_train first to build and save artifacts."
+        )
+    with manifest_path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def validate_manifest(
+    out_root: Path,
+    data_cfg: dict[str, Any],
+    require_node_indices: bool = False,
+    require_node_mask: bool = False,
+) -> dict[str, Any]:
+    """Read and validate manifest against current data config. Returns manifest."""
+    manifest = read_manifest(out_root)
+    pmd = manifest.get("pixel_motif_dataset", {})
+    errors: list[str] = []
+
+    # Check top_k
+    expected_top_k = int(data_cfg.get("top_k", 32))
+    if pmd.get("top_k") != expected_top_k:
+        errors.append(f"top_k: manifest={pmd.get('top_k')} vs config={expected_top_k}")
+
+    # Check nmax if configured
+    expected_nmax = data_cfg.get("nmax")
+    if expected_nmax is not None and pmd.get("nmax") is not None:
+        if int(pmd["nmax"]) != int(expected_nmax):
+            errors.append(f"nmax: manifest={pmd.get('nmax')} vs config={expected_nmax}")
+
+    # Check descriptor_dim if configured
+    expected_dim = data_cfg.get("descriptor_dim")
+    if expected_dim is not None and pmd.get("descriptor_dim") is not None:
+        if int(pmd["descriptor_dim"]) != int(expected_dim):
+            errors.append(f"descriptor_dim: manifest={pmd.get('descriptor_dim')} vs config={expected_dim}")
+
+    # Check node_indices requirement
+    if require_node_indices and not pmd.get("has_node_indices", False):
+        errors.append("has_node_indices=False but model requires node_indices (HierarchicalMotifGNN). Rebuild artifact.")
+
+    if require_node_mask and not pmd.get("has_node_mask", False):
+        errors.append("has_node_mask=False but model requires node_mask. Rebuild artifact.")
+
+    if errors:
+        raise ValueError(
+            f"Artifact manifest validation failed ({out_root}/manifest.json):\n"
+            + "\n".join(f"  - {e}" for e in errors)
+        )
+
+    print(f"[manifest] Validated OK: {out_root / 'manifest.json'}", flush=True)
+    return manifest
+
+
+def load_artifacts_from_input(
+    artifact_input_path: str | Path,
+    out_root: str | Path,
+) -> dict[str, Path]:
+    """Copy/symlink artifacts from /kaggle/input/<dataset>/artifacts -> out_root.
+
+    On Kaggle, /kaggle/input is read-only so we copy to /kaggle/working.
+    Returns resolved paths dict (same schema as resolve_artifact_paths).
+    """
+    src = Path(artifact_input_path)
+    dst = Path(out_root)
+
+    if not src.exists():
+        raise FileNotFoundError(f"artifact_input_path not found: {src}")
+
+    print(f"[load_artifacts] Copying {src} -> {dst}", flush=True)
+    if dst.exists():
+        # Remove stale artifacts to avoid mixing versions
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst)
+    print(f"[load_artifacts] Done.", flush=True)
+
+    # Return paths using the same schema as resolve_artifact_paths
+    return {
+        "out_root": dst,
+        "graph_repo": dst / "graph_repo",
+        "candidate_dir": dst / "pixel_candidate_subgraphs_v2",
+        "motif_bank_dir": dst / "pixel_motif_bank_v2",
+        "pixel_motif_dir": dst / "pixel_motif_dataset_v2",
+    }
+
+
+def zip_artifacts(out_root: Path, zip_path: Path) -> None:
+    """Zip the entire artifacts directory for download/publishing."""
+    if not out_root.exists():
+        print(f"[zip_artifacts] Skipping — artifacts dir missing: {out_root}", flush=True)
+        return
+    if zip_path.exists():
+        zip_path.unlink()
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.make_archive(str(zip_path.with_suffix("")), "zip", root_dir=out_root.parent, base_dir=out_root.name)
+    print(f"[zip_artifacts] Created {zip_path} ({zip_path.stat().st_size / 1024**2:.2f} MB)", flush=True)
 
 
 def ensure_pixel_motif_artifacts(

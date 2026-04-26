@@ -10,10 +10,27 @@ from typing import Any
 
 import yaml
 
-from src.pipeline.artifact_builder import ensure_pixel_motif_artifacts, resolve_artifact_paths, run_command
+from src.pipeline.artifact_builder import (
+    ensure_pixel_motif_artifacts,
+    load_artifacts_from_input,
+    normalize_data_config,
+    resolve_artifact_paths,
+    run_command,
+    validate_manifest,
+    write_manifest,
+    zip_artifacts,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
+
+# Modes supported by run_experiment
+# build_and_train   : build artifacts from CSV then train (lần đầu chạy version đó)
+# train_from_artifact: load artifact từ /kaggle/input rồi train (các lần sau)
+# build_only        : chỉ build artifact, không train
+# train_only        : skip build, dùng artifact đã có trong working, train
+# debug_only        : chỉ chạy debug batch
+VALID_MODES = {"build_and_train", "train_from_artifact", "build_only", "train_only", "debug_only"}
 
 
 def load_experiment_config(config_name_or_path: str) -> tuple[dict[str, Any], Path]:
@@ -96,6 +113,33 @@ def zip_outputs(outputs_cfg: dict[str, Any], experiment_name: str) -> None:
     print(f"[zip] Created {zip_path} ({zip_path.stat().st_size / 1024**2:.2f} MB)", flush=True)
 
 
+def _resolve_mode(
+    mode: str | None,
+    *,
+    build_only: bool,
+    train_only: bool,
+    debug_only: bool,
+) -> str:
+    """Resolve mode string, supporting both new --mode flag and legacy boolean flags."""
+    # Legacy flags take precedence if mode is default
+    legacy_flags = sum(bool(v) for v in [build_only, train_only, debug_only])
+    if legacy_flags > 1:
+        raise ValueError("--build_only, --train_only, and --debug_only are mutually exclusive")
+
+    if mode is not None and mode not in VALID_MODES:
+        raise ValueError(f"--mode must be one of {sorted(VALID_MODES)}, got {mode!r}")
+
+    if build_only:
+        return "build_only"
+    if train_only:
+        return "train_only"
+    if debug_only:
+        return "debug_only"
+    if mode is not None:
+        return mode
+    return "build_and_train"
+
+
 def run_experiment(
     config_name_or_path: str,
     *,
@@ -104,13 +148,26 @@ def run_experiment(
     pixel_motif_dir: str | Path | None = None,
     epochs: int | None = None,
     smoke: bool = False,
+    # New hybrid mode
+    mode: str | None = None,                    # build_and_train | train_from_artifact | build_only | train_only | debug_only
+    artifact_input_path: str | Path | None = None,  # path khi mode=train_from_artifact
+    zip_artifacts_after_build: bool = False,     # có zip toàn bộ artifacts sau khi build không
+    # Legacy flags (vẫn giữ để backward compatible)
     build_only: bool = False,
     train_only: bool = False,
     debug_only: bool = False,
     no_wandb: bool = False,
     no_skip_existing: bool = False,
 ) -> None:
-    """Run one experiment from config."""
+    """Run one experiment from config.
+
+    Modes:
+        build_and_train       Build artifacts from CSV then train. (default)
+        train_from_artifact   Load artifact from artifact_input_path, validate manifest, then train.
+        build_only            Build artifacts only, no train.
+        train_only            Skip build, use existing artifacts in out_root, train.
+        debug_only            Debug batch forward only.
+    """
     cfg, cfg_path = load_experiment_config(config_name_or_path)
     experiment_cfg = dict(cfg.get("experiment", {}) or {})
     data_cfg = dict(cfg.get("data", {}) or {})
@@ -118,8 +175,7 @@ def run_experiment(
     outputs_cfg = dict(cfg.get("outputs", {}) or {})
     experiment_name = str(experiment_cfg.get("name", cfg_path.stem))
 
-    if sum(bool(v) for v in [build_only, train_only, debug_only]) > 1:
-        raise ValueError("--build_only, --train_only, and --debug_only are mutually exclusive")
+    resolved_mode = _resolve_mode(mode, build_only=build_only, train_only=train_only, debug_only=debug_only)
 
     if smoke:
         data_cfg["smoke"] = True
@@ -128,34 +184,123 @@ def run_experiment(
     if pixel_motif_dir is not None:
         data_cfg["pixel_motif_dir"] = str(pixel_motif_dir)
     elif out_root is not None:
-        # Keep local/Kaggle artifact overrides coherent; don't keep a config's
-        # absolute pixel_motif_dir when the caller moves artifact_root.
         data_cfg.pop("pixel_motif_dir", None)
 
-    paths = resolve_artifact_paths(data_cfg, out_root_override=out_root)
+    data_cfg_normalized = normalize_data_config(data_cfg)
+    default_out_root = Path(out_root or data_cfg_normalized.get("artifact_root", "/kaggle/working/artifacts"))
 
     print("=" * 100, flush=True)
     print(f"Experiment : {experiment_name}", flush=True)
     print(f"Config     : {cfg_path}", flush=True)
+    print(f"Mode       : {resolved_mode}", flush=True)
     print(f"Model cfg  : {train_cfg.get('config')}", flush=True)
-    print(f"out_root   : {paths['out_root']}", flush=True)
+    print(f"out_root   : {default_out_root}", flush=True)
+
+    # ------------------------------------------------------------------
+    # MODE: train_from_artifact
+    # ------------------------------------------------------------------
+    if resolved_mode == "train_from_artifact":
+        if artifact_input_path is None:
+            raise ValueError(
+                "--artifact_input_path is required when mode=train_from_artifact.\n"
+                "Example: --artifact_input_path /kaggle/input/fer2013-pixel-motif-v2-spatial-r12-k32-n25/artifacts"
+            )
+
+        print(f"artifact   : {artifact_input_path}", flush=True)
+        print("=" * 100, flush=True)
+
+        # Copy artifact từ input -> working
+        paths = load_artifacts_from_input(artifact_input_path, default_out_root)
+
+        # Validate manifest
+        require_node_indices = bool(train_cfg.get("debug_batch", False))  # C cần node_indices
+        validate_manifest(
+            paths["out_root"],
+            data_cfg_normalized,
+            require_node_indices=require_node_indices,
+            require_node_mask=require_node_indices,
+        )
+
+        print(f"graph_repo : {paths['graph_repo']}", flush=True)
+        print(f"dataset    : {paths['pixel_motif_dir']}", flush=True)
+
+        # Debug batch nếu cần
+        if bool(train_cfg.get("debug_batch", train_cfg.get("debug_hierarchical_batch", False))):
+            debug_hierarchical_batch(train_cfg, paths)
+
+        if bool(train_cfg.get("enabled", True)):
+            train_model(train_cfg, paths, epochs=epochs, no_wandb=no_wandb)
+            zip_outputs(outputs_cfg, experiment_name)
+        else:
+            print("Training disabled by experiment config.", flush=True)
+        return
+
+    # ------------------------------------------------------------------
+    # All other modes: resolve paths from working/out_root
+    # ------------------------------------------------------------------
+    paths = resolve_artifact_paths(data_cfg, out_root_override=out_root)
     print(f"graph_repo : {paths['graph_repo']}", flush=True)
     print(f"dataset    : {paths['pixel_motif_dir']}", flush=True)
     print("=" * 100, flush=True)
 
-    if not train_only and not debug_only:
+    # ------------------------------------------------------------------
+    # MODE: build_and_train | build_only
+    # ------------------------------------------------------------------
+    if resolved_mode in {"build_and_train", "build_only"}:
         paths = ensure_pixel_motif_artifacts(data_cfg, csv_root=csv_root, out_root=out_root)
 
-    if build_only:
-        print("Build-only mode complete.", flush=True)
-        return
+        # Write manifest after successful build
+        write_manifest(
+            paths["out_root"],
+            data_cfg_normalized,
+            experiment_name,
+            paths["pixel_motif_dir"],
+        )
 
+        # Optionally zip artifacts for download/publishing to Kaggle Dataset
+        if zip_artifacts_after_build:
+            zip_name = f"{experiment_name}_artifacts.zip"
+            zip_path = Path("/kaggle/working") / zip_name
+            zip_artifacts(paths["out_root"], zip_path)
+
+        if resolved_mode == "build_only":
+            print("Build-only mode complete.", flush=True)
+            return
+
+    # ------------------------------------------------------------------
+    # MODE: train_only — skip build, use existing artifacts in working
+    # ------------------------------------------------------------------
+    if resolved_mode == "train_only":
+        # Validate manifest if it exists; warn if missing
+        manifest_path = paths["out_root"] / "manifest.json"
+        if manifest_path.exists():
+            require_node_indices = bool(train_cfg.get("debug_batch", False))
+            validate_manifest(
+                paths["out_root"],
+                data_cfg_normalized,
+                require_node_indices=require_node_indices,
+                require_node_mask=require_node_indices,
+            )
+        else:
+            print(
+                "[warn] manifest.json not found in artifact root. "
+                "Skipping validation — make sure artifacts are from the correct build.",
+                flush=True,
+            )
+
+    # ------------------------------------------------------------------
+    # Debug batch (build_and_train, train_only)
+    # ------------------------------------------------------------------
     if bool(train_cfg.get("debug_batch", train_cfg.get("debug_hierarchical_batch", False))):
         debug_hierarchical_batch(train_cfg, paths)
-    if debug_only:
+
+    if resolved_mode == "debug_only":
         print("Debug-only mode complete.", flush=True)
         return
 
+    # ------------------------------------------------------------------
+    # Train
+    # ------------------------------------------------------------------
     if bool(train_cfg.get("enabled", True)):
         train_model(train_cfg, paths, epochs=epochs, no_wandb=no_wandb)
         zip_outputs(outputs_cfg, experiment_name)

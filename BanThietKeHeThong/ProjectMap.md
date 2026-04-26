@@ -16,12 +16,15 @@ Notebook chỉ đổi:
 
 ```python
 EXPERIMENT = "hierarchical_motif_gnn_c"
+BUILD_ARTIFACTS = True   # False nếu dùng artifact đã lưu
+ARTIFACT_INPUT_PATH = "/kaggle/input/fer2013-pixel-motif-v2-spatial-r12-k32-n25/artifacts"
 ```
 
-hoặc:
+Hai mode chính:
 
-```python
-EXPERIMENT = "pixel_motif_baseline_b"
+```text
+Lần đầu chạy version đó:   --mode build_and_train  (build từ CSV rồi train)
+Các lần sau:               --mode train_from_artifact --artifact_input_path <path>
 ```
 
 ## 2. Khi muốn thêm model mới
@@ -107,6 +110,17 @@ build_graph_repo(...)
 build_candidates(...)
 build_motif_bank(...)
 build_pixel_motif_dataset(...)
+
+# Manifest
+write_manifest(out_root, data_cfg, experiment_name, pixel_motif_dir)
+read_manifest(out_root)
+validate_manifest(out_root, data_cfg, require_node_indices, require_node_mask)
+
+# Load từ Kaggle input
+load_artifacts_from_input(artifact_input_path, out_root)
+
+# Zip toàn bộ artifacts
+zip_artifacts(out_root, zip_path)
 ```
 
 Chỉ sửa file này nếu thay đổi data recipe/stage.
