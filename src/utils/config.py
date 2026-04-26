@@ -28,25 +28,7 @@ def load_config(model='simple_cnn', env='kaggle') -> dict:
     Returns:
         dict: config (gồm base) đã ghi đè (nếu có) và các config env tương ứng
     """
-    # Accept either a model name (e.g. 'resnet') or a path to a yaml
-    from pathlib import Path
-    model_path = Path(model)
-    # Try a few resolution strategies for user-provided path:
-    # 1) exact path as given
-    # 2) relative to repository root
-    # 3) relative to current working dir
-    # 4) fallback to CONFIG_DIR/{model}.yaml
-    if model_path.is_file():
-        model_config_path = str(model_path)
-    else:
-        candidate_repo = Path(ROOT_DIRECTORY) / model
-        candidate_cwd = Path.cwd() / model
-        if candidate_repo.is_file():
-            model_config_path = str(candidate_repo)
-        elif candidate_cwd.is_file():
-            model_config_path = str(candidate_cwd)
-        else:
-            model_config_path = os.path.join(CONFIG_DIR, f"{model}.yaml")
+    model_config_path = os.path.join(CONFIG_DIR, f"{model}.yaml")
     env_config_path = os.path.join(CONFIG_DIR, "env.yaml")
     base_config_path = os.path.join(CONFIG_DIR, "base.yaml")
 

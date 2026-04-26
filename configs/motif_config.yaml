@@ -1,0 +1,32 @@
+# Motif-based Graph FER Configuration
+
+model:
+  name: "motif_graph_fer"
+  feat_dim: 128
+  num_classes: 7
+  motifs_per_class: 8
+  top_k: 4
+  dropout: 0.3
+
+data:
+  batch_size: 64
+  num_workers: 4
+  input_size: 48
+  in_channels: 1
+
+training:
+  epochs: 100
+  learning_rate: 0.001
+  weight_decay: 1e-4
+  loss: "motif_combined"
+  motif_loss_weight: 0.5
+  motif_div_weight: 0.05
+  motif_tau: 0.1
+  scheduler: "reduce_lr_on_plateau"
+  patience: 10
+  factor: 0.5
+
+augmentation:
+  flip: true
+  rotation: 10
+  zoom: 0.1

@@ -3,6 +3,7 @@ from .simple_cnn import SimpleCNN
 # from .resnet import ResNet
 # from .resmaskingnet import ResMaskingNet
 from .resnet import ResNet50
+from .motif_graph_fer import MotifGraphModel
 
 """Hi, guy, tạo model mới thì:
     1. Tạo file src/models/model_name.py
@@ -12,10 +13,6 @@ from .resnet import ResNet50
 
 MODEL_REGISTRY = {
     "simple_cnn": SimpleCNN,
-    # "vgg11": lambda **kw: VGG(variant="vgg11", **kw),
-    # "vgg19": lambda **kw: VGG(variant="vgg19", **kw),
-    # "resnet18": lambda **kw: ResNet(variant="resnet18", **kw),
-    # "resnet34": lambda **kw: ResNet(variant="resnet34", **kw),
     "resnet": lambda config, **kw: ResNet50(
         num_classes=config['data'].get('num_classes', 7),
         in_channels=config['data'].get('in_channels', 1),
@@ -29,7 +26,9 @@ MODEL_REGISTRY = {
         landmark_edge_alpha=config['model'].get('landmark_edge_alpha', 6.0),
         landmark_from_stage=config['model'].get('landmark_from_stage', 3),
     ),
-    # "resmaskingnet": ResMaskingNet,
+    "motif_graph_fer": lambda config, **kw: MotifGraphModel(
+        config.get('model', {})
+    ),
 }
 
 def get_model(name: str, **kwargs):

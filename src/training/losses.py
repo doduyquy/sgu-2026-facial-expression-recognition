@@ -1,5 +1,55 @@
 import torch
 import torch.nn as nn 
+import torch.nn.functional as F
+
+class MotifConsistencyLoss(nn.Module):
+    def __init__(self, num_classes=7, motifs_per_class=8, tau=0.1):
+        super().__init__()
+        self.num_classes = num_classes
+        self.motifs_per_class = motifs_per_class
+        self.tau = tau
+
+    def forward(self, scores, top_k_idx, targets):
+        """
+        scores: (B, num_candidates, Total_Motifs)
+        top_k_idx: (B, top_k)
+        targets: (B,)
+        """
+        B, num_cands, Total_Motifs = scores.shape
+        top_k = top_k_idx.shape[1]
+        
+        # Get scores for selected subgraphs
+        batch_idx = torch.arange(B, device=scores.device).unsqueeze(1).expand(-1, top_k)
+        selected_scores = scores[batch_idx, top_k_idx] # (B, top_k, Total_Motifs)
+        
+        # Create mask for correct class motifs
+        mask = torch.zeros(B, Total_Motifs, device=scores.device)
+        for i in range(B):
+            c = targets[i]
+            mask[i, c*self.motifs_per_class : (c+1)*self.motifs_per_class] = 1.0
+        mask = mask.unsqueeze(1) # (B, 1, Total_Motifs)
+        
+        # 1. Similarity to SAME class motifs (Positive)
+        pos_scores = selected_scores.masked_fill(mask == 0, -1e9)
+        log_sum_exp_pos = torch.logsumexp(pos_scores / self.tau, dim=-1)
+        
+        # 2. Similarity to ALL motifs
+        log_sum_exp_all = torch.logsumexp(selected_scores / self.tau, dim=-1)
+        
+        # Intra-class loss (InfoNCE style)
+        loss_intra = -(log_sum_exp_pos - log_sum_exp_all).mean()
+        
+        # 3. Inter-class Separation (Contrastive/Triplet style)
+        # We want Avg(pos_scores) > Avg(neg_scores) + margin
+        pos_avg = (selected_scores * mask).sum(dim=-1) / self.motifs_per_class
+        neg_avg = (selected_scores * (1 - mask)).sum(dim=-1) / (Total_Motifs - self.motifs_per_class)
+        
+        # Contrastive margin loss
+        margin = 0.2
+        loss_inter = F.relu(margin + neg_avg - pos_avg).mean()
+        
+        return loss_intra + loss_inter
+
 
 
 
@@ -47,6 +97,42 @@ def build_loss(config, class_weights=None):
         if alpha is not None:
             alpha_tensor = torch.tensor(alpha, dtype=torch.float)
         loss = FocalLoss(gamma=gamma, alpha=alpha_tensor)
+
+    elif loss_name == 'motif_combined':
+        # Combined CrossEntropy and MotifConsistencyLoss
+        alpha = config['training'].get('motif_loss_weight', 0.5)
+        ce_loss = nn.CrossEntropyLoss()
+        motif_loss = MotifConsistencyLoss(
+            num_classes=config['model'].get('num_classes', 7),
+            motifs_per_class=config['model'].get('motifs_per_class', 8),
+            tau=config['training'].get('motif_tau', 0.1)
+        )
+        
+        class CombinedMotifLoss(nn.Module):
+            def __init__(self, ce, motif, weight, div_weight=0.1):
+                super().__init__()
+                self.ce = ce
+                self.motif = motif
+                self.weight = weight
+                self.div_weight = div_weight
+            
+            def forward(self, logits, targets, scores, top_k_idx, model=None):
+                l_ce = self.ce(logits, targets)
+                l_motif = self.motif(scores, top_k_idx, targets)
+                
+                loss = l_ce + self.weight * l_motif
+                
+                # Diversity loss
+                if model is not None and hasattr(model, 'compute_motif_diversity_loss'):
+                    l_div = model.compute_motif_diversity_loss()
+                    loss = loss + self.div_weight * l_div
+                    
+                return loss
+
+        loss = CombinedMotifLoss(
+            ce_loss, motif_loss, alpha, 
+            div_weight=config['training'].get('motif_div_weight', 0.1)
+        )
 
     else: 
         raise ValueError(f"\n[!!!] Not support {loss_name} loss!\n")
