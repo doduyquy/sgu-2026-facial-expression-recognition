@@ -478,10 +478,17 @@ src/utils/config.py
 src/utils/checkpoint.py
 ```
 
-Model chính:
+Model chính baseline B:
 
 ```text
 src/models/motif_guided_gnn.py
+```
+
+Model chính hierarchical C:
+
+```text
+src/models/hierarchical_motif_gnn.py
+src/models/internal_subgraph_encoder.py
 ```
 
 Dataset loader chính:
