@@ -278,8 +278,53 @@ class MotifGraphModel(nn.Module):
                 
         return torch.stack(subgraphs, dim=1), torch.stack(subgraph_adjs, dim=1), subgraph_centers
 
-    def forward(self, x, return_selection=False):
+    def get_landmark_outputs(self):
+        """ Return latest motif matching scores for Trainer compatibility """
+        return getattr(self, '_latest_scores', None), getattr(self, '_latest_top_k', None)
+
+    def get_aux_losses(self):
+        """ Compute motif losses for Trainer compatibility """
+        if not hasattr(self, '_latest_scores') or self._latest_scores is None:
+            return {}
+            
+        # Get latest targets (stored during forward)
+        targets = getattr(self, '_latest_targets', None)
+        if targets is None:
+            return {}
+            
+        # Safety check: batch size must match
+        if self._latest_scores.shape[0] != targets.shape[0]:
+            return {}
+            
+        from src.training.losses import MotifConsistencyLoss
+        if not hasattr(self, '_motif_consistency_criterion'):
+            self._motif_consistency_criterion = MotifConsistencyLoss(motifs_per_class=self.motifs_per_class)
+            
+        l_motif = self._motif_consistency_criterion(self._latest_scores, self._latest_top_k, targets)
+        l_div = self.compute_motif_diversity_loss()
+        
+        return {
+            "motif_consistency": l_motif,
+            "motif_diversity": l_div
+        }
+        
+    def get_landmark_aux_logits(self):
+        """ Stub for compatibility with Trainer """
+        return None
+
+    def set_training_progress(self, progress):
+        """ Stub for compatibility with Trainer """
+        pass
+        
+    def get_current_prior_strength(self):
+        """ Stub for compatibility with Trainer """
+        return 0.0
+
+    def forward(self, x, return_selection=False, targets=None):
         B = x.shape[0]
+        # Store targets for aux loss calculation
+        self._latest_targets = targets
+        
         feat_map = self.backbone(x)
         _, _, H, W = feat_map.shape
         
@@ -342,6 +387,10 @@ class MotifGraphModel(nn.Module):
         
         aggregated = torch.sum(selected_embeds * attn_weights, dim=1)
         logits = self.classifier(aggregated)
+        
+        # Store for Trainer access
+        self._latest_scores = scores
+        self._latest_top_k = top_k_idx
         
         # Store for Trainer access
         self._latest_scores = scores

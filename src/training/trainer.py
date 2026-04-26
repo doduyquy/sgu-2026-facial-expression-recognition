@@ -207,7 +207,7 @@ class Trainer:
                 labels_a = labels
                 labels_b = labels[perm]
 
-            # Pass labels to forward if model supports it (for internal loss calculation)
+            # Pass labels to forward for internal loss calculation
             if hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
                 outputs = self.model(images, targets=labels)
             else:
@@ -457,7 +457,12 @@ class Trainer:
                         self.model.pos_supervision_weight = float(getattr(self, '_runtime_pos_sup_lambda', self.landmark_pos_sup_lambda))
                 except Exception:
                     pass
-                outputs = self.model(images)
+                # Pass labels to forward for internal loss calculation
+                if hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
+                    outputs = self.model(images, targets=labels)
+                else:
+                    outputs = self.model(images)
+                
                 logits = self._extract_logits(outputs)
                 cls_loss = self.criterion(logits, labels)
                 aux_losses = self._extract_aux_losses(outputs)
@@ -485,6 +490,12 @@ class Trainer:
                     + (div_lambda_t * div_loss)
                     + (edge_consistency_lambda_t * edge_consistency_loss)
                 )
+                
+                # Aggregate ALL other auxiliary losses automatically
+                for k, v in aux_losses.items():
+                    if k not in ["landmark_diversity", "landmark_entropy", "landmark_sparsity", "landmark_overlap"]:
+                        w = self.config.get('training', {}).get(f'{k}_weight', 0.1)
+                        loss = loss + float(w) * v
                 try:
                     if overlap_lambda_t.item() > 0.0:
                         loss = loss + (overlap_lambda_t * overlap_loss)
