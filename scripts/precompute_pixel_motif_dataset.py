@@ -62,6 +62,11 @@ def _process_split(
     diversity_sigma: float,
     max_nodes: int,
     edge_attr_mode: str,
+    selection_mode: str,
+    disc_weight: float,
+    global_weight: float,
+    coverage_weight: float,
+    redundancy_weight: float,
 ) -> List[dict]:
     path = candidate_dir / f"{split}_pixel_candidates.pt"
     if not path.exists():
@@ -90,6 +95,11 @@ def _process_split(
             eta=eta,
             diversity_sigma=diversity_sigma,
             mask=sample.get("mask"),
+            selection_mode=selection_mode,
+            disc_weight=disc_weight,
+            global_weight=global_weight,
+            coverage_weight=coverage_weight,
+            redundancy_weight=redundancy_weight,
         )
         if edge_attr_mode == "rich":
             edge_index, edge_attr = build_directed_knn_rich_edges(
@@ -173,6 +183,15 @@ def main() -> None:
     p.add_argument("--eta", type=float, default=0.05)
     p.add_argument("--diversity_sigma", type=float, default=0.12)
     p.add_argument(
+        "--selection_mode",
+        choices=["greedy_coverage", "greedy_discriminative_soft_coverage"],
+        default="greedy_coverage",
+    )
+    p.add_argument("--disc_weight", type=float, default=0.3)
+    p.add_argument("--global_weight", type=float, default=0.3)
+    p.add_argument("--coverage_weight", type=float, default=0.1)
+    p.add_argument("--redundancy_weight", type=float, default=0.1)
+    p.add_argument(
         "--edge_attr_mode",
         choices=["spatial", "rich"],
         default="spatial",
@@ -213,6 +232,11 @@ def main() -> None:
             diversity_sigma=args.diversity_sigma,
             max_nodes=max_nodes,
             edge_attr_mode=args.edge_attr_mode,
+            selection_mode=args.selection_mode,
+            disc_weight=args.disc_weight,
+            global_weight=args.global_weight,
+            coverage_weight=args.coverage_weight,
+            redundancy_weight=args.redundancy_weight,
         )
         split_counts[split] = len(samples)
 
@@ -230,6 +254,11 @@ def main() -> None:
         "gamma": float(args.gamma),
         "eta": float(args.eta),
         "diversity_sigma": float(args.diversity_sigma),
+        "selection_mode": args.selection_mode,
+        "disc_weight": float(args.disc_weight),
+        "global_weight": float(args.global_weight),
+        "coverage_weight": float(args.coverage_weight),
+        "redundancy_weight": float(args.redundancy_weight),
         "edge_attr_mode": args.edge_attr_mode,
         "edge_attr_names": list(edge_attr_names),
         "edge_attr_dim": len(edge_attr_names),

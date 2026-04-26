@@ -20,6 +20,14 @@ class PixelMotifPrototype:
     discriminative_score: float
     support: int
     exemplars: List[dict] = field(default_factory=list)
+    support_count: Optional[int] = None
+    class_counts: Optional[torch.Tensor] = None
+    class_distribution: Optional[torch.Tensor] = None
+    class_purity: Optional[float] = None
+    entropy: Optional[float] = None
+    entropy_norm: Optional[float] = None
+    global_dominance: Optional[float] = None
+    metadata: Dict = field(default_factory=dict)
 
 
 @dataclass

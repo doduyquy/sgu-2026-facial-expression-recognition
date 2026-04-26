@@ -65,12 +65,17 @@ def resolve_artifact_paths(data_cfg: dict[str, Any], out_root_override: str | Pa
     out_root = Path(out_root_override or data_cfg.get("artifact_root", "/kaggle/working/artifacts"))
     edge_attr_mode = str(data_cfg.get("edge_attr_mode", "spatial"))
     default_dataset = "pixel_motif_dataset_v2_rich_edges" if edge_attr_mode == "rich" else "pixel_motif_dataset_v2"
+    recipe = str(data_cfg.get("recipe", "pixel_motif_v2"))
+    default_bank = "pixel_motif_bank_v2"
+    if "d2a" in recipe:
+        default_bank = "pixel_motif_bank_v3_d2a"
+        default_dataset = "pixel_motif_dataset_v3_d2a"
     pixel_motif_dir = Path(data_cfg.get("pixel_motif_dir", out_root / default_dataset))
     return {
         "out_root": out_root,
         "graph_repo": out_root / "graph_repo",
-        "candidate_dir": out_root / "pixel_candidate_subgraphs_v2",
-        "motif_bank_dir": out_root / "pixel_motif_bank_v2",
+        "candidate_dir": Path(data_cfg.get("candidate_dir", out_root / "pixel_candidate_subgraphs_v2")),
+        "motif_bank_dir": Path(data_cfg.get("motif_bank_dir", out_root / default_bank)),
         "pixel_motif_dir": pixel_motif_dir,
     }
 
@@ -226,6 +231,12 @@ def build_motif_bank(data_cfg: dict[str, Any], candidate_dir: Path, motif_bank_d
         "--num_exemplars",
         str(data_cfg.get("num_exemplars", 5)),
     ]
+    if bool(data_cfg.get("enable_discriminative_metadata", False)):
+        cmd.append("--enable_discriminative_metadata")
+    if "assignment_batch_size" in data_cfg:
+        cmd.extend(["--assignment_batch_size", str(data_cfg.get("assignment_batch_size"))])
+    if "significant_class_threshold" in data_cfg:
+        cmd.extend(["--significant_class_threshold", str(data_cfg.get("significant_class_threshold"))])
     run_command(cmd)
     run_command(
         [
@@ -270,6 +281,16 @@ def build_pixel_motif_dataset(
         str(data_cfg.get("diversity_sigma", 0.12)),
         "--edge_attr_mode",
         str(data_cfg.get("edge_attr_mode", "spatial")),
+        "--selection_mode",
+        str(data_cfg.get("selection_mode", "greedy_coverage")),
+        "--disc_weight",
+        str(data_cfg.get("disc_weight", 0.3)),
+        "--global_weight",
+        str(data_cfg.get("global_weight", 0.3)),
+        "--coverage_weight",
+        str(data_cfg.get("coverage_weight", 0.1)),
+        "--redundancy_weight",
+        str(data_cfg.get("redundancy_weight", 0.1)),
     ]
     run_command(cmd)
     run_command([sys.executable, "scripts/inspect_pixel_motif_dataset.py", "--data_dir", str(pixel_motif_dir)])
@@ -377,7 +398,7 @@ def write_manifest(
     has_node_mask = _check_node_mask(pixel_motif_dir)
 
     manifest = {
-        "artifact_version": "pixel_motif_v2",
+        "artifact_version": str(data_cfg.get("recipe", "pixel_motif_v2")),
         "experiment_name": experiment_name,
         "created_from": "csv",
         "graph": {
@@ -394,6 +415,7 @@ def write_manifest(
         "motif": {
             "num_motifs_per_class": int(data_cfg.get("num_motifs_per_class", 16)),
             "descriptor_dim": descriptor_dim,
+            "enable_discriminative_metadata": bool(data_cfg.get("enable_discriminative_metadata", False)),
         },
         "pixel_motif_dataset": {
             "top_k": int(data_cfg.get("top_k", 32)),
@@ -406,6 +428,11 @@ def write_manifest(
             "sub_x_dtype": "float32",
             "sub_adj_dtype": "uint8",
             "edge_attr_mode": str(data_cfg.get("edge_attr_mode", "spatial")),
+            "selection_mode": str(data_cfg.get("selection_mode", "greedy_coverage")),
+            "disc_weight": float(data_cfg.get("disc_weight", 0.3)),
+            "global_weight": float(data_cfg.get("global_weight", 0.3)),
+            "coverage_weight": float(data_cfg.get("coverage_weight", 0.1)),
+            "redundancy_weight": float(data_cfg.get("redundancy_weight", 0.1)),
         },
         "compatible_models": ["motif_guided_gnn", "hierarchical_motif_gnn"],
     }

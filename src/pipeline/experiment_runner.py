@@ -186,6 +186,8 @@ def run_experiment(
         data_cfg["pixel_motif_dir"] = str(pixel_motif_dir)
     elif out_root is not None:
         data_cfg.pop("pixel_motif_dir", None)
+        data_cfg.pop("motif_bank_dir", None)
+        data_cfg.pop("candidate_dir", None)
 
     data_cfg_normalized = normalize_data_config(data_cfg)
     default_out_root = Path(out_root or data_cfg_normalized.get("artifact_root", "/kaggle/working/artifacts"))

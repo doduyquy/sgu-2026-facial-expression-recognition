@@ -1,0 +1,92 @@
+%% Paste this as a new Mermaid diagram. Remove the default sample graph first.
+flowchart TD
+    TITLE["Version C - Hierarchical Pixel Motif GNN<br/>Internal pixel-subgraph GNN + descriptor + motif-level GNN"]
+
+    subgraph K["Kaggle / Experiment Entry"]
+        K0["kaggle_pixel_motif_end_to_end.ipynb<br/>Only edit EXPERIMENT"]
+        K1["scripts/run_experiment.py<br/>Thin CLI entrypoint"]
+        K2["configs/experiments/hierarchical_motif_gnn_c.yaml"]
+        K0 --> K1 --> K2
+    end
+
+    subgraph P["Pipeline API"]
+        P0["src/pipeline/experiment_runner.py"]
+        P1["src/pipeline/artifact_builder.py"]
+        K1 --> P0 --> P1
+    end
+
+    subgraph D["Data Build"]
+        D0["CSV<br/>train.csv / val.csv / test.csv"]
+        D1["graph_repo<br/>SharedGraphStructure + chunked PixelGraphSample"]
+        D2["pixel_candidate_subgraphs_v2<br/>descriptor 41D + node_indices trace"]
+        D3["pixel_motif_bank_v2<br/>emotion-specific motif prototypes"]
+        D4["pixel_motif_dataset_v2<br/>top-K selected motif subgraphs per image"]
+        D5["pixel_motif_dataset_v3_hierarchical<br/>sub_x + sub_adj + sub_node_mask"]
+        D0 --> D1 --> D2 --> D3 --> D4 --> D5
+    end
+
+    P1 --> D0
+
+    subgraph C["Version C Model"]
+        C0["configs/hierarchical_motif_gnn.yaml"]
+        C1["HierarchicalMotifGNN"]
+
+        C2["Input per image<br/>K selected motifs"]
+        C3["sub_x [B,K,N,7]<br/>pixel features"]
+        C4["sub_adj [B,K,N,N]<br/>internal pixel edges"]
+        C5["sub_node_mask [B,K,N]"]
+
+        C6["InternalPixelSubgraphEncoder"]
+        C7["Linear 7 -> 64<br/>LayerNorm + GELU + Dropout"]
+        C8["DenseGraphSAGE x2<br/>mean aggregation on subgraph pixels"]
+        C9["mean_max readout"]
+        C10["z_internal [B,K,128]"]
+
+        C11["descriptor x [B,K,41]"]
+        C12["motif metadata<br/>match_score + disc_score + class one-hot"]
+        C13["motif node feature concat<br/>z_internal + descriptor + metadata"]
+
+        C14["node_encoder<br/>Linear -> 128 + LayerNorm + GELU"]
+        C15["motif-level GraphSAGE x2"]
+        C16["motif_attention pooling<br/>weighted by hidden state + match_score"]
+        C17["concat motif_score_vector [B,7]"]
+        C18["classifier MLP"]
+        C19["logits [B,7]"]
+    end
+
+    D5 --> C2
+    D1 --> C3
+
+    C0 --> C1
+    C1 --> C2
+    C2 --> C3
+    C2 --> C4
+    C2 --> C5
+
+    C3 --> C6
+    C4 --> C6
+    C5 --> C6
+
+    C6 --> C7 --> C8 --> C9 --> C10
+    C10 --> C13
+    C11 --> C13
+    C12 --> C13
+
+    C13 --> C14 --> C15 --> C16 --> C17 --> C18 --> C19
+
+    subgraph TRAIN["Training"]
+        T0["Weighted CE<br/>class_weight_power = 0.5"]
+        T1["AdamW<br/>lr = 5e-4"]
+        T2["ReduceLROnPlateau<br/>monitor val_macro_f1"]
+        T3["Early stopping<br/>patience = 15"]
+    end
+
+    C19 --> T0 --> T1 --> T2 --> T3
+
+    subgraph OUT["Outputs"]
+        O0["outputs/checkpoints"]
+        O1["outputs/figures/confusion_matrix.png"]
+        O2["/kaggle/working/hierarchical_motif_gnn_c_outputs.zip"]
+    end
+
+    T3 --> OUT

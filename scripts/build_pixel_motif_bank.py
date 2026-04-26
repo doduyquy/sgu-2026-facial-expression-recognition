@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import math
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -137,6 +138,81 @@ def _make_exemplars(
     return exemplars
 
 
+def _entropy_from_counts(counts: torch.Tensor) -> tuple[float, float, float]:
+    total = float(counts.sum().item())
+    if total <= 0:
+        return 0.0, 0.0, 0.0
+    probs = counts.float() / total
+    entropy = float(-(probs[probs > 0] * probs[probs > 0].log()).sum().item())
+    entropy_norm = entropy / max(math.log(max(2, int(counts.numel()))), 1e-12)
+    purity = float(probs.max().item())
+    return entropy, entropy_norm, purity
+
+
+def _attach_discriminative_metadata(
+    motifs: Dict[int, List[PixelMotifPrototype]],
+    norm: Dict[int, torch.Tensor],
+    num_classes: int,
+    *,
+    assignment_batch_size: int = 8192,
+    significant_class_threshold: float = 0.10,
+) -> None:
+    """Assign sampled descriptors to selected motifs and derive class-purity metadata."""
+    flat_motifs: list[PixelMotifPrototype] = []
+    prototypes: list[torch.Tensor] = []
+    for class_id in range(num_classes):
+        for motif in motifs.get(class_id, []):
+            flat_motifs.append(motif)
+            prototypes.append(torch.as_tensor(motif.prototype).float().view(-1))
+    if not prototypes:
+        return
+    proto = torch.stack(prototypes)
+    counts = torch.zeros((len(flat_motifs), num_classes), dtype=torch.long)
+
+    for class_id in range(num_classes):
+        desc = norm.get(class_id)
+        if desc is None or desc.numel() == 0:
+            continue
+        for start in range(0, desc.shape[0], assignment_batch_size):
+            batch = desc[start : start + assignment_batch_size]
+            sim = cosine_similarity_matrix(batch, proto)
+            assigned = sim.argmax(dim=1)
+            binc = torch.bincount(assigned, minlength=len(flat_motifs)).long()
+            counts[:, class_id] += binc
+
+    for motif_idx, motif in enumerate(flat_motifs):
+        class_counts = counts[motif_idx].clone()
+        total = int(class_counts.sum().item())
+        entropy, entropy_norm, purity = _entropy_from_counts(class_counts)
+        distribution = class_counts.float() / max(1, total)
+        significant_classes = int((distribution >= float(significant_class_threshold)).sum().item())
+        d2a_score = float(purity * (1.0 - entropy_norm))
+        old_score = float(motif.discriminative_score)
+        motif.support_count = total
+        motif.class_counts = class_counts
+        motif.class_distribution = distribution
+        motif.class_purity = purity
+        motif.entropy = entropy
+        motif.entropy_norm = entropy_norm
+        motif.global_dominance = float(entropy_norm)
+        motif.discriminative_score = d2a_score
+        motif.metadata.update(
+            {
+                "legacy_discriminative_score": old_score,
+                "d2a_discriminative_score": d2a_score,
+                "support_count": total,
+                "class_counts": class_counts.tolist(),
+                "class_distribution": distribution.tolist(),
+                "class_purity": purity,
+                "entropy": entropy,
+                "entropy_norm": entropy_norm,
+                "global_dominance": float(entropy_norm),
+                "significant_class_count": significant_classes,
+                "significant_class_threshold": float(significant_class_threshold),
+            }
+        )
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--input_dir", default="artifacts/pixel_candidate_subgraphs_v2")
@@ -148,6 +224,9 @@ def main() -> None:
     p.add_argument("--kmeans_batch_size", type=int, default=4096)
     p.add_argument("--oversample_factor", type=int, default=2)
     p.add_argument("--num_exemplars", type=int, default=5)
+    p.add_argument("--enable_discriminative_metadata", action="store_true")
+    p.add_argument("--assignment_batch_size", type=int, default=8192)
+    p.add_argument("--significant_class_threshold", type=float, default=0.10)
     args = p.parse_args()
 
     input_dir = Path(args.input_dir)
@@ -279,6 +358,21 @@ def main() -> None:
             all_disc.append(motif.discriminative_score)
         motifs[class_id] = selected
 
+    if args.enable_discriminative_metadata:
+        print("Computing D2A class-purity/discriminative motif metadata...")
+        _attach_discriminative_metadata(
+            motifs,
+            norm,
+            num_classes,
+            assignment_batch_size=args.assignment_batch_size,
+            significant_class_threshold=args.significant_class_threshold,
+        )
+        all_disc = [
+            float(m.discriminative_score)
+            for class_motifs in motifs.values()
+            for m in class_motifs
+        ]
+
     bank = PixelMotifBank(
         motifs=motifs,
         descriptor_dim=descriptor_dim,
@@ -296,6 +390,15 @@ def main() -> None:
             "descriptor_mean": mean.tolist(),
             "descriptor_std": std.tolist(),
             "num_exemplars": int(args.num_exemplars),
+            "enable_discriminative_metadata": bool(args.enable_discriminative_metadata),
+            "metadata_definition": {
+                "class_distribution": "nearest selected motif assignment over sampled train candidates",
+                "class_purity": "max p(class | motif)",
+                "entropy_norm": "entropy(class_distribution) / log(num_classes)",
+                "discriminative_score": "class_purity * (1 - entropy_norm) when D2A metadata is enabled",
+                "global_dominance": "entropy_norm",
+            },
+            "significant_class_threshold": float(args.significant_class_threshold),
             "image_counts_per_class": image_counts,
             "candidate_meta": {
                 "num_candidates": meta.get("num_candidates"),

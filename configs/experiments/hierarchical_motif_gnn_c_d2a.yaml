@@ -1,0 +1,65 @@
+experiment:
+  name: hierarchical_motif_gnn_c_d2a
+  description: "D2A: discriminative motif bank + soft coverage selection, model C mean readout unchanged."
+
+data:
+  recipe: pixel_motif_v3_d2a_discriminative_softcoverage
+  csv_root: auto
+  artifact_root: /kaggle/working/artifacts
+  stage: all
+  skip_existing: true
+  smoke: false
+  smoke_samples: 100
+
+  edge_attr_mode: spatial
+  motif_bank_dir: /kaggle/working/artifacts/pixel_motif_bank_v3_d2a
+  pixel_motif_dir: /kaggle/working/artifacts/pixel_motif_dataset_v3_d2a
+  build_hierarchical_cache: false
+
+  graph:
+    chunk_size: 500
+    connectivity: 8
+
+  candidates:
+    max_candidates: 128
+    seed_stride: 4
+    radii: [1, 2]
+    coverage_grid: [4, 4]
+    log_every: 500
+
+  motif_bank:
+    num_motifs_per_class: 16
+    max_subgraphs_per_class: 50000
+    alpha: 0.5
+    seed: 42
+    num_exemplars: 5
+    enable_discriminative_metadata: true
+    assignment_batch_size: 8192
+    significant_class_threshold: 0.10
+
+  motif_dataset:
+    top_k: 32
+    knn_k: 4
+    selection_mode: greedy_discriminative_soft_coverage
+    disc_weight: 0.3
+    global_weight: 0.3
+    coverage_weight: 0.1
+    redundancy_weight: 0.1
+    beta: 0.5
+    gamma: 0.25
+    eta: 0.05
+    diversity_sigma: 0.12
+
+training:
+  enabled: true
+  env: kaggle
+  config: hierarchical_motif_gnn_c_readout_mean
+  epochs: 80
+  no_wandb: false
+  debug_batch: true
+  debug_batch_size: 2
+
+outputs:
+  zip_outputs: true
+  zip_name: hierarchical_motif_gnn_c_d2a_outputs.zip
+
