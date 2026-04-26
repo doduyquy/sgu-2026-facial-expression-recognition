@@ -1,0 +1,59 @@
+﻿flowchart TD
+    TITLE["Current Pixel Motif FER-2013 Workflow<br/>Template-driven, single Kaggle notebook"]
+
+    subgraph K["Kaggle / Experiment Entry"]
+        K0["kaggle_pixel_motif_end_to_end.ipynb<br/>Only edit EXPERIMENT"]
+        K1["scripts/run_experiment.py<br/>Thin CLI entrypoint"]
+        K2["configs/experiments/*.yaml<br/>Single source of truth"]
+        K0 --> K1 --> K2
+    end
+
+    subgraph P["Pipeline API"]
+        P0["src/pipeline/experiment_runner.py"]
+        P1["src/pipeline/artifact_builder.py"]
+        K1 --> P0 --> P1
+    end
+
+    subgraph D["Data Build"]
+        D0["CSV<br/>train.csv / val.csv / test.csv"]
+        D1["graph_repo<br/>SharedGraphStructure + chunked PixelGraphSample"]
+        D2["pixel_candidate_subgraphs_v2<br/>descriptor 41D + node_indices trace"]
+        D3["pixel_motif_bank_v2<br/>emotion-specific motif prototypes"]
+        D4["pixel_motif_dataset_v2<br/>top-K selected motif subgraphs per image"]
+        D0 --> D1 --> D2 --> D3 --> D4
+    end
+
+    P1 --> D0
+
+    subgraph B["Baseline B"]
+        B0["configs/experiments/pixel_motif_baseline_b.yaml"]
+        B1["configs/pixel_motif_guided_gnn_motif_norm.yaml"]
+        B2["MotifGuidedGNN"]
+        B3["descriptor 41D + motif metadata"]
+        B4["motif-level GraphSAGE + motif_attention"]
+        B5["Accuracy ~45.11%<br/>Macro F1 ~0.4196"]
+        B0 --> B1 --> B2 --> B3 --> B4 --> B5
+    end
+
+    subgraph C["Version C"]
+        C0["configs/experiments/hierarchical_motif_gnn_c.yaml"]
+        C1["configs/hierarchical_motif_gnn.yaml"]
+        C2["InternalPixelSubgraphEncoder"]
+        C3["sub_x [B,K,N,7]<br/>sub_adj [B,K,N,N]"]
+        C4["z_internal + descriptor 41D + motif metadata"]
+        C5["motif-level GraphSAGE + motif_attention"]
+        C0 --> C1 --> C2 --> C3 --> C4 --> C5
+    end
+
+    D4 --> B3
+    D4 --> C3
+    D1 --> C3
+
+    subgraph OUT["Outputs"]
+        O0["outputs/checkpoints"]
+        O1["outputs/figures/confusion_matrix.png"]
+        O2["/kaggle/working/<experiment>_outputs.zip"]
+    end
+
+    B5 --> OUT
+    C5 --> OUT

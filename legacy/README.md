@@ -22,3 +22,9 @@ configs/hierarchical_motif_gnn.yaml
 The files here are not deleted so older ideas can still be inspected, but they
 should not be used for new Kaggle runs unless they are deliberately restored.
 
+Legacy docs from the old design notes are in:
+
+```text
+legacy/docs/
+```
+

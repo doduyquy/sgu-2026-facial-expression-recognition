@@ -1,261 +1,128 @@
-﻿# Kaggle Workflow Guide cho Pixel-preserving Motif V2
+# Kaggle Workflow Guide - Pixel Motif FER-2013
 
-File này dùng để nhắc mọi lần code tiếp, debug, hoặc nhờ AI chỉnh sửa project:
+File này là bản hướng dẫn workflow hiện tại của project. Có thể gửi nguyên file này cho ChatGPT/Codex để nó hiểu cách chạy Kaggle đúng, tránh nhầm dataset/config/model.
+
+Nếu cần biết file/hàm/class để sửa code, đọc thêm:
 
 ```text
-Local chỉ dùng để code/test nhỏ.
-Kaggle là nơi build artifact nặng và train model chính.
+BanThietKeHeThong/ProjectMap.md
 ```
 
-Workflow Kaggle hiện tại chỉ có **1 notebook chính**:
+## 1. Nguyên tắc hiện tại
+
+Workflow Kaggle hiện tại là **single end-to-end notebook**:
 
 ```text
 kaggle_pixel_motif_end_to_end.ipynb
 ```
 
-Notebook này chạy một luồng duy nhất:
+Notebook này không nhận pixel motif dataset prebuilt. Nó chỉ cần CSV FER-2013:
 
 ```text
-CSV FER-2013
+train.csv
+val.csv
+test.csv
+```
+
+Sau đó tự chạy:
+
+```text
+CSV
 -> graph_repo
 -> pixel_candidate_subgraphs_v2
 -> pixel_motif_bank_v2
 -> pixel_motif_dataset_v2
--> debug batch nếu cần
+-> debug batch nếu config yêu cầu
 -> train
 -> evaluate
 -> zip outputs
 ```
 
-Hai notebook cũ chỉ còn là legacy reference, không dùng cho experiment chính:
-
-1. `legacy/deprecated_notebooks/kaggle_build_pixel_motif_dataset_v2.ipynb`  # DEPRECATED
-2. `legacy/deprecated_notebooks/kaggle_train_pixel_motif_baseline.ipynb`    # DEPRECATED
-
-Lý do gộp: build dataset ở notebook A rồi publish thành Kaggle Dataset, sau đó notebook B scan `/kaggle/input` rất dễ train nhầm dataset/config. Từ giờ data vừa sinh trong cùng run sẽ được train ngay, không có bước handoff artifact rời.
-
-Nguồn sự thật của mỗi run là experiment config:
+Lý do thiết kế như vậy:
 
 ```text
-configs/experiments/pixel_motif_baseline_b.yaml
-configs/experiments/hierarchical_motif_gnn_c.yaml
+Trước đây có 2 notebook:
+1. build dataset
+2. train từ Kaggle Dataset đã publish
+
+Cách đó dễ train nhầm dataset/config, nhất là khi có spatial/rich/hierarchical.
+Hiện tại data vừa sinh trong cùng run sẽ được train ngay.
 ```
 
-Entrypoint script:
+## 2. Active files
+
+Notebook chính:
+
+```text
+kaggle_pixel_motif_end_to_end.ipynb
+```
+
+Entrypoint chính:
 
 ```text
 scripts/run_experiment.py
 ```
 
-Pipeline API cố định:
+Pipeline API:
 
 ```text
 src/pipeline/artifact_builder.py
 src/pipeline/experiment_runner.py
 ```
 
-Nguyên tắc template:
+Experiment configs:
 
 ```text
-Muốn thử model mới:
-1. thêm src/models/<model>.py
-2. register model trong src/models/__init__.py
-3. thêm config model nếu cần
-4. thêm/copy một file configs/experiments/<experiment>.yaml
-5. đổi EXPERIMENT trong kaggle_pixel_motif_end_to_end.ipynb
-6. chạy
+configs/experiments/pixel_motif_baseline_b.yaml
+configs/experiments/hierarchical_motif_gnn_c.yaml
 ```
 
-Không sửa notebook, không sửa runner, không sửa data pipeline nếu chỉ thay model.
-
-## 0. Bài học bắt buộc khi tạo biến thể dataset/model mới
-
-Lỗi đã gặp:
+Model configs:
 
 ```text
-Đã thêm bản rich edge trong code sinh dữ liệu,
-nhưng ban đầu chưa đồng bộ tên output dataset, config train,
-Notebook A và Notebook B.
-Kết quả là dữ liệu có thể đã là rich nhưng vẫn nằm trong folder tên cũ,
-dễ train nhầm config hoặc publish nhầm artifact.
+configs/pixel_motif_guided_gnn_motif_norm.yaml
+configs/hierarchical_motif_gnn.yaml
 ```
 
-Từ giờ, hễ tạo một biến thể mới như:
+Atomic data scripts được pipeline API gọi trực tiếp:
 
 ```text
-spatial edge -> rich edge
-top_k 32 -> top_k 48
-radii 1 2 -> radii 1 2 3
-dataset v2 -> dataset v3
-baseline B -> hierarchical C
+scripts/build_graph_repository.py
+scripts/precompute_pixel_candidate_subgraphs.py
+scripts/build_pixel_motif_bank.py
+scripts/precompute_pixel_motif_dataset.py
+scripts/inspect_pixel_candidate_subgraphs.py
+scripts/inspect_pixel_motif_bank.py
+scripts/inspect_pixel_motif_dataset.py
+scripts/audit_pixel_motif_dataset.py
 ```
 
-thì phải kiểm tra đủ 6 điểm sau:
-
-1. **Tên artifact cuối cùng**
-
-   Ví dụ:
-
-   ```text
-   pixel_motif_dataset_v2              # baseline spatial/old
-   pixel_motif_dataset_v2_rich_edges   # rich edge 13D
-   ```
-
-2. **Script build dataset**
-
-   File cần kiểm tra:
-
-   ```text
-   legacy/scripts/run_pixel_motif_v2_pipeline.py
-   scripts/precompute_pixel_motif_dataset.py
-   ```
-
-   Các option phải có và được truyền xuyên suốt:
-
-   ```text
-   --edge_attr_mode spatial|rich
-   --pixel_motif_dir <output_dir>       # nếu cần override tên output
-   ```
-
-3. **Notebook A phải build đúng biến thể**
-
-   File:
-
-   ```text
-   legacy/deprecated_notebooks/kaggle_build_pixel_motif_dataset_v2.ipynb
-   ```
-
-   Cần kiểm tra:
-
-   ```python
-   EDGE_ATTR_MODE = "rich"     # hoặc "spatial"
-   ```
-
-   Notebook A phải copy đúng thư mục final ra `/kaggle/working`:
-
-   ```text
-   rich    -> /kaggle/working/pixel_motif_dataset_v2_rich_edges
-   spatial -> /kaggle/working/pixel_motif_dataset_v2
-   ```
-
-   Sau khi copy, Notebook A phải xóa artifact trung gian và repo source:
-
-   ```text
-   /kaggle/working/artifacts
-   /kaggle/working/sgu-2026-facial-expression-recognition
-   ```
-
-   Lý do: Kaggle Dataset sẽ gom toàn bộ file còn lại trong `/kaggle/working`.
-
-4. **Notebook B phải train đúng config tương ứng**
-
-   File:
-
-   ```text
-   legacy/deprecated_notebooks/kaggle_train_pixel_motif_baseline.ipynb
-   ```
-
-   Cần kiểm tra:
-
-   ```python
-   MODEL_VARIANT = "hierarchical"  # hoặc "spatial" / "rich"
-   DATASET_VARIANT = "spatial"     # hoặc "rich"
-   ```
-
-   Mapping phải đúng:
-
-   ```text
-   hierarchical -> configs/hierarchical_motif_gnn.yaml
-   rich         -> legacy/configs/pixel_motif_guided_gnn_rich_edges.yaml
-   spatial      -> configs/pixel_motif_guided_gnn_motif_norm.yaml
-   ```
-
-   Với `MODEL_VARIANT = "hierarchical"` phải có thêm `graph_repo`, vì model C dựng
-   `sub_x/sub_adj/sub_node_mask` từ `node_indices` + node features thật trong graph repo.
-
-5. **Config train phải trỏ đúng dataset và edge_attr_dim**
-
-   Với rich edge:
-
-   ```yaml
-   data:
-     pixel_motif_dataset_path: artifacts/pixel_motif_dataset_v2_rich_edges
-
-   model:
-     use_edge_attr: true
-     edge_attr_dim: 13
-   ```
-
-   Với spatial baseline:
-
-   ```yaml
-   data:
-     pixel_motif_dataset_path: artifacts/pixel_motif_dataset_v2
-
-   model:
-     edge_attr_dim: 3
-   ```
-
-6. **Inspect dataset trước khi train**
-
-   Không tin vào tên folder. Phải kiểm tra nội dung:
-
-   ```bash
-   python scripts/inspect_pixel_motif_dataset.py --data_dir <dataset_path>
-   ```
-
-   Rich edge đúng phải thấy:
-
-   ```text
-   edge_attr: (128, 13)
-   ```
-
-   hoặc trong `meta.pt`:
-
-   ```text
-   edge_attr_mode: rich
-   edge_attr_dim: 13
-   ```
-
-   Spatial baseline đúng phải thấy:
-
-   ```text
-   edge_attr: (128, 3)
-   ```
-
-   Hierarchical C cần kiểm tra thêm sample có:
-
-   ```text
-   node_indices
-   node_mask
-   ```
-
-   và Notebook B phải tìm được:
-
-   ```text
-   graph_repo/shared/shared_graph.pt
-   graph_repo/train/chunk_*.pt
-   graph_repo/val/chunk_*.pt
-   graph_repo/test/chunk_*.pt
-   ```
-
-Nguyên tắc chốt:
+Train/debug:
 
 ```text
-Tên folder chỉ là nhãn.
-meta.pt và shape edge_attr mới là sự thật.
-Notebook A và Notebook B luôn phải được sửa theo cặp khi thêm biến thể dataset.
+scripts/train.py
+scripts/debug_hierarchical_batch.py
 ```
 
-## 1. Workflow chính: End-to-end Pixel Motif Experiment
+## 3. Cách chạy trên Kaggle
 
-File:
+### Bước 1: Push code lên GitHub
 
-```text
-kaggle_pixel_motif_end_to_end.ipynb
+Notebook Kaggle clone repo từ GitHub. Vì vậy trước khi chạy Kaggle phải push code hiện tại lên branch notebook đang dùng.
+
+Trong notebook hiện có các biến:
+
+```python
+GITHUB_USERNAME = "doduyquy"
+GITHUB_REPO_NAME = "sgu-2026-facial-expression-recognition"
+GITHUB_REPO_BRANCH = "Tri_GNN"
 ```
 
-Notebook này chỉ cần Kaggle input chứa CSV:
+Nếu đổi branch thì sửa ở cell đầu.
+
+### Bước 2: Add Kaggle input dataset CSV
+
+Chỉ cần dataset có:
 
 ```text
 train.csv
@@ -263,856 +130,390 @@ val.csv
 test.csv
 ```
 
-Không add pixel motif dataset prebuilt vào input cho workflow chính. Notebook sẽ gọi:
-
-```bash
-python -m scripts.run_experiment --config hierarchical_motif_gnn_c
-```
-
-hoặc baseline B:
-
-```bash
-python -m scripts.run_experiment --config pixel_motif_baseline_b
-```
-
-Luồng này tự dùng path vừa build:
+Không cần add:
 
 ```text
-graph_repo_path              = /kaggle/working/artifacts/graph_repo
-pixel_motif_dataset_path     = /kaggle/working/artifacts/pixel_motif_dataset_v2
+graph_repo
+pixel_motif_dataset_v2
+pixel_motif_dataset_v2_rich_edges
 ```
 
-Vì vậy không còn tình huống train nhầm dataset từ `/kaggle/input`.
+Vì workflow mới sẽ build trong `/kaggle/working/artifacts`.
 
-### Experiment configs
+### Bước 3: Chọn experiment
 
-Baseline B tốt nhất hiện tại:
+Trong notebook:
+
+```python
+EXPERIMENT = "hierarchical_motif_gnn_c"
+```
+
+hoặc baseline:
+
+```python
+EXPERIMENT = "pixel_motif_baseline_b"
+```
+
+Notebook sẽ gọi:
+
+```bash
+python -m scripts.run_experiment --config <EXPERIMENT>
+```
+
+### Bước 4: Run all
+
+Luồng sẽ tự:
+
+```text
+scan /kaggle/input tìm CSV
+build artifacts
+debug nếu cần
+train
+evaluate
+zip outputs
+```
+
+## 4. Experiment config là nguồn sự thật
+
+Mỗi experiment nằm trong:
+
+```text
+configs/experiments/
+```
+
+Ví dụ `hierarchical_motif_gnn_c.yaml`:
+
+```yaml
+experiment:
+  name: hierarchical_motif_gnn_c
+
+data:
+  recipe: pixel_motif_v2
+  csv_root: auto
+  artifact_root: /kaggle/working/artifacts
+  stage: all
+  skip_existing: true
+  edge_attr_mode: spatial
+  pixel_motif_dir: /kaggle/working/artifacts/pixel_motif_dataset_v2
+
+training:
+  config: hierarchical_motif_gnn
+  epochs: 80
+  debug_batch: true
+```
+
+Điều quan trọng:
+
+```text
+Notebook không map model/dataset thủ công.
+Runner không hard-code model.
+Experiment config quyết định data recipe và train config.
+```
+
+## 5. Baseline B
+
+Baseline tốt nhất hiện tại:
+
+```text
+B = descriptor-only Motif Guided GNN
+```
+
+Experiment:
 
 ```text
 configs/experiments/pixel_motif_baseline_b.yaml
-train.config = pixel_motif_guided_gnn_motif_norm
-edge_attr_mode = spatial
 ```
 
-Cải tiến C hiện tại:
+Training config:
 
 ```text
-configs/experiments/hierarchical_motif_gnn_c.yaml
-train.config = hierarchical_motif_gnn
-edge_attr_mode = spatial
-debug_hierarchical_batch = true
+configs/pixel_motif_guided_gnn_motif_norm.yaml
 ```
 
-Điểm quan trọng: C vẫn dùng `edge_attr_mode = spatial` ở bản đầu để so sánh công bằng với B. Không bật rich edge trong experiment C đầu tiên.
+Model:
 
-### Commands
-
-Chạy C end-to-end trên Kaggle:
-
-```bash
-python -m scripts.run_experiment \
-  --config hierarchical_motif_gnn_c
+```text
+src/models/motif_guided_gnn.py
 ```
 
-Chạy B end-to-end trên Kaggle:
+Kết quả tham chiếu:
+
+```text
+Accuracy:    khoảng 45.11%
+Macro F1:    khoảng 0.4196
+Weighted F1: khoảng 0.4380
+```
+
+Run baseline B:
 
 ```bash
 python -m scripts.run_experiment \
   --config pixel_motif_baseline_b
 ```
 
-Smoke test:
+## 6. Cải tiến C
+
+Cải tiến hiện tại:
+
+```text
+C = HierarchicalMotifGNN
+```
+
+Experiment:
+
+```text
+configs/experiments/hierarchical_motif_gnn_c.yaml
+```
+
+Training config:
+
+```text
+configs/hierarchical_motif_gnn.yaml
+```
+
+Models:
+
+```text
+src/models/internal_subgraph_encoder.py
+src/models/hierarchical_motif_gnn.py
+```
+
+Ý tưởng:
+
+```text
+selected subgraph pixel nodes thật
+-> internal dense GraphSAGE
+-> z_internal
+-> concat descriptor 41D + motif metadata
+-> motif-level GraphSAGE như baseline B
+-> classifier
+```
+
+Bản C đầu tiên cố ý:
+
+```text
+edge_attr_mode = spatial
+motif_use_edge_attr = false
+use_descriptor = true
+loss = weighted_ce
+```
+
+Mục tiêu là so sánh công bằng:
+
+```text
+B = descriptor-only motif GNN
+C = descriptor + internal pixel-subgraph GNN
+```
+
+Run C:
+
+```bash
+python -m scripts.run_experiment \
+  --config hierarchical_motif_gnn_c
+```
+
+## 7. Commands local để kiểm tra nhanh
+
+Các lệnh này đã được dùng để kiểm chứng workflow trong môi trường:
+
+```bash
+conda activate fer-graph
+```
+
+Kiểm tra debug batch C từ artifact local có sẵn:
 
 ```bash
 python -m scripts.run_experiment \
   --config hierarchical_motif_gnn_c \
-  --smoke \
-  --epochs 1 \
+  --out_root artifacts \
+  --debug_only \
   --no_wandb
 ```
 
-Chỉ build artifact, chưa train:
+Kỳ vọng shape:
+
+```text
+x:             [2, 32, 41]
+sub_x:         [2, 32, 25, 7]
+sub_adj:       [2, 32, 25, 25]
+sub_node_mask: [2, 32, 25]
+logits:        [2, 7]
+```
+
+Build-only smoke local:
 
 ```bash
 python -m scripts.run_experiment \
   --config hierarchical_motif_gnn_c \
-  --build_only
+  --csv_root data \
+  --out_root artifacts \
+  --build_only \
+  --smoke \
+  --no_wandb
 ```
 
-Chỉ kiểm tra hierarchical batch/forward/backward qua runner, chưa train full:
+Help:
 
 ```bash
-python -m scripts.run_experiment \
-  --config hierarchical_motif_gnn_c \
-  --debug_only
+python -m scripts.run_experiment --help
 ```
 
-Train lại từ artifact vừa có trong `/kaggle/working/artifacts`:
+## 8. Cách thêm model mới
 
-```bash
-python -m scripts.run_experiment \
-  --config hierarchical_motif_gnn_c \
-  --train_only
-```
-
-## 2. Legacy Notebook A: Build Pixel Motif Dataset
-
-File:
+Nguyên tắc template:
 
 ```text
-legacy/deprecated_notebooks/kaggle_build_pixel_motif_dataset_v2.ipynb
+Nếu chỉ thử model mới, không sửa notebook, không sửa runner, không sửa data pipeline.
 ```
 
-Mục tiêu:
+Quy trình:
+
+1. Thêm model:
 
 ```text
-CSV FER-2013
--> graph_repo
--> pixel_candidate_subgraphs_v2
--> pixel_motif_bank_v2
--> pixel_motif_dataset_v2 hoặc pixel_motif_dataset_v2_rich_edges
+src/models/<new_model>.py
 ```
 
-Notebook này chỉ nên chạy khi thay đổi các phần:
-
-- cách graph hóa ảnh
-- node feature / edge feature
-- candidate subgraph generation
-- motif bank / clustering / scoring
-- motif matching / selection
-- top_k, knn_k, coverage/diversity
-
-Notebook này không phải notebook train lặp lại hằng ngày.
-
-### Input Kaggle của Notebook A
-
-Cần add Kaggle Dataset chứa:
+2. Register model:
 
 ```text
-train.csv
-val.csv
-test.csv
+src/models/__init__.py
 ```
 
-Notebook sẽ scan `/kaggle/input` để tìm folder chứa đủ 3 file này.
-
-### Output Kaggle của Notebook A
-
-Output sạch để tạo Kaggle Dataset mới:
+3. Thêm model config nếu cần:
 
 ```text
-/kaggle/working/pixel_motif_dataset_v2/ hoặc
-/kaggle/working/pixel_motif_dataset_v2_rich_edges/
-  train_pixel_motif.pt
-  val_pixel_motif.pt
-  test_pixel_motif.pt
-  meta.pt
-  README_KAGGLE_DATASET.txt
+configs/<new_model>.yaml
 ```
 
-Artifact này phải giữ `node_indices` và `node_mask`. Đây là trace bắt buộc cho
-`HierarchicalMotifGNN`; nếu thiếu thì không được fake center-only, phải rebuild
-candidate/motif dataset để lưu lại node indices.
+4. Thêm experiment config:
 
-Nếu muốn Notebook B train hierarchical mà không add dataset `fer-graph-repo`
-riêng, Notebook A có biến:
+```text
+configs/experiments/<new_experiment>.yaml
+```
+
+5. Trong notebook đổi:
 
 ```python
-PUBLISH_GRAPH_REPO_TOO = True
+EXPERIMENT = "<new_experiment>"
 ```
 
-khi bật sẽ copy thêm:
+6. Run notebook.
+
+Không sửa:
 
 ```text
-/kaggle/working/graph_repo/
+kaggle_pixel_motif_end_to_end.ipynb
+scripts/run_experiment.py
+src/pipeline/artifact_builder.py
+src/pipeline/experiment_runner.py
 ```
 
-Mặc định nên để `False` và dùng graph repo như một Kaggle Dataset riêng để output
-pixel motif không phình quá lớn.
+trừ khi thay đổi bản chất data pipeline.
 
-Sau khi Notebook A chạy xong:
+## 9. Khi nào mới sửa data pipeline
 
-1. Save Version / Save & Run All.
-2. Vào output files của notebook.
-3. Tạo Kaggle Dataset mới từ folder final còn lại trong `/kaggle/working`.
-4. Dataset này sẽ là input cho Notebook B.
-
-### Notebook A gọi đến file nào?
-
-Notebook A gọi script điều phối:
+Chỉ sửa `src/pipeline/artifact_builder.py` hoặc atomic data scripts nếu thay đổi:
 
 ```text
-legacy/scripts/run_pixel_motif_v2_pipeline.py
+graph construction
+node features
+edge features
+candidate topology
+motif bank building
+motif matching/selection
+artifact format
 ```
 
-Script này gọi lần lượt:
+Nếu chỉ thêm model classifier mới, không sửa data pipeline.
+
+## 10. Output trên Kaggle
+
+Artifacts trong run:
 
 ```text
-scripts/build_graph_repository.py
-scripts/precompute_pixel_candidate_subgraphs.py
-scripts/inspect_pixel_candidate_subgraphs.py
-scripts/build_pixel_motif_bank.py
-scripts/inspect_pixel_motif_bank.py
-scripts/precompute_pixel_motif_dataset.py
-scripts/inspect_pixel_motif_dataset.py
-scripts/audit_pixel_motif_dataset.py
+/kaggle/working/artifacts/graph_repo
+/kaggle/working/artifacts/pixel_candidate_subgraphs_v2
+/kaggle/working/artifacts/pixel_motif_bank_v2
+/kaggle/working/artifacts/pixel_motif_dataset_v2
 ```
 
-Các module code liên quan trực tiếp:
-
-```text
-data/raw_fer_dataset.py
-data/shared_graph_builder.py
-data/canonical_graph_builder.py
-data/graph_repository.py
-data/graph_resolver.py
-src/graph/subgraph_descriptor.py
-src/motif_v2/topology.py
-src/motif_v2/types.py
-src/motif_v2/io.py
-src/motif_v2/matching.py
-src/motif/motif_scoring.py
-```
-
-Artifact trung gian của Notebook A:
-
-```text
-/kaggle/working/artifacts/graph_repo/
-/kaggle/working/artifacts/pixel_candidate_subgraphs_v2/
-/kaggle/working/artifacts/pixel_motif_bank_v2/
-/kaggle/working/artifacts/pixel_motif_dataset_v2/
-/kaggle/working/artifacts/pixel_motif_dataset_v2_rich_edges/  # nếu EDGE_ATTR_MODE=rich
-```
-
-Artifact cuối cùng cần publish:
-
-```text
-/kaggle/working/pixel_motif_dataset_v2/              # spatial baseline
-/kaggle/working/pixel_motif_dataset_v2_rich_edges/   # rich edge
-```
-
-Notebook A hiện có biến:
-
-```python
-EDGE_ATTR_MODE = "spatial"        # hoặc "rich"
-PUBLISH_GRAPH_REPO_TOO = False    # bật nếu cần publish graph_repo cùng output
-```
-
-Sau khi copy final dataset, Notebook A phải cleanup để Kaggle Dataset không gom artifact nặng:
-
-```text
-rm -rf /kaggle/working/artifacts
-rm -rf /kaggle/working/sgu-2026-facial-expression-recognition
-```
-
-## 3. Legacy Notebook B: Train Pixel Motif Baseline
-
-File:
-
-```text
-legacy/deprecated_notebooks/kaggle_train_pixel_motif_baseline.ipynb
-```
-
-Mục tiêu:
-
-```text
-pixel_motif_dataset_v2 hoặc pixel_motif_dataset_v2_rich_edges
--> inspect dataset
--> train MLP sanity nếu cần
--> train GNN baseline chính
--> evaluate test set
--> zip outputs
-```
-
-Notebook này nên chạy khi thay đổi:
-
-- model
-- loss
-- optimizer / scheduler
-- training config
-- ablation config
-- số epoch / seed / wandb
-- evaluator / visualization output
-
-Không cần chạy lại Notebook A nếu chỉ sửa model hoặc training.
-
-### Input Kaggle của Notebook B
-
-Cần add Kaggle Dataset được tạo từ Notebook A, chứa:
-
-```text
-train_pixel_motif.pt
-val_pixel_motif.pt
-test_pixel_motif.pt
-meta.pt
-```
-
-Notebook sẽ scan `/kaggle/input` để tìm folder chứa đủ các file này.
-
-Notebook B hiện có biến:
-
-```python
-MODEL_VARIANT = "hierarchical"  # "hierarchical" | "spatial" | "rich"
-DATASET_VARIANT = "spatial"     # "spatial" | "rich"
-```
-
-Mapping config:
-
-```text
-hierarchical -> configs/hierarchical_motif_gnn.yaml
-spatial      -> configs/pixel_motif_guided_gnn_motif_norm.yaml
-rich         -> legacy/configs/pixel_motif_guided_gnn_rich_edges.yaml
-```
-
-Với `MODEL_VARIANT = "hierarchical"` cần add thêm Kaggle Dataset graph repo:
-
-```text
-/kaggle/input/fer-graph-repo/graph_repo/
-```
-
-hoặc một dataset bất kỳ có folder `graph_repo` đúng cấu trúc. Notebook B sẽ scan
-`/kaggle/input` để tìm.
-
-### Output Kaggle của Notebook B
-
-Train output nằm ở:
+Training outputs:
 
 ```text
 /kaggle/working/sgu-2026-facial-expression-recognition/outputs/
 ```
 
-Notebook cũng zip output thành:
+Zip outputs:
 
 ```text
-/kaggle/working/pixel_motif_v2_train_outputs.zip
+/kaggle/working/<experiment_name>_outputs.zip
 ```
 
-### Notebook B gọi đến file nào?
+## 11. Legacy
 
-Notebook B gọi:
+Các file cũ đã được gom vào:
 
 ```text
-scripts/inspect_pixel_motif_dataset.py
-scripts/debug_hierarchical_batch.py  # chỉ khi MODEL_VARIANT=hierarchical
-scripts/train.py
+legacy/
 ```
-
-Config chính:
-
-```text
-configs/pixel_motif_guided_gnn_motif_norm.yaml
-```
-
-Config rich edge:
-
-```text
-legacy/configs/pixel_motif_guided_gnn_rich_edges.yaml
-```
-
-Config hierarchical C:
-
-```text
-configs/hierarchical_motif_gnn.yaml
-```
-
-Config sanity MLP nếu bật:
-
-```text
-legacy/configs/pixel_motif_guided_mlp_clean.yaml
-```
-
-Các module train liên quan:
-
-```text
-src/data/pixel_motif_dataset.py
-src/data/dataloader.py
-src/models/__init__.py
-src/models/motif_guided_gnn.py
-src/models/motif_guided_mlp.py
-src/models/internal_subgraph_encoder.py
-src/models/hierarchical_motif_gnn.py
-src/training/losses.py
-src/training/optimizer.py
-src/training/trainer.py
-src/evaluation/metrics.py
-src/evaluation/evaluator.py
-src/utils/config.py
-src/utils/checkpoint.py
-```
-
-Model chính baseline B:
-
-```text
-src/models/motif_guided_gnn.py
-```
-
-Model chính hierarchical C:
-
-```text
-src/models/hierarchical_motif_gnn.py
-src/models/internal_subgraph_encoder.py
-```
-
-Dataset loader chính:
-
-```text
-src/data/pixel_motif_dataset.py
-```
-
-Collate function chính:
-
-```text
-src/data/dataloader.py
-collate_fn_pixel_motif
-```
-
-## 3. File config baseline chính
-
-File:
-
-```text
-configs/pixel_motif_guided_gnn_motif_norm.yaml
-```
-
-Đây là config baseline tốt nhất hiện tại.
-
-Các điểm quan trọng:
-
-```yaml
-data:
-  mode: pixel_motif
-  normalize_x: true
-
-model:
-  name: motif_guided_gnn
-  use_motif_score_vector: true
-  use_match_score_feature: true
-  use_match_score_weighting: true
-  pooling: motif_attention
-
-loss:
-  name: weighted_ce
-  use_class_weights: true
-  class_weight_power: 0.5
-```
-
-Không nên đổi nhầm sang:
-
-```text
-configs/pixel_motif_guided_gnn_clean.yaml
-configs/pixel_motif_guided_gnn.yaml
-```
-
-Hai file đó dùng cho ablation / thử nghiệm, không phải baseline chính.
-
-### Config rich edge
-
-File:
-
-```text
-legacy/configs/pixel_motif_guided_gnn_rich_edges.yaml
-```
-
-Dùng cho dataset:
-
-```text
-pixel_motif_dataset_v2_rich_edges
-```
-
-Điểm bắt buộc:
-
-```yaml
-model:
-  use_edge_attr: true
-  edge_attr_dim: 13
-```
-
-Không train rich dataset bằng config spatial nếu `edge_attr` là 13 chiều.
-Không train spatial dataset bằng config rich nếu `edge_attr` là 3 chiều.
-
-### Config Hierarchical Motif GNN C
-
-File:
-
-```text
-configs/hierarchical_motif_gnn.yaml
-```
-
-Dùng để so sánh công bằng với baseline B:
-
-```text
-B = descriptor-only motif GNN
-C = internal pixel-subgraph GNN + descriptor + motif metadata + motif-level GNN
-```
-
-Điểm bắt buộc:
-
-```yaml
-data:
-  mode: pixel_motif
-  return_subgraph_tensors: true
-  normalize_x: true
-
-model:
-  name: hierarchical_motif_gnn
-  use_descriptor: true
-  motif_use_edge_attr: false
-  use_motif_score_vector: true
-```
-
-Config này cần cả:
-
-```text
-pixel_motif_dataset_v2/
-graph_repo/
-```
-
-`pixel_motif_dataset_v2` cung cấp descriptor 41D, motif metadata và `node_indices`.
-`graph_repo` cung cấp node features 7D và shared graph adjacency để dựng:
-
-```text
-sub_x:          [B, K, Nmax, 7]
-sub_node_mask:  [B, K, Nmax]
-sub_adj:        [B, K, Nmax, Nmax]
-```
-
-Trước khi train C nên chạy:
-
-```bash
-python -m scripts.debug_hierarchical_batch \
-  --config hierarchical_motif_gnn \
-  --env kaggle \
-  --pixel_motif_dataset_path /kaggle/input/<pixel-dataset>/pixel_motif_dataset_v2 \
-  --graph_repo_path /kaggle/input/fer-graph-repo/graph_repo
-```
-
-## 4. Khi sửa gì thì chạy notebook nào?
-
-### Chỉ sửa model, loss, optimizer, trainer
 
 Ví dụ:
 
 ```text
-src/models/motif_guided_gnn.py
-src/models/motif_guided_mlp.py
-src/models/internal_subgraph_encoder.py
-src/models/hierarchical_motif_gnn.py
-src/training/losses.py
-src/training/trainer.py
-configs/*.yaml
+legacy/configs/
+legacy/scripts/
+legacy/deprecated_notebooks/
 ```
 
-Chỉ cần chạy:
+Hai notebook cũ:
 
 ```text
+legacy/deprecated_notebooks/kaggle_build_pixel_motif_dataset_v2.ipynb
 legacy/deprecated_notebooks/kaggle_train_pixel_motif_baseline.ipynb
 ```
 
-Không cần build lại dataset.
-
-### Sửa motif matching hoặc top-k selection
-
-Ví dụ:
+Hai orchestration script cũ:
 
 ```text
-src/motif_v2/matching.py
-scripts/precompute_pixel_motif_dataset.py
-src/motif_v2/topology.py  # nếu chỉ sửa hàm tạo edge giữa selected subgraphs
-```
-
-Cần chạy lại Notebook A từ stage:
-
-```text
-motif_dataset
-```
-
-Hoặc chạy full Notebook A nếu muốn chắc chắn artifact đồng bộ.
-
-### Sửa motif bank / clustering / scoring
-
-Ví dụ:
-
-```text
-scripts/build_pixel_motif_bank.py
-src/motif_v2/types.py
-src/motif_v2/io.py
-src/motif/motif_scoring.py
-```
-
-Cần chạy lại Notebook A từ stage:
-
-```text
-motif_bank
-motif_dataset
-```
-
-### Sửa candidate topology / descriptor
-
-Ví dụ:
-
-```text
-src/motif_v2/topology.py
-src/graph/subgraph_descriptor.py
-scripts/precompute_pixel_candidate_subgraphs.py
-```
-
-Cần chạy lại Notebook A từ stage:
-
-```text
-candidates
-motif_bank
-motif_dataset
-```
-
-### Sửa node feature / edge feature / graph construction
-
-Ví dụ:
-
-```text
-data/canonical_graph_builder.py
-data/shared_graph_builder.py
-configs/graph_config.py
-scripts/build_graph_repository.py
-```
-
-Cần chạy lại Notebook A từ đầu:
-
-```text
-graph_repo
-candidates
-motif_bank
-motif_dataset
-```
-
-## 5. Script điều phối stage
-
-File:
-
-```text
+legacy/scripts/run_pixel_motif_experiment.py
 legacy/scripts/run_pixel_motif_v2_pipeline.py
 ```
 
-Các stage:
+Các file này giữ lại để tham khảo, không dùng cho workflow chính.
+
+## 12. Những lỗi cần tránh
+
+Không làm các việc sau:
 
 ```text
---stage graph_repo
---stage candidates
---stage motif_bank
---stage motif_dataset
---stage all
+Train từ pixel motif dataset prebuilt không rõ version.
+Scan /kaggle/input để chọn dataset motif đã publish.
+Sửa notebook mỗi lần đổi model.
+Sửa runner mỗi lần đổi model.
+Train C với rich edge trong lần so sánh đầu.
+Bỏ descriptor 41D khỏi C ở bản đầu.
+Fake node_indices nếu artifact thiếu.
 ```
 
-Các option quan trọng:
+Nếu artifact thiếu `node_indices`:
 
 ```text
---csv_root
---out_root
---skip_existing
---smoke
---smoke_samples
+Không fake dữ liệu.
+Rebuild pixel motif dataset từ pipeline.
 ```
 
-Ví dụ build full trên Kaggle:
+## 13. Tóm tắt cho ChatGPT/Codex
 
-```bash
-python legacy/scripts/run_pixel_motif_v2_pipeline.py \
-  --stage all \
-  --csv_root /kaggle/input/fer13-split \
-  --out_root /kaggle/working/artifacts \
-  --edge_attr_mode rich \
-  --skip_existing
-```
-
-Ví dụ smoke test:
-
-```bash
-python legacy/scripts/run_pixel_motif_v2_pipeline.py \
-  --stage all \
-  --csv_root /kaggle/input/fer13-split \
-  --out_root /kaggle/working/artifacts_smoke \
-  --edge_attr_mode rich \
-  --smoke \
-  --smoke_samples 100 \
-  --skip_existing
-```
-
-Ví dụ chỉ build lại rich motif dataset từ candidates và motif bank đã có:
-
-```bash
-python legacy/scripts/run_pixel_motif_v2_pipeline.py \
-  --stage motif_dataset \
-  --out_root /kaggle/working/artifacts \
-  --edge_attr_mode rich
-```
-
-Output mặc định:
+Nếu gửi file này cho ChatGPT/Codex, cần nó hiểu:
 
 ```text
-spatial -> /kaggle/working/artifacts/pixel_motif_dataset_v2
-rich    -> /kaggle/working/artifacts/pixel_motif_dataset_v2_rich_edges
+Project hiện dùng workflow template config-driven.
+Notebook chính là kaggle_pixel_motif_end_to_end.ipynb.
+Entrypoint chính là scripts/run_experiment.py.
+Experiment config là nguồn sự thật.
+Baseline B là pixel_motif_guided_gnn_motif_norm, macro F1 khoảng 0.4196.
+Cải tiến C là hierarchical_motif_gnn, thêm internal pixel-subgraph encoder.
+Muốn thêm model mới thì thêm model + registry + experiment config, rồi đổi EXPERIMENT trong notebook.
+Không sửa notebook/runner/data pipeline nếu chỉ thay model.
 ```
-
-## 6. Lệnh train baseline chính
-
-Trên Kaggle:
-
-```bash
-python -m scripts.train \
-  --config pixel_motif_guided_gnn_motif_norm \
-  --env kaggle \
-  --pixel_motif_dataset_path /kaggle/input/<dataset-name>/pixel_motif_dataset_v2 \
-  --epochs 100
-```
-
-Nếu dataset input không có thư mục con `pixel_motif_dataset_v2`, mà file `.pt` nằm trực tiếp trong dataset root, thì path là:
-
-```bash
---pixel_motif_dataset_path /kaggle/input/<dataset-name>
-```
-
-Notebook B tự scan và dùng đúng folder tìm được, nên thường không cần sửa tay.
-
-### Lệnh train rich edge
-
-Trên Kaggle:
-
-```bash
-python -m scripts.train \
-  --config pixel_motif_guided_gnn_rich_edges \
-  --env kaggle \
-  --pixel_motif_dataset_path /kaggle/input/<dataset-name>/pixel_motif_dataset_v2_rich_edges \
-  --epochs 100
-```
-
-Nếu dataset input không có thư mục con `pixel_motif_dataset_v2_rich_edges`, mà file `.pt` nằm trực tiếp trong dataset root:
-
-```bash
---pixel_motif_dataset_path /kaggle/input/<dataset-name>
-```
-
-### Lệnh debug/train Hierarchical Motif GNN C
-
-Debug một batch trước:
-
-```bash
-python -m scripts.debug_hierarchical_batch \
-  --config hierarchical_motif_gnn \
-  --env kaggle \
-  --pixel_motif_dataset_path /kaggle/input/<pixel-dataset>/pixel_motif_dataset_v2 \
-  --graph_repo_path /kaggle/input/fer-graph-repo/graph_repo
-```
-
-Train:
-
-```bash
-python -m scripts.train \
-  --config hierarchical_motif_gnn \
-  --env kaggle \
-  --pixel_motif_dataset_path /kaggle/input/<pixel-dataset>/pixel_motif_dataset_v2 \
-  --graph_repo_path /kaggle/input/fer-graph-repo/graph_repo \
-  --epochs 80
-```
-
-Nếu pixel motif files nằm trực tiếp trong dataset root:
-
-```bash
---pixel_motif_dataset_path /kaggle/input/<pixel-dataset>
-```
-
-Mục tiêu so sánh:
-
-```text
-B: pixel_motif_guided_gnn_motif_norm
-C: hierarchical_motif_gnn
-```
-
-Không bật rich edge khi chạy C lần đầu, để so sánh đúng phần đóng góp của
-internal pixel-subgraph GNN.
-
-## 7. Kết quả baseline hiện tại
-
-Baseline chính:
-
-```text
-Pixel-preserving Motif V2 + Motif-guided GNN
-```
-
-Config:
-
-```text
-configs/pixel_motif_guided_gnn_motif_norm.yaml
-```
-
-Kết quả local tốt nhất:
-
-```text
-Best epoch: 57
-Val Macro F1: 0.4100
-
-Test Accuracy: 45.11%
-Test Macro F1: 0.4196
-Test Weighted F1: 0.4380
-```
-
-So với MLP clean:
-
-```text
-MLP clean:
-Accuracy 39.20%
-Macro F1 0.3174
-
-GNN motif_norm:
-Accuracy 45.11%
-Macro F1 0.4196
-
-Gain:
-+5.91% accuracy
-+0.1022 macro F1
-```
-
-## 8. Nhắc nhở khi yêu cầu AI chỉnh code
-
-Khi yêu cầu AI sửa code, nên nói rõ:
-
-```text
-Tôi đang chạy project theo workflow Kaggle 2 notebook:
-- legacy/deprecated_notebooks/kaggle_build_pixel_motif_dataset_v2.ipynb để build artifact
-- legacy/deprecated_notebooks/kaggle_train_pixel_motif_baseline.ipynb để train
-
-Baseline chính dùng:
-- configs/pixel_motif_guided_gnn_motif_norm.yaml
-- artifacts/pixel_motif_dataset_v2 hoặc Kaggle Dataset pixel_motif_dataset_v2
-
-Nếu dùng rich edge thì phải nói rõ:
-- legacy/configs/pixel_motif_guided_gnn_rich_edges.yaml
-- pixel_motif_dataset_v2_rich_edges
-- edge_attr_dim = 13
-- Notebook A: EDGE_ATTR_MODE = "rich"
-- Notebook B: MODEL_VARIANT = "rich", DATASET_VARIANT = "rich"
-
-Nếu dùng HierarchicalMotifGNN C thì phải nói rõ:
-- configs/hierarchical_motif_gnn.yaml
-- pixel_motif_dataset_v2 spatial baseline
-- graph_repo path
-- Notebook B: MODEL_VARIANT = "hierarchical", DATASET_VARIANT = "spatial"
-- chạy scripts/debug_hierarchical_batch.py trước train
-
-Nếu chỉ sửa model/train thì không được yêu cầu build lại dataset.
-Nếu sửa topology/matching/motif thì phải nói rõ cần chạy lại Notebook A từ stage nào.
-```
-
-Điều này giúp tránh việc AI đề xuất sai luồng, ví dụ:
-
-- build artifact nặng ở local
-- upload artifact thủ công lên Kaggle
-- sửa nhầm motif V1
-- train bằng config ablation thay vì baseline chính
-- quên `normalize_x: true`
-- quên `return_subgraph_tensors: true` khi train hierarchical
-- train hierarchical mà chưa add graph_repo vào Kaggle input
-- tạo dataset mới nhưng không đổi tên output folder
-- sửa Notebook A mà quên sửa Notebook B
-- train rich dataset bằng config spatial hoặc ngược lại
-- publish Kaggle Dataset kèm cả `/kaggle/working/artifacts` làm dataset phình lên nhiều GB
-
-
