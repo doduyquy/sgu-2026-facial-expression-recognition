@@ -20,6 +20,21 @@ from src.utils.data_stats import get_class_distribution # testing: class weight
 from datetime import datetime
 #-------------------------------------------------------------
 
+def resolve_data_path(data_path):
+    required_files = {"train.csv", "val.csv", "test.csv"}
+    if os.path.isdir(data_path):
+        if required_files.issubset(set(os.listdir(data_path))):
+            return data_path
+
+        for current_dir, _, files in os.walk(data_path):
+            if required_files.issubset(set(files)):
+                print(f"--> Data path not exact; using discovered split folder: {current_dir}")
+                return current_dir
+
+    raise FileNotFoundError(
+        f"Could not find train.csv, val.csv, test.csv under data_path: {data_path}"
+    )
+
 def main():
     print("\t\t--> In main <--\t\t")
 
@@ -37,13 +52,12 @@ def main():
     config = load_config(args.config, args.env)
     set_seed(config['seed'].get('random_seed', 21))
 
-    # data path and root path for each platform
-    if config['env']['platform'] == 'kaggle':
-        data_path = config['kaggle'].get('data_path', "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split")
-        root_path = config['kaggle'].get('root_path', "/kaggle/working/sgu-2026-facial-expression-recognition/")
-    else: 
-        data_path = config['local'].get('data_path', "../dataset")
-        root_path = config['local'].get('root_path', "../")
+    # load_config() merges env.yaml into top-level keys: data_path, output_dir, root_path.
+    path_cfg = config.get('paths', {})
+    data_path = path_cfg.get('data_path', config.get('data_path', "dataset/fer13-split"))
+    output_dir = path_cfg.get('output_dir', config.get('output_dir', "outputs"))
+    root_path = config.get('root_path', ".")
+    data_path = resolve_data_path(data_path)
        
 
     timestamp = datetime.now().strftime("%d%m%Y_%H%M")
@@ -97,7 +111,7 @@ def main():
     scheduler = build_scheduler(optimizer=optimizer, config=config)
     
     # set path to save ckpt
-    path_save_ckpt = os.path.join(root_path, f"outputs/checkpoints/{config['model'].get('name', 'cnn')}/{run_name}_best.pth")
+    path_save_ckpt = os.path.join(output_dir, f"checkpoints/{config['model'].get('name', 'cnn')}/{run_name}_best.pth")
     os.makedirs(os.path.dirname(path_save_ckpt), exist_ok=True)
 
     trainer = Trainer(
@@ -122,7 +136,7 @@ def main():
     # Get path of file best  
     load_checkpoints(model, optimizer, path_save_ckpt, device)
     
-    eval_dir_path = os.path.join(root_path ,"outputs/figures")
+    eval_dir_path = os.path.join(output_dir, "figures")
     os.makedirs(eval_dir_path, exist_ok=True)
     print(f"Evaluatoin save path: {eval_dir_path}")
 

@@ -1,0 +1,13 @@
+_base_: "base.yaml"
+
+model:
+  name: "resnet152"
+
+data:
+  image_size: 224
+  channels: 3  # Force 3 channels for this model
+  normalize: false  # Original RMN FER2013 checkpoints use ToTensor only
+
+training:
+  lr: 0.0001
+  batch_size: 64

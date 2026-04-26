@@ -4,6 +4,15 @@ from torchvision.transforms import v2
 from torchvision.transforms import functional as TF
 
 
+class ToChannels(torch.nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.mode = 'RGB' if channels == 3 else 'L'
+
+    def forward(self, img):
+        return img.convert(self.mode)
+
+
 class RandomGamma(torch.nn.Module):
     """
     Random gamma correction for grayscale/RGB facial images.
@@ -34,14 +43,24 @@ def build_transform(config, split="train") -> Compose:
         torchvision.transforms.v2.Compose
     """
     image_size = config["data"].get("image_size", 48)
-    channels = 1  # Chỉ có 48x48x1 theo yêu cầu
+    channels = config["data"].get("channels", 1)
 
-    mean = [0.5]
-    std = [0.5]
+    normalize = config["data"].get("normalize", True)
+
+    if channels == 3:
+        mean = [0.485, 0.456, 0.406]
+        std = [0.229, 0.224, 0.225]
+    else:
+        mean = [0.5]
+        std = [0.5]
+
+    common_ops = [
+        ToChannels(channels),
+        v2.Resize((image_size, image_size)),
+    ]
 
     if split == "train":
-        transform_ops = [
-            v2.Resize((image_size, image_size)),
+        transform_ops = common_ops + [
 
             # FER-safe augmentations
             v2.RandomHorizontalFlip(p=0.5),
@@ -55,19 +74,22 @@ def build_transform(config, split="train") -> Compose:
 
             v2.ToImage(),
             v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize(mean=mean, std=std),
-            
+        ]
+        if normalize:
+            transform_ops.append(v2.Normalize(mean=mean, std=std))
+
+        transform_ops += [
             # Thêm Random Erasing (Cutout) chống overfitting & ép Region Attention
             v2.RandomErasing(p=0.4, scale=(0.02, 0.15), value='random'),
         ]
 
     else:
-        transform_ops = [
-            v2.Resize((image_size, image_size)),
+        transform_ops = common_ops + [
             v2.ToImage(),
             v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize(mean=mean, std=std),
         ]
+        if normalize:
+            transform_ops.append(v2.Normalize(mean=mean, std=std))
 
     return v2.Compose(transform_ops)
 

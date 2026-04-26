@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision.models as models
+import os
 from .CBAM import ECA, CBAM
 
 # Input:  (B, 1, 48, 48)
@@ -217,3 +219,125 @@ class ResNet50(nn.Module):
             x = self.fc(features)
 
         return x
+
+class ResNet152(nn.Module):
+    def __init__(self, config, channels=3):
+        super().__init__()
+        self.num_classes = config['data']['num_classes']
+        self.config = config
+        model_cfg = config.get('model', {})
+        self.pretrained_checkpoint_path = model_cfg.get('checkpoint_path')
+        self.reset_classifier_after_load = model_cfg.get('reset_classifier', False)
+        self.freeze_backbone_on_start = model_cfg.get('freeze_backbone', False)
+        self.unfreeze_epoch = model_cfg.get('unfreeze_epoch', None)
+        self.backbone_frozen = False
+        
+        # Use torchvision's resnet152
+        self.model = models.resnet152(weights=None)
+        
+        # Modify conv1 if channels != 3
+        if channels != 3:
+            self.model.conv1 = nn.Conv2d(channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+            
+        # Modify fc layer
+        self.model.fc = nn.Linear(self.model.fc.in_features, self.num_classes)
+
+        if self.pretrained_checkpoint_path:
+            self.load_from_checkpoint(self.pretrained_checkpoint_path, device='cpu')
+
+        if self.reset_classifier_after_load:
+            self.reset_classifier()
+
+        if self.freeze_backbone_on_start:
+            self.freeze_backbone()
+
+    def forward(self, x, labels=None):
+        return self.model(x)
+
+    def train(self, mode=True):
+        super().train(mode)
+        if mode and self.backbone_frozen:
+            for name, module in self.model.named_children():
+                if name != 'fc':
+                    module.eval()
+        return self
+
+    def reset_classifier(self):
+        in_features = self.model.fc.in_features
+        self.model.fc = nn.Linear(in_features, self.num_classes)
+        nn.init.normal_(self.model.fc.weight, mean=0.0, std=0.01)
+        nn.init.zeros_(self.model.fc.bias)
+        print("--> [ResNet152] Reset classifier head.")
+
+    def freeze_backbone(self):
+        for name, param in self.model.named_parameters():
+            param.requires_grad = name.startswith('fc.')
+        self.backbone_frozen = True
+        print("--> [ResNet152] Frozen backbone; training classifier only.")
+
+    def unfreeze_backbone(self):
+        for param in self.model.parameters():
+            param.requires_grad = True
+        self.backbone_frozen = False
+        print("--> [ResNet152] Unfrozen full backbone for fine-tuning.")
+
+    def check_unfreeze(self, epoch):
+        if self.unfreeze_epoch is None:
+            return False
+        if self.backbone_frozen and epoch >= self.unfreeze_epoch:
+            self.unfreeze_backbone()
+            return True
+        return False
+
+    def load_from_checkpoint(self, checkpoint_path, device):
+        checkpoint_path = self.resolve_checkpoint_path(checkpoint_path)
+        print(f"--> Loading ResNet152 weights from {checkpoint_path}")
+        ckpt = torch.load(checkpoint_path, map_location=device)
+        
+        state_dict = None
+        if 'net' in ckpt:
+            state_dict = ckpt['net']
+        elif 'model_state_dict' in ckpt:
+            state_dict = ckpt['model_state_dict']
+        else:
+            state_dict = ckpt
+            
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            name = k.replace('module.', '') 
+            new_state_dict[name] = v
+            
+        # Debug: Xem model hiện tại có những gì vs checkpoint có gì
+        model_keys = list(self.model.state_dict().keys())
+        print(f"--> Model has {len(model_keys)} keys. Checkpoint has {len(new_state_dict)} keys.")
+        print(f"--> Model last keys: {model_keys[-3:]}")
+        print(f"--> Checkpoint last keys: {list(new_state_dict.keys())[-3:]}")
+        
+        # Cố gắng map trọng số vào self.model
+        missing_keys, unexpected_keys = self.model.load_state_dict(new_state_dict, strict=False)
+        
+        if len(missing_keys) > 0:
+            print(f"Warning: Missing keys: {len(missing_keys)}")
+        if len(unexpected_keys) > 0:
+            print(f"Warning: Unexpected keys: {len(unexpected_keys)}")
+            
+        print("--> Weights loaded successfully into self.model.")
+
+    @staticmethod
+    def resolve_checkpoint_path(checkpoint_path):
+        if os.path.exists(checkpoint_path):
+            return checkpoint_path
+
+        basename = os.path.basename(checkpoint_path)
+        search_roots = [os.getcwd()]
+        if os.path.exists("/kaggle/input"):
+            search_roots.insert(0, "/kaggle/input")
+
+        for root in search_roots:
+            for current_dir, _, files in os.walk(root):
+                if basename in files:
+                    found_path = os.path.join(current_dir, basename)
+                    print(f"--> [ResNet152] Checkpoint path not found; using discovered file: {found_path}")
+                    return found_path
+
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")

@@ -4,7 +4,7 @@ from .vgg import VGG19, VGGFusionSpatial, VGGFusionCBAM, VGGFusionSpatialCNN
 from .transformer_encoder import VGGFusionTransformer, VGGFusionTransformerV2, VGGFusionTransformerEA
 from .efficientnet import EfficientNetForFER2013
 from .vgg_ea import VGGEA_CNN
-from .resnet import ResNet50
+from .resnet import ResNet50, ResNet152
 from .dual_fusion import VGGResNetAttentionFusion
 from .region_attention import RegionAlignedFER
 from .resnet_region_attention import ResNetRegionAlignedFER
@@ -35,6 +35,7 @@ MODEL_REGISTRY = {
     # "resnet18": lambda **kw: ResNet(variant="resnet18", **kw),
     # "resnet34": lambda **kw: ResNet(variant="resnet34", **kw),
     "resnet50": lambda **kw: ResNet50(config=kw['config'], channels=kw['config']['data']['channels']),
+    "resnet152": lambda **kw: ResNet152(config=kw['config'], channels=kw['config']['data']['channels']),
     "vgg_resnet_attention": lambda **kw: VGGResNetAttentionFusion(config=kw['config'], channels=kw['config']['data']['channels']),
     "region_aligned_fer": lambda **kw: RegionAlignedFER(config=kw['config'], channels=kw['config']['data']['channels']),
     "resnet_region_aligned_fer": lambda **kw: ResNetRegionAlignedFER(config=kw['config'], channels=kw['config']['data']['channels']),
