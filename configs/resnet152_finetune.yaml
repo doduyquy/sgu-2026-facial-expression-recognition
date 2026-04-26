@@ -8,7 +8,8 @@ model:
   head_hidden_dim: 512
   head_dropout: 0.2
   freeze_backbone: true
-  unfreeze_epoch: 2
+  trainable_backbone_layers: ["layer4"]
+  unfreeze_epoch: null
 
 data:
   image_size: 224

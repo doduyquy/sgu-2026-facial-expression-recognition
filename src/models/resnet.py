@@ -229,9 +229,13 @@ class ResNet152(nn.Module):
         self.pretrained_checkpoint_path = model_cfg.get('checkpoint_path')
         self.reset_classifier_after_load = model_cfg.get('reset_classifier', True)
         self.freeze_backbone_on_start = model_cfg.get('freeze_backbone', False)
+        self.trainable_backbone_layers = model_cfg.get('trainable_backbone_layers', [])
         self.unfreeze_epoch = model_cfg.get('unfreeze_epoch', None)
         self.backbone_frozen = False
         self.feature_dim = 2048
+
+        if isinstance(self.trainable_backbone_layers, str):
+            self.trainable_backbone_layers = [self.trainable_backbone_layers]
 
         self.backbone = models.resnet152(weights=None)
         if channels != 3:
@@ -250,9 +254,23 @@ class ResNet152(nn.Module):
         if self.freeze_backbone_on_start:
             self.freeze_backbone()
 
+    def forward_features(self, x):
+        x = self.backbone.conv1(x)
+        x = self.backbone.bn1(x)
+        x = self.backbone.relu(x)
+        x = self.backbone.maxpool(x)
+
+        x = self.backbone.layer1(x)
+        x = self.backbone.layer2(x)
+        x = self.backbone.layer3(x)
+        x = self.backbone.layer4(x)
+
+        return x
+
     def forward(self, x, labels=None):
-        features = self.backbone(x)
-        return self.head(features)
+        feat = self.forward_features(x)
+        global_feat = F.adaptive_avg_pool2d(feat, 1).flatten(1)
+        return self.head(global_feat)
 
     def build_head(self, model_cfg):
         head_type = model_cfg.get('head_type', 'mlp')
@@ -276,6 +294,9 @@ class ResNet152(nn.Module):
         super().train(mode)
         if mode and self.backbone_frozen:
             self.backbone.eval()
+            for layer_name in self.trainable_backbone_layers:
+                if hasattr(self.backbone, layer_name):
+                    getattr(self.backbone, layer_name).train(mode)
         return self
 
     def reset_classifier(self):
@@ -285,10 +306,18 @@ class ResNet152(nn.Module):
     def freeze_backbone(self):
         for param in self.backbone.parameters():
             param.requires_grad = False
+
+        for layer_name in self.trainable_backbone_layers:
+            if not hasattr(self.backbone, layer_name):
+                raise ValueError(f"ResNet152 has no backbone layer named '{layer_name}'")
+            for param in getattr(self.backbone, layer_name).parameters():
+                param.requires_grad = True
+
         for param in self.head.parameters():
             param.requires_grad = True
         self.backbone_frozen = True
-        print("--> [ResNet152] Frozen backbone; training head only.")
+        trainable = ", ".join(self.trainable_backbone_layers + ["head"])
+        print(f"--> [ResNet152] Frozen backbone except: {trainable}.")
 
     def unfreeze_backbone(self):
         for param in self.backbone.parameters():
