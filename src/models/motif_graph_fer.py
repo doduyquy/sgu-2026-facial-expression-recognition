@@ -254,6 +254,30 @@ class MotifGraphModel(nn.Module):
         
         return sim.mean()
 
+    def _extract_candidate_subgraphs(self, nodes, adj, H, W):
+        B, N, _ = nodes.shape
+        subgraphs = []
+        subgraph_adjs = []
+        subgraph_centers = []
+        
+        # Extract 3x3 patches (sliding window)
+        for i in range(1, H-1):
+            for j in range(1, W-1):
+                indices = []
+                for di in [-1, 0, 1]:
+                    for dj in [-1, 0, 1]:
+                        indices.append((i + di) * W + (j + dj))
+                
+                indices = torch.tensor(indices, device=nodes.device)
+                sub_nodes = nodes[:, indices, :] # (B, 9, C+2)
+                sub_adj = adj[:, indices][:, :, indices] # (B, 9, 9)
+                
+                subgraphs.append(sub_nodes)
+                subgraph_adjs.append(sub_adj)
+                subgraph_centers.append((i, j))
+                
+        return torch.stack(subgraphs, dim=1), torch.stack(subgraph_adjs, dim=1), subgraph_centers
+
     def forward(self, x, return_selection=False):
         B = x.shape[0]
         feat_map = self.backbone(x)
