@@ -212,6 +212,15 @@ def main() -> None:
     p.add_argument("--stage", default="all", choices=STAGE_ORDER + ["all"])
     p.add_argument("--csv_root", default=None)
     p.add_argument("--out_root", default="artifacts")
+    p.add_argument(
+        "--pixel_motif_dir",
+        default=None,
+        help=(
+            "Override final pixel motif dataset directory. "
+            "Default: pixel_motif_dataset_v2 for spatial edges, "
+            "pixel_motif_dataset_v2_rich_edges for rich edges."
+        ),
+    )
     p.add_argument("--skip_existing", action="store_true")
     p.add_argument("--smoke", action="store_true")
     p.add_argument("--smoke_samples", type=int, default=100)
@@ -243,7 +252,12 @@ def main() -> None:
     graph_repo = out_root / "graph_repo"
     candidate_dir = out_root / "pixel_candidate_subgraphs_v2"
     motif_bank_dir = out_root / "pixel_motif_bank_v2"
-    pixel_motif_dir = out_root / "pixel_motif_dataset_v2"
+    if args.pixel_motif_dir is not None:
+        pixel_motif_dir = Path(args.pixel_motif_dir)
+    elif args.edge_attr_mode == "rich":
+        pixel_motif_dir = out_root / "pixel_motif_dataset_v2_rich_edges"
+    else:
+        pixel_motif_dir = out_root / "pixel_motif_dataset_v2"
 
     stages = _resolve_stages(args.stage)
     print(f"Stages: {stages}", flush=True)
