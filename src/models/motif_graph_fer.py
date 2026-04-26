@@ -254,33 +254,25 @@ class MotifGraphModel(nn.Module):
         
         return sim.mean()
 
-    def _get_grid_graph(self, feat_map):
-        B, C, H, W = feat_map.shape
-        N = H * W
+    def get_landmark_outputs(self):
+        """ Stub for compatibility with Trainer """
+        return None, None
+
+    def get_aux_losses(self):
+        """ Stub for compatibility with Trainer """
+        return {}
         
-        # Node features: CNN features + normalized coords
-        y, x = torch.meshgrid(torch.linspace(0, 1, H), torch.linspace(0, 1, W), indexing='ij')
-        coords = torch.stack([x, y], dim=-1).to(feat_map.device) # (H, W, 2)
-        coords = coords.view(1, N, 2).expand(B, -1, -1)
+    def get_landmark_aux_logits(self):
+        """ Stub for compatibility with Trainer """
+        return None
+
+    def set_training_progress(self, progress):
+        """ Stub for compatibility with Trainer """
+        pass
         
-        nodes = feat_map.permute(0, 2, 3, 1).reshape(B, N, C)
-        nodes = torch.cat([nodes, coords], dim=-1) # (B, N, C+2)
-        
-        # Edges: 8-neighborhood
-        adj = torch.zeros(B, N, N, device=feat_map.device)
-        for i in range(H):
-            for j in range(W):
-                idx = i * W + j
-                for di in [-1, 0, 1]:
-                    for dj in [-1, 0, 1]:
-                        ni, nj = i + di, j + dj
-                        if 0 <= ni < H and 0 <= nj < W:
-                            n_idx = ni * W + nj
-                            # Feature similarity weight
-                            sim = torch.exp(-torch.norm(nodes[:, idx, :C] - nodes[:, n_idx, :C], dim=-1) / math.sqrt(C))
-                            adj[:, idx, n_idx] = sim
-                            
-        return nodes, adj
+    def get_current_prior_strength(self):
+        """ Stub for compatibility with Trainer """
+        return 0.0
 
     def _extract_candidate_subgraphs(self, nodes, adj, H, W):
         B, N, _ = nodes.shape
