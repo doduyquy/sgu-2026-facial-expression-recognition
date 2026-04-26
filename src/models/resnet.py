@@ -227,20 +227,19 @@ class ResNet152(nn.Module):
         self.config = config
         model_cfg = config.get('model', {})
         self.pretrained_checkpoint_path = model_cfg.get('checkpoint_path')
-        self.reset_classifier_after_load = model_cfg.get('reset_classifier', False)
+        self.reset_classifier_after_load = model_cfg.get('reset_classifier', True)
         self.freeze_backbone_on_start = model_cfg.get('freeze_backbone', False)
         self.unfreeze_epoch = model_cfg.get('unfreeze_epoch', None)
         self.backbone_frozen = False
-        
-        # Use torchvision's resnet152
-        self.model = models.resnet152(weights=None)
-        
-        # Modify conv1 if channels != 3
+        self.feature_dim = 2048
+
+        self.backbone = models.resnet152(weights=None)
         if channels != 3:
-            self.model.conv1 = nn.Conv2d(channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
-            
-        # Modify fc layer
-        self.model.fc = nn.Linear(self.model.fc.in_features, self.num_classes)
+            self.backbone.conv1 = nn.Conv2d(channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+
+        self.feature_dim = self.backbone.fc.in_features
+        self.backbone.fc = nn.Identity()
+        self.head = self.build_head(model_cfg)
 
         if self.pretrained_checkpoint_path:
             self.load_from_checkpoint(self.pretrained_checkpoint_path, device='cpu')
@@ -252,31 +251,49 @@ class ResNet152(nn.Module):
             self.freeze_backbone()
 
     def forward(self, x, labels=None):
-        return self.model(x)
+        features = self.backbone(x)
+        return self.head(features)
+
+    def build_head(self, model_cfg):
+        head_type = model_cfg.get('head_type', 'mlp')
+        hidden_dim = model_cfg.get('head_hidden_dim', 512)
+        dropout = model_cfg.get('head_dropout', 0.3)
+
+        if head_type == 'linear':
+            return nn.Linear(self.feature_dim, self.num_classes)
+
+        return nn.Sequential(
+            nn.BatchNorm1d(self.feature_dim),
+            nn.Dropout(dropout),
+            nn.Linear(self.feature_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.BatchNorm1d(hidden_dim),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, self.num_classes),
+        )
 
     def train(self, mode=True):
         super().train(mode)
         if mode and self.backbone_frozen:
-            for name, module in self.model.named_children():
-                if name != 'fc':
-                    module.eval()
+            self.backbone.eval()
         return self
 
     def reset_classifier(self):
-        in_features = self.model.fc.in_features
-        self.model.fc = nn.Linear(in_features, self.num_classes)
-        nn.init.normal_(self.model.fc.weight, mean=0.0, std=0.01)
-        nn.init.zeros_(self.model.fc.bias)
+        self.head = self.build_head(self.config.get('model', {}))
         print("--> [ResNet152] Reset classifier head.")
 
     def freeze_backbone(self):
-        for name, param in self.model.named_parameters():
-            param.requires_grad = name.startswith('fc.')
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+        for param in self.head.parameters():
+            param.requires_grad = True
         self.backbone_frozen = True
-        print("--> [ResNet152] Frozen backbone; training classifier only.")
+        print("--> [ResNet152] Frozen backbone; training head only.")
 
     def unfreeze_backbone(self):
-        for param in self.model.parameters():
+        for param in self.backbone.parameters():
+            param.requires_grad = True
+        for param in self.head.parameters():
             param.requires_grad = True
         self.backbone_frozen = False
         print("--> [ResNet152] Unfrozen full backbone for fine-tuning.")
@@ -306,15 +323,18 @@ class ResNet152(nn.Module):
         for k, v in state_dict.items():
             name = k.replace('module.', '') 
             new_state_dict[name] = v
-            
-        # Debug: Xem model hiện tại có những gì vs checkpoint có gì
-        model_keys = list(self.model.state_dict().keys())
-        print(f"--> Model has {len(model_keys)} keys. Checkpoint has {len(new_state_dict)} keys.")
-        print(f"--> Model last keys: {model_keys[-3:]}")
-        print(f"--> Checkpoint last keys: {list(new_state_dict.keys())[-3:]}")
-        
-        # Cố gắng map trọng số vào self.model
-        missing_keys, unexpected_keys = self.model.load_state_dict(new_state_dict, strict=False)
+
+        if any(k.startswith('backbone.') or k.startswith('head.') for k in new_state_dict):
+            missing_keys, unexpected_keys = self.load_state_dict(new_state_dict, strict=False)
+        else:
+            backbone_state_dict = {
+                k: v for k, v in new_state_dict.items()
+                if not k.startswith('fc.')
+            }
+            skipped = len(new_state_dict) - len(backbone_state_dict)
+            if skipped:
+                print(f"--> [ResNet152] Skipped {skipped} checkpoint classifier keys; using custom head.")
+            missing_keys, unexpected_keys = self.backbone.load_state_dict(backbone_state_dict, strict=False)
         
         if len(missing_keys) > 0:
             print(f"Warning: Missing keys: {len(missing_keys)}")
