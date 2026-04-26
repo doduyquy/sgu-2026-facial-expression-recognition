@@ -23,6 +23,13 @@ class MotifTrainer:
         self.epochs = config['training'].get('epochs', 100)
         self.best_val_loss = float('inf')
         
+        # SCN Parameters
+        self.use_scn = config['training'].get('use_scn', True)
+        self.scn_alpha = float(config['training'].get('scn_alpha', 1.0))
+        self.scn_rank_lambda = float(config['training'].get('scn_rank_lambda', 0.3))
+        self.scn_warmup_epochs = int(config['training'].get('scn_warmup_epochs', 5))
+        self.scn_margin = 0.4
+        
         # Early Stopping
         patience = config['training'].get('patience', 10)
         self.early_stopping = EarlyStopping(
@@ -30,6 +37,33 @@ class MotifTrainer:
             verbose=True, 
             path=os.path.join(save_dir, 'best_motif_model.pt')
         )
+
+    def _scn_loss(self, logits, labels, base_loss_per_sample, epoch):
+        """ SCN logic: weighted loss + ranking loss """
+        with torch.no_grad():
+            probs = torch.softmax(logits, dim=1)
+            conf = probs.gather(1, labels.unsqueeze(1)).squeeze(1) # (B,)
+            weights = (1.0 - conf) ** 2
+            weights = weights.clamp(min=0.2)
+        
+        # Weighted main loss
+        weighted_loss = (weights * base_loss_per_sample).mean()
+        
+        # Ranking loss
+        if epoch >= self.scn_warmup_epochs:
+            B = logits.size(0)
+            k = max(2, int(0.2 * B))
+            sorted_conf, idx = torch.sort(conf)
+            hard_idx, easy_idx = idx[:k], idx[k:]
+            
+            hard_loss = base_loss_per_sample[hard_idx].mean()
+            easy_loss = base_loss_per_sample[easy_idx].mean()
+            ranking_loss = torch.relu(easy_loss - hard_loss + self.scn_margin)
+        else:
+            ranking_loss = torch.tensor(0.0, device=self.device)
+            
+        total_loss = self.scn_alpha * weighted_loss + self.scn_rank_lambda * ranking_loss
+        return total_loss
 
     def train_one_epoch(self, epoch):
         self.model.train()
@@ -46,8 +80,27 @@ class MotifTrainer:
             # Forward: MotifGraphModel returns (logits, top_k_idx, centers, scores)
             logits, top_k_idx, _, scores = self.model(images, return_selection=True)
             
-            # CombinedMotifLoss forward(logits, targets, scores, top_k_idx, model)
-            loss = self.criterion(logits, labels, scores, top_k_idx, model=self.model)
+            if self.use_scn:
+                # 1. Classification part (per-sample)
+                ce_none = nn.CrossEntropyLoss(reduction='none')
+                l_ce_none = ce_none(logits, labels)
+                
+                # 2. Motif Consistency part (per-sample)
+                l_motif_none = self.criterion.motif(scores, top_k_idx, labels, reduction='none')
+                
+                # Combined per-sample base loss for SCN to judge
+                base_loss_per_sample = l_ce_none + self.criterion.weight * l_motif_none
+                
+                # SCN re-weighting and ranking
+                total_weighted_loss = self._scn_loss(logits, labels, base_loss_per_sample, epoch)
+                
+                # Diversity loss (global regularizer, doesn't depend on samples)
+                l_div = self.model.compute_motif_diversity_loss()
+                
+                loss = total_weighted_loss + self.criterion.div_weight * l_div
+            else:
+                # Standard CombinedMotifLoss
+                loss = self.criterion(logits, labels, scores, top_k_idx, model=self.model)
             
             loss.backward()
             self.optimizer.step()

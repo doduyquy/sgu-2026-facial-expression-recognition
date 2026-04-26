@@ -15,7 +15,7 @@ data:
   in_channels: 1
 
 training:
-  epochs: 100
+  epochs: 1000
   lr: 0.001
   weight_decay: 1e-4
   loss: "motif_combined"
@@ -23,7 +23,7 @@ training:
   motif_div_weight: 0.05
   motif_tau: 0.1
   scheduler: "reduce_lr_on_plateau"
-  patience: 10
+  patience: 20
   factor: 0.5
 
 augmentation:

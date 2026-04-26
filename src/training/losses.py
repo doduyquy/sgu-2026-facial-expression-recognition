@@ -9,7 +9,7 @@ class MotifConsistencyLoss(nn.Module):
         self.motifs_per_class = motifs_per_class
         self.tau = tau
 
-    def forward(self, scores, top_k_idx, targets):
+    def forward(self, scores, top_k_idx, targets, reduction='mean'):
         """
         scores: (B, num_candidates, Total_Motifs)
         top_k_idx: (B, top_k)
@@ -36,19 +36,24 @@ class MotifConsistencyLoss(nn.Module):
         # 2. Similarity to ALL motifs
         log_sum_exp_all = torch.logsumexp(selected_scores / self.tau, dim=-1)
         
-        # Intra-class loss (InfoNCE style)
-        loss_intra = -(log_sum_exp_pos - log_sum_exp_all).mean()
+        # Intra-class loss per sample (InfoNCE style)
+        # Average over top-k subgraphs
+        loss_intra = -(log_sum_exp_pos - log_sum_exp_all).mean(dim=1) # (B,)
         
         # 3. Inter-class Separation (Contrastive/Triplet style)
         # We want Avg(pos_scores) > Avg(neg_scores) + margin
         pos_avg = (selected_scores * mask).sum(dim=-1) / self.motifs_per_class
         neg_avg = (selected_scores * (1 - mask)).sum(dim=-1) / (Total_Motifs - self.motifs_per_class)
         
-        # Contrastive margin loss
+        # Contrastive margin loss per sample
         margin = 0.2
-        loss_inter = F.relu(margin + neg_avg - pos_avg).mean()
+        loss_inter = F.relu(margin + neg_avg - pos_avg).mean(dim=1) # (B,)
         
-        return loss_intra + loss_inter
+        total_loss = loss_intra + loss_inter
+        
+        if reduction == 'mean':
+            return total_loss.mean()
+        return total_loss
 
 
 
