@@ -21,6 +21,7 @@ data:
 training:
   epochs: 35
   patience: 8
+  monitor: "val_accuracy"
   loss: "cross_entropy"
   label_smoothing: 0.05
   optimizer: "adamw"

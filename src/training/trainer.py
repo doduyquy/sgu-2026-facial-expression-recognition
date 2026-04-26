@@ -25,6 +25,9 @@ class Trainer:
         self.run_name = run_name
         self.config = config
         self.path_save_ckpt = save_dir
+        self.monitor = config['training'].get('monitor', 'val_loss')
+        if self.monitor not in ['val_loss', 'val_accuracy']:
+            raise ValueError("training.monitor must be either 'val_loss' or 'val_accuracy'")
 
 
     def train_one_epoch(self):
@@ -135,7 +138,7 @@ class Trainer:
         if self.use_wandb:
             init_wandb(config=self.config, run_name=self.run_name)
 
-        best_val_loss = float("inf")
+        best_score = float("inf") if self.monitor == 'val_loss' else -float("inf")
         patience_counter = 0
         all_train_loss = []
         all_val_loss = []
@@ -195,16 +198,27 @@ class Trainer:
                     self.scheduler.step()
 
             # save checkpoint
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
+            current_score = val_loss if self.monitor == 'val_loss' else val_acc.item()
+            improved = current_score < best_score if self.monitor == 'val_loss' else current_score > best_score
+
+            if improved:
+                best_score = current_score
                 patience_counter = 0
 
                 torch.save({
                     "model_state_dict": self.model.state_dict(),
                     "optimizer_state_dict": self.optimizer.state_dict(),
-                    "epoch": ep
+                    "epoch": ep,
+                    "val_loss": val_loss,
+                    "val_accuracy": val_acc.item(),
+                    "monitor": self.monitor,
+                    "best_score": best_score,
                 }, self.path_save_ckpt)
-                print(f"\t--- Save best at ep {ep+1}, val_loss: {val_loss:.4f}, path: {self.path_save_ckpt} ---")
+                print(
+                    f"\t--- Save best at ep {ep+1}, "
+                    f"val_loss: {val_loss:.4f}, val_accuracy: {val_acc.item():.4f}, "
+                    f"monitor: {self.monitor}, path: {self.path_save_ckpt} ---"
+                )
 
             else:
                 patience_counter += 1
