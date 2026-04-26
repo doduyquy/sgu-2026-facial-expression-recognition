@@ -254,78 +254,8 @@ class MotifGraphModel(nn.Module):
         
         return sim.mean()
 
-    def get_landmark_outputs(self):
-        """ Return latest motif matching scores for Trainer compatibility """
-        return getattr(self, '_latest_scores', None), getattr(self, '_latest_top_k', None)
-
-    def get_aux_losses(self):
-        """ Compute motif losses for Trainer compatibility """
-        if not hasattr(self, '_latest_scores') or self._latest_scores is None:
-            return {}
-            
-        # We need a MotifConsistencyLoss instance to compute the loss here
-        # or we can compute it directly.
-        from src.training.losses import MotifConsistencyLoss
-        
-        # Initialize loss objects if not exists (using default tau)
-        if not hasattr(self, '_motif_consistency_criterion'):
-            self._motif_consistency_criterion = MotifConsistencyLoss(motifs_per_class=self.motifs_per_class)
-            
-        # Get latest targets (stored during forward)
-        targets = getattr(self, '_latest_targets', None)
-        if targets is None:
-            return {}
-            
-        l_motif = self._motif_consistency_criterion(self._latest_scores, self._latest_top_k, targets)
-        l_div = self.compute_motif_diversity_loss()
-        
-        return {
-            "motif_consistency": l_motif,
-            "motif_diversity": l_div
-        }
-        
-    def get_landmark_aux_logits(self):
-        """ Stub for compatibility with Trainer """
-        return None
-
-    def set_training_progress(self, progress):
-        """ Stub for compatibility with Trainer """
-        pass
-        
-    def get_current_prior_strength(self):
-        """ Stub for compatibility with Trainer """
-        return 0.0
-
-    def _extract_candidate_subgraphs(self, nodes, adj, H, W):
-        B, N, _ = nodes.shape
-        subgraphs = []
-        subgraph_adjs = []
-        subgraph_centers = []
-        
-        # Extract 3x3 patches
-        for i in range(1, H-1):
-            for j in range(1, W-1):
-                indices = []
-                for di in [-1, 0, 1]:
-                    for dj in [-1, 0, 1]:
-                        indices.append((i + di) * W + (j + dj))
-                
-                indices = torch.tensor(indices, device=nodes.device)
-                sub_nodes = nodes[:, indices, :] # (B, 9, C+2)
-                sub_adj = adj[:, indices][:, :, indices] # (B, 9, 9)
-                
-                subgraphs.append(sub_nodes)
-                subgraph_adjs.append(sub_adj)
-                subgraph_centers.append((i, j))
-                
-        return torch.stack(subgraphs, dim=1), torch.stack(subgraph_adjs, dim=1), subgraph_centers
-
-    def forward(self, x, return_selection=False, targets=None):
+    def forward(self, x, return_selection=False):
         B = x.shape[0]
-        # Store targets for aux loss calculation if provided
-        if targets is not None:
-            self._latest_targets = targets
-            
         feat_map = self.backbone(x)
         _, _, H, W = feat_map.shape
         
