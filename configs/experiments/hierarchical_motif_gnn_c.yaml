@@ -22,7 +22,7 @@ data:
   # sub_x: float32 [K, Nmax, 7]
   # sub_adj: uint8  [K, Nmax, Nmax]  (cast to float in dataloader)
   # sub_node_mask: bool [K, Nmax]
-  build_hierarchical_cache: true
+  build_hierarchical_cache: false
 
   graph:
     chunk_size: 500
