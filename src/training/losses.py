@@ -105,7 +105,7 @@ def build_loss(config, class_weights=None):
 
     elif loss_name == 'motif_combined':
         # Combined CrossEntropy and MotifConsistencyLoss
-        alpha = config['training'].get('motif_loss_weight', 0.5)
+        alpha_weight = config['training'].get('motif_loss_weight', 0.5)
         ce_loss = nn.CrossEntropyLoss()
         motif_loss = MotifConsistencyLoss(
             num_classes=config['model'].get('num_classes', 7),
@@ -124,22 +124,19 @@ def build_loss(config, class_weights=None):
             def forward(self, logits, targets, scores=None, top_k_idx=None, model=None):
                 l_ce = self.ce(logits, targets)
                 
-                # Only compute motif loss if scores and top_k_idx are provided
                 if scores is not None and top_k_idx is not None:
                     l_motif = self.motif(scores, top_k_idx, targets)
                     loss = l_ce + self.weight * l_motif
                 else:
                     loss = l_ce
                 
-                # Diversity loss
                 if model is not None and hasattr(model, 'compute_motif_diversity_loss'):
                     l_div = model.compute_motif_diversity_loss()
                     loss = loss + self.div_weight * l_div
-                    
                 return loss
 
         loss = CombinedMotifLoss(
-            ce_loss, motif_loss, alpha, 
+            ce_loss, motif_loss, alpha_weight, 
             div_weight=config['training'].get('motif_div_weight', 0.1)
         )
 
