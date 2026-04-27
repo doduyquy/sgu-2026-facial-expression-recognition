@@ -82,6 +82,8 @@ class LearnableSlotCandidateMotifGNN(nn.Module):
         slot_attention_entropy_weight: float = 0.0,
         slot_diversity_weight: float = 0.0,
         class_attention_diversity_weight: float = 0.0,
+        combined_attention_diversity_weight: float = 0.0,
+        combined_attention_diversity_margin: float = 0.65,
     ) -> None:
         super().__init__()
         self.num_classes = int(num_classes)
@@ -97,6 +99,8 @@ class LearnableSlotCandidateMotifGNN(nn.Module):
         self.slot_attention_entropy_weight = float(slot_attention_entropy_weight)
         self.slot_diversity_weight = float(slot_diversity_weight)
         self.class_attention_diversity_weight = float(class_attention_diversity_weight)
+        self.combined_attention_diversity_weight = float(combined_attention_diversity_weight)
+        self.combined_attention_diversity_margin = float(combined_attention_diversity_margin)
         if self.global_pooling_type not in {"mean", "mean_max"}:
             raise ValueError(
                 f"Unknown global_pooling_type={global_pooling_type!r}; expected 'mean' or 'mean_max'"
@@ -249,6 +253,18 @@ class LearnableSlotCandidateMotifGNN(nn.Module):
         eye = torch.eye(K, device=sim.device, dtype=torch.bool).unsqueeze(0)
         return sim.masked_select(~eye).mean() if K > 1 else sim.sum() * 0.0
 
+    @staticmethod
+    def _combined_attention_diversity(attn: torch.Tensor, margin: float) -> torch.Tensor:
+        attn = attn / attn.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+        norm = F.normalize(attn, dim=-1)
+        sim = torch.matmul(norm, norm.transpose(1, 2))
+        C = sim.shape[-1]
+        if C <= 1:
+            return sim.sum() * 0.0
+        eye = torch.eye(C, device=sim.device, dtype=torch.bool).unsqueeze(0)
+        offdiag = sim.masked_select(~eye)
+        return F.relu(offdiag - float(margin)).mean()
+
     def forward(self, batch: dict) -> dict:
         feat, mask = self._features(batch)
         h = self.candidate_proj(feat) * mask.unsqueeze(-1).to(dtype=feat.dtype)
@@ -267,6 +283,11 @@ class LearnableSlotCandidateMotifGNN(nn.Module):
         else:
             logits, class_slot_attention = self._attention_pool(slots, global_context)
 
+        combined_candidate_attention = None
+        if class_slot_attention is not None:
+            combined_candidate_attention = torch.matmul(class_slot_attention, candidate_attention)
+            combined_candidate_attention = combined_candidate_attention.masked_fill(~mask.unsqueeze(1), 0.0)
+
         aux_loss = logits.new_tensor(0.0)
         if self.slot_attention_entropy_weight:
             aux_loss = aux_loss + self.slot_attention_entropy_weight * self._attention_entropy(candidate_attention)
@@ -274,11 +295,17 @@ class LearnableSlotCandidateMotifGNN(nn.Module):
             aux_loss = aux_loss + self.slot_diversity_weight * self._attention_diversity(candidate_attention)
         if self.class_attention_diversity_weight and class_slot_attention is not None:
             aux_loss = aux_loss + self.class_attention_diversity_weight * self._attention_diversity(class_slot_attention)
+        if self.combined_attention_diversity_weight and combined_candidate_attention is not None:
+            aux_loss = aux_loss + self.combined_attention_diversity_weight * self._combined_attention_diversity(
+                combined_candidate_attention,
+                self.combined_attention_diversity_margin,
+            )
 
         return {
             "logits": logits,
             "candidate_attention": candidate_attention,
             "class_slot_attention": class_slot_attention,
+            "combined_candidate_attention": combined_candidate_attention,
             "slot_embeddings": slots,
             "aux_loss": aux_loss,
         }

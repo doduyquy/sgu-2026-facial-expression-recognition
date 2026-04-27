@@ -1,0 +1,42 @@
+experiment:
+  name: learnable_slot_candidate_motif_gnn_d3_2a
+  description: "D3.2a: D3.1 w025 plus combined class-candidate attention diversity loss."
+
+data:
+  recipe: candidate_attention_v1
+  csv_root: auto
+  artifact_root: /kaggle/working/artifacts
+  stage: all
+  skip_existing: true
+  smoke: false
+  smoke_samples: 100
+  candidate_attention_dir: /kaggle/working/artifacts/candidate_attention_dataset_v1
+
+  graph:
+    chunk_size: 500
+    connectivity: 8
+
+  candidates:
+    max_candidates: 128
+    seed_stride: 4
+    radii: [1, 2]
+    coverage_grid: [4, 4]
+    log_every: 500
+
+  candidate_attention:
+    max_candidates: 128
+    candidate_k_spatial: 8
+    candidate_k_feature: 4
+
+training:
+  enabled: true
+  env: kaggle
+  config: learnable_slot_candidate_motif_gnn_d3_2a
+  epochs: 120
+  no_wandb: false
+  debug_batch: true
+  debug_batch_size: 2
+
+outputs:
+  zip_outputs: true
+  zip_name: learnable_slot_candidate_motif_gnn_d3_2a_outputs.zip

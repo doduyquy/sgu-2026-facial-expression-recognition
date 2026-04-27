@@ -103,6 +103,8 @@ MODEL_REGISTRY = {
         slot_attention_entropy_weight=config.get("loss", {}).get("slot_attention_entropy_weight", 0.0),
         slot_diversity_weight=config.get("loss", {}).get("slot_diversity_weight", 0.0),
         class_attention_diversity_weight=config.get("loss", {}).get("class_attention_diversity_weight", 0.0),
+        combined_attention_diversity_weight=config.get("loss", {}).get("combined_attention_diversity_weight", 0.0),
+        combined_attention_diversity_margin=config.get("loss", {}).get("combined_attention_diversity_margin", 0.65),
     ),
 }
 

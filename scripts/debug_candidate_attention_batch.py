@@ -65,8 +65,18 @@ def main() -> None:
     print(f"candidate_attention       : {tuple(out['candidate_attention'].shape)}")
     if out.get("class_slot_attention") is not None:
         print(f"class_slot_attention      : {tuple(out['class_slot_attention'].shape)}")
+    if out.get("combined_candidate_attention") is not None:
+        print(f"combined_candidate_attention: {tuple(out['combined_candidate_attention'].shape)}")
     print(f"slot_embeddings           : {tuple(out['slot_embeddings'].shape)}")
+    print(f"aux_loss                  : {tuple(out['aux_loss'].shape)}")
     assert tuple(out["logits"].shape) == (int(args.batch_size), int(config["model"].get("num_classes", 7)))
+    if out.get("combined_candidate_attention") is not None:
+        assert tuple(out["combined_candidate_attention"].shape) == (
+            int(args.batch_size),
+            int(config["model"].get("num_classes", 7)),
+            int(out["candidate_attention"].shape[-1]),
+        )
+    assert tuple(out["aux_loss"].shape) == ()
     print("OK")
 
 

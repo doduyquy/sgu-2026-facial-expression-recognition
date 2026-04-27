@@ -125,9 +125,14 @@ def main() -> None:
             views = [("top_slot", -1, slot_scores)]
             class_attn = out.get("class_slot_attention")
             if class_attn is not None:
-                cand_attn = out["candidate_attention"][0]
-                pred_scores = torch.matmul(class_attn[0, pred], cand_attn)
-                true_scores = torch.matmul(class_attn[0, label], cand_attn)
+                combined_attn = out.get("combined_candidate_attention")
+                if combined_attn is not None:
+                    pred_scores = combined_attn[0, pred]
+                    true_scores = combined_attn[0, label]
+                else:
+                    cand_attn = out["candidate_attention"][0]
+                    pred_scores = torch.matmul(class_attn[0, pred], cand_attn)
+                    true_scores = torch.matmul(class_attn[0, label], cand_attn)
                 views.extend([("pred_class", pred, pred_scores), ("true_class", label, true_scores)])
 
             for view_name, slot_or_class, weights in views:
@@ -160,4 +165,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
