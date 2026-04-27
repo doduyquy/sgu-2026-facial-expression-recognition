@@ -4,7 +4,7 @@ model:
   name: "motif_graph_fer"
   feat_dim: 128
   num_classes: 7
-  motifs_per_class: 8
+  motifs_per_class: 6
   top_k: 4
   dropout: 0.3
 
