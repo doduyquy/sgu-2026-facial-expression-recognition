@@ -207,12 +207,42 @@ class Trainer:
                 labels_a = labels
                 labels_b = labels[perm]
 
-            # Pass labels to forward for internal loss calculation
-            if hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
-                outputs = self.model(images, targets=labels)
+            # Motif Model handling: need special forward for Consistency Loss
+            import torchvision.transforms.functional as TF
+            is_motif_model = self.config['model'].get('name', '') == 'motif_graph_fer'
+            
+            # Update training progress for Annealing (Selection strategy)
+            if is_motif_model and hasattr(self.model, 'set_training_progress'):
+                current_epoch = getattr(self, '_current_epoch', 0)
+                total_epochs = self.config['training'].get('epochs', 100)
+                self.model.set_training_progress(current_epoch / max(1, total_epochs))
+
+            if is_motif_model:
+                # Forward with selection for consistency loss
+                outputs = self.model(images, return_selection=True, targets=labels)
+                logits, top_k_idx, _, scores = outputs
+                
+                # 1. Consistency Loss (Stability)
+                self._current_motif_consistency = torch.tensor(0.0, device=self.device)
+                if self.config['training'].get('use_consistency', True):
+                    angle = float(torch.empty(1).uniform_(-10, 10))
+                    images_aug = TF.rotate(images, angle)
+                    outputs_aug = self.model(images_aug, return_selection=True)
+                    _, _, _, scores_aug = outputs_aug
+                    self._current_motif_consistency = F.mse_loss(scores, scores_aug)
+                
+                # 2. Entropy Regularization (Sharpness)
+                probs = torch.softmax(logits, dim=1)
+                self._current_motif_entropy = -torch.mean(torch.sum(probs * torch.log(probs + 1e-9), dim=1))
             else:
-                outputs = self.model(images)
-            logits = self._extract_logits(outputs)
+                # Standard model forward
+                if hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
+                    outputs = self.model(images, targets=labels)
+                else:
+                    outputs = self.model(images)
+                logits = self._extract_logits(outputs)
+                self._current_motif_consistency = torch.tensor(0.0, device=self.device)
+                self._current_motif_entropy = torch.tensor(0.0, device=self.device)
 
             # batch confidence used to scale landmark diversity: low-confidence batches
             # should emphasize landmark regularizers more (helps hard samples)
@@ -302,6 +332,12 @@ class Trainer:
                     # Default weight 0.1 for new/unknown aux losses or use config
                     w = self.config.get('training', {}).get(f'{k}_weight', 0.1)
                     loss = loss + float(w) * v
+            
+            # (6) Add Motif-specific training losses
+            if is_motif_model:
+                w_cons = self.config.get('training', {}).get('motif_consistency_weight', 0.1)
+                w_ent = self.config.get('training', {}).get('motif_entropy_weight', 0.01)
+                loss = loss + float(w_cons) * self._current_motif_consistency + float(w_ent) * self._current_motif_entropy
             
             try:
                 if overlap_lambda_t.item() > 0.0:

@@ -39,12 +39,22 @@ class MotifTrainer:
         )
 
     def _scn_loss(self, logits, labels, base_loss_per_sample, epoch):
-        """ SCN logic: weighted loss + ranking loss """
+        """ SCN logic: weighted loss + ranking loss (Class-aware Tuning) """
         with torch.no_grad():
             probs = torch.softmax(logits, dim=1)
             conf = probs.gather(1, labels.unsqueeze(1)).squeeze(1) # (B,)
+            
+            # Basic confidence weighting
             weights = (1.0 - conf) ** 2
-            weights = weights.clamp(min=0.2)
+            
+            # (3) SCN Tuning theo class:
+            # Tăng trọng số cho Disgust (1) và Fear (2) để mô hình tập trung hơn
+            class_focus = torch.ones_like(labels, dtype=torch.float)
+            class_focus[labels == 1] = 1.5 # Disgust focus
+            class_focus[labels == 2] = 1.2 # Fear focus
+            weights = weights * class_focus
+            
+            weights = weights.clamp(min=0.2, max=2.0)
         
         # Weighted main loss
         weighted_loss = (weights * base_loss_per_sample).mean()
@@ -66,6 +76,7 @@ class MotifTrainer:
         return total_loss
 
     def train_one_epoch(self, epoch):
+        import torchvision.transforms.functional as TF
         self.model.train()
         running_loss = 0.0
         corrects = 0
@@ -78,29 +89,38 @@ class MotifTrainer:
             self.optimizer.zero_grad()
             
             # Forward: MotifGraphModel returns (logits, top_k_idx, centers, scores)
+            # MotifGraphModel now uses Gumbel-Softmax during training
             logits, top_k_idx, _, scores = self.model(images, return_selection=True)
             
+            # (6) Entropy Regularization: Encourage sharp selection
+            # Extract attn_weights indirectly from the model if possible or recalculate
+            # For simplicity, we can regularize the confidence scores
+            probs = torch.softmax(logits, dim=1)
+            entropy_loss = -torch.mean(torch.sum(probs * torch.log(probs + 1e-9), dim=1))
+            
             if self.use_scn:
-                # 1. Classification part (per-sample)
                 ce_none = nn.CrossEntropyLoss(reduction='none')
                 l_ce_none = ce_none(logits, labels)
-                
-                # 2. Motif Consistency part (per-sample)
                 l_motif_none = self.criterion.motif(scores, top_k_idx, labels, reduction='none')
-                
-                # Combined per-sample base loss for SCN to judge
                 base_loss_per_sample = l_ce_none + self.criterion.weight * l_motif_none
-                
-                # SCN re-weighting and ranking
-                total_weighted_loss = self._scn_loss(logits, labels, base_loss_per_sample, epoch)
-                
-                # Diversity loss (global regularizer, doesn't depend on samples)
-                l_div = self.model.compute_motif_diversity_loss()
-                
-                loss = total_weighted_loss + self.criterion.div_weight * l_div
+                main_loss = self._scn_loss(logits, labels, base_loss_per_sample, epoch)
             else:
-                # Standard CombinedMotifLoss
-                loss = self.criterion(logits, labels, scores, top_k_idx, model=self.model)
+                main_loss = self.criterion(logits, labels, scores, top_k_idx, model=self.model)
+
+            # (6) Augment-Consistency Loss (Stability)
+            consistency_loss = torch.tensor(0.0, device=self.device)
+            if self.config['training'].get('use_consistency', True):
+                # Mild augmentation
+                angle = float(torch.empty(1).uniform_(-10, 10))
+                images_aug = TF.rotate(images, angle)
+                
+                # Forward aug
+                logits_aug, _, _, scores_aug = self.model(images_aug, return_selection=True)
+                # MSE loss between scores (ensure same motifs are activated)
+                consistency_loss = F.mse_loss(scores, scores_aug)
+            
+            # Total Loss
+            loss = main_loss + 0.01 * entropy_loss + 0.1 * consistency_loss
             
             loss.backward()
             self.optimizer.step()
@@ -110,7 +130,11 @@ class MotifTrainer:
             corrects += torch.sum(preds == labels.data)
             total += labels.size(0)
             
-            pbar.set_postfix({"loss": f"{loss.item():.4f}", "acc": f"{torch.sum(preds == labels.data).item()/images.size(0):.4f}"})
+            pbar.set_postfix({
+                "loss": f"{loss.item():.4f}", 
+                "cons": f"{consistency_loss.item():.4f}",
+                "acc": f"{torch.sum(preds == labels.data).item()/images.size(0):.4f}"
+            })
             
         return running_loss / total, corrects.double() / total
 
