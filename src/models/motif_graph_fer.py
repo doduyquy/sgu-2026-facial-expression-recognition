@@ -123,53 +123,38 @@ class CrossAttentionMatching(nn.Module):
         self.k_lin = nn.Linear(feat_dim, feat_dim)
         
     def forward(self, candidates, motifs):
-        """
-        candidates: (B*Cands, 9, D)
-        motifs: (Num_Motifs, 9, D)
-        """
-        # We want a similarity score between each candidate and each motif
-        # Using vectorized cross-attention
         B_c, N, D = candidates.shape
         M, _, _ = motifs.shape
         
         # Project
-        q = self.q_lin(candidates) # (B*Cands, 9, D)
-        k = self.k_lin(motifs)    # (M, 9, D)
+        q = self.q_lin(candidates) 
+        k = self.k_lin(motifs)    
         
-        # Compute all-to-all similarity for each candidate-motif pair
-        # Reshape to (B*Cands, 1, 9, D) and (1, M, 9, D)
-        # Dot product: (B*Cands, M, 9, 9)
-        # sim[b, m, i, j] is similarity between node i of cand b and node j of motif m
-        sim_matrix = torch.einsum('bid,mjd->bmij', q, k) / math.sqrt(D)
+        # (3) Matching Normalization: Use Cosine Similarity for stability
+        q = F.normalize(q, dim=-1)
+        k = F.normalize(k, dim=-1)
         
-        # Soft alignment: for each node in cand, find best match in motif
-        # (B*Cands, M, 9)
+        sim_matrix = torch.einsum('bid,mjd->bmij', q, k) 
+        
+        # Soft alignment
         align_cand = sim_matrix.max(dim=-1)[0].mean(dim=-1)
-        # For each node in motif, find best match in cand
         align_motif = sim_matrix.max(dim=-2)[0].mean(dim=-1)
         
-        # Symmetric similarity
         return (align_cand + align_motif) / 2.0
 
 class MotifBank(nn.Module):
-    """
-    Stores learnable prototype subgraphs (motifs) for each class.
-    """
     def __init__(self, num_classes=7, motifs_per_class=8, num_nodes=9, feat_dim=128):
         super().__init__()
         self.num_classes = num_classes
         self.motifs_per_class = motifs_per_class
         self.num_nodes = num_nodes
         
-        # Learnable motif prototypes: (num_classes, motifs_per_class, num_nodes, feat_dim)
         self.motifs = nn.Parameter(torch.randn(num_classes, motifs_per_class, num_nodes, feat_dim))
         nn.init.xavier_uniform_(self.motifs)
         
-        # Motif fixed structure (3x3 grid adjacency)
         adj = self._generate_3x3_grid_adj()
         self.register_buffer('motif_adj', adj)
         
-        # Relative coordinates for 3x3 motif nodes (from 0 to 1)
         rel_coords = self._generate_3x3_rel_coords()
         self.register_buffer('rel_coords', rel_coords)
 
@@ -188,12 +173,10 @@ class MotifBank(nn.Module):
 
     def _generate_3x3_rel_coords(self):
         y, x = torch.meshgrid(torch.linspace(0, 1, 3), torch.linspace(0, 1, 3), indexing='ij')
-        return torch.stack([x, y], dim=-1).view(9, 2) # (9, 2)
+        return torch.stack([x, y], dim=-1).view(9, 2) 
 
     def get_motifs(self):
-        # Return motifs reshaped to (Total_Motifs, num_nodes, feat_dim)
         flat_motifs = self.motifs.view(-1, self.num_nodes, self.motifs.shape[-1])
-        # Add relative coords
         Total_Motifs = flat_motifs.shape[0]
         coords = self.rel_coords.unsqueeze(0).expand(Total_Motifs, -1, -1)
         motifs_with_coords = torch.cat([flat_motifs, coords], dim=-1)
@@ -205,12 +188,24 @@ class MotifGraphModel(nn.Module):
         self.feat_dim = config.get('feat_dim', 128)
         self.num_classes = config.get('num_classes', 7)
         self.motifs_per_class = config.get('motifs_per_class', 8)
-        self.top_k = config.get('top_k', 4)
+        self.top_k = config.get('top_k', 4) 
+        self.temperature = config.get('motif_tau', 0.1) 
         
         self.backbone = MotifBackbone(feat_dim=self.feat_dim)
-        self.gnn = GraphAttentionLayer(self.feat_dim, self.feat_dim) 
         
-        # Learnable positional encoding for 3x3 patch (9 nodes)
+        self.gnn_layers = nn.ModuleList([
+            GraphAttentionLayer(self.feat_dim, self.feat_dim),
+            GraphAttentionLayer(self.feat_dim, self.feat_dim)
+        ])
+        
+        # 3.2 Deformable: Predict offsets
+        self.offset_predictor = nn.Sequential(
+            nn.Linear(self.feat_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, 2), 
+            nn.Tanh() 
+        )
+        
         self.pos_embed = nn.Parameter(torch.randn(1, 9, self.feat_dim))
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
         
@@ -221,180 +216,181 @@ class MotifGraphModel(nn.Module):
             feat_dim=self.feat_dim
         )
         
-        # Subgraph encoder for classification
-        self.subgraph_encoder = nn.Sequential(
-            nn.Linear(self.feat_dim, self.feat_dim),
-            nn.LayerNorm(self.feat_dim),
-            nn.ReLU(),
-            nn.Dropout(config.get('dropout', 0.3))
-        )
-        
-        # Attention pooling: scores for K subgraphs
-        self.attention = nn.Sequential(
-            nn.Linear(self.feat_dim, 64),
-            nn.Tanh(),
-            nn.Linear(64, 1)
-        )
-        
-        self.classifier = nn.Linear(self.feat_dim, self.num_classes)
+        self.logit_scale = nn.Parameter(torch.ones(1) * 10.0)
 
     def compute_motif_diversity_loss(self):
-        # Prevent motifs from becoming too similar (L_div = mean(cosine_sim))
-        # self.motif_bank.motifs: (num_classes, motifs_per_class, 9, feat_dim)
+        # (4) Enhanced Diversity Loss: Intra-class and Inter-class
         m = self.motif_bank.motifs # (C, M, 9, d)
-        m = m.view(self.num_classes, self.motifs_per_class, -1) # (C, M, 9d)
-        m = F.normalize(m, dim=-1)
+        C, M, N, D = m.shape
+        m_flat = m.view(C, M, -1) # (C, M, N*D)
+        m_flat = F.normalize(m_flat, dim=-1)
         
-        # Compute self-similarity for each class
+        # Intra-class diversity (Make motifs within same class different)
         # (C, M, M)
-        sim = torch.matmul(m, m.transpose(1, 2))
-        # Remove diagonal
-        eye = torch.eye(self.motifs_per_class, device=m.device).unsqueeze(0)
-        sim = sim * (1 - eye)
+        sim_intra = torch.matmul(m_flat, m_flat.transpose(1, 2))
+        eye = torch.eye(M, device=m.device).unsqueeze(0)
+        l_intra = (sim_intra * (1 - eye)).mean()
         
-        return sim.mean()
+        # Inter-class separation (Make class centers different)
+        class_centers = m_flat.mean(dim=1) # (C, N*D)
+        class_centers = F.normalize(class_centers, dim=-1)
+        sim_inter = torch.matmul(class_centers, class_centers.transpose(0, 1))
+        eye_c = torch.eye(C, device=m.device)
+        l_inter = (sim_inter * (1 - eye_c)).mean()
+        
+        return l_intra + 0.5 * l_inter
 
-    def _extract_candidate_subgraphs(self, nodes, adj, H, W):
-        B, N, _ = nodes.shape
-        subgraphs = []
-        subgraph_adjs = []
-        subgraph_centers = []
+    def _extract_deformable_subgraphs(self, feat_map, H, W, node_feats):
+        """ (2) Real Deformable Sampling using grid_sample """
+        B, C_feat, _, _ = feat_map.shape
+        N_nodes = H * W
         
-        # Extract 3x3 patches (sliding window)
+        # Center indices (interior)
+        center_indices = []
         for i in range(1, H-1):
             for j in range(1, W-1):
-                indices = []
-                for di in [-1, 0, 1]:
-                    for dj in [-1, 0, 1]:
-                        indices.append((i + di) * W + (j + dj))
-                
-                indices = torch.tensor(indices, device=nodes.device)
-                sub_nodes = nodes[:, indices, :] # (B, 9, C+2)
-                sub_adj = adj[:, indices][:, :, indices] # (B, 9, 9)
-                
-                subgraphs.append(sub_nodes)
-                subgraph_adjs.append(sub_adj)
-                subgraph_centers.append((i, j))
-                
-        return torch.stack(subgraphs, dim=1), torch.stack(subgraph_adjs, dim=1), subgraph_centers
-
-    def get_landmark_outputs(self):
-        """ Return latest motif matching scores for Trainer compatibility """
-        return getattr(self, '_latest_scores', None), getattr(self, '_latest_top_k', None)
-
-    def get_aux_losses(self):
-        """ Compute motif losses for Trainer compatibility """
-        if not hasattr(self, '_latest_scores') or self._latest_scores is None:
-            return {}
-            
-        # Get latest targets (stored during forward)
-        targets = getattr(self, '_latest_targets', None)
-        if targets is None:
-            return {}
-            
-        # Safety check: batch size must match
-        if self._latest_scores.shape[0] != targets.shape[0]:
-            return {}
-            
-        from src.training.losses import MotifConsistencyLoss
-        if not hasattr(self, '_motif_consistency_criterion'):
-            self._motif_consistency_criterion = MotifConsistencyLoss(motifs_per_class=self.motifs_per_class)
-            
-        l_motif = self._motif_consistency_criterion(self._latest_scores, self._latest_top_k, targets)
-        l_div = self.compute_motif_diversity_loss()
+                center_indices.append(i * W + j)
+        center_indices = torch.tensor(center_indices, device=feat_map.device)
+        num_cands = len(center_indices)
         
-        return {
-            "motif_consistency": l_motif,
-            "motif_diversity": l_div
-        }
+        center_feats = node_feats[:, center_indices, :] # (B, Num_Centers, D)
+        offsets = self.offset_predictor(center_feats) # (B, Num_Centers, 2) in [-1, 1]
         
-    def get_landmark_aux_logits(self):
-        """ Stub for compatibility with Trainer """
-        return None
-
-    def set_training_progress(self, progress):
-        """ Stub for compatibility with Trainer """
-        pass
+        # Base grid for 3x3 patches
+        # Relative grid: 3x3 around (0,0)
+        rel_y, rel_x = torch.meshgrid(torch.linspace(-1, 1, 3), torch.linspace(-1, 1, 3), indexing='ij')
+        rel_grid = torch.stack([rel_x, rel_y], dim=-1).to(feat_map.device) # (3, 3, 2)
+        rel_grid = rel_grid.view(1, 1, 9, 2) # (1, 1, 9, 2)
         
-    def get_current_prior_strength(self):
-        """ Stub for compatibility with Trainer """
-        return 0.0
+        # Map center indices to normalized grid coordinates [-1, 1]
+        c_y = (center_indices // W).float() / (H - 1) * 2 - 1
+        c_x = (center_indices % W).float() / (W - 1) * 2 - 1
+        centers_grid = torch.stack([c_x, c_y], dim=-1).view(1, num_cands, 1, 2) # (1, num_cands, 1, 2)
+        
+        # Full grid for sampling: (B, num_cands, 9, 2)
+        # Each candidate gets a 3x3 grid centered at (center + offset)
+        sampling_grid = centers_grid + offsets.unsqueeze(2) + rel_grid * (1.0 / (W-1))
+        sampling_grid = sampling_grid.view(B, num_cands * 9, 1, 2)
+        
+        # Real sampling from feature map
+        # Output: (B, C_feat, num_cands * 9, 1)
+        sampled_feats = F.grid_sample(feat_map, sampling_grid, align_corners=True)
+        sampled_feats = sampled_feats.view(B, C_feat, num_cands, 9).permute(0, 2, 3, 1) # (B, num_cands, 9, C_feat)
+        
+        # For adjacency, we stick to grid for now but with sampled features
+        adj = self.motif_bank.motif_adj.unsqueeze(0).unsqueeze(0).expand(B, num_cands, -1, -1)
+        
+        # Return centers for visualization
+        centers_coords = []
+        for idx in center_indices:
+            centers_coords.append((idx // W, idx % W))
+            
+        return sampled_feats, adj, centers_coords
 
     def forward(self, x, return_selection=False, targets=None):
         B = x.shape[0]
-        # Store targets for aux loss calculation
         self._latest_targets = targets
         
-        feat_map = self.backbone(x)
+        feat_map = self.backbone(x) # (B, C, H, W)
         _, _, H, W = feat_map.shape
         
-        # 1. Build Grid Graph
-        nodes, adj = self._get_grid_graph(feat_map)
+        # 3.1 Sparse Semantic Graph
+        nodes_with_coords, adj = self._get_global_graph(feat_map)
         
-        # 2. Extract candidate subgraphs (3x3 patches)
-        # candidates: (B, num_candidates, 9, C+2)
-        candidates, cand_adjs, centers = self._extract_candidate_subgraphs(nodes, adj, H, W)
+        # 3.4 Multi-layer GNN
+        node_feats = nodes_with_coords[:, :, :-2]
+        if node_feats.shape[-1] != self.feat_dim:
+            if not hasattr(self, 'proj_node'):
+                self.proj_node = nn.Linear(node_feats.shape[-1], self.feat_dim).to(x.device)
+            node_feats = self.proj_node(node_feats)
+            
+        for gnn in self.gnn_layers:
+            node_feats = gnn(node_feats, adj)
+            
+        # (2) Real Deformable Extraction
+        candidates, cand_adjs, centers = self._extract_deformable_subgraphs(feat_map, H, W, node_feats)
         num_cands = candidates.shape[1]
         
-        # 3. Encode candidates using GAT and Positional Encoding
-        flat_cands = candidates.view(B * num_cands, 9, -1)
-        flat_adjs = cand_adjs.view(B * num_cands, 9, 9)
-        
+        # Prepare Candidates
+        flat_cands = candidates.reshape(B * num_cands, 9, -1)
         if flat_cands.shape[-1] != self.feat_dim:
-            if not hasattr(self, 'proj_node'):
-                self.proj_node = nn.Linear(flat_cands.shape[-1], self.feat_dim).to(flat_cands.device)
             flat_cands = self.proj_node(flat_cands)
-            
         flat_cands = flat_cands + self.pos_embed
         
-        # Use GAT for better expressiveness
-        cand_embeds = self.gnn(flat_cands, flat_adjs) 
+        # Prepare Motifs
+        motifs_with_coords, _ = self.motif_bank.get_motifs()
+        motif_feats = motifs_with_coords[:, :, :-2]
+        if motif_feats.shape[-1] != self.feat_dim:
+            motif_feats = self.proj_node(motif_feats)
+        motif_feats = motif_feats + self.pos_embed
         
-        # 4. Motif Matching (Cross-Attention Matching)
-        motifs_with_coords, motif_adj = self.motif_bank.get_motifs()
-        num_motifs = motifs_with_coords.shape[0]
-        
-        if motifs_with_coords.shape[-1] != self.feat_dim:
-            motifs_with_coords = self.proj_node(motifs_with_coords)
-            
-        motifs_with_coords = motifs_with_coords + self.pos_embed
-        
-        motif_embeds = self.gnn(motifs_with_coords, 
-                                motif_adj.unsqueeze(0).expand(num_motifs, -1, -1)) 
-        
-        # Soft Matching instead of hard alignment
+        # (3) Matching Logic with Normalization
         if not hasattr(self, 'matching_layer'):
             self.matching_layer = CrossAttentionMatching(self.feat_dim).to(x.device)
             
-        # scores: (B*num_cands, num_motifs)
-        scores = self.matching_layer(cand_embeds, motif_embeds)
-        scores = scores.view(B, num_cands, num_motifs)
+        scores = self.matching_layer(flat_cands, motif_feats).view(B, num_cands, -1)
         
-        # 5. Subgraph Selection
-        max_scores, _ = scores.max(dim=-1) # (B, num_cands)
-        top_k_vals, top_k_idx = torch.topk(max_scores, k=self.top_k, dim=1)
+        # 4. Prototype-based Classification
+        class_motif_scores = scores.view(B, num_cands, self.num_classes, self.motifs_per_class)
+        best_motif_per_cand_per_class = class_motif_scores.max(dim=-1)[0]
         
-        # 6. Aggregate and Classify
-        cand_pooled = cand_embeds.mean(dim=1).view(B, num_cands, -1)
+        # (5) Sharp Soft Selection: Sharpened Softmax
+        cand_relevance = best_motif_per_cand_per_class.max(dim=-1)[0]
+        # Use a temperature for selection sharpness
+        selection_temp = 0.05 
+        attn_weights = F.softmax(cand_relevance / selection_temp, dim=1).unsqueeze(-1) 
         
-        batch_idx = torch.arange(B, device=x.device).unsqueeze(1).expand(-1, self.top_k)
-        selected_embeds = cand_pooled[batch_idx, top_k_idx] 
+        logits = torch.sum(best_motif_per_cand_per_class * attn_weights, dim=1)
+        logits = logits * self.logit_scale 
         
-        selected_embeds = self.subgraph_encoder(selected_embeds)
-        
-        attn_logits = self.attention(selected_embeds)
-        attn_weights = F.softmax(attn_logits, dim=1) 
-        
-        aggregated = torch.sum(selected_embeds * attn_weights, dim=1)
-        logits = self.classifier(aggregated)
-        
-        # Store for Trainer access
         self._latest_scores = scores
+        _, top_k_idx = torch.topk(cand_relevance, k=self.top_k, dim=1)
         self._latest_top_k = top_k_idx
         
-        # Store for Trainer access
-        self._latest_scores = scores
-        self._latest_top_k = top_k_idx
+        if return_selection:
+            return logits, top_k_idx, centers, scores
+            
+        return logits
+
+    def _get_global_graph(self, feat_map):
+        """ (1) Sparse Semantic Graph (k=4) """
+        B, C, H, W = feat_map.shape
+        N = H * W
+        
+        y, x = torch.meshgrid(torch.linspace(0, 1, H), torch.linspace(0, 1, W), indexing='ij')
+        coords = torch.stack([x, y], dim=-1).to(feat_map.device).view(1, N, 2).expand(B, -1, -1)
+        nodes = feat_map.permute(0, 2, 3, 1).reshape(B, N, C)
+        nodes_with_coords = torch.cat([nodes, coords], dim=-1)
+        
+        nodes_norm = F.normalize(nodes, dim=-1)
+        sim = torch.matmul(nodes_norm, nodes_norm.transpose(1, 2))
+        
+        # Sparse Graph: k=4 to reduce noise
+        k_neighbors = 4 
+        topk_sim, topk_idx = torch.topk(sim, k=k_neighbors, dim=-1)
+        
+        adj = torch.zeros_like(sim)
+        adj.scatter_(-1, topk_idx, topk_sim)
+        
+        return nodes_with_coords, adj
+
+    def get_landmark_outputs(self):
+        return getattr(self, '_latest_scores', None), getattr(self, '_latest_top_k', None)
+
+    def get_landmark_aux_logits(self):
+        return None
+
+    def set_training_progress(self, progress):
+        pass
+        
+    def get_current_prior_strength(self):
+        return 0.0
+
+    def get_aux_losses(self):
+        if not hasattr(self, '_latest_scores') or self._latest_scores is None:
+            return {}
+        l_div = self.compute_motif_diversity_loss()
+        return {"motif_diversity": l_div}
         
         if return_selection:
             return logits, top_k_idx, centers, scores

@@ -25,6 +25,10 @@ training:
   scheduler: "reduce_lr_on_plateau"
   patience: 20
   factor: 0.5
+  use_scn: true
+  scn_warmup_epochs: 10
+  scn_alpha: 1.0
+  scn_rank_lambda: 0.3
 
 augmentation:
   flip: true
