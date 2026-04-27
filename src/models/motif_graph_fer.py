@@ -4,13 +4,6 @@ import torch.nn.functional as F
 import math
 from torchvision.models import resnet18, ResNet18_Weights
 
-try:
-    from .CBAM import CBAM
-except ImportError:
-    import sys
-    import os
-    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-    from models.CBAM import CBAM
 
 class MotifBackbone(nn.Module):
     """
@@ -102,14 +95,14 @@ class CrossAttentionMatching(nn.Module):
         # sim_matrix: (B_c, M, 9, 9)
         sim_matrix = torch.einsum('bid,mjd->bmij', q, k) 
         
-        # (2) Sharpened Matching: Top-3 nodes instead of mean
-        # This keeps the sharpness of motif parts
-        top_k_sim = sim_matrix.max(dim=-1)[0].topk(k=3, dim=-1)[0].mean(dim=-1)
+        # (2) Sharpened Matching: Top-5 nodes for better robustness
+        # 3 was too sparse, making it sensitive to noise.
+        top_k_sim = sim_matrix.max(dim=-1)[0].topk(k=5, dim=-1)[0].mean(dim=-1)
         feat_sim = top_k_sim
         
-        # (3) Relaxed Position Bias: Lenient sigmoid
+        # (3) Position Bias: Slightly tighter (0.4) to avoid eyes/mouth confusion
         dist = torch.cdist(cand_coords.unsqueeze(0), motif_target_coords.unsqueeze(0)).squeeze(0)
-        pos_penalty = torch.sigmoid(-(dist - 0.5) * 5.0) 
+        pos_penalty = torch.sigmoid(-(dist - 0.4) * 5.0) 
         
         return feat_sim * pos_penalty
 
@@ -298,7 +291,8 @@ class MotifGraphModel(nn.Module):
             if self._progress < 0.3:
                 attn_weights = F.softmax(cand_relevance / 0.5, dim=1).unsqueeze(-1)
             else:
-                attn_weights = F.gumbel_softmax(cand_relevance, tau=0.5, hard=True).unsqueeze(-1)
+                # Use hard=False to avoid losing multi-region information
+                attn_weights = F.gumbel_softmax(cand_relevance, tau=0.3, hard=False).unsqueeze(-1)
         else:
             attn_weights = F.softmax(cand_relevance / 0.1, dim=1).unsqueeze(-1)
         
@@ -326,7 +320,8 @@ class MotifGraphModel(nn.Module):
         sim = sim_feat * sim_spatial
         
         # Sparse Softmax: Mask everything except top-k, then softmax
-        k = 4
+        # Increased k to 8 to regain facial context
+        k = 8
         mask = torch.zeros_like(sim)
         topk_idx = torch.topk(sim, k=k, dim=-1)[1]
         mask.scatter_(-1, topk_idx, 1.0)

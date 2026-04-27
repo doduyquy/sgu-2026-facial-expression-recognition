@@ -1,38 +1,10 @@
-from .simple_cnn import SimpleCNN
-# from .vgg import VGG
-# from .resnet import ResNet
-# from .resmaskingnet import ResMaskingNet
-from .resnet import ResNet50
 from .motif_graph_fer import MotifGraphModel
 
-"""Hi, guy, tạo model mới thì:
-    1. Tạo file src/models/model_name.py
-    2. Thêm vào MODEL_REGISTRY ở dưới
-    3. Tạo file configs/model_name.yaml để set config cho nó.    
-"""
-
-MODEL_REGISTRY = {
-    "simple_cnn": SimpleCNN,
-    "resnet": lambda config, **kw: ResNet50(
-        num_classes=config['data'].get('num_classes', 7),
-        in_channels=config['data'].get('in_channels', 1),
-        use_learned_landmark_branch=config['model'].get('use_learned_landmark_branch', True),
-        landmark_num_points=config['model'].get('landmark_num_points', 6),
-        landmark_tau=config['model'].get('landmark_tau', 0.07),
-        landmark_num_heads=config['model'].get('landmark_num_heads', 1),
-        landmark_feature_dropout_p=config['model'].get('landmark_feature_dropout_p', 0.3),
-        landmark_head_dropout_p=config['model'].get('landmark_head_dropout_p', 0.2),
-        landmark_edge_guidance_beta=config['model'].get('landmark_edge_guidance_beta', 1.0),
-        landmark_edge_alpha=config['model'].get('landmark_edge_alpha', 6.0),
-        landmark_from_stage=config['model'].get('landmark_from_stage', 3),
-    ),
-    "motif_graph_fer": lambda config, **kw: MotifGraphModel(
-        config.get('model', {})
-    ),
-}
-
-def get_model(name: str, **kwargs):
-    """Factory function: tạo model theo tên trong config."""
-    if name not in MODEL_REGISTRY:
-        raise ValueError(f"Model '{name}' not found. Available: {list(MODEL_REGISTRY.keys())}")
-    return MODEL_REGISTRY[name](**kwargs)
+def get_model(name, config):
+    """
+    Model factory: only MotifGraphModel is kept.
+    """
+    if name == 'motif_graph_fer':
+        return MotifGraphModel(config['model'])
+    else:
+        raise ValueError(f"Model {name} not found. Only 'motif_graph_fer' is supported.")

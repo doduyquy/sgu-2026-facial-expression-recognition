@@ -13,7 +13,7 @@ class MotifConsistencyLoss(nn.Module):
         """
         scores: (B, num_candidates, Total_Motifs)
         top_k_idx: (B, top_k)
-        targets: (B,)
+        targets: (B,)   
         """
         B, num_cands, Total_Motifs = scores.shape
         top_k = top_k_idx.shape[1]
