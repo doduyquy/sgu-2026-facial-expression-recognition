@@ -19,7 +19,8 @@ def build_transform(config, split="train") -> Compose: # train | val | test
             # Augmentation
             v2.Resize(size=(image_size, image_size)),
             v2.RandomHorizontalFlip(p=0.5),
-            v2.RandomRotation(21),
+            v2.RandomRotation(15), # Giảm xuống 15 độ cho "nhẹ nhàng"
+            v2.RandomPerspective(distortion_scale=0.2, p=0.5), # Thêm perspective để test Deformable
             # crop image with output shape: (image_size, image_size), small zoom 
             v2.RandomResizedCrop(size=(image_size), scale=(0.8, 1)),
 

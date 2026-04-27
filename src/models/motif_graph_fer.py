@@ -238,7 +238,7 @@ class MotifGraphModel(nn.Module):
         eye_c = torch.eye(C, device=m.device)
         l_inter = (sim_inter * (1 - eye_c)).mean()
         
-        return l_intra + 0.5 * l_inter
+        return l_intra + 0.75 * l_inter
 
     def _extract_deformable_subgraphs(self, feat_map, H, W, node_feats):
         """ (2) Real Deformable Sampling using grid_sample """
@@ -337,7 +337,7 @@ class MotifGraphModel(nn.Module):
         # (5) Sharp Soft Selection: Sharpened Softmax
         cand_relevance = best_motif_per_cand_per_class.max(dim=-1)[0]
         # Use a temperature for selection sharpness
-        selection_temp = 0.05 
+        selection_temp = 0.1 
         attn_weights = F.softmax(cand_relevance / selection_temp, dim=1).unsqueeze(-1) 
         
         logits = torch.sum(best_motif_per_cand_per_class * attn_weights, dim=1)
