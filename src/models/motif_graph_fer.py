@@ -74,37 +74,57 @@ class GraphAttentionLayer(nn.Module):
 
 class CrossAttentionMatching(nn.Module):
     """
-    True Attention-based Matching with Relaxed Position Bias.
+    Upgrade 1 & 2: Structural Node-wise Alignment with Granular Position Bias.
     """
     def __init__(self, feat_dim):
         super().__init__()
         self.feat_dim = feat_dim
         self.q_lin = nn.Linear(feat_dim, feat_dim)
         self.k_lin = nn.Linear(feat_dim, feat_dim)
+        self.v_lin = nn.Linear(feat_dim, feat_dim)
         
-    def forward(self, candidates, motifs, cand_coords, motif_target_coords):
+    def forward(self, candidates, motifs, cand_node_coords, motif_node_coords):
+        """
+        candidates: (B_c, 9, D)
+        motifs: (M, 9, D)
+        cand_node_coords: (B_c, 9, 2) - Absolute coordinates of each node in candidate
+        motif_node_coords: (M, 9, 2) - Target coordinates of each node in motif
+        """
         B_c, N, D = candidates.shape
         M, _, _ = motifs.shape
         
-        q = self.q_lin(candidates) 
-        k = self.k_lin(motifs)    
+        q = self.q_lin(candidates) # (B_c, 9, D)
+        k = self.k_lin(motifs)     # (M, 9, D)
+        v = self.v_lin(motifs)     # (M, 9, D)
         
         q = F.normalize(q, dim=-1)
         k = F.normalize(k, dim=-1)
         
-        # sim_matrix: (B_c, M, 9, 9)
+        # Upgrade 1: Structural Alignment via Attention
+        # sim_matrix: (B_c, M, 9, 9) -> How each candidate node matches each motif node
         sim_matrix = torch.einsum('bid,mjd->bmij', q, k) 
+        attn = F.softmax(sim_matrix / 0.1, dim=-1) # (B_c, M, 9, 9)
         
-        # (2) Sharpened Matching: Top-5 nodes for better robustness
-        # 3 was too sparse, making it sensitive to noise.
-        top_k_sim = sim_matrix.max(dim=-1)[0].topk(k=5, dim=-1)[0].mean(dim=-1)
-        feat_sim = top_k_sim
+        # Aligned Motif: For each candidate node, find its corresponding part in the motif
+        # aligned: (B_c, M, 9, D)
+        aligned_motifs = torch.einsum('bmij,mjd->bmid', attn, v)
         
-        # (3) Position Bias: Slightly tighter (0.4) to avoid eyes/mouth confusion
-        dist = torch.cdist(cand_coords.unsqueeze(0), motif_target_coords.unsqueeze(0)).squeeze(0)
-        pos_penalty = torch.sigmoid(-(dist - 0.4) * 5.0) 
+        # Feature Similarity: Cosine similarity between candidate nodes and their aligned motif counterparts
+        # result: (B_c, M, 9) -> mean -> (B_c, M)
+        feat_sim = F.cosine_similarity(candidates.unsqueeze(1), aligned_motifs, dim=-1).mean(dim=-1)
         
-        return feat_sim * pos_penalty
+        # Upgrade 2: Node-wise Position Bias (True Graph Matching)
+        # Compute distances between every node i in candidate and every node j in motif
+        # dist_matrix: (B_c, M, 9, 9)
+        dist_matrix = torch.cdist(cand_node_coords.unsqueeze(1), motif_node_coords.unsqueeze(0))
+        
+        # Apply bias to the attention or directly to the similarity
+        # We penalize nodes that are too far from their "structural home"
+        # node_pos_bias: (B_c, M, 9, 9) -> weighted by attention -> (B_c, M)
+        node_pos_bias = torch.sigmoid(-(dist_matrix - 0.4) * 5.0)
+        structural_bias = (attn * node_pos_bias).sum(dim=(-1, -2)) / 9.0
+        
+        return feat_sim * (0.5 + 0.5 * structural_bias)
 
 class MotifBank(nn.Module):
     # ... (rest of MotifBank stays same)
@@ -117,13 +137,24 @@ class MotifBank(nn.Module):
         self.motifs = nn.Parameter(torch.randn(num_classes, motifs_per_class, num_nodes, feat_dim))
         nn.init.xavier_uniform_(self.motifs)
         
+        # Upgrade 2: Node-level target coordinates for each motif
+        # Each motif is a 3x3 grid, we define where each of its 9 nodes *should* be on the face
         targets = torch.tensor([
             [0.2, 0.2], [0.8, 0.2], # Eyes
             [0.5, 0.8], [0.5, 0.9], # Mouth
             [0.2, 0.5], [0.8, 0.5], # Cheeks
             [0.5, 0.4], [0.5, 0.6]  # Nose/Center
         ]).repeat(num_classes, 1)
-        self.register_buffer('target_coords', targets)
+        
+        # Create a 9-node target grid for each motif center
+        # For simplicity, we define 8 "anchor regions" and for each region, 
+        # the motif nodes have a local 3x3 structure around that anchor.
+        motif_node_targets = []
+        rel_grid = self._generate_3x3_rel_coords() * 0.1 # local spread
+        for center in targets:
+            motif_node_targets.append(center.unsqueeze(0) + rel_grid)
+        
+        self.register_buffer('node_target_coords', torch.stack(motif_node_targets)) # (Total_Motifs, 9, 2)
 
         adj = self._generate_3x3_grid_adj()
         self.register_buffer('motif_adj', adj)
@@ -198,7 +229,7 @@ class MotifGraphModel(nn.Module):
         
         self.logit_scale = nn.Parameter(torch.ones(1) * 10.0)
         self.alpha = nn.Parameter(torch.ones(1) * 0.5)
-        self._progress = 0.0 # Training progress [0, 1]
+        self._progress = 0.0
 
     def compute_motif_diversity_loss(self):
         m = self.motif_bank.motifs 
@@ -216,16 +247,22 @@ class MotifGraphModel(nn.Module):
         eye_c = torch.eye(C, device=m.device)
         l_inter = (sim_inter * (1 - eye_c)).mean()
         
-        # (5) Motif-Feature Alignment Loss:
-        # Encourages motifs to be close to at least some real features
+        # Upgrade 3: Motif Usage Entropy Loss (Avoid Collapse)
+        l_usage = torch.tensor(0.0, device=m.device)
+        if hasattr(self, '_latest_scores'):
+            # Usage probability across motifs (B * num_cands)
+            # scores: (B, num_cands, Total_Motifs)
+            usage_logits = self._latest_scores.view(-1, C * M)
+            usage_probs = F.softmax(usage_logits, dim=-1).mean(dim=0)
+            l_usage = (usage_probs * torch.log(usage_probs + 1e-9)).sum() # Maximize entropy -> minimize this
+            
+        # Alignment Loss (from previous)
         l_align = torch.tensor(0.0, device=m.device)
         if hasattr(self, '_latest_scores'):
-            # Max score per motif across all candidates in batch
-            # scores: (B, num_cands, num_motifs)
             max_motif_match = self._latest_scores.max(dim=0)[0].max(dim=0)[0]
             l_align = 1.0 - max_motif_match.mean()
         
-        return l_intra + 1.0 * l_inter + 0.5 * l_align
+        return l_intra + 1.0 * l_inter + 0.5 * l_align + 0.1 * l_usage
 
     def _extract_deformable_subgraphs(self, feat_map, H, W, node_feats):
         B, C_feat, _, _ = feat_map.shape
@@ -239,15 +276,18 @@ class MotifGraphModel(nn.Module):
         c_y = (center_indices // W).float() / (H - 1) * 2 - 1
         c_x = (center_indices % W).float() / (W - 1) * 2 - 1
         centers_grid = torch.stack([c_x, c_y], dim=-1).view(1, num_cands, 1, 2) 
-        abs_coords = (centers_grid + offsets.unsqueeze(2) + 1.0) / 2.0 
-        abs_centers = abs_coords.squeeze(2) 
+        
+        # abs_node_coords: (B, num_cands, 9, 2) - Absolute coordinates for Upgrade 2
+        abs_node_coords = (centers_grid + offsets.unsqueeze(2) + rel_grid * (1.0 / (W-1)) + 1.0) / 2.0
+        abs_node_coords = abs_node_coords.expand(B, -1, -1, -1)
+
         sampling_grid = centers_grid + offsets.unsqueeze(2) + rel_grid * (1.0 / (W-1))
         sampling_grid = sampling_grid.view(B, num_cands * 9, 1, 2)
         sampled_feats = F.grid_sample(feat_map, sampling_grid, align_corners=True, padding_mode='zeros')
         sampled_feats = sampled_feats.view(B, C_feat, num_cands, 9).permute(0, 2, 3, 1) 
         adj = self.motif_bank.motif_adj.unsqueeze(0).unsqueeze(0).expand(B, num_cands, -1, -1)
         centers_coords = torch.stack([center_indices // W, center_indices % W], dim=-1)
-        return sampled_feats, adj, centers_coords, abs_centers
+        return sampled_feats, adj, centers_coords, abs_node_coords
 
     def forward(self, x, return_selection=False, targets=None):
         B = x.shape[0]
@@ -261,37 +301,38 @@ class MotifGraphModel(nn.Module):
         node_feats = self.proj_node(node_feats)
         for gnn in self.gnn_layers:
             node_feats = gnn(node_feats, adj)
-        candidates, cand_adjs, centers, abs_centers = self._extract_deformable_subgraphs(feat_map, H, W, node_feats)
+        candidates, cand_adjs, centers, abs_node_coords = self._extract_deformable_subgraphs(feat_map, H, W, node_feats)
         num_cands = candidates.shape[1]
         flat_cands = candidates.reshape(B * num_cands, 9, -1)
         if flat_cands.shape[-1] != self.feat_dim:
             flat_cands = self.proj_node(flat_cands)
         flat_cands = flat_cands + self.pos_embed
-        flat_abs_centers = abs_centers.reshape(B * num_cands, 2)
+        
+        flat_abs_node_coords = abs_node_coords.reshape(B * num_cands, 9, 2)
+        
         motifs_with_coords, _ = self.motif_bank.get_motifs()
         motif_feats = motifs_with_coords[:, :, :-2]
         if motif_feats.shape[-1] != self.feat_dim:
             motif_feats = self.proj_node(motif_feats)
         motif_feats = motif_feats + self.pos_embed
+        
         if not hasattr(self, 'matching_layer'):
             self.matching_layer = CrossAttentionMatching(self.feat_dim).to(x.device)
+            
         scores = self.matching_layer(
             flat_cands, motif_feats, 
-            flat_abs_centers, self.motif_bank.target_coords
+            flat_abs_node_coords, self.motif_bank.node_target_coords
         ).view(B, num_cands, -1)
+        
         self._latest_scores = scores
         class_motif_scores = scores.view(B, num_cands, self.num_classes, self.motifs_per_class)
         best_motif_per_cand_per_class = class_motif_scores.topk(k=min(2, self.motifs_per_class), dim=-1)[0].mean(dim=-1)
         
-        # (4) Selection Annealing: Softmax -> Gumbel
         cand_relevance = best_motif_per_cand_per_class.max(dim=-1)[0]
         if self.training:
-            # Phase 1 (Progress < 0.3): Softmax for exploration
-            # Phase 2 (Progress >= 0.3): Gumbel for sharpening
             if self._progress < 0.3:
                 attn_weights = F.softmax(cand_relevance / 0.5, dim=1).unsqueeze(-1)
             else:
-                # Use hard=False to avoid losing multi-region information
                 attn_weights = F.gumbel_softmax(cand_relevance, tau=0.3, hard=False).unsqueeze(-1)
         else:
             attn_weights = F.softmax(cand_relevance / 0.1, dim=1).unsqueeze(-1)
