@@ -34,6 +34,10 @@ from src.data.subgraph_dataset import SubgraphDescriptorDataset
 from src.data.precomputed_subgraph_graph_dataset import PrecomputedSubgraphGraphDataset
 from src.data.motif_filtered_dataset import MotifFilteredDataset
 from src.data.pixel_motif_dataset import PixelMotifDataset
+from src.data.candidate_attention_dataset import (
+    CandidateAttentionDataset,
+    collate_fn_candidate_attention,
+)
 
 
 # ===========================================================================
@@ -116,11 +120,21 @@ def build_dataloader(
         return _build_pixel_motif_loaders(
             pixel_motif_dataset_path, config, batch_size, num_workers, graph_repo_path=graph_repo_path
         )
+    elif mode == "candidate_attention":
+        data_cfg = config.get("data", {})
+        candidate_attention_dataset_path = config.get(
+            "candidate_attention_dataset_path",
+            data_cfg.get("candidate_attention_dataset_path", "artifacts/candidate_attention_dataset_v1"),
+        )
+        print(f"--- Candidate attention dataset: {candidate_attention_dataset_path}")
+        return _build_candidate_attention_loaders(
+            candidate_attention_dataset_path, config, batch_size, num_workers
+        )
     else:
         raise ValueError(
             f"dataloader_mode không hợp lệ: {mode!r}. "
             f"Chọn 'graph_vector', 'subgraph_descriptor', 'resolved', "
-            f"'precomputed_subgraph_graph', 'motif_filtered' hoặc 'pixel_motif'."
+            f"'precomputed_subgraph_graph', 'motif_filtered', 'pixel_motif' hoặc 'candidate_attention'."
         )
 
 
@@ -648,6 +662,44 @@ def collate_fn_pixel_motif(batch):
         out["sub_node_mask"] = torch.stack([s["sub_node_mask"] for s in batch])
         out["sub_adj"] = torch.stack([s["sub_adj"] for s in batch])
     return out
+
+
+# ===========================================================================
+# Mode 7: Candidate attention dataset
+# ===========================================================================
+
+def _build_candidate_attention_loaders(
+    dataset_path: str,
+    config: dict,
+    batch_size: int,
+    num_workers: int,
+) -> Tuple[DataLoader, DataLoader, DataLoader, int]:
+    data_cfg = config.get("data", {})
+    pin_memory = bool(data_cfg.get("pin_memory", True))
+    normalize_x = bool(data_cfg.get("normalize_x", False))
+
+    train_ds = CandidateAttentionDataset(dataset_path, "train", normalize_x=normalize_x)
+    val_ds = CandidateAttentionDataset(dataset_path, "val", normalize_x=normalize_x)
+    test_ds = CandidateAttentionDataset(dataset_path, "test", normalize_x=normalize_x)
+    input_dim = train_ds.input_dim
+
+    print(f"--- Candidate attention dataset : {dataset_path}")
+    print(f"--- Train: {len(train_ds)} | Val: {len(val_ds)} | Test: {len(test_ds)}")
+    print(f"--- Input dim: {input_dim} | M={train_ds.max_candidates}")
+
+    train_loader = DataLoader(
+        train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers,
+        pin_memory=pin_memory, collate_fn=collate_fn_candidate_attention,
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers,
+        pin_memory=pin_memory, collate_fn=collate_fn_candidate_attention,
+    )
+    test_loader = DataLoader(
+        test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers,
+        pin_memory=pin_memory, collate_fn=collate_fn_candidate_attention,
+    )
+    return train_loader, val_loader, test_loader, input_dim
 
 
 # ===========================================================================

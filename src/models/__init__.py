@@ -4,6 +4,7 @@ from src.models.subgraph_gnn_baseline import SubgraphGNNBaseline
 from src.models.motif_guided_mlp import MotifGuidedMLP
 from src.models.motif_guided_gnn import MotifGuidedGNN
 from src.models.hierarchical_motif_gnn import HierarchicalMotifGNN
+from src.models.learnable_slot_candidate_motif_gnn import LearnableSlotCandidateMotifGNN
 
 """
 Hi, tạo model mới thì:
@@ -84,6 +85,22 @@ MODEL_REGISTRY = {
         pooling=config["model"].get("pooling", "motif_attention"),
         use_motif_score_vector=config["model"].get("use_motif_score_vector", True),
         use_match_score_weighting=config["model"].get("use_match_score_weighting", True),
+    ),
+    "learnable_slot_candidate_motif_gnn": lambda config, input_dim, **kw: LearnableSlotCandidateMotifGNN(
+        num_classes=config["model"].get("num_classes", config["data"].get("num_classes", 7)),
+        descriptor_dim=config["model"].get("descriptor_dim", input_dim),
+        hidden_dim=config["model"].get("hidden_dim", 128),
+        candidate_gnn_layers=config["model"].get("candidate_gnn_layers", 2),
+        slot_gnn_layers=config["model"].get("slot_gnn_layers", 2),
+        num_slots=config["model"].get("num_slots", 32),
+        slot_iterations=config["model"].get("slot_iterations", 1),
+        dropout=config["model"].get("dropout", 0.2),
+        use_geometry_features=config["model"].get("use_geometry_features", True),
+        use_motif_metadata_features=config["model"].get("use_motif_metadata_features", False),
+        pooling=config["model"].get("pooling", "class_conditioned_slot_attention"),
+        slot_attention_entropy_weight=config.get("loss", {}).get("slot_attention_entropy_weight", 0.0),
+        slot_diversity_weight=config.get("loss", {}).get("slot_diversity_weight", 0.0),
+        class_attention_diversity_weight=config.get("loss", {}).get("class_attention_diversity_weight", 0.0),
     ),
 }
 

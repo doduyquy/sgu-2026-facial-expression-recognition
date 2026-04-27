@@ -27,22 +27,30 @@ def _forward_batch(model, batch: dict, device) -> torch.Tensor:
         key: value.to(device) if torch.is_tensor(value) else value
         for key, value in batch.items()
     }
-    x = batch["x"]
+    x = batch.get("x")
+
+    if "candidate_x" in batch:
+        out = model(batch)
+        return out["logits"] if isinstance(out, dict) else out
 
     if {"motif_score_vector", "match_scores", "matched_class"}.issubset(batch.keys()):
-        return model(batch)
+        out = model(batch)
+        return out["logits"] if isinstance(out, dict) else out
 
     if "edge_index" in batch and "edge_valid" in batch:
         edge_index = batch["edge_index"]
         edge_valid = batch["edge_valid"]
         mask = batch.get("mask")
-        return model(x, edge_index=edge_index, edge_valid=edge_valid, mask=mask)
+        out = model(x, edge_index=edge_index, edge_valid=edge_valid, mask=mask)
+        return out["logits"] if isinstance(out, dict) else out
 
     mask = batch.get("mask")
     if mask is not None:
-        return model(x, mask=mask)
+        out = model(x, mask=mask)
+        return out["logits"] if isinstance(out, dict) else out
 
-    return model(x)
+    out = model(x)
+    return out["logits"] if isinstance(out, dict) else out
 
 
 def _load_raw_test_images(config: dict):

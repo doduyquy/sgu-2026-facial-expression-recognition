@@ -113,6 +113,8 @@ def main():
     parser.add_argument("--pixel_motif_dataset_path", type=str, default=None,
                         help="Override pixel_motif_dataset_path tu env.yaml. "
                              "Dung cho mode pixel_motif tren local/Kaggle.")
+    parser.add_argument("--candidate_attention_dataset_path", type=str, default=None,
+                        help="Override candidate_attention_dataset_path tu env/config.")
     parser.add_argument("--epochs", type=int, default=None,
                         help="Override training.epochs de sanity-test nhanh.")
     parser.add_argument("--no_wandb", action="store_true",
@@ -136,6 +138,8 @@ def main():
         config["motif_filtered_dataset_path"] = args.motif_filtered_dataset_path
     if args.pixel_motif_dataset_path is not None:
         config["pixel_motif_dataset_path"] = args.pixel_motif_dataset_path
+    if args.candidate_attention_dataset_path is not None:
+        config["candidate_attention_dataset_path"] = args.candidate_attention_dataset_path
     if args.epochs is not None:
         config.setdefault("training", {})["epochs"] = int(args.epochs)
     if args.no_wandb:
@@ -173,6 +177,14 @@ def main():
     if pixel_motif_dataset_path is not None:
         source = "CLI override" if args.pixel_motif_dataset_path is not None else "from config/env"
         print(f"--- pixel_motif_dataset_path : {pixel_motif_dataset_path}  [{source}]", flush=True)
+
+    candidate_attention_dataset_path = config.get(
+        "candidate_attention_dataset_path",
+        config.get("data", {}).get("candidate_attention_dataset_path"),
+    )
+    if candidate_attention_dataset_path is not None:
+        source = "CLI override" if args.candidate_attention_dataset_path is not None else "from config/env"
+        print(f"--- candidate_attention_dataset_path : {candidate_attention_dataset_path}  [{source}]", flush=True)
 
     print(f"--- root_path       : {root_path}", flush=True)
     flush_stdio()

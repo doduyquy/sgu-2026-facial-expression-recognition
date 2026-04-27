@@ -92,8 +92,9 @@ class Trainer:
             y = self._get_labels(batch)
 
             self.optimizer.zero_grad()
-            logits = self._forward_batch(batch, x)
-            loss_out = self._compute_loss(logits, y, batch)
+            model_out = self._forward_batch(batch, x)
+            logits = self._extract_logits(model_out)
+            loss_out = self._compute_loss(logits, y, batch, model_out=model_out)
             loss = loss_out["loss"] if isinstance(loss_out, dict) else loss_out
             loss.backward()
             if self.grad_clip_norm is not None and self.grad_clip_norm > 0:
@@ -137,8 +138,9 @@ class Trainer:
             x = batch["x"]
             y = self._get_labels(batch)
 
-            logits = self._forward_batch(batch, x)
-            loss_out = self._compute_loss(logits, y, batch)
+            model_out = self._forward_batch(batch, x)
+            logits = self._extract_logits(model_out)
+            loss_out = self._compute_loss(logits, y, batch, model_out=model_out)
             loss = loss_out["loss"] if isinstance(loss_out, dict) else loss_out
 
             running_loss += loss.item() * x.size(0)
@@ -183,11 +185,28 @@ class Trainer:
             raise KeyError("Batch must contain 'y' or 'label'")
         return y.to(self.device).long()
 
-    def _compute_loss(self, logits: torch.Tensor, y: torch.Tensor, batch: dict):
+    def _extract_logits(self, model_out):
+        if isinstance(model_out, dict):
+            return model_out["logits"]
+        return model_out
+
+    def _compute_loss(self, logits: torch.Tensor, y: torch.Tensor, batch: dict, model_out=None):
         try:
-            return self.criterion(logits, y, batch=batch)
+            loss_out = self.criterion(logits, y, batch=batch)
         except TypeError:
-            return self.criterion(logits, y)
+            loss_out = self.criterion(logits, y)
+        aux_loss = None
+        if isinstance(model_out, dict):
+            aux_loss = model_out.get("aux_loss")
+        if aux_loss is None:
+            return loss_out
+        if isinstance(loss_out, dict):
+            total = loss_out["loss"] + aux_loss
+            out = dict(loss_out)
+            out["loss"] = total
+            out["motif_loss"] = out.get("motif_loss", logits.new_tensor(0.0)) + aux_loss
+            return out
+        return loss_out + aux_loss
 
     def _forward_batch(self, batch: dict, x: torch.Tensor) -> torch.Tensor:
         """
@@ -197,6 +216,8 @@ class Trainer:
           - MLP batch : có 'mask'                       → model(x, mask=mask)
           - Plain      : chỉ có 'x'                      → model(x)
         """
+        if "candidate_x" in batch:
+            return self.model(batch)
         if {"motif_score_vector", "match_scores", "matched_class"}.issubset(batch.keys()):
             return self.model(batch)
         elif "edge_index" in batch and "edge_valid" in batch:

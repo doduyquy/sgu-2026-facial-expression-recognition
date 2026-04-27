@@ -18,6 +18,7 @@ from typing import Any, Iterable
 
 SPLITS = ["train", "val", "test"]
 STAGE_ORDER = ["graph_repo", "candidates", "motif_bank", "motif_dataset"]
+CANDIDATE_ATTENTION_STAGE_ORDER = ["graph_repo", "candidates", "candidate_attention_dataset"]
 REQUIRED_CSV_FILES = {"train.csv", "val.csv", "test.csv"}
 
 # Keys in manifest that must match config when loading from artifact.
@@ -77,13 +78,16 @@ def resolve_artifact_paths(data_cfg: dict[str, Any], out_root_override: str | Pa
         "candidate_dir": Path(data_cfg.get("candidate_dir", out_root / "pixel_candidate_subgraphs_v2")),
         "motif_bank_dir": Path(data_cfg.get("motif_bank_dir", out_root / default_bank)),
         "pixel_motif_dir": pixel_motif_dir,
+        "candidate_attention_dir": Path(
+            data_cfg.get("candidate_attention_dir", out_root / "candidate_attention_dataset_v1")
+        ),
     }
 
 
 def normalize_data_config(data_cfg: dict[str, Any]) -> dict[str, Any]:
     """Flatten template-style data sections into the builder's internal option map."""
     out = dict(data_cfg)
-    for section in ["graph", "candidates", "motif_bank", "motif_dataset"]:
+    for section in ["graph", "candidates", "motif_bank", "motif_dataset", "candidate_attention"]:
         nested = out.pop(section, None)
         if isinstance(nested, dict):
             out.update(nested)
@@ -108,6 +112,10 @@ def has_motif_bank(path: Path) -> bool:
 
 def has_pixel_motif_dataset(path: Path) -> bool:
     return (path / "meta.pt").exists() and all((path / f"{split}_pixel_motif.pt").exists() for split in SPLITS)
+
+
+def has_candidate_attention_dataset(path: Path) -> bool:
+    return (path / "meta.pt").exists() and all((path / f"{split}_candidate_attention.pt").exists() for split in SPLITS)
 
 
 def _check_sub_x_cache(path: Path) -> bool:
@@ -136,6 +144,17 @@ def resolve_stages(stage: str) -> list[str]:
         return list(STAGE_ORDER)
     if stage not in STAGE_ORDER:
         raise ValueError(f"Unknown stage {stage!r}; expected one of {STAGE_ORDER + ['all']}")
+    return [stage]
+
+
+def resolve_candidate_attention_stages(stage: str) -> list[str]:
+    if stage == "all":
+        return list(CANDIDATE_ATTENTION_STAGE_ORDER)
+    if stage not in CANDIDATE_ATTENTION_STAGE_ORDER:
+        raise ValueError(
+            f"Unknown candidate_attention stage {stage!r}; expected one of "
+            f"{CANDIDATE_ATTENTION_STAGE_ORDER + ['all']}"
+        )
     return [stage]
 
 
@@ -306,6 +325,32 @@ def build_pixel_motif_dataset(
     )
 
 
+def build_candidate_attention_dataset(
+    data_cfg: dict[str, Any],
+    candidate_dir: Path,
+    candidate_attention_dir: Path,
+    skip_existing: bool,
+) -> None:
+    if skip_existing and has_candidate_attention_dataset(candidate_attention_dir):
+        print(f"[skip] candidate attention dataset exists: {candidate_attention_dir}", flush=True)
+        return
+    cmd = [
+        sys.executable,
+        "scripts/precompute_candidate_attention_dataset.py",
+        "--candidate_dir",
+        str(candidate_dir),
+        "--out_dir",
+        str(candidate_attention_dir),
+        "--max_candidates",
+        str(data_cfg.get("max_candidates", 128)),
+        "--k_spatial",
+        str(data_cfg.get("candidate_k_spatial", data_cfg.get("k_spatial", 8))),
+        "--k_feature",
+        str(data_cfg.get("candidate_k_feature", data_cfg.get("k_feature", 4))),
+    ]
+    run_command(cmd)
+
+
 def print_artifact_summary(paths: Iterable[Path]) -> None:
     print("\nArtifacts:", flush=True)
     for path in paths:
@@ -392,6 +437,45 @@ def write_manifest(
     pixel_motif_dir: Path,
 ) -> Path:
     """Write manifest.json after a successful artifact build."""
+    if str(data_cfg.get("recipe", "")) == "candidate_attention_v1":
+        try:
+            import torch
+            meta_path = pixel_motif_dir / "meta.pt"
+            meta = torch.load(meta_path, map_location="cpu", weights_only=False) if meta_path.exists() else {}
+        except Exception:
+            meta = {}
+        manifest = {
+            "artifact_version": "candidate_attention_v1",
+            "experiment_name": experiment_name,
+            "created_from": "csv",
+            "graph": {
+                "image_size": 48,
+                "node_feature_dim": 7,
+                "connectivity": int(data_cfg.get("connectivity", 8)),
+            },
+            "candidate": {
+                "seed_stride": int(data_cfg.get("seed_stride", 4)),
+                "radii": _as_list(data_cfg.get("radii", [1, 2])),
+                "max_candidates": int(data_cfg.get("max_candidates", 128)),
+                "nmax": meta.get("max_nodes_per_candidate"),
+            },
+            "candidate_attention_dataset": {
+                "max_candidates": int(meta.get("max_candidates", data_cfg.get("max_candidates", 128))),
+                "descriptor_dim": int(meta.get("descriptor_dim", 41)),
+                "edge_attr_dim": int(meta.get("edge_attr_dim", 4)),
+                "k_spatial": int(meta.get("k_spatial", data_cfg.get("candidate_k_spatial", 8))),
+                "k_feature": int(meta.get("k_feature", data_cfg.get("candidate_k_feature", 4))),
+                "has_candidate_node_indices": True,
+                "has_candidate_node_mask": True,
+            },
+            "compatible_models": ["learnable_slot_candidate_motif_gnn"],
+        }
+        manifest_path = out_root / "manifest.json"
+        with manifest_path.open("w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+        print(f"[manifest] Written: {manifest_path}", flush=True)
+        return manifest_path
+
     nmax = _probe_nmax(pixel_motif_dir)
     descriptor_dim = _probe_descriptor_dim(pixel_motif_dir)
     has_node_indices = _check_node_indices(pixel_motif_dir)
@@ -523,11 +607,15 @@ def load_artifacts_from_input(
     shutil.copytree(src, dst)
     print(f"[load_artifacts] Done.", flush=True)
 
-    # Auto-detect the most specific pixel motif dataset available.
+    # Auto-detect the most specific dataset available.
+    candidate_attention_dir = dst / "candidate_attention_dataset_v1"
     d2a_dir = dst / "pixel_motif_dataset_v3_d2a"
     v3_dir = dst / "pixel_motif_dataset_v3_hierarchical"
     v2_dir = dst / "pixel_motif_dataset_v2"
-    if has_pixel_motif_dataset(d2a_dir):
+    if has_candidate_attention_dataset(candidate_attention_dir):
+        pixel_motif_dir = candidate_attention_dir
+        print(f"[load_artifacts] Auto-detected candidate attention dataset: {candidate_attention_dir}", flush=True)
+    elif has_pixel_motif_dataset(d2a_dir):
         pixel_motif_dir = d2a_dir
         print(f"[load_artifacts] Auto-detected D2A dataset: {d2a_dir}", flush=True)
     elif has_hierarchical_cache(v3_dir):
@@ -538,8 +626,8 @@ def load_artifacts_from_input(
         print(f"[load_artifacts] Using V2 dataset: {pixel_motif_dir}", flush=True)
     else:
         raise FileNotFoundError(
-            "Could not find a supported pixel motif dataset in loaded artifacts. "
-            f"Checked: {d2a_dir}, {v3_dir}, {v2_dir}"
+            "Could not find a supported dataset in loaded artifacts. "
+            f"Checked: {candidate_attention_dir}, {d2a_dir}, {v3_dir}, {v2_dir}"
         )
 
     d2a_bank_dir = dst / "pixel_motif_bank_v3_d2a"
@@ -553,6 +641,7 @@ def load_artifacts_from_input(
         "candidate_dir": dst / "pixel_candidate_subgraphs_v2",
         "motif_bank_dir": motif_bank_dir,
         "pixel_motif_dir": pixel_motif_dir,
+        "candidate_attention_dir": candidate_attention_dir,
     }
 
 
@@ -601,7 +690,13 @@ def ensure_pixel_motif_artifacts(
     paths = resolve_artifact_paths(data_cfg, out_root_override=out_root)
     resolved_csv_root = resolve_csv_root(csv_root or data_cfg.get("csv_root", "auto"))
     skip_existing = bool(data_cfg.get("skip_existing", True))
-    stages = resolve_stages(str(data_cfg.get("stage", "all")))
+    recipe = str(data_cfg.get("recipe", "pixel_motif_v2"))
+    is_candidate_attention = recipe == "candidate_attention_v1"
+    stages = (
+        resolve_candidate_attention_stages(str(data_cfg.get("stage", "all")))
+        if is_candidate_attention
+        else resolve_stages(str(data_cfg.get("stage", "all")))
+    )
 
     print(f"Stages: {stages}", flush=True)
     print(f"CSV root: {resolved_csv_root}", flush=True)
@@ -622,6 +717,21 @@ def ensure_pixel_motif_artifacts(
                 paths["pixel_motif_dir"],
                 skip_existing,
             )
+        elif stage == "candidate_attention_dataset":
+            build_candidate_attention_dataset(
+                data_cfg,
+                paths["candidate_dir"],
+                paths["candidate_attention_dir"],
+                skip_existing,
+            )
+
+    if is_candidate_attention:
+        paths["pixel_motif_dir"] = paths["candidate_attention_dir"]
+        print(f"[pipeline] Using candidate attention dataset: {paths['candidate_attention_dir']}", flush=True)
+        print_artifact_summary(
+            [paths["graph_repo"], paths["candidate_dir"], paths["candidate_attention_dir"]]
+        )
+        return paths
 
     # Optional V3 hierarchical cache — only when build_hierarchical_cache: true in data config
     if bool(data_cfg.get("build_hierarchical_cache", False)):

@@ -1,0 +1,57 @@
+data:
+  mode: candidate_attention
+  candidate_attention_dataset_path: artifacts/candidate_attention_dataset_v1
+  batch_size: 64
+  num_workers: 2
+  pin_memory: true
+  normalize_x: true
+
+model:
+  name: learnable_slot_candidate_motif_gnn
+  num_classes: 7
+  descriptor_dim: 41
+  hidden_dim: 128
+  candidate_gnn_layers: 2
+  slot_gnn_layers: 2
+  num_slots: 32
+  slot_iterations: 1
+  dropout: 0.2
+  use_geometry_features: true
+  use_motif_metadata_features: false
+  pooling: class_conditioned_slot_attention
+
+loss:
+  name: weighted_ce
+  use_class_weights: true
+  class_weight_power: 0.5
+  class_counts: [3995, 436, 4097, 7215, 4830, 3171, 4965]
+  slot_attention_entropy_weight: 0.0
+  slot_diversity_weight: 0.0
+  class_attention_diversity_weight: 0.0
+
+optimizer:
+  name: adamw
+  lr: 0.001
+  weight_decay: 0.0001
+
+scheduler:
+  name: ReduceLROnPlateau
+  mode: max
+  monitor: val_macro_f1
+  factor: 0.5
+  patience: 5
+  min_lr: 0.000001
+
+training:
+  loss: weighted_ce
+  class_weight_power: 0.5
+  batch_size: 64
+  epochs: 80
+  early_stopping_patience: 15
+  early_stop: 15
+  monitor: val_macro_f1
+  grad_clip_norm: 5.0
+
+logging:
+  use_wandb: true
+
