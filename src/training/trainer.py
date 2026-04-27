@@ -80,7 +80,7 @@ class Trainer:
         if is_motif_model and hasattr(self.model, 'set_training_progress'):
             self.model.set_training_progress(epoch / max(1, self.epochs))
 
-        pbar = tqdm(self.train_loader, desc=f"Epoch {epoch}/{self.epochs} [Train]")
+        pbar = tqdm(self.train_loader)
         for images, labels in pbar:
             images, labels = images.to(self.device), labels.to(self.device)
             self.optimizer.zero_grad()
