@@ -77,6 +77,8 @@ class LearnableSlotCandidateMotifGNN(nn.Module):
         use_geometry_features: bool = True,
         use_motif_metadata_features: bool = False,
         pooling: str = "class_conditioned_slot_attention",
+        use_global_candidate_pooling: bool = False,
+        global_pooling_type: str = "mean_max",
         slot_attention_entropy_weight: float = 0.0,
         slot_diversity_weight: float = 0.0,
         class_attention_diversity_weight: float = 0.0,
@@ -90,9 +92,15 @@ class LearnableSlotCandidateMotifGNN(nn.Module):
         self.use_geometry_features = bool(use_geometry_features)
         self.use_motif_metadata_features = bool(use_motif_metadata_features)
         self.pooling = str(pooling)
+        self.use_global_candidate_pooling = bool(use_global_candidate_pooling)
+        self.global_pooling_type = str(global_pooling_type)
         self.slot_attention_entropy_weight = float(slot_attention_entropy_weight)
         self.slot_diversity_weight = float(slot_diversity_weight)
         self.class_attention_diversity_weight = float(class_attention_diversity_weight)
+        if self.global_pooling_type not in {"mean", "mean_max"}:
+            raise ValueError(
+                f"Unknown global_pooling_type={global_pooling_type!r}; expected 'mean' or 'mean_max'"
+            )
 
         feature_dim = self.descriptor_dim
         if self.use_geometry_features:
@@ -122,18 +130,22 @@ class LearnableSlotCandidateMotifGNN(nn.Module):
             [FullyConnectedSlotSAGELayer(hidden_dim, dropout=dropout) for _ in range(slot_gnn_layers)]
         )
 
+        global_dim = 0
+        if self.use_global_candidate_pooling:
+            global_dim = hidden_dim * (2 if self.global_pooling_type == "mean_max" else 1)
+
         if self.pooling == "class_conditioned_slot_attention":
             self.class_queries = nn.Parameter(torch.randn(num_classes, hidden_dim) * 0.02)
             self.class_q = nn.Linear(hidden_dim, hidden_dim)
             self.slot_k = nn.Linear(hidden_dim, hidden_dim)
             self.slot_v = nn.Linear(hidden_dim, hidden_dim)
-            self.class_logit = nn.Linear(hidden_dim, 1)
+            self.class_logit = nn.Linear(hidden_dim + global_dim, 1)
         elif self.pooling == "attention":
             self.pool_score = nn.Linear(hidden_dim, 1)
             self.classifier = nn.Sequential(
-                nn.LayerNorm(hidden_dim),
+                nn.LayerNorm(hidden_dim + global_dim),
                 nn.Dropout(dropout),
-                nn.Linear(hidden_dim, num_classes),
+                nn.Linear(hidden_dim + global_dim, num_classes),
             )
         else:
             raise ValueError(f"Unknown pooling={pooling!r}")
@@ -187,7 +199,21 @@ class LearnableSlotCandidateMotifGNN(nn.Module):
             slots = self.slot_norm(slots)
         return slots, attn
 
-    def _class_conditioned_pool(self, slots: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def _global_candidate_pool(self, h: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        mask_f = mask.unsqueeze(-1).to(dtype=h.dtype)
+        denom = mask_f.sum(dim=1).clamp_min(1.0)
+        mean_pool = (h * mask_f).sum(dim=1) / denom
+        if self.global_pooling_type == "mean":
+            return mean_pool
+        max_pool = h.masked_fill(~mask.unsqueeze(-1), torch.finfo(h.dtype).min).amax(dim=1)
+        max_pool = torch.where(mask.any(dim=1, keepdim=True), max_pool, torch.zeros_like(max_pool))
+        return torch.cat([mean_pool, max_pool], dim=-1)
+
+    def _class_conditioned_pool(
+        self,
+        slots: torch.Tensor,
+        global_context: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         B, K, H = slots.shape
         q = self.class_q(self.class_queries).unsqueeze(0).expand(B, -1, -1)
         k = self.slot_k(slots)
@@ -195,12 +221,20 @@ class LearnableSlotCandidateMotifGNN(nn.Module):
         logits = torch.einsum("bch,bkh->bck", q, k) / math.sqrt(H)
         class_attn = torch.softmax(logits, dim=-1)
         z = torch.einsum("bck,bkh->bch", class_attn, v)
+        if global_context is not None:
+            z = torch.cat([z, global_context.unsqueeze(1).expand(-1, self.num_classes, -1)], dim=-1)
         logits = self.class_logit(z).squeeze(-1)
         return logits, class_attn
 
-    def _attention_pool(self, slots: torch.Tensor) -> tuple[torch.Tensor, None]:
+    def _attention_pool(
+        self,
+        slots: torch.Tensor,
+        global_context: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, None]:
         weight = torch.softmax(self.pool_score(slots).squeeze(-1), dim=-1)
         image_emb = torch.einsum("bk,bkh->bh", weight, slots)
+        if global_context is not None:
+            image_emb = torch.cat([image_emb, global_context], dim=-1)
         return self.classifier(image_emb), None
 
     @staticmethod
@@ -223,14 +257,15 @@ class LearnableSlotCandidateMotifGNN(nn.Module):
         for layer in self.candidate_layers:
             h = layer(h, edge_index=edge_index, edge_valid=edge_valid, node_mask=mask)
 
+        global_context = self._global_candidate_pool(h, mask) if self.use_global_candidate_pooling else None
         slots, candidate_attention = self._slot_attention(h, mask)
         for layer in self.slot_layers:
             slots = layer(slots)
 
         if self.pooling == "class_conditioned_slot_attention":
-            logits, class_slot_attention = self._class_conditioned_pool(slots)
+            logits, class_slot_attention = self._class_conditioned_pool(slots, global_context)
         else:
-            logits, class_slot_attention = self._attention_pool(slots)
+            logits, class_slot_attention = self._attention_pool(slots, global_context)
 
         aux_loss = logits.new_tensor(0.0)
         if self.slot_attention_entropy_weight:
@@ -247,4 +282,3 @@ class LearnableSlotCandidateMotifGNN(nn.Module):
             "slot_embeddings": slots,
             "aux_loss": aux_loss,
         }
-
