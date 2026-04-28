@@ -59,7 +59,7 @@ def main() -> None:
     mask = batch.get("candidate_mask")
     values = candidate_x[mask.bool()] if torch.is_tensor(mask) and mask.any() else candidate_x.reshape(-1, candidate_x.shape[-1])
     print(
-        "candidate_x batch stats before projection: "
+        "candidate_x batch stats after normalize before projection: "
         f"min={values.min().item():.6f} max={values.max().item():.6f} "
         f"mean={values.mean().item():.6f} std={values.std(unbiased=False).item():.6f}"
     )

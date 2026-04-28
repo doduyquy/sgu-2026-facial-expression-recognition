@@ -246,10 +246,10 @@ class Trainer:
         else:
             values = candidate_x.reshape(-1, candidate_x.shape[-1])
         if values.numel() == 0:
-            print("--- candidate_x batch stats before projection: empty", flush=True)
+            print("--- candidate_x batch stats after normalize before projection: empty", flush=True)
         else:
             print(
-                "--- candidate_x batch stats before projection: "
+                "--- candidate_x batch stats after normalize before projection: "
                 f"min={values.min().item():.6f} "
                 f"max={values.max().item():.6f} "
                 f"mean={values.mean().item():.6f} "

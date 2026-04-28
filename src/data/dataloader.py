@@ -37,6 +37,8 @@ from src.data.pixel_motif_dataset import PixelMotifDataset
 from src.data.candidate_attention_dataset import (
     CandidateAttentionDataset,
     collate_fn_candidate_attention,
+    compute_candidate_x_scaler_from_train,
+    load_candidate_x_scaler_stats,
 )
 
 
@@ -677,10 +679,15 @@ def _build_candidate_attention_loaders(
     data_cfg = config.get("data", {})
     pin_memory = bool(data_cfg.get("pin_memory", True))
     normalize_x = bool(data_cfg.get("normalize_candidate_x", data_cfg.get("normalize_x", False)))
+    scaler_stats = None
+    if normalize_x:
+        scaler_stats = load_candidate_x_scaler_stats(dataset_path)
+        if scaler_stats is None:
+            scaler_stats = compute_candidate_x_scaler_from_train(dataset_path, save=True)
 
-    train_ds = CandidateAttentionDataset(dataset_path, "train", normalize_x=normalize_x)
-    val_ds = CandidateAttentionDataset(dataset_path, "val", normalize_x=normalize_x)
-    test_ds = CandidateAttentionDataset(dataset_path, "test", normalize_x=normalize_x)
+    train_ds = CandidateAttentionDataset(dataset_path, "train", normalize_x=normalize_x, scaler_stats=scaler_stats)
+    val_ds = CandidateAttentionDataset(dataset_path, "val", normalize_x=normalize_x, scaler_stats=scaler_stats)
+    test_ds = CandidateAttentionDataset(dataset_path, "test", normalize_x=normalize_x, scaler_stats=scaler_stats)
     input_dim = train_ds.input_dim
 
     print(f"--- Candidate attention dataset : {dataset_path}")

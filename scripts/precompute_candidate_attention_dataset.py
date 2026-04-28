@@ -15,6 +15,8 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from src.data.candidate_attention_dataset import compute_candidate_x_scaler_from_train
+
 
 def _torch_load(path: Path):
     try:
@@ -251,6 +253,17 @@ def main() -> None:
     }
     torch.save(out_meta, out_dir / "meta.pt")
     print(f"meta saved -> {out_dir / 'meta.pt'}")
+    if "train" in args.splits:
+        stats = compute_candidate_x_scaler_from_train(out_dir, save=True)
+        print(f"candidate_x train-only scaler saved -> {out_dir / 'candidate_x_scaler_stats.pt'}")
+        print(
+            "candidate_x train_mean first5: "
+            f"{[round(float(v), 6) for v in stats['mean'][:5]]}"
+        )
+        print(
+            "candidate_x train_std first5 : "
+            f"{[round(float(v), 6) for v in stats['std'][:5]]}"
+        )
     print("DONE")
 
 
