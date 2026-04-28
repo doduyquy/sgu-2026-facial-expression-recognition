@@ -93,15 +93,44 @@ def debug_candidate_attention_batch(train_cfg: dict[str, Any], paths: dict[str, 
     run_command(cmd)
 
 
+def debug_full_graph_d4_batch(train_cfg: dict[str, Any], paths: dict[str, Path]) -> None:
+    cmd = [
+        sys.executable,
+        "scripts/debug_full_graph_d4_batch.py",
+        "--config",
+        str(train_cfg.get("config", "full_graph_adaptive_motif_slot_gnn_d4a")),
+        "--env",
+        str(train_cfg.get("env", "kaggle")),
+        "--graph_repo_path",
+        str(paths["graph_repo"]),
+        "--batch_size",
+        str(train_cfg.get("debug_batch_size", 2)),
+        "--num_workers",
+        "0",
+    ]
+    run_command(cmd)
+
+
 def debug_batch_for_experiment(train_cfg: dict[str, Any], paths: dict[str, Path]) -> None:
     config_name = str(train_cfg.get("config", ""))
-    if "learnable_slot_candidate_motif_gnn" in config_name:
+    if "full_graph_adaptive_motif_slot_gnn" in config_name:
+        debug_full_graph_d4_batch(train_cfg, paths)
+    elif "learnable_slot_candidate_motif_gnn" in config_name:
         debug_candidate_attention_batch(train_cfg, paths)
     else:
         debug_hierarchical_batch(train_cfg, paths)
 
 
-def train_model(train_cfg: dict[str, Any], paths: dict[str, Path], *, epochs: int | None, no_wandb: bool) -> None:
+def train_model(
+    train_cfg: dict[str, Any],
+    paths: dict[str, Path],
+    *,
+    epochs: int | None,
+    no_wandb: bool,
+    max_train_batches: int | None = None,
+    max_val_batches: int | None = None,
+    max_test_batches: int | None = None,
+) -> None:
     cmd = [
         sys.executable,
         "-m",
@@ -123,6 +152,13 @@ def train_model(train_cfg: dict[str, Any], paths: dict[str, Path], *, epochs: in
     ]
     if no_wandb or bool(train_cfg.get("no_wandb", False)):
         cmd.append("--no_wandb")
+    for flag, value in [
+        ("--max_train_batches", max_train_batches if max_train_batches is not None else train_cfg.get("max_train_batches")),
+        ("--max_val_batches", max_val_batches if max_val_batches is not None else train_cfg.get("max_val_batches")),
+        ("--max_test_batches", max_test_batches if max_test_batches is not None else train_cfg.get("max_test_batches")),
+    ]:
+        if value is not None:
+            cmd.extend([flag, str(value)])
     run_command(cmd)
 
 
@@ -176,6 +212,9 @@ def run_experiment(
     out_root: str | Path | None = None,
     pixel_motif_dir: str | Path | None = None,
     epochs: int | None = None,
+    max_train_batches: int | None = None,
+    max_val_batches: int | None = None,
+    max_test_batches: int | None = None,
     smoke: bool = False,
     # New hybrid mode
     mode: str | None = None,                    # build_and_train | train_from_artifact | build_only | train_only | debug_only
@@ -211,6 +250,14 @@ def run_experiment(
         data_cfg["smoke"] = True
     if no_skip_existing:
         data_cfg["skip_existing"] = False
+    if out_root is not None:
+        out_root_text = str(out_root).replace("\\", "/")
+        if not out_root_text.startswith("/kaggle/") and str(train_cfg.get("env", "kaggle")) == "kaggle":
+            train_cfg["env"] = "local"
+            print(
+                f"[local] out_root={out_root} is not a Kaggle path; using training.env=local for subprocesses.",
+                flush=True,
+            )
     if pixel_motif_dir is not None:
         data_cfg["pixel_motif_dir"] = str(pixel_motif_dir)
     elif out_root is not None:
@@ -258,8 +305,8 @@ def run_experiment(
         # Validate manifest (optional — warn if manifest.json missing from older artifact uploads)
         require_node_indices = bool(train_cfg.get("debug_batch", False))  # C cần node_indices
         manifest_path = paths["out_root"] / "manifest.json"
-        if str(data_cfg_normalized.get("recipe", "")) == "candidate_attention_v1":
-            print("[manifest] Candidate attention artifact detected; skipping pixel-motif manifest checks.", flush=True)
+        if str(data_cfg_normalized.get("recipe", "")) in {"candidate_attention_v1", "full_graph_d4"}:
+            print("[manifest] Non pixel-motif artifact detected; skipping pixel-motif manifest checks.", flush=True)
         elif manifest_path.exists():
             validate_manifest(
                 paths["out_root"],
@@ -283,7 +330,15 @@ def run_experiment(
             debug_batch_for_experiment(train_cfg, paths)
 
         if bool(train_cfg.get("enabled", True)):
-            train_model(train_cfg, paths, epochs=epochs, no_wandb=no_wandb)
+            train_model(
+                train_cfg,
+                paths,
+                epochs=epochs,
+                no_wandb=no_wandb,
+                max_train_batches=max_train_batches,
+                max_val_batches=max_val_batches,
+                max_test_batches=max_test_batches,
+            )
             zip_outputs(outputs_cfg, experiment_name)
         else:
             print("Training disabled by experiment config.", flush=True)
@@ -293,11 +348,13 @@ def run_experiment(
     # All other modes: resolve paths from working/out_root
     # ------------------------------------------------------------------
     paths = resolve_artifact_paths(data_cfg, out_root_override=out_root)
-    dataset_log_path = (
-        paths["candidate_attention_dir"]
-        if str(data_cfg_normalized.get("recipe", "")) == "candidate_attention_v1"
-        else paths["pixel_motif_dir"]
-    )
+    recipe = str(data_cfg_normalized.get("recipe", ""))
+    if recipe == "candidate_attention_v1":
+        dataset_log_path = paths["candidate_attention_dir"]
+    elif recipe == "full_graph_d4":
+        dataset_log_path = paths["graph_repo"]
+    else:
+        dataset_log_path = paths["pixel_motif_dir"]
     print(f"graph_repo : {paths['graph_repo']}", flush=True)
     print(f"dataset    : {dataset_log_path}", flush=True)
     print("=" * 100, flush=True)
@@ -332,8 +389,8 @@ def run_experiment(
     if resolved_mode == "train_only":
         # Validate manifest if it exists; warn if missing
         manifest_path = paths["out_root"] / "manifest.json"
-        if str(data_cfg_normalized.get("recipe", "")) == "candidate_attention_v1":
-            print("[manifest] Candidate attention artifact detected; skipping pixel-motif manifest checks.", flush=True)
+        if str(data_cfg_normalized.get("recipe", "")) in {"candidate_attention_v1", "full_graph_d4"}:
+            print("[manifest] Non pixel-motif artifact detected; skipping pixel-motif manifest checks.", flush=True)
         elif manifest_path.exists():
             require_node_indices = bool(train_cfg.get("debug_batch", False))
             validate_manifest(
@@ -363,7 +420,15 @@ def run_experiment(
     # Train
     # ------------------------------------------------------------------
     if bool(train_cfg.get("enabled", True)):
-        train_model(train_cfg, paths, epochs=epochs, no_wandb=no_wandb)
+        train_model(
+            train_cfg,
+            paths,
+            epochs=epochs,
+            no_wandb=no_wandb,
+            max_train_batches=max_train_batches,
+            max_val_batches=max_val_batches,
+            max_test_batches=max_test_batches,
+        )
         zip_outputs(outputs_cfg, experiment_name)
     else:
         print("Training disabled by experiment config.", flush=True)

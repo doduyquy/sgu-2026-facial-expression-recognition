@@ -16,6 +16,18 @@ EMOTION_NAMES = [
 ]
 
 
+def _optional_positive_int(value) -> int | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in {"", "none", "null"}:
+        return None
+    out = int(value)
+    if out <= 0:
+        return None
+    return out
+
+
 def _forward_batch(model, batch: dict, device) -> torch.Tensor:
     """
     Dispatch forward giống Trainer:
@@ -30,6 +42,10 @@ def _forward_batch(model, batch: dict, device) -> torch.Tensor:
     x = batch.get("x")
 
     if "candidate_x" in batch:
+        out = model(batch)
+        return out["logits"] if isinstance(out, dict) else out
+
+    if "node_features" in batch and "edge_index" in batch and "edge_attr" in batch:
         out = model(batch)
         return out["logits"] if isinstance(out, dict) else out
 
@@ -167,9 +183,26 @@ def evaluate_and_show(model, test_loader, device, save_dir: str, config: dict | 
     all_preds = []
     all_trues = []
     all_graph_ids = []
+    max_test_batches = _optional_positive_int(
+        (config or {}).get("training", {}).get("max_test_batches") if config is not None else None
+    )
+    if max_test_batches is not None:
+        print(
+            f"WARNING/SMOKE: max_test_batches={max_test_batches}; "
+            "test metrics and confusion matrix are subset metrics, not full-dataset metrics.",
+            flush=True,
+        )
 
     with torch.no_grad():
-        for batch in tqdm(test_loader, desc="Evaluating test set"):
+        try:
+            test_total = len(test_loader)
+        except TypeError:
+            test_total = None
+        if max_test_batches is not None:
+            test_total = min(max_test_batches, test_total) if test_total is not None else max_test_batches
+        for batch_idx, batch in enumerate(tqdm(test_loader, desc="Evaluating test set", total=test_total)):
+            if max_test_batches is not None and batch_idx >= max_test_batches:
+                break
             y = batch.get("y", batch.get("label")).to(device)
             logits = _forward_batch(model, batch, device)
             preds = torch.argmax(logits, dim=1)

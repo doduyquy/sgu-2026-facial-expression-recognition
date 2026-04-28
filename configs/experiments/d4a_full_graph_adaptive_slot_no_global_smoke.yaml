@@ -1,0 +1,32 @@
+experiment:
+  name: d4a_full_graph_adaptive_slot_no_global_smoke
+  description: "D4A local smoke: slot-only readout with limited batches."
+
+data:
+  recipe: full_graph_d4
+  csv_root: auto
+  artifact_root: artifacts
+  stage: graph_repo
+  skip_existing: true
+  smoke: false
+  smoke_samples: 100
+
+  graph:
+    chunk_size: 500
+    connectivity: 8
+
+training:
+  enabled: true
+  env: local
+  config: full_graph_adaptive_motif_slot_gnn_d4a_no_global
+  epochs: 3
+  no_wandb: false
+  debug_batch: true
+  debug_batch_size: 2
+  max_train_batches: 20
+  max_val_batches: 10
+  max_test_batches: 10
+
+outputs:
+  zip_outputs: false
+  zip_name: d4a_full_graph_adaptive_slot_no_global_smoke_outputs.zip

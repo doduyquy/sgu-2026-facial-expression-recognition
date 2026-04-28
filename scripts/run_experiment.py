@@ -48,6 +48,9 @@ def main() -> None:
     parser.add_argument("--out_root", default=None)
     parser.add_argument("--pixel_motif_dir", default=None)
     parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--max_train_batches", type=int, default=None)
+    parser.add_argument("--max_val_batches", type=int, default=None)
+    parser.add_argument("--max_test_batches", type=int, default=None)
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--no_wandb", action="store_true")
     parser.add_argument("--no_skip_existing", action="store_true")
@@ -63,6 +66,9 @@ def main() -> None:
         out_root=args.out_root,
         pixel_motif_dir=args.pixel_motif_dir,
         epochs=args.epochs,
+        max_train_batches=args.max_train_batches,
+        max_val_batches=args.max_val_batches,
+        max_test_batches=args.max_test_batches,
         smoke=args.smoke,
         mode=args.mode,
         artifact_input_path=args.artifact_input_path,

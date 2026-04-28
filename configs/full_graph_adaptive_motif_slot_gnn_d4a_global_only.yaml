@@ -1,0 +1,64 @@
+data:
+  name: full_graph
+  mode: full_graph
+  recipe: full_graph_d4
+  num_classes: 7
+  image_size: 48
+  batch_size: 16
+  num_workers: 2
+  pin_memory: true
+  graph_cache_chunks: 1
+  node_dim: 7
+  edge_dim: 5
+
+model:
+  name: full_graph_adaptive_motif_slot_gnn
+  num_classes: 7
+  node_dim: 7
+  edge_dim: 5
+  hidden_dim: 128
+  num_layers: 2
+  num_slots: 32
+  dropout: 0.2
+  use_edge_attr: true
+  use_null_slot: true
+  use_slot_gates: true
+  readout_mode: global_only
+
+loss:
+  name: weighted_ce
+  use_class_weights: true
+  class_weight_power: 0.25
+  class_counts: [3995, 436, 4097, 7215, 4830, 3171, 4965]
+  lambda_smooth: 0.0
+  lambda_sparse: 0.0
+  lambda_diversity: 0.0
+
+optimizer:
+  name: adamw
+  lr: 0.001
+  weight_decay: 0.0001
+
+scheduler:
+  name: ReduceLROnPlateau
+  mode: max
+  monitor: val_macro_f1
+  factor: 0.5
+  patience: 5
+  min_lr: 0.000001
+
+training:
+  loss: weighted_ce
+  class_weight_power: 0.25
+  batch_size: 16
+  epochs: 80
+  early_stopping_patience: 20
+  early_stop: 20
+  monitor: val_macro_f1
+  grad_clip_norm: 5.0
+  max_train_batches: null
+  max_val_batches: null
+  max_test_batches: null
+
+logging:
+  use_wandb: true

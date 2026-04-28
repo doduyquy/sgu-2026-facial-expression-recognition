@@ -99,7 +99,8 @@ def main():
     parser.add_argument("--dataloader_mode", type=str, default=None,
                         help="Override dataloader mode tu config: "
                              "graph_vector | subgraph_descriptor | resolved | "
-                             "precomputed_subgraph_graph | motif_filtered | pixel_motif")
+                             "precomputed_subgraph_graph | motif_filtered | pixel_motif | "
+                             "candidate_attention | full_graph")
     parser.add_argument("--graph_repo_path", type=str, default=None,
                         help="Override graph_repo_path tu env.yaml. "
                              "Dung khi path tren Kaggle khac voi gia tri mac dinh trong config. "
@@ -118,6 +119,12 @@ def main():
                         help="Override candidate_attention_dataset_path tu env/config.")
     parser.add_argument("--epochs", type=int, default=None,
                         help="Override training.epochs de sanity-test nhanh.")
+    parser.add_argument("--max_train_batches", type=int, default=None,
+                        help="Smoke/debug: limit train batches per epoch. Omit for full train.")
+    parser.add_argument("--max_val_batches", type=int, default=None,
+                        help="Smoke/debug: limit validation batches per epoch. Omit for full validation.")
+    parser.add_argument("--max_test_batches", type=int, default=None,
+                        help="Smoke/debug: limit test batches during final evaluation. Omit for full test.")
     parser.add_argument("--no_wandb", action="store_true",
                         help="Tat WandB cho local smoke test.")
     parser.add_argument("--experiment_name", type=str, default=None,
@@ -145,6 +152,26 @@ def main():
         config["candidate_attention_dataset_path"] = args.candidate_attention_dataset_path
     if args.epochs is not None:
         config.setdefault("training", {})["epochs"] = int(args.epochs)
+    if args.max_train_batches is not None:
+        config.setdefault("training", {})["max_train_batches"] = int(args.max_train_batches)
+    if args.max_val_batches is not None:
+        config.setdefault("training", {})["max_val_batches"] = int(args.max_val_batches)
+    if args.max_test_batches is not None:
+        config.setdefault("training", {})["max_test_batches"] = int(args.max_test_batches)
+    elif (
+        config.setdefault("training", {}).get("max_test_batches") is None
+        and (
+            config["training"].get("max_train_batches") is not None
+            or config["training"].get("max_val_batches") is not None
+        )
+    ):
+        fallback_test_batches = config["training"].get("max_val_batches", config["training"].get("max_train_batches"))
+        config["training"]["max_test_batches"] = fallback_test_batches
+        print(
+            f"WARNING/SMOKE: max_test_batches not provided; using {fallback_test_batches} "
+            "because train/val batch limits are active.",
+            flush=True,
+        )
     if args.no_wandb:
         config.setdefault("logging", {})["use_wandb"] = False
     if args.experiment_name is not None:
@@ -279,7 +306,11 @@ def _log_run_config(config: dict) -> None:
 
     print("--- Run config", flush=True)
     print(f"--- experiment name          : {config.get('experiment_name', '<direct-train>')}", flush=True)
+    print(f"--- data recipe              : {data_cfg.get('recipe', data_cfg.get('name'))}", flush=True)
     print(f"--- model name               : {model_cfg.get('name')}", flush=True)
+    print(f"--- node_dim                 : {model_cfg.get('node_dim')}", flush=True)
+    print(f"--- edge_dim                 : {model_cfg.get('edge_dim', data_cfg.get('edge_dim'))}", flush=True)
+    print(f"--- hidden_dim               : {model_cfg.get('hidden_dim')}", flush=True)
     print(f"--- seed                     : {seed_cfg.get('random_seed', 42)}", flush=True)
     print(f"--- lr                       : {lr}", flush=True)
     print(f"--- optimizer                : {optimizer_name}", flush=True)
@@ -292,6 +323,9 @@ def _log_run_config(config: dict) -> None:
     print(f"--- global_pooling_type      : {model_cfg.get('global_pooling_type')}", flush=True)
     print(f"--- num_slots                : {model_cfg.get('num_slots')}", flush=True)
     print(f"--- slot_iterations          : {model_cfg.get('slot_iterations')}", flush=True)
+    print(f"--- max_train_batches        : {train_cfg.get('max_train_batches')}", flush=True)
+    print(f"--- max_val_batches          : {train_cfg.get('max_val_batches')}", flush=True)
+    print(f"--- max_test_batches         : {train_cfg.get('max_test_batches')}", flush=True)
 
 
 if __name__ == "__main__":

@@ -40,6 +40,7 @@ from src.data.candidate_attention_dataset import (
     compute_candidate_x_scaler_from_train,
     load_candidate_x_scaler_stats,
 )
+from src.data.full_graph_dataset import FullGraphDataset, collate_fn_full_graph
 
 
 # ===========================================================================
@@ -64,7 +65,10 @@ def build_dataloader(
     -------
     train_loader, val_loader, test_loader, input_dim
     """
-    mode       = config.get("dataloader_mode", "graph_vector")
+    data_cfg_top = config.get("data", {}) or {}
+    mode       = config.get("dataloader_mode", data_cfg_top.get("mode", "graph_vector"))
+    if mode == "graph_vector" and data_cfg_top.get("recipe") == "full_graph_d4":
+        mode = "full_graph"
     batch_size = config.get("training", {}).get("batch_size",
                  config.get("data", {}).get("batch_size", 128))
     num_workers = config.get("num_workers",
@@ -132,11 +136,16 @@ def build_dataloader(
         return _build_candidate_attention_loaders(
             candidate_attention_dataset_path, config, batch_size, num_workers
         )
+    elif mode == "full_graph":
+        _validate_repo(graph_repo_path)
+        print(f"--- Full graph repo: {graph_repo_path}")
+        return _build_full_graph_loaders(graph_repo_path, config, batch_size, num_workers)
     else:
         raise ValueError(
             f"dataloader_mode không hợp lệ: {mode!r}. "
             f"Chọn 'graph_vector', 'subgraph_descriptor', 'resolved', "
-            f"'precomputed_subgraph_graph', 'motif_filtered', 'pixel_motif' hoặc 'candidate_attention'."
+            f"'precomputed_subgraph_graph', 'motif_filtered', 'pixel_motif', "
+            f"'candidate_attention' hoặc 'full_graph'."
         )
 
 
@@ -706,6 +715,44 @@ def _build_candidate_attention_loaders(
     test_loader = DataLoader(
         test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers,
         pin_memory=pin_memory, collate_fn=collate_fn_candidate_attention,
+    )
+    return train_loader, val_loader, test_loader, input_dim
+
+
+def _build_full_graph_loaders(
+    graph_repo_path: str,
+    config: dict,
+    batch_size: int,
+    num_workers: int,
+) -> Tuple[DataLoader, DataLoader, DataLoader, int]:
+    data_cfg = config.get("data", {})
+    pin_memory = bool(data_cfg.get("pin_memory", True))
+    cache_chunks = int(data_cfg.get("graph_cache_chunks", 1))
+
+    train_ds = FullGraphDataset(graph_repo_path, "train", cache_chunks=cache_chunks)
+    val_ds = FullGraphDataset(graph_repo_path, "val", cache_chunks=cache_chunks)
+    test_ds = FullGraphDataset(graph_repo_path, "test", cache_chunks=cache_chunks)
+    input_dim = train_ds.input_dim
+
+    print(f"--- Full graph dataset : {graph_repo_path}")
+    print(f"--- data recipe: {data_cfg.get('recipe', 'full_graph_d4')}")
+    print(f"--- Train: {len(train_ds)} | Val: {len(val_ds)} | Test: {len(test_ds)}")
+    print(
+        f"--- num_nodes: {train_ds.num_nodes} | num_edges: {train_ds.num_edges} | "
+        f"node_dim: {input_dim} | edge_dim: {train_ds.edge_dim}"
+    )
+
+    train_loader = DataLoader(
+        train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers,
+        pin_memory=pin_memory, collate_fn=collate_fn_full_graph,
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers,
+        pin_memory=pin_memory, collate_fn=collate_fn_full_graph,
+    )
+    test_loader = DataLoader(
+        test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers,
+        pin_memory=pin_memory, collate_fn=collate_fn_full_graph,
     )
     return train_loader, val_loader, test_loader, input_dim
 

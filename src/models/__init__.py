@@ -5,6 +5,7 @@ from src.models.motif_guided_mlp import MotifGuidedMLP
 from src.models.motif_guided_gnn import MotifGuidedGNN
 from src.models.hierarchical_motif_gnn import HierarchicalMotifGNN
 from src.models.learnable_slot_candidate_motif_gnn import LearnableSlotCandidateMotifGNN
+from src.models.full_graph_adaptive_motif_slot_gnn import FullGraphAdaptiveMotifSlotGNN
 
 """
 Hi, tạo model mới thì:
@@ -105,6 +106,22 @@ MODEL_REGISTRY = {
         class_attention_diversity_weight=config.get("loss", {}).get("class_attention_diversity_weight", 0.0),
         combined_attention_diversity_weight=config.get("loss", {}).get("combined_attention_diversity_weight", 0.0),
         combined_attention_diversity_margin=config.get("loss", {}).get("combined_attention_diversity_margin", 0.65),
+    ),
+    "full_graph_adaptive_motif_slot_gnn": lambda config, input_dim, **kw: FullGraphAdaptiveMotifSlotGNN(
+        node_dim=config["model"].get("node_dim", input_dim),
+        edge_dim=config["model"].get("edge_dim", config.get("data", {}).get("edge_dim", 5)),
+        hidden_dim=config["model"].get("hidden_dim", 128),
+        num_layers=config["model"].get("num_layers", 2),
+        num_slots=config["model"].get("num_slots", 32),
+        num_classes=config["model"].get("num_classes", config["data"].get("num_classes", 7)),
+        dropout=config["model"].get("dropout", 0.2),
+        use_edge_attr=config["model"].get("use_edge_attr", True),
+        use_null_slot=config["model"].get("use_null_slot", True),
+        use_slot_gates=config["model"].get("use_slot_gates", True),
+        readout_mode=config["model"].get("readout_mode", "slots_global"),
+        lambda_smooth=config.get("loss", {}).get("lambda_smooth", 0.0),
+        lambda_sparse=config.get("loss", {}).get("lambda_sparse", 0.0),
+        lambda_diversity=config.get("loss", {}).get("lambda_diversity", 0.0),
     ),
 }
 

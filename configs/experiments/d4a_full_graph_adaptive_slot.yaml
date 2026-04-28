@@ -1,0 +1,29 @@
+experiment:
+  name: d4a_full_graph_adaptive_slot
+  description: "D4A: full pixel graph -> edge-aware GNN -> adaptive motif slots -> classifier."
+
+data:
+  recipe: full_graph_d4
+  csv_root: auto
+  artifact_root: /kaggle/working/artifacts
+  stage: graph_repo
+  skip_existing: true
+  smoke: false
+  smoke_samples: 100
+
+  graph:
+    chunk_size: 500
+    connectivity: 8
+
+training:
+  enabled: true
+  env: kaggle
+  config: full_graph_adaptive_motif_slot_gnn_d4a
+  epochs: 80
+  no_wandb: false
+  debug_batch: true
+  debug_batch_size: 2
+
+outputs:
+  zip_outputs: true
+  zip_name: d4a_full_graph_adaptive_slot_outputs.zip

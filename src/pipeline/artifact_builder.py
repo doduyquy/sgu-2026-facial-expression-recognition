@@ -72,9 +72,10 @@ def resolve_artifact_paths(data_cfg: dict[str, Any], out_root_override: str | Pa
         default_bank = "pixel_motif_bank_v3_d2a"
         default_dataset = "pixel_motif_dataset_v3_d2a"
     pixel_motif_dir = Path(data_cfg.get("pixel_motif_dir", out_root / default_dataset))
+    graph_repo = Path(data_cfg.get("graph_repo_path", out_root / "graph_repo"))
     return {
         "out_root": out_root,
-        "graph_repo": out_root / "graph_repo",
+        "graph_repo": graph_repo,
         "candidate_dir": Path(data_cfg.get("candidate_dir", out_root / "pixel_candidate_subgraphs_v2")),
         "motif_bank_dir": Path(data_cfg.get("motif_bank_dir", out_root / default_bank)),
         "pixel_motif_dir": pixel_motif_dir,
@@ -437,6 +438,26 @@ def write_manifest(
     pixel_motif_dir: Path,
 ) -> Path:
     """Write manifest.json after a successful artifact build."""
+    if str(data_cfg.get("recipe", "")) == "full_graph_d4":
+        manifest = {
+            "artifact_version": "full_graph_d4",
+            "experiment_name": experiment_name,
+            "created_from": "csv",
+            "graph": {
+                "image_size": 48,
+                "num_nodes": 2304,
+                "node_feature_dim": 7,
+                "edge_feature_dim": 5,
+                "connectivity": int(data_cfg.get("connectivity", 8)),
+            },
+            "compatible_models": ["full_graph_adaptive_motif_slot_gnn"],
+        }
+        manifest_path = out_root / "manifest.json"
+        with manifest_path.open("w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+        print(f"[manifest] Written: {manifest_path}", flush=True)
+        return manifest_path
+
     if str(data_cfg.get("recipe", "")) == "candidate_attention_v1":
         try:
             import torch
@@ -627,6 +648,9 @@ def load_artifacts_from_input(
     elif has_pixel_motif_dataset(v2_dir):
         pixel_motif_dir = v2_dir
         print(f"[load_artifacts] Using V2 dataset: {pixel_motif_dir}", flush=True)
+    elif has_graph_repo(dst / "graph_repo"):
+        pixel_motif_dir = dst / "graph_repo"
+        print(f"[load_artifacts] Auto-detected full graph repo: {pixel_motif_dir}", flush=True)
     else:
         raise FileNotFoundError(
             "Could not find a supported dataset in loaded artifacts. "
@@ -695,11 +719,16 @@ def ensure_pixel_motif_artifacts(
     skip_existing = bool(data_cfg.get("skip_existing", True))
     recipe = str(data_cfg.get("recipe", "pixel_motif_v2"))
     is_candidate_attention = recipe == "candidate_attention_v1"
+    is_full_graph_d4 = recipe == "full_graph_d4"
     stages = (
         resolve_candidate_attention_stages(str(data_cfg.get("stage", "all")))
         if is_candidate_attention
+        else ["graph_repo"]
+        if is_full_graph_d4 and str(data_cfg.get("stage", "graph_repo")) in {"all", "graph_repo"}
         else resolve_stages(str(data_cfg.get("stage", "all")))
     )
+    if is_full_graph_d4 and str(data_cfg.get("stage", "graph_repo")) not in {"all", "graph_repo"}:
+        raise ValueError("full_graph_d4 only supports stage='graph_repo' or stage='all'")
 
     print(f"Stages: {stages}", flush=True)
     print(f"CSV root: {resolved_csv_root}", flush=True)
@@ -734,6 +763,12 @@ def ensure_pixel_motif_artifacts(
         print_artifact_summary(
             [paths["graph_repo"], paths["candidate_dir"], paths["candidate_attention_dir"]]
         )
+        return paths
+
+    if is_full_graph_d4:
+        paths["pixel_motif_dir"] = paths["graph_repo"]
+        print(f"[pipeline] Using full graph repository: {paths['graph_repo']}", flush=True)
+        print_artifact_summary([paths["graph_repo"]])
         return paths
 
     # Optional V3 hierarchical cache — only when build_hierarchical_cache: true in data config
