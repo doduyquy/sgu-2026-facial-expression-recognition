@@ -26,7 +26,7 @@ model:
 loss:
   name: weighted_ce
   use_class_weights: true
-  class_weight_power: 0.35
+  class_weight_power: 0.20
   class_counts: [3995, 436, 4097, 7215, 4830, 3171, 4965]
   slot_attention_entropy_weight: 0.0
   slot_diversity_weight: 0.0
@@ -47,7 +47,7 @@ scheduler:
 
 training:
   loss: weighted_ce
-  class_weight_power: 0.35
+  class_weight_power: 0.20
   batch_size: 64
   epochs: 120
   early_stopping_patience: 20

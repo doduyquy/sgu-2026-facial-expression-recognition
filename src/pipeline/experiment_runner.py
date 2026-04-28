@@ -118,6 +118,8 @@ def train_model(train_cfg: dict[str, Any], paths: dict[str, Path], *, epochs: in
         str(paths["graph_repo"]),
         "--epochs",
         str(epochs if epochs is not None else train_cfg.get("epochs", 80)),
+        "--experiment_name",
+        str(train_cfg.get("experiment_name", train_cfg.get("name", "")) or train_cfg.get("config", "")),
     ]
     if no_wandb or bool(train_cfg.get("no_wandb", False)):
         cmd.append("--no_wandb")
@@ -201,6 +203,7 @@ def run_experiment(
     train_cfg = dict(cfg.get("training", {}) or {})
     outputs_cfg = dict(cfg.get("outputs", {}) or {})
     experiment_name = str(experiment_cfg.get("name", cfg_path.stem))
+    train_cfg.setdefault("experiment_name", experiment_name)
 
     resolved_mode = _resolve_mode(mode, build_only=build_only, train_only=train_only, debug_only=debug_only)
 

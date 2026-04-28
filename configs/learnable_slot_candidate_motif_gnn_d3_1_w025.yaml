@@ -5,6 +5,7 @@ data:
   num_workers: 2
   pin_memory: true
   normalize_x: true
+  normalize_candidate_x: true
 
 model:
   name: learnable_slot_candidate_motif_gnn

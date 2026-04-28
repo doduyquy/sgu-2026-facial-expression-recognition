@@ -676,7 +676,7 @@ def _build_candidate_attention_loaders(
 ) -> Tuple[DataLoader, DataLoader, DataLoader, int]:
     data_cfg = config.get("data", {})
     pin_memory = bool(data_cfg.get("pin_memory", True))
-    normalize_x = bool(data_cfg.get("normalize_x", False))
+    normalize_x = bool(data_cfg.get("normalize_candidate_x", data_cfg.get("normalize_x", False)))
 
     train_ds = CandidateAttentionDataset(dataset_path, "train", normalize_x=normalize_x)
     val_ds = CandidateAttentionDataset(dataset_path, "val", normalize_x=normalize_x)
@@ -686,6 +686,7 @@ def _build_candidate_attention_loaders(
     print(f"--- Candidate attention dataset : {dataset_path}")
     print(f"--- Train: {len(train_ds)} | Val: {len(val_ds)} | Test: {len(test_ds)}")
     print(f"--- Input dim: {input_dim} | M={train_ds.max_candidates}")
+    print(f"--- normalize_candidate_x: {normalize_x}")
 
     train_loader = DataLoader(
         train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers,

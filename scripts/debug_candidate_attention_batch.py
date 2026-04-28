@@ -55,6 +55,14 @@ def main() -> None:
         value = batch.get(key)
         if torch.is_tensor(value):
             print(f"{key:<28}: {tuple(value.shape)} {value.dtype}")
+    candidate_x = batch["candidate_x"].float()
+    mask = batch.get("candidate_mask")
+    values = candidate_x[mask.bool()] if torch.is_tensor(mask) and mask.any() else candidate_x.reshape(-1, candidate_x.shape[-1])
+    print(
+        "candidate_x batch stats before projection: "
+        f"min={values.min().item():.6f} max={values.max().item():.6f} "
+        f"mean={values.mean().item():.6f} std={values.std(unbiased=False).item():.6f}"
+    )
 
     model = get_model(config["model"]["name"], config=config, input_dim=input_dim)
     model.eval()

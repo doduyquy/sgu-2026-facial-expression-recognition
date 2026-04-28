@@ -462,6 +462,9 @@ def write_manifest(
             "candidate_attention_dataset": {
                 "max_candidates": int(meta.get("max_candidates", data_cfg.get("max_candidates", 128))),
                 "descriptor_dim": int(meta.get("descriptor_dim", 41)),
+                "descriptor_storage": str(meta.get("descriptor_storage", "raw_unmarked")),
+                "descriptor_scaling": str(meta.get("descriptor_scaling", "unknown")),
+                "geometry_normalized": bool(meta.get("geometry_normalized", True)),
                 "edge_attr_dim": int(meta.get("edge_attr_dim", 4)),
                 "k_spatial": int(meta.get("k_spatial", data_cfg.get("candidate_k_spatial", 8))),
                 "k_feature": int(meta.get("k_feature", data_cfg.get("candidate_k_feature", 4))),

@@ -30,6 +30,7 @@ from src.utils.checkpoint import load_checkpoints
 from src.data.dataloader import build_dataloader
 from src.models import get_model
 from src.training.losses import build_loss
+from src.training.losses import compute_class_weights
 from src.training.optimizer import build_optimizer, build_scheduler
 from src.training.trainer import Trainer
 from src.evaluation.evaluator import evaluate_and_show
@@ -119,6 +120,8 @@ def main():
                         help="Override training.epochs de sanity-test nhanh.")
     parser.add_argument("--no_wandb", action="store_true",
                         help="Tat WandB cho local smoke test.")
+    parser.add_argument("--experiment_name", type=str, default=None,
+                        help="Optional experiment name for run logging.")
     args = parser.parse_args()
 
     # ── Device ──
@@ -144,6 +147,8 @@ def main():
         config.setdefault("training", {})["epochs"] = int(args.epochs)
     if args.no_wandb:
         config.setdefault("logging", {})["use_wandb"] = False
+    if args.experiment_name is not None:
+        config["experiment_name"] = args.experiment_name
     set_seed(config["seed"].get("random_seed", 42))
 
     # ── Paths ──
@@ -187,6 +192,7 @@ def main():
         print(f"--- candidate_attention_dataset_path : {candidate_attention_dataset_path}  [{source}]", flush=True)
 
     print(f"--- root_path       : {root_path}", flush=True)
+    _log_run_config(config)
     flush_stdio()
 
     # ── DataLoaders từ graph repository ──
@@ -250,6 +256,42 @@ def main():
             print(f"[WARN] Cannot upload checkpoint to WandB: {exc}")
 
     print("\n\t\tDONE!\n")
+
+
+def _log_run_config(config: dict) -> None:
+    data_cfg = config.get("data", {}) or {}
+    model_cfg = config.get("model", {}) or {}
+    loss_cfg = config.get("loss", {}) or {}
+    opt_cfg = config.get("optimizer", {}) or {}
+    train_cfg = config.get("training", {}) or {}
+    sched_cfg = config.get("scheduler", {}) or {}
+    seed_cfg = config.get("seed", {}) or {}
+    lr = opt_cfg.get("lr", train_cfg.get("lr", 0.001))
+    weight_decay = opt_cfg.get("weight_decay", train_cfg.get("weight_decay", 0.0001))
+    optimizer_name = opt_cfg.get("name", train_cfg.get("optimizer", "adam"))
+    scheduler_name = sched_cfg.get("name", train_cfg.get("scheduler", "reduce_lr_on_plateau"))
+    class_weight_power = loss_cfg.get("class_weight_power", train_cfg.get("class_weight_power", 1.0))
+    class_counts = loss_cfg.get("class_counts")
+    actual_weights = None
+    if loss_cfg.get("use_class_weights", False) and class_counts is not None:
+        actual_weights = compute_class_weights(class_counts, power=float(class_weight_power)).tolist()
+    normalize_candidate_x = bool(data_cfg.get("normalize_candidate_x", data_cfg.get("normalize_x", False)))
+
+    print("--- Run config", flush=True)
+    print(f"--- experiment name          : {config.get('experiment_name', '<direct-train>')}", flush=True)
+    print(f"--- model name               : {model_cfg.get('name')}", flush=True)
+    print(f"--- seed                     : {seed_cfg.get('random_seed', 42)}", flush=True)
+    print(f"--- lr                       : {lr}", flush=True)
+    print(f"--- optimizer                : {optimizer_name}", flush=True)
+    print(f"--- scheduler                : {scheduler_name}", flush=True)
+    print(f"--- weight_decay             : {weight_decay}", flush=True)
+    print(f"--- class_weight_power       : {class_weight_power}", flush=True)
+    print(f"--- actual class weights     : {actual_weights}", flush=True)
+    print(f"--- normalize_candidate_x    : {normalize_candidate_x}", flush=True)
+    print(f"--- global_candidate_pooling : {model_cfg.get('use_global_candidate_pooling')}", flush=True)
+    print(f"--- global_pooling_type      : {model_cfg.get('global_pooling_type')}", flush=True)
+    print(f"--- num_slots                : {model_cfg.get('num_slots')}", flush=True)
+    print(f"--- slot_iterations          : {model_cfg.get('slot_iterations')}", flush=True)
 
 
 if __name__ == "__main__":

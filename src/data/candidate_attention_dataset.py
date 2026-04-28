@@ -36,6 +36,7 @@ class CandidateAttentionDataset(Dataset):
                 all_x = torch.cat(xs, dim=0)
                 self._mean = all_x.mean(dim=0)
                 self._std = all_x.std(dim=0, unbiased=False).clamp_min(1e-6)
+        self._log_scaling_info()
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -70,6 +71,47 @@ class CandidateAttentionDataset(Dataset):
         if self.normalize_x and self._mean is not None:
             out["candidate_x"] = (out["candidate_x"].float() - self._mean) / self._std
         return out
+
+    @property
+    def descriptor_scaling_source(self) -> str:
+        if not self.normalize_x:
+            return "disabled"
+        if self._mean is None or self._std is None:
+            return "enabled, but no valid candidates found"
+        return f"{self.split} split first {min(2048, len(self.samples))} samples"
+
+    @property
+    def descriptor_storage(self) -> str:
+        return str(self.meta.get("descriptor_storage", self.meta.get("candidate_x_storage", "raw_unmarked")))
+
+    @property
+    def geometry_scaling_enabled(self) -> bool:
+        return bool(self.meta.get("geometry_normalized", True))
+
+    def _log_scaling_info(self) -> None:
+        print(
+            f"--- [{self.split}] descriptor_scaling: {'enabled' if self.normalize_x else 'disabled'}",
+            flush=True,
+        )
+        print(f"--- [{self.split}] descriptor mean/std source: {self.descriptor_scaling_source}", flush=True)
+        print(f"--- [{self.split}] candidate_x storage: {self.descriptor_storage}", flush=True)
+        if not self.normalize_x and self.descriptor_storage not in {"raw", "raw_unmarked"}:
+            print(
+                f"[warn] [{self.split}] normalize_candidate_x=false but artifact marks "
+                f"candidate_x storage as {self.descriptor_storage!r}; rebuild a raw descriptor artifact "
+                "for a true no-scale run.",
+                flush=True,
+            )
+        print(
+            f"--- [{self.split}] geometry_scaling: "
+            f"{'enabled' if self.geometry_scaling_enabled else 'disabled'}",
+            flush=True,
+        )
+        print(
+            f"--- [{self.split}] edge_attr scaling: normalized spatial dx/dy/dist from normalized centers; "
+            "edge_type unscaled",
+            flush=True,
+        )
 
 
 def collate_fn_candidate_attention(batch: list[dict[str, Any]]) -> dict[str, Any]:
@@ -115,4 +157,3 @@ def collate_fn_candidate_attention(batch: list[dict[str, Any]]) -> dict[str, Any
     # Alias used by generic Trainer for sample count only; model consumes candidate_x.
     out["x"] = out["candidate_x"]
     return out
-

@@ -231,6 +231,11 @@ def main() -> None:
         "source_candidate_dir": str(candidate_dir),
         "max_candidates": max_candidates,
         "descriptor_dim": int(meta.get("descriptor_dim", 41)),
+        "descriptor_storage": "raw",
+        "descriptor_scaling": "none",
+        "geometry_normalized": True,
+        "geometry_scaling": "normalized image coordinates in candidate_centers/candidate_bbox; radius is topology integer",
+        "edge_attr_scaling": "dx/dy/dist computed from normalized centers; edge_type unscaled",
         "max_nodes_per_candidate": max_nodes,
         "k_spatial": int(args.k_spatial),
         "k_feature": int(args.k_feature),
@@ -251,4 +256,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

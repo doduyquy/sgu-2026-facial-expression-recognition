@@ -74,6 +74,7 @@ class Trainer:
             config.get("data", {}).get("num_classes", 7),
         )
         self.grad_clip_norm = config["training"].get("grad_clip_norm")
+        self._logged_candidate_x_stats = False
 
     # ------------------------------------------------------------------
     #  Core loops
@@ -90,6 +91,7 @@ class Trainer:
             batch = self._move_batch_to_device(batch)
             x = batch["x"]
             y = self._get_labels(batch)
+            self._maybe_log_candidate_x_stats(batch)
 
             self.optimizer.zero_grad()
             model_out = self._forward_batch(batch, x)
@@ -233,6 +235,28 @@ class Trainer:
         else:
             # Plain MLP mode
             return self.model(x)
+
+    def _maybe_log_candidate_x_stats(self, batch: dict) -> None:
+        if self._logged_candidate_x_stats or "candidate_x" not in batch:
+            return
+        candidate_x = batch["candidate_x"].detach().float()
+        mask = batch.get("candidate_mask")
+        if torch.is_tensor(mask) and mask.any():
+            values = candidate_x[mask.bool()]
+        else:
+            values = candidate_x.reshape(-1, candidate_x.shape[-1])
+        if values.numel() == 0:
+            print("--- candidate_x batch stats before projection: empty", flush=True)
+        else:
+            print(
+                "--- candidate_x batch stats before projection: "
+                f"min={values.min().item():.6f} "
+                f"max={values.max().item():.6f} "
+                f"mean={values.mean().item():.6f} "
+                f"std={values.std(unbiased=False).item():.6f}",
+                flush=True,
+            )
+        self._logged_candidate_x_stats = True
 
     # ------------------------------------------------------------------
     #  fit
