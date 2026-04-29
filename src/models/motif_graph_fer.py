@@ -28,7 +28,6 @@ import torch.nn.functional as F
 # ── PyTorch Geometric imports ──────────────────────────────────────────────────
 try:
     from torch_geometric.nn import GATConv, global_add_pool
-    from torch_geometric.nn import knn_graph
     from torch_geometric.utils import scatter
     _HAS_PYG = True
 except ImportError:
@@ -69,6 +68,7 @@ except ImportError:
         if size is None:
             size = int(batch.max().item()) + 1
         return scatter(x, batch, dim=0, reduce='sum', dim_size=size)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # (A) CNN ENCODER
@@ -126,64 +126,45 @@ class CNNEncoder(nn.Module):
 # (B) GRAPH BUILDER
 # ══════════════════════════════════════════════════════════════════════════════
 
-def build_knn_graph(patch_map: torch.Tensor, k: int = 8) -> "Batch":
+def build_knn_graph(patch_map: torch.Tensor, k: int = 8):
     """
-    Convert patch feature map to a PyG Batch of kNN graphs.
-    Each image gets its own independent graph — no cross-image edges.
-
-    Args:
-        patch_map : (B, C, H, W)  — e.g. (B, 64, 6, 6)
-        k         : number of nearest neighbours per node
-    Returns:
-        PyG Batch with .x (N_total, C) and .batch (N_total,)
-    """
-    B, C, H, W = patch_map.shape
-    N = H * W   # nodes per image (36 for 6×6)
-
-    # Flatten spatial dims: (B, C, H, W) → (B, N, C) → (B*N, C)
-    node_feats = patch_map.permute(0, 2, 3, 1).reshape(B * N, C)
-
-    # ✅ Correct batch assignment: prevents cross-image edges
-    # batch[i] = which image sample node i belongs to
-    batch_idx = torch.arange(B, device=patch_map.device).repeat_interleave(N)
-    # batch_idx shape: (B*N,)  — [0,0,...,0, 1,1,...,1, ..., B-1,...,B-1]
-
-    # Build kNN graph respecting batch boundaries
-    edge_index = knn_graph(
-        node_feats,
-        k=k,
-        batch=batch_idx,
-        loop=False,       # no self-loops (added by GATConv if needed)
-        flow='source_to_target',
-    )   # edge_index: (2, E_total)
-
-    return node_feats, edge_index, batch_idx
-
-
-def build_knn_graph_fallback(patch_map: torch.Tensor, k: int = 8):
-    """
-    Pure-PyTorch fallback (no PyG) using per-image cdist kNN.
-    Returns dense list of (edge_index, node_feats) per image.
+    Native PyTorch implementation of kNN graph (no torch-cluster required).
+    Optimized for constant N nodes per image.
     """
     B, C, H, W = patch_map.shape
     N = H * W
-    node_feats = patch_map.permute(0, 2, 3, 1).reshape(B * N, C)
-    batch_idx  = torch.arange(B, device=patch_map.device).repeat_interleave(N)
-
-    all_edges = []
-    for b in range(B):
-        x_b = node_feats[b * N : (b + 1) * N]           # (N, C)
-        dist = torch.cdist(x_b, x_b)                    # (N, N)
-        dist.fill_diagonal_(float('inf'))
-        _, nbr_idx = dist.topk(k, dim=1, largest=False) # (N, k)
-        src = torch.arange(N, device=patch_map.device).unsqueeze(1).expand(-1, k).reshape(-1)
-        dst = nbr_idx.reshape(-1)
-        # Offset by batch start
-        src = src + b * N
-        dst = dst + b * N
-        all_edges.append(torch.stack([src, dst], dim=0))
-
-    edge_index = torch.cat(all_edges, dim=1)  # (2, E_total)
+    
+    # (B, C, H, W) -> (B, N, C)
+    x = patch_map.permute(0, 2, 3, 1).reshape(B, N, C)
+    
+    # Tính khoảng cách Euclidean giữa các node trong từng ảnh
+    # dist shape: (B, N, N)
+    dist = torch.cdist(x, x)
+    
+    # Loại bỏ self-loop bằng cách đặt khoảng cách tới chính nó là vô hạn
+    idx_eye = torch.arange(N, device=x.device)
+    dist[:, idx_eye, idx_eye] = float('inf')
+    
+    # Lấy k láng giềng gần nhất
+    # topk_indices shape: (B, N, k)
+    _, topk_indices = dist.topk(k, dim=-1, largest=False)
+    
+    # Tạo edge_index (2, B * N * k)
+    # Row indices: [0, 0, ..., 0, 1, 1, ..., N-1] cho mỗi batch
+    row = torch.arange(N, device=x.device).view(1, N, 1).expand(B, N, k)
+    col = topk_indices
+    
+    # Offset theo batch index để các node không bị nối nhầm sang ảnh khác
+    batch_offset = torch.arange(B, device=x.device).view(B, 1, 1) * N
+    row = (row + batch_offset).reshape(-1)
+    col = (col + batch_offset).reshape(-1)
+    
+    edge_index = torch.stack([row, col], dim=0)
+    
+    # Flatten node features và tạo batch_idx
+    node_feats = x.reshape(B * N, C)
+    batch_idx = torch.arange(B, device=x.device).repeat_interleave(N)
+    
     return node_feats, edge_index, batch_idx
 
 
@@ -424,14 +405,9 @@ class MotifGraphModel(nn.Module):
         # cnn_global: (B, 64)
 
         # (B) Graph construction
-        if _HAS_PYG:
-            node_feats, edge_index, batch_idx = build_knn_graph(
-                patch_map, k=self.k_neighbors
-            )
-        else:
-            node_feats, edge_index, batch_idx = build_knn_graph_fallback(
-                patch_map, k=self.k_neighbors
-            )
+        node_feats, edge_index, batch_idx = build_knn_graph(
+            patch_map, k=self.k_neighbors
+        )
 
         # (C) GNN
         node_emb = self.gnn_encoder(node_feats, edge_index)
