@@ -1,36 +1,56 @@
-# Motif-based Graph FER Configuration
+# Motif-based Graph FER Configuration (v2 — Hybrid CNN+GATConv+Motif)
 
 model:
   name: "motif_graph_fer"
-  feat_dim: 128
+  feat_dim: 64            # CNN output channels; graph node dim
   num_classes: 7
-  motifs_per_class: 6
-  top_k: 4
-  dropout: 0.3
+  k_neighbors: 8          # kNN graph k (patch-level, 6x6=36 nodes)
+  num_motifs: 16          # K learnable motif vectors
+  gat_heads: 4            # GATConv attention heads (concat=False → dim stays 64)
+  motif_tau: 0.1          # temperature for cosine similarity in MotifLayer
+  dropout: 0.3            # classifier dropout
+  motif_div_weight: 0.2   # weight for motif diversity auxiliary loss
 
 data:
-  batch_size: 64
-  num_workers: 4
-  input_size: 48
+  batch_size: 32
+  num_workers: 2
+  image_size: 48
   in_channels: 1
+  mean: [0.5]
+  std: [0.5]
 
 training:
-  epochs: 1000
+  # Phase 1: CNN warmup (freeze GNN/Motif/NodeSelector)
+  phase1_epochs: 20
+  # Phase 2: full end-to-end
+  epochs: 200
+  # LR schedule: Phase1 = 1e-3, Phase2 drops to 1e-4
   lr: 0.001
+  lr_phase2: 0.0001
   weight_decay: 1e-4
-  loss: "motif_combined"
-  motif_loss_weight: 0.5
-  motif_div_weight: 0.05
-  motif_tau: 0.1
-  scheduler: "reduce_lr_on_plateau"
-  patience: 25
-  factor: 0.5
-  use_scn: true
-  scn_warmup_epochs: 10
-  scn_alpha: 1.0
-  scn_rank_lambda: 0.3
+  optimizer: "adam"
+
+  # Loss
+  loss: "cross_entropy"       # base CE; motif_diversity added via get_aux_losses()
+  motif_div_weight: 0.2       # informational — kept for reference
+  motif_diversity_weight: 0.2 # ← Trainer looks up '{key}_weight'; key='motif_diversity'
+
+  # LR Scheduler (applied in Phase 2)
+  scheduler: "cosine"
+  # patience for early stopping (used if ReduceLROnPlateau chosen instead)
+  patience: 20
+  lr_factor: 0.5
+  lr_patience: 5
+
+  # SCN disabled (clean spec run)
+  use_scn: false
+  label_smoothing: 0.1
+
+  # Class weights
+  use_class_weights: true
+  class_weight_mode: "sqrt_inverse"
 
 augmentation:
   flip: true
-  rotation: 10
+  rotation: 15
   zoom: 0.1
