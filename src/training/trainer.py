@@ -297,12 +297,19 @@ class Trainer:
             # Compose simplified loss: classification + diversity + overlap (light)
             loss = cls_loss + (div_lambda_t * div_loss)
             
+            # Option A: Warmup multiplier for Auxiliary Losses
+            # Only apply warmup during Phase 2 (start_epoch > 0). Warm up over 15 epochs.
+            local_ep = ep - self.start_epoch
+            warmup_multiplier = 1.0
+            if self.start_epoch > 0:
+                warmup_multiplier = min(1.0, (local_ep + 1) / 15.0)
+
             # Aggregate ALL other auxiliary losses automatically
             for k, v in aux_losses.items():
                 if k not in ["landmark_diversity", "landmark_entropy", "landmark_sparsity", "landmark_overlap"]:
                     # Default weight 0.1 for new/unknown aux losses or use config
                     w = self.config.get('training', {}).get(f'{k}_weight', 0.1)
-                    loss = loss + float(w) * v
+                    loss = loss + float(w) * v * warmup_multiplier
             
             try:
                 if overlap_lambda_t.item() > 0.0:

@@ -30,7 +30,8 @@ training:
   optimizer: "adam"
 
   # Loss
-  loss: "cross_entropy"
+  loss: "focal"
+  focal_gamma: 2.0
   label_smoothing: 0.1
 
   # Auxiliary loss weights (used by Trainer via get_aux_losses key lookup)
@@ -46,7 +47,7 @@ training:
   lr_patience: 5
 
   # SCN disabled for clean semantic-graph run
-  use_scn: false
+  use_scn: True
 
   # Class weights
   use_class_weights: true
