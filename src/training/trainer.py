@@ -299,7 +299,8 @@ class Trainer:
             
             # Option A: Warmup multiplier for Auxiliary Losses
             # Only apply warmup during Phase 2 (start_epoch > 0). Warm up over 15 epochs.
-            local_ep = ep - self.start_epoch
+            current_ep = getattr(self, '_current_epoch', self.start_epoch)
+            local_ep = current_ep - self.start_epoch
             warmup_multiplier = 1.0
             if self.start_epoch > 0:
                 warmup_multiplier = min(1.0, (local_ep + 1) / 15.0)
