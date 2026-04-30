@@ -190,6 +190,7 @@ class HybridAdjacency(nn.Module):
             nn.Linear(64, 1),
             nn.Sigmoid(),
         )
+        self._last_A_learned = None
 
     def forward(self, node_feats):
         """
@@ -210,6 +211,16 @@ class HybridAdjacency(nn.Module):
 
         # Learned edge weights: A_learned_ij ∈ (0, 1)
         A_learned = self.edge_mlp(pairs).squeeze(-1)  # (B, N, N)
+
+        # --- Step 3: Top-k edges sparsity ---
+        # Only keep top 4 strongest learned connections per node
+        k_edges = min(4, N)
+        vals, idx = torch.topk(A_learned, k_edges, dim=-1)
+        mask = torch.zeros_like(A_learned).scatter_(-1, idx, 1.0)
+        A_learned = A_learned * mask
+        
+        # Save for entropy loss (Step 1)
+        self._last_A_learned = A_learned
 
         # Edge-wise fusion
         A_fixed = self.A_fixed.unsqueeze(0)            # (1, N, N)
@@ -552,6 +563,14 @@ class SemanticMotifGNN(nn.Module):
         losses["motif_symmetry"] = self.motif_bank.symmetry_loss()
         losses["motif_region"] = self.motif_bank.region_consistency_loss()
         losses["motif_diversity"] = self.motif_bank.diversity_loss()
+        
+        # Binary Entropy on learned adjacency (Step 1)
+        if hasattr(self.adjacency, "_last_A_learned") and self.adjacency._last_A_learned is not None:
+            A = self.adjacency._last_A_learned
+            eps = 1e-6
+            entropy = -(A * torch.log(A + eps) + (1 - A) * torch.log(1 - A + eps))
+            losses["adjacency_entropy"] = entropy.mean()
+
         if self._contrastive_loss is not None:
             losses["contrastive_match"] = self._contrastive_loss
         return losses

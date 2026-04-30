@@ -30,8 +30,7 @@ training:
   optimizer: "adam"
 
   # Loss
-  loss: "focal"
-  focal_gamma: 2.0
+  loss: "cross_entropy"
   label_smoothing: 0.1
 
   # Auxiliary loss weights (used by Trainer via get_aux_losses key lookup)
@@ -39,6 +38,7 @@ training:
   motif_symmetry_weight: 0.05
   motif_region_weight: 0.05
   motif_diversity_weight: 0.02
+  adjacency_entropy_weight: 0.05
 
   # Scheduler
   scheduler: "cosine"
