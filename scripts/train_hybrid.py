@@ -53,7 +53,7 @@ except ImportError:
 
 # ══════════════════════════════════════════════════════════════════════════════
 def build_phase_trainer(model, train_loader, val_loader, config,
-                        device, run_name, save_dir, lr_override=None, start_epoch=0):
+                        device, run_name, save_dir, lr_override=None):
     """
     Build a Trainer with optionally overridden LR.
     Rebuilds optimizer so Phase-2 gets a fresh Adam at lr_phase2.
@@ -78,7 +78,6 @@ def build_phase_trainer(model, train_loader, val_loader, config,
         device=device,
         run_name=run_name,
         save_dir=save_dir,
-        start_epoch=start_epoch,
     )
     return trainer
 
@@ -176,7 +175,6 @@ def main():
             run_name=f"{run_name}_p1",
             save_dir=save_path,
             lr_override=None,
-            start_epoch=0,
         )
         p1_trainer.fit()
         print("[Phase 1] Done.\n")
@@ -205,7 +203,6 @@ def main():
         run_name=run_name,
         save_dir=save_path,
         lr_override=lr_phase2,
-        start_epoch=phase1_epochs,
     )
     p2_trainer.fit()
     print("[Phase 2] Done.\n")

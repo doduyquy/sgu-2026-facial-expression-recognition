@@ -10,12 +10,11 @@ def load_checkpoints(model, optimizer, checkpoint_path, device):
 
     print(f"--> Loading ckpt from {checkpoint_path}")
 
-    ckpt = torch.load(checkpoint_path, map_location=device)
+    ckpt = torch.load(checkpoint_path)
     # load weight -> model
     model.load_state_dict(ckpt['model_state_dict'])
     # load optimizer and return current checkpoint
-    if optimizer is not None and 'optimizer_state_dict' in ckpt:
-        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+    optimizer.load_state_dict(ckpt['optimizer_state_dict'])
 
     return ckpt['epoch']
 
