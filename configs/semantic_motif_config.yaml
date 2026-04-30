@@ -1,0 +1,58 @@
+# SemanticMotif-GNN Configuration
+# Semantic Graph + Structured Motif model for FER2013
+
+model:
+  name: "semantic_motif_gnn"
+  feat_dim: 64             # CNN output / node feature dimension
+  num_classes: 7
+  num_regions: 8           # semantic facial regions (nodes)
+  motifs_per_class: 4      # learnable motif prototypes per emotion
+  gat_heads: 4             # multi-head attention heads
+  match_tau: 0.07          # temperature for contrastive matching
+  dropout: 0.3
+
+data:
+  batch_size: 64
+  num_workers: 2
+  image_size: 48
+  in_channels: 1
+  mean: [0.5]
+  std: [0.5]
+
+training:
+  # Phase 1: backbone warmup
+  phase1_epochs: 15
+  # Phase 2: end-to-end training
+  epochs: 200
+  lr: 0.001
+  lr_phase2: 0.0001
+  weight_decay: 1e-4
+  optimizer: "adam"
+
+  # Loss
+  loss: "cross_entropy"
+  label_smoothing: 0.1
+
+  # Auxiliary loss weights (used by Trainer via get_aux_losses key lookup)
+  contrastive_match_weight: 0.5
+  motif_symmetry_weight: 0.1
+  motif_region_weight: 0.1
+  motif_diversity_weight: 0.2
+
+  # Scheduler
+  scheduler: "cosine"
+  patience: 20
+  lr_factor: 0.5
+  lr_patience: 5
+
+  # SCN disabled for clean semantic-graph run
+  use_scn: false
+
+  # Class weights
+  use_class_weights: true
+  class_weight_mode: "sqrt_inverse"
+
+augmentation:
+  flip: true
+  rotation: 15
+  zoom: 0.1
