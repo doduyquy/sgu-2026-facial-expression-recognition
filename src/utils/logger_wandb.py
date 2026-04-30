@@ -19,7 +19,7 @@ def init_wandb(config, run_name=None):
 
 def log_metrics(metrics_dict, epoch=None):
     if wandb.run is not None:
-        wandb.log(metrics_dict, step=epoch)
+        wandb.log(metrics_dict)
 
 def log_image_to_wandb(tag, fig):
     """Log 10 true image and 10 wrong image"""

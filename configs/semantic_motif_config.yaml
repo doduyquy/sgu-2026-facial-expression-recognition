@@ -34,10 +34,10 @@ training:
   label_smoothing: 0.1
 
   # Auxiliary loss weights (used by Trainer via get_aux_losses key lookup)
-  contrastive_match_weight: 0.5
-  motif_symmetry_weight: 0.1
-  motif_region_weight: 0.1
-  motif_diversity_weight: 0.2
+  contrastive_match_weight: 0.2
+  motif_symmetry_weight: 0.05
+  motif_region_weight: 0.05
+  motif_diversity_weight: 0.02
 
   # Scheduler
   scheduler: "cosine"

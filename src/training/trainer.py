@@ -9,8 +9,9 @@ from src.utils.logger_wandb import init_wandb, log_image_to_wandb, log_metrics
 
 class Trainer:
     """Forward -> Compute loss -> zero_grad -> Backward -> Update weights (step)"""
-    def __init__(self, model, train_loader, val_loader, criterion, optimizer, scheduler, config, device, run_name, save_dir):
+    def __init__(self, model, train_loader, val_loader, criterion, optimizer, scheduler, config, device, run_name, save_dir, start_epoch=0):
         self.model = model.to(device)
+        self.start_epoch = start_epoch
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.criterion = criterion
@@ -532,10 +533,10 @@ class Trainer:
 
         print(f'\n--> Start training in total {self.epochs} epochs with {self.device} device. Start...\n')
 
-        for ep in range(self.epochs):
+        for ep in range(self.start_epoch, self.start_epoch + self.epochs):
             # expose current epoch for runtime gating (SCN warmup etc.)
             self._current_epoch = ep
-            progress = ep / max(self.epochs - 1, 1)
+            progress = (ep - self.start_epoch) / max(self.epochs - 1, 1)
             set_progress = getattr(self.model, "set_training_progress", None)
             if callable(set_progress):
                 try:

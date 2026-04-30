@@ -384,7 +384,7 @@ class ContrastiveMotifMatcher(nn.Module):
     differentiable hard selection.
     """
 
-    def __init__(self, feat_dim, num_classes=7, motifs_per_class=4, tau=0.07):
+    def __init__(self, feat_dim, num_classes=7, motifs_per_class=4, tau=0.07, num_nodes=8):
         super().__init__()
         self.tau = tau
         self.C = num_classes
@@ -394,6 +394,8 @@ class ContrastiveMotifMatcher(nn.Module):
             nn.ReLU(),
             nn.Linear(feat_dim, feat_dim),
         )
+        # Learnable node importance for weighted similarity (attention over nodes)
+        self.node_importance = nn.Parameter(torch.zeros(num_nodes))
 
     def forward(self, graph_nodes, motif_bank, targets=None):
         """
@@ -411,8 +413,13 @@ class ContrastiveMotifMatcher(nn.Module):
         g = F.normalize(self.proj(graph_nodes), dim=-1)                 # (B, N, D)
         m = F.normalize(motif_bank.view(C * M, N, D), dim=-1)          # (CM, N, D)
 
-        # Node-aligned cosine similarity averaged over nodes → (B, CM)
-        sim = torch.einsum("bnd,mnd->bm", g, m) / N
+        # Node-aligned cosine similarity: (B, CM, N)
+        sim = torch.einsum("bnd,mnd->bmn", g, m)
+
+        # Weighted node attention instead of simple average
+        node_weight = F.softmax(self.node_importance, dim=-1)  # (N,)
+        sim = (sim * node_weight).sum(dim=-1)                  # (B, CM)
+        
         sim_scaled = sim / self.tau
 
         # Gumbel noise for exploration during training
@@ -420,17 +427,19 @@ class ContrastiveMotifMatcher(nn.Module):
             gumbel = -torch.log(-torch.log(torch.rand_like(sim_scaled) + 1e-8) + 1e-8)
             sim_scaled = sim_scaled + gumbel * 0.05
 
-        # Reshape to (B, C, M) — pick top-2 motifs per class
+        # Reshape to (B, C, M)
         sim_class = sim_scaled.view(B, C, M)
-        k = min(2, M)
-        topk_sim = sim_class.topk(k=k, dim=-1)[0].mean(dim=-1)   # (B, C)
+        
+        # Softmax pooling (logsumexp) instead of hard top-k
+        # This provides smoother gradients and allows all motifs to learn
+        match_sim = torch.logsumexp(sim_class, dim=-1)   # (B, C)
 
         # InfoNCE contrastive loss
         contrastive_loss = None
         if targets is not None:
-            contrastive_loss = F.cross_entropy(topk_sim, targets)
+            contrastive_loss = F.cross_entropy(match_sim, targets)
 
-        return topk_sim, contrastive_loss
+        return match_sim, contrastive_loss
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +479,7 @@ class SemanticMotifGNN(nn.Module):
         self.motif_bank = StructuredMotifBank(C, M, N, D)
 
         # --- Contrastive Matcher ---
-        self.matcher = ContrastiveMotifMatcher(D, C, M, tau=tau)
+        self.matcher = ContrastiveMotifMatcher(D, C, M, tau=tau, num_nodes=N)
 
         # --- Global Branch ---
         self.global_pool = nn.AdaptiveAvgPool2d(1)
@@ -482,7 +491,8 @@ class SemanticMotifGNN(nn.Module):
             nn.Linear(128, C),
         )
 
-        # Fusion gate
+        # Fusion logic
+        self.match_ln = nn.LayerNorm(C)
         self.alpha = nn.Parameter(torch.tensor(0.5))
 
         # Internal state
@@ -509,6 +519,18 @@ class SemanticMotifGNN(nn.Module):
 
         # 5. Motif matching
         motifs = self.motif_bank.get_motifs()             # (C, M, N, D)
+
+        # EMA Prototype Update: push motifs towards the actual graph nodes of their class
+        if self.training and targets is not None:
+            with torch.no_grad():
+                for c in range(self.num_classes):
+                    mask = (targets == c)
+                    if mask.sum() > 0:
+                        class_nodes = nodes[mask].mean(dim=0)  # (N, D)
+                        # 0.99 decay for stability
+                        self.motif_bank.motif_feats.data[c] = \
+                            0.95 * self.motif_bank.motif_feats.data[c] + 0.05 * class_nodes.unsqueeze(0)
+
         match_logits, contrastive_loss = self.matcher(
             nodes, motifs, targets
         )                                                 # (B, C)
@@ -517,7 +539,9 @@ class SemanticMotifGNN(nn.Module):
 
         # 6. Fusion
         gate = torch.sigmoid(self.alpha)
-        logits = match_logits + gate * logits_global
+        # Scale match logits to match global_logits scale via LayerNorm
+        match_logits_norm = self.match_ln(match_logits)
+        logits = match_logits_norm + gate * logits_global
 
         return logits
 
