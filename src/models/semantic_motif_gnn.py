@@ -544,6 +544,38 @@ class SemanticMotifGNN(nn.Module):
     def get_current_prior_strength(self):
         return 0.0
 
+    # ---- Two-phase training support (used by train_hybrid.py) ----
+
+    def freeze_for_phase1(self):
+        """
+        Phase 1 — CNN warmup: freeze graph + motif components,
+        train only backbone + global classifier.
+        """
+        # Freeze: node extractor, adjacency, GAT, motif bank, matcher
+        frozen_modules = [
+            self.node_extractor,
+            self.adjacency,
+            self.motif_bank,
+            self.matcher,
+        ]
+        frozen_modules.extend(self.gat_layers)
+
+        for module in frozen_modules:
+            for param in module.parameters():
+                param.requires_grad = False
+
+        # Keep backbone + global_fc + alpha trainable (they are by default)
+        trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in self.parameters())
+        print(f"[Phase1 Freeze] Trainable: {trainable:,} / {total:,} params")
+
+    def unfreeze_all(self):
+        """Phase 2 — unfreeze everything for end-to-end training."""
+        for param in self.parameters():
+            param.requires_grad = True
+        trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        print(f"[Unfreeze All] Trainable: {trainable:,} params")
+
 
 # ---------------------------------------------------------------------------
 # Standalone test
