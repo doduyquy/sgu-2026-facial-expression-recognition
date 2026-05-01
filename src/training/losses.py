@@ -106,7 +106,11 @@ def build_loss(config, class_weights=None):
     elif loss_name == 'motif_combined':
         # Combined CrossEntropy and MotifConsistencyLoss
         alpha_weight = config['training'].get('motif_loss_weight', 0.5)
-        ce_loss = nn.CrossEntropyLoss()
+        label_smoothing = config['training'].get('label_smoothing', 0.0)
+        if class_weights is not None:
+            ce_loss = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
+        else:
+            ce_loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
         motif_loss = MotifConsistencyLoss(
             num_classes=config['model'].get('num_classes', 7),
             motifs_per_class=config['model'].get('motifs_per_class', 8),

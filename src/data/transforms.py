@@ -12,17 +12,25 @@ def build_transform(config, split="train") -> Compose: # train | val | test
         compose: a transform compose
     """
     image_size = config['data']['image_size']
+    aug = config.get('augmentation', {}) if isinstance(config, dict) else {}
+    hflip_p = float(aug.get('hflip_p', 0.5))
+    rotation = float(aug.get('rotation', 15))
+    perspective_scale = float(aug.get('perspective_scale', 0.2))
+    perspective_p = float(aug.get('perspective_p', 0.5))
+    crop_scale = aug.get('crop_scale', (0.8, 1.0))
+    if isinstance(crop_scale, list):
+        crop_scale = tuple(crop_scale)
     if split == "train":
         trans = v2.Compose([
             # v2.Grayscale(num_output_channels=1),
             
             # Augmentation
             v2.Resize(size=(image_size, image_size)),
-            v2.RandomHorizontalFlip(p=0.5),
-            v2.RandomRotation(15), # Giảm xuống 15 độ cho "nhẹ nhàng"
-            v2.RandomPerspective(distortion_scale=0.2, p=0.5), # Thêm perspective để test Deformable
+            v2.RandomHorizontalFlip(p=hflip_p),
+            v2.RandomRotation(rotation), # Giảm xuống 15 độ cho "nhẹ nhàng"
+            v2.RandomPerspective(distortion_scale=perspective_scale, p=perspective_p), # Thêm perspective để test Deformable
             # crop image with output shape: (image_size, image_size), small zoom 
-            v2.RandomResizedCrop(size=(image_size), scale=(0.8, 1)),
+            v2.RandomResizedCrop(size=(image_size), scale=crop_scale),
 
             v2.ToImage(),
             v2.ToDtype(torch.float32, scale=True), # scale=True: / 255

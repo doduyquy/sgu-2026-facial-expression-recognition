@@ -22,6 +22,9 @@ training:
   motif_loss_weight: 0.5
   motif_div_weight: 0.05
   motif_tau: 0.1
+  label_smoothing: 0.05
+  use_class_weights: true
+  class_weight_mode: "sqrt_inverse"
   scheduler: "reduce_lr_on_plateau"
   patience: 25
   factor: 0.5
@@ -31,6 +34,8 @@ training:
   scn_rank_lambda: 0.3
 
 augmentation:
-  flip: true
+  hflip_p: 0.5
   rotation: 10
-  zoom: 0.1
+  perspective_scale: 0.1
+  perspective_p: 0.3
+  crop_scale: [0.9, 1.0]
