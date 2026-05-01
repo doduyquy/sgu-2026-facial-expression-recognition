@@ -42,7 +42,7 @@ training:
   lr_patience: 5
   
   # SCN (Sample Classification Network)
-  use_scn: true
+  use_scn: False
   scn_warmup_epochs: 10
   scn_alpha: 1.0
   scn_rank_lambda: 0.3
