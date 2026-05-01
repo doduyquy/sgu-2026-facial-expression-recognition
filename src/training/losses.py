@@ -1,6 +1,10 @@
 import torch
 import torch.nn as nn 
 import torch.nn.functional as F
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from training.confusion_loss import ConfusionMatrixLoss, ContrastiveConfusionLoss
 
 class MotifConsistencyLoss(nn.Module):
     def __init__(self, num_classes=7, motifs_per_class=8, tau=0.1):
@@ -144,6 +148,38 @@ def build_loss(config, class_weights=None):
             div_weight=config['training'].get('motif_div_weight', 0.1)
         )
 
+    elif loss_name == 'confusion_matrix':
+        # ConfusionMatrixLoss: Focus on hard emotion pairs
+        margin = config['training'].get('confusion_margin', 0.5)
+        return ConfusionMatrixLoss(num_classes=config['model'].get('num_classes', 7), margin=margin)
+    
+    elif loss_name == 'confusion_combined':
+        # Combined CE + ConfusionMatrixLoss
+        label_smoothing = config['training'].get('label_smoothing', 0.0)
+        if class_weights is not None:
+            ce_loss = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
+        else:
+            ce_loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+        
+        conf_loss = ConfusionMatrixLoss(
+            num_classes=config['model'].get('num_classes', 7),
+            margin=config['training'].get('confusion_margin', 0.5)
+        )
+        
+        class CombinedConfusionLoss(nn.Module):
+            def __init__(self, ce, conf, weight):
+                super().__init__()
+                self.ce = ce
+                self.conf = conf
+                self.weight = weight
+            
+            def forward(self, logits, labels):
+                l_ce = self.ce(logits, labels)
+                l_conf = self.conf(logits, labels)
+                return l_ce + self.weight * l_conf
+        
+        return CombinedConfusionLoss(ce_loss, conf_loss, config['training'].get('confusion_loss_weight', 0.5))
+    
     else: 
         raise ValueError(f"\n[!!!] Not support {loss_name} loss!\n")
 

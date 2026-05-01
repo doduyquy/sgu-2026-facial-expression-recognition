@@ -5,11 +5,13 @@ import math
 
 try:
     from .CBAM import CBAM
+    from .attention import RegionAttention
 except ImportError:
     import sys
     import os
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
     from models.CBAM import CBAM
+    from models.attention import RegionAttention
 
 class MotifBackbone(nn.Module):
     """
@@ -228,6 +230,13 @@ class MotifGraphModel(nn.Module):
         self.logit_scale = nn.Parameter(torch.ones(1) * 10.0)
         # Weight for combining Motif and Global logits
         self.alpha = nn.Parameter(torch.ones(1) * 0.5)
+        
+        # Region Attention for focusing on emotion-specific regions
+        use_region_attention = config.get('use_region_attention', False)
+        if use_region_attention:
+            self.region_attention = RegionAttention(feat_dim=self.feat_dim, num_regions=3)
+        else:
+            self.region_attention = None
 
     def compute_motif_diversity_loss(self):
         m = self.motif_bank.motifs 
@@ -288,6 +297,10 @@ class MotifGraphModel(nn.Module):
         
         feat_map = self.backbone(x) # (B, C, H, W)
         _, _, H, W = feat_map.shape
+        
+        # Apply Region Attention to focus on emotion-specific regions
+        if self.region_attention is not None:
+            feat_map = self.region_attention(feat_map)
         
         # 4. Global Branch prediction
         logits_global = self.global_fc(self.global_pool(feat_map))
