@@ -1,0 +1,34 @@
+# Pixel GNN - moi pixel la 1 node, canh noi 8-neighbor, message dung delta.
+_base_: "base.yaml"
+
+model:
+  name: "pixel_gnn"
+
+  # Pixel graph
+  hidden_dim: 128
+  num_layers: 3
+
+  # Regularization
+  dropout: 0.3
+
+data:
+  image_size: 48
+  channels: 1
+  batch_size: 64
+
+training:
+  lr: 0.001
+  epochs: 300
+  optimizer: "adamw"
+  weight_decay: 0.0001
+  label_smoothing: 0.1
+  scheduler: "cosine"
+  use_class_weights: false
+  patience: 20
+
+env:
+  platform: "kaggle"
+
+kaggle:
+  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
+  root_path: "/kaggle/working/sgu-2026-facial-expression-recognition"

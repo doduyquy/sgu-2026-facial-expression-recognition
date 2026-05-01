@@ -10,6 +10,7 @@ from .region_attention import RegionAlignedFER
 from .resnet_region_attention import ResNetRegionAlignedFER
 from .swin_region_attention import SwinRegionAlignedFER
 from .GraphNN import MotifGNN
+from .PixelGNN import PixelGNN
 # from .vit_ea_6x6 import VisionTransformerEA_6x6
 
 
@@ -41,6 +42,7 @@ MODEL_REGISTRY = {
     "resnet_region_aligned_fer": lambda **kw: ResNetRegionAlignedFER(config=kw['config'], channels=kw['config']['data']['channels']),
     "swin_region_aligned_fer": lambda **kw: SwinRegionAlignedFER(config=kw['config'], channels=kw['config']['data']['channels']),
     "motif_gnn": lambda **kw: MotifGNN(config=kw['config'], channels=kw['config']['data']['channels']),
+    "pixel_gnn": lambda **kw: PixelGNN(config=kw['config'], channels=kw['config']['data']['channels']),
     # "resmaskingnet": ResMaskingNet,
     "efficientnet_fer2013": EfficientNetForFER2013,
     "vgg_ea_cnn": lambda **kw: VGGEA_CNN(config=kw['config'], channels=kw['config']['data']['channels']),
