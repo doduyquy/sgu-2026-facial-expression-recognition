@@ -58,7 +58,7 @@ class ConfusionMatrixLoss(nn.Module):
             label_b = labels[b].item()
             
             # Check if this sample belongs to a hard confusion pair
-            pair_loss = 0.0
+            pair_loss = torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
             is_hard_pair = False
             
             for class_i, class_j, weight in self.confusion_pairs:
@@ -68,7 +68,7 @@ class ConfusionMatrixLoss(nn.Module):
                     score_false = logit_b[class_j]
                     # Margin-based loss: want score_true > score_false + margin
                     pair_loss_ij = weight * F.relu(self.margin + score_false - score_true)
-                    pair_loss += pair_loss_ij
+                    pair_loss = pair_loss + pair_loss_ij
                     is_hard_pair = True
                 
                 # Case 2: True label is class_j, penalize predicting class_i
@@ -76,7 +76,7 @@ class ConfusionMatrixLoss(nn.Module):
                     score_true = logit_b[class_j]
                     score_false = logit_b[class_i]
                     pair_loss_ji = weight * F.relu(self.margin + score_false - score_true)
-                    pair_loss += pair_loss_ji
+                    pair_loss = pair_loss + pair_loss_ji
                     is_hard_pair = True
             
             losses.append(pair_loss)
