@@ -178,7 +178,8 @@ class PixelDeltaLayer(nn.Module):
         msg_max = masked_for_max.max(dim=2).values
         msg_max = torch.where(torch.isfinite(msg_max), msg_max, torch.zeros_like(msg_max))
 
-        msg_var = ((messages - msg_mean.unsqueeze(2)).pow(2) * valid_f).sum(dim=2) / degree
+        msg_second_moment = (messages.pow(2) * valid_f).sum(dim=2) / degree
+        msg_var = msg_second_moment - msg_mean.pow(2)
         msg_std = torch.sqrt(msg_var.clamp_min(0.0) + 1e-8)
 
         agg = self.agg_proj(torch.cat([msg_mean, msg_max, msg_std], dim=-1))

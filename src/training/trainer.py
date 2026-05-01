@@ -1,4 +1,5 @@
 import torch
+import torch.distributed as dist
 from torch import device
 import os
 import numpy as np 
@@ -26,8 +27,37 @@ class Trainer:
         self.config = config
         self.path_save_ckpt = save_dir
         self.monitor = config['training'].get('monitor', 'val_loss')
+        self.is_distributed = dist.is_available() and dist.is_initialized()
+        self.rank = dist.get_rank() if self.is_distributed else 0
+        self.is_main_process = self.rank == 0
         if self.monitor not in ['val_loss', 'val_accuracy']:
             raise ValueError("training.monitor must be either 'val_loss' or 'val_accuracy'")
+
+    def _unwrap_model(self):
+        return self.model.module if hasattr(self.model, "module") else self.model
+
+    def _reduce_epoch_stats(self, loss_sum, corrects, total, ortho_sum=0.0):
+        stats = torch.tensor(
+            [loss_sum, float(corrects), float(total), ortho_sum],
+            device=self.device,
+            dtype=torch.float64,
+        )
+        if self.is_distributed:
+            dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+
+        total = max(stats[2].item(), 1.0)
+        epoch_loss = stats[0].item() / total
+        epoch_acc = stats[1] / total
+        epoch_ortho = stats[3].item() / total if stats[3].item() > 0 else 0.0
+        return epoch_loss, torch.tensor(epoch_acc, device=self.device), epoch_ortho
+
+    def _sync_stop_flag(self, should_stop):
+        if not self.is_distributed:
+            return should_stop
+
+        stop_tensor = torch.tensor(int(should_stop), device=self.device)
+        dist.broadcast(stop_tensor, src=0)
+        return bool(stop_tensor.item())
 
 
     def train_one_epoch(self):
@@ -96,11 +126,7 @@ class Trainer:
             corrects += torch.sum(preds == labels.data)
             total += labels.size(0)
 
-        epoch_loss = running_loss / total
-        epoch_acc = corrects.double() / total
-        epoch_ortho = (running_ortho / total) if running_ortho > 0 else 0.0
-
-        return epoch_loss, epoch_acc, epoch_ortho
+        return self._reduce_epoch_stats(running_loss, corrects, total, running_ortho)
 
 
     def validate(self):
@@ -122,9 +148,7 @@ class Trainer:
                 corrects += torch.sum(preds == labels.data)
                 total += labels.size(0)
 
-        epoch_loss = running_loss / total
-        epoch_acc = corrects.double() / total
-
+        epoch_loss, epoch_acc, _ = self._reduce_epoch_stats(running_loss, corrects, total)
         return epoch_loss, epoch_acc
 
 
@@ -133,9 +157,10 @@ class Trainer:
         Return:
             all_train_loss, all_val_loss
         """
-        print(f'\n--> Train on {len(self.train_loader.dataset)} samples, validate on {len(self.val_loader.dataset)} samples')
+        if self.is_main_process:
+            print(f'\n--> Train on {len(self.train_loader.dataset)} samples, validate on {len(self.val_loader.dataset)} samples')
 
-        if self.use_wandb:
+        if self.use_wandb and self.is_main_process:
             init_wandb(config=self.config, run_name=self.run_name)
 
         best_score = float("inf") if self.monitor == 'val_loss' else -float("inf")
@@ -143,13 +168,17 @@ class Trainer:
         all_train_loss = []
         all_val_loss = []
 
-        print(f'\n--> Start training in total {self.epochs} epochs with {self.device} device. Start...\n')
+        if self.is_main_process:
+            print(f'\n--> Start training in total {self.epochs} epochs with {self.device} device. Start...\n')
 
         for ep in range(self.epochs):
+            if self.is_distributed and hasattr(self.train_loader.sampler, "set_epoch"):
+                self.train_loader.sampler.set_epoch(ep)
 
             # ── Transfer Learning: kiểm tra có cần mở băng backbone không ──
-            if hasattr(self.model, 'check_unfreeze'):
-                should_rebuild = self.model.check_unfreeze(ep)
+            base_model = self._unwrap_model()
+            if hasattr(base_model, 'check_unfreeze'):
+                should_rebuild = base_model.check_unfreeze(ep)
                 if should_rebuild:
                     # Rebuild optimizer với LR nhỏ hơn cho fine-tuning
                     finetune_lr = self.config['training'].get('finetune_lr', 1e-5)
@@ -165,7 +194,8 @@ class Trainer:
                     
                     # RESET bộ đếm Early Stopping để Phase 2 được chạy đủ
                     patience_counter = 0
-                    print(f"[Trainer] Rebuilt optimizer & scheduler with finetune_lr={finetune_lr} and reset patience.")
+                    if self.is_main_process:
+                        print(f"[Trainer] Rebuilt optimizer & scheduler with finetune_lr={finetune_lr} and reset patience.")
 
             train_loss, train_acc, train_ortho_loss = self.train_one_epoch()
             val_loss, val_acc = self.validate()
@@ -173,14 +203,15 @@ class Trainer:
             all_train_loss.append(train_loss)
             all_val_loss.append(val_loss)
 
-            print(
-                f"Epoch {ep+1}/{self.epochs} - "
-                f"loss: {train_loss:.4f} (ortho: {train_ortho_loss:.4f}) - accuracy: {train_acc.item():.4f} - "
-                f"val_loss: {val_loss:.4f} - val_accuracy: {val_acc.item():.4f}"
-            )
+            if self.is_main_process:
+                print(
+                    f"Epoch {ep+1}/{self.epochs} - "
+                    f"loss: {train_loss:.4f} (ortho: {train_ortho_loss:.4f}) - accuracy: {train_acc.item():.4f} - "
+                    f"val_loss: {val_loss:.4f} - val_accuracy: {val_acc.item():.4f}"
+                )
 
             # wandb log
-            if self.use_wandb:
+            if self.use_wandb and self.is_main_process:
                 log_metrics({
                     "Epoch": ep + 1,
                     "Train/Loss": train_loss,
@@ -201,31 +232,38 @@ class Trainer:
             current_score = val_loss if self.monitor == 'val_loss' else val_acc.item()
             improved = current_score < best_score if self.monitor == 'val_loss' else current_score > best_score
 
+            should_stop = False
             if improved:
                 best_score = current_score
                 patience_counter = 0
 
-                torch.save({
-                    "model_state_dict": self.model.state_dict(),
-                    "optimizer_state_dict": self.optimizer.state_dict(),
-                    "epoch": ep,
-                    "val_loss": val_loss,
-                    "val_accuracy": val_acc.item(),
-                    "monitor": self.monitor,
-                    "best_score": best_score,
-                }, self.path_save_ckpt)
-                print(
-                    f"\t--- Save best at ep {ep+1}, "
-                    f"val_loss: {val_loss:.4f}, val_accuracy: {val_acc.item():.4f}, "
-                    f"monitor: {self.monitor}, path: {self.path_save_ckpt} ---"
-                )
+                if self.is_main_process:
+                    torch.save({
+                        "model_state_dict": self._unwrap_model().state_dict(),
+                        "optimizer_state_dict": self.optimizer.state_dict(),
+                        "epoch": ep,
+                        "val_loss": val_loss,
+                        "val_accuracy": val_acc.item(),
+                        "monitor": self.monitor,
+                        "best_score": best_score,
+                    }, self.path_save_ckpt)
+                    print(
+                        f"\t--- Save best at ep {ep+1}, "
+                        f"val_loss: {val_loss:.4f}, val_accuracy: {val_acc.item():.4f}, "
+                        f"monitor: {self.monitor}, path: {self.path_save_ckpt} ---"
+                    )
 
             else:
                 patience_counter += 1
-                print(f"\t-!- No improvement: {patience_counter}/{self.patience}")
+                if self.is_main_process:
+                    print(f"\t-!- No improvement: {patience_counter}/{self.patience}")
                 if patience_counter >= self.patience:
-                    print(f"\t-_- Early stopping at ep={ep+1}")
-                    break
+                    if self.is_main_process:
+                        print(f"\t-_- Early stopping at ep={ep+1}")
+                    should_stop = True
+
+            if self._sync_stop_flag(should_stop):
+                break
 
         return all_train_loss, all_val_loss
 

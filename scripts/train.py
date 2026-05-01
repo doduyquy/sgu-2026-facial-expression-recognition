@@ -2,6 +2,8 @@ import os
 import wandb
 import torch
 import argparse
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from src.utils.config import load_config
 from src.utils.seed import set_seed
 from src.utils.logger_wandb import init_wandb
@@ -20,6 +22,30 @@ from src.utils.data_stats import get_class_distribution # testing: class weight
 from datetime import datetime
 #-------------------------------------------------------------
 
+def setup_distributed():
+    if "RANK" not in os.environ or "WORLD_SIZE" not in os.environ:
+        return False, 0, 1, 0
+
+    rank = int(os.environ["RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("DDP needs CUDA GPUs. Run without torchrun for CPU/single process.")
+
+    torch.cuda.set_device(local_rank)
+    dist.init_process_group(backend="nccl")
+    return True, rank, world_size, local_rank
+
+
+def cleanup_distributed():
+    if dist.is_available() and dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def is_main_process():
+    return not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == 0
+
 def resolve_data_path(data_path):
     required_files = {"train.csv", "val.csv", "test.csv"}
     if os.path.isdir(data_path):
@@ -36,11 +62,16 @@ def resolve_data_path(data_path):
     )
 
 def main():
-    print("\t\t--> In main <--\t\t")
+    distributed, rank, world_size, local_rank = setup_distributed()
+    if is_main_process():
+        print("\t\t--> In main <--\t\t")
 
     # device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  
-    print("--- Use device:", device)
+    device = torch.device(f"cuda:{local_rank}" if distributed else ("cuda" if torch.cuda.is_available() else "cpu"))
+    if is_main_process():
+        print("--- Use device:", device)
+        if distributed:
+            print(f"--- DDP enabled: world_size={world_size}")
 
     # get args 
     parser = argparse.ArgumentParser()
@@ -64,7 +95,11 @@ def main():
     run_name = f"{config['model'].get('name', 'cnn')}_{timestamp}"
 
     # load data, loss, optim, model
-    train_loader, val_loader, test_loader = build_dataloader(config=config, data_path=data_path)
+    train_loader, val_loader, test_loader = build_dataloader(
+        config=config,
+        data_path=data_path,
+        distributed=distributed,
+    )
     
     model = get_model(
         name=config['model']['name'],
@@ -77,20 +112,26 @@ def main():
     
     if hasattr(model, 'load_pretrained_backbones'):
         if pretrained_vgg and pretrained_resnet:
-            print("\n" + "="*50 + "\n[Transfer Learning] Loading dual pretrained backbones...\n" + "="*50)
+            if is_main_process():
+                print("\n" + "="*50 + "\n[Transfer Learning] Loading dual pretrained backbones...\n" + "="*50)
             model.load_pretrained_backbones(pretrained_vgg, pretrained_resnet, device=device)
             model.freeze_backbones()
-            print("="*50 + "\n")
+            if is_main_process():
+                print("="*50 + "\n")
         elif pretrained_resnet:
-            print("\n" + "="*50 + "\n[Transfer Learning] Loading ResNet pretrained backbone...\n" + "="*50)
+            if is_main_process():
+                print("\n" + "="*50 + "\n[Transfer Learning] Loading ResNet pretrained backbone...\n" + "="*50)
             model.load_pretrained_backbones(resnet_ckpt_path=pretrained_resnet, device=device)
             model.freeze_backbones()
-            print("="*50 + "\n")
+            if is_main_process():
+                print("="*50 + "\n")
         elif pretrained_vgg:
-            print("\n" + "="*50 + "\n[Transfer Learning] Loading VGG pretrained backbone...\n" + "="*50)
+            if is_main_process():
+                print("\n" + "="*50 + "\n[Transfer Learning] Loading VGG pretrained backbone...\n" + "="*50)
             model.load_pretrained_backbones(vgg_ckpt_path=pretrained_vgg, device=device)
             model.freeze_backbones()
-            print("="*50 + "\n")
+            if is_main_process():
+                print("="*50 + "\n")
 
 
     # get class_distribution for class_weights (optional)
@@ -98,13 +139,18 @@ def main():
     class_weights = None
     
     if use_class_weights:
-        print("--> Using Class Weights to handle imbalance...")
+        if is_main_process():
+            print("--> Using Class Weights to handle imbalance...")
         trainset_path = os.path.join(data_path, "train.csv")
         train_class_distribution = get_class_distribution(trainset_path)
         train_class_distribution_np = train_class_distribution.values
         class_weights = 1.0 / torch.tensor(train_class_distribution_np, dtype=torch.float)
         class_weights = class_weights / class_weights.sum()
         class_weights = class_weights.to(device)
+
+    model = model.to(device)
+    if distributed:
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
 
     loss = build_loss(config=config, class_weights=class_weights)
     optimizer = build_optimizer(model=model, config=config)
@@ -129,6 +175,13 @@ def main():
     train_losses, val_losses = trainer.fit()
 
     # evaluate
+    if distributed:
+        dist.barrier()
+
+    if not is_main_process():
+        cleanup_distributed()
+        return
+
     print("\n" + "="*51)
     print("Evaluate in test set")
     print("="*51)
@@ -154,6 +207,7 @@ def main():
         wandb.finish()
 
     print("\n\t\tDONE!\n")
+    cleanup_distributed()
 
     
 

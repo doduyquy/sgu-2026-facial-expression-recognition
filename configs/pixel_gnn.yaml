@@ -14,7 +14,7 @@ model:
 data:
   image_size: 48
   channels: 1
-  batch_size: 64
+  batch_size: 16
 
 training:
   lr: 0.001
