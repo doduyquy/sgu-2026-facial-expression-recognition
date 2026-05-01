@@ -49,13 +49,6 @@ training:
   scn_min_weight: 0.2
   scn_margin: 0.4
 
-logging:
-  use_wandb: true
-  wandb_entity: "phucga15062005"
-  wandb_project: "FER2013"
-
-env:
-  platform: "local"
 
 # Gentle augmentation for 48x48 images
 augmentation:
@@ -64,12 +57,3 @@ augmentation:
   perspective_scale: 0.05  # Minimal perspective distortion
   perspective_p: 0.2
   crop_scale: [0.95, 1.0]  # Tight crop to preserve details
-
-# Local environment paths
-local:
-  data_path: "./dataset"
-  root_path: "./"
-
-kaggle:
-  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
-  root_path: "/kaggle/working/sgu-2026-facial-expression-recognition"
