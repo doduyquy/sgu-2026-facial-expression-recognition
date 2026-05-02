@@ -189,10 +189,15 @@ class RegionAttentionModule(nn.Module):
     - Use spatial softmax (not channel-wise) to focus on WHERE
     - K regions per emotion helps with multiple aspects
     """
-    def __init__(self, feat_dim=128, num_regions=3):
+    def __init__(self, feat_dim=128, num_regions=3, attention_temperature=0.5, attention_power=1.0, learnable_temperature=True):
         super().__init__()
         self.feat_dim = feat_dim
         self.num_regions = num_regions
+        self.attention_power = float(attention_power)
+        if learnable_temperature:
+            self.temperature = nn.Parameter(torch.tensor(float(attention_temperature)))
+        else:
+            self.register_buffer("temperature", torch.tensor(float(attention_temperature)))
         
         # Generate K attention maps using 1x1 convolution
         self.attention_generator = nn.Conv2d(feat_dim, num_regions, kernel_size=1)
@@ -221,7 +226,11 @@ class RegionAttentionModule(nn.Module):
         # Spatial softmax - normalize over spatial dimension for each region
         # Reshape for softmax: (B, K, H*W)
         attention_logits_flat = attention_logits.view(B, self.num_regions, -1)
-        attention_maps_flat = F.softmax(attention_logits_flat, dim=-1)  # (B, K, H*W)
+        temperature = torch.clamp(self.temperature, min=0.05)
+        attention_maps_flat = F.softmax(attention_logits_flat / temperature, dim=-1)  # (B, K, H*W)
+        if self.attention_power > 1.0:
+            attention_maps_flat = attention_maps_flat.pow(self.attention_power)
+            attention_maps_flat = attention_maps_flat / attention_maps_flat.sum(dim=-1, keepdim=True).clamp(min=1e-6)
         attention_maps = attention_maps_flat.view(B, self.num_regions, H, W)
         
         # Weighted pooling: extract region features
@@ -264,14 +273,15 @@ class MotifModule(nn.Module):
     - Cosine similarity (normalized) for stability
     - Learnable temperature parameter for controlling softness
     """
-    def __init__(self, feat_dim=128, num_emotions=7, num_regions=3):
+    def __init__(self, feat_dim=128, num_emotions=7, num_regions=3, motifs_per_class=2):
         super().__init__()
         self.feat_dim = feat_dim
         self.num_emotions = num_emotions
         self.num_regions = num_regions
+        self.motifs_per_class = motifs_per_class
         
         # Learnable emotion prototypes
-        self.prototypes = nn.Parameter(torch.randn(num_emotions, feat_dim))
+        self.prototypes = nn.Parameter(torch.randn(num_emotions, motifs_per_class, feat_dim))
         nn.init.xavier_uniform_(self.prototypes)
         
         # Temperature for controlling softness of similarity
@@ -290,21 +300,23 @@ class MotifModule(nn.Module):
         
         # Normalize region features and prototypes for cosine similarity
         region_features_norm = F.normalize(region_features, dim=-1)  # (B, K, C)
-        prototypes_norm = F.normalize(self.prototypes, dim=-1)  # (num_emotions, C)
-        
-        # Compute cosine similarity: (B, K, C) x (C, num_emotions) -> (B, K, num_emotions)
-        similarity_scores = torch.bmm(
-            region_features_norm,  # (B, K, C)
-            prototypes_norm.t().unsqueeze(0).expand(B, -1, -1)  # (B, C, num_emotions)
-        )  # -> (B, K, num_emotions)
-        
+        prototypes_norm = F.normalize(self.prototypes, dim=-1)  # (E, P, C)
+
+        # Compute cosine similarity to all class motifs
+        prototypes_flat = prototypes_norm.view(self.num_emotions * self.motifs_per_class, self.feat_dim)
+        similarity_full = torch.einsum("bkc,mc->bkm", region_features_norm, prototypes_flat)
+        similarity_full = similarity_full.view(B, self.num_regions, self.num_emotions, self.motifs_per_class)
+
         # Scale by temperature (higher temp = softer similarities)
-        similarity_scores = similarity_scores / (self.temperature + 1e-8)
-        
-        # Flatten for classification use
-        motif_features = similarity_scores.reshape(B, -1)  # (B, K*num_emotions)
-        
-        return similarity_scores, motif_features
+        similarity_full = similarity_full / (self.temperature + 1e-8)
+
+        # Aggregate motifs per class (best matching motif per class)
+        similarity_scores = similarity_full.max(dim=-1).values  # (B, K, E)
+
+        # Flatten for optional downstream usage
+        motif_features = similarity_scores.reshape(B, -1)  # (B, K*E)
+
+        return similarity_scores, motif_features, similarity_full
 
 
 # ============================================================================
@@ -329,11 +341,13 @@ class GraphAttentionLayer(nn.Module):
     - Multi-head attention for capturing different relationship types
     - Self-loops to maintain node information
     """
-    def __init__(self, feat_dim=128, num_heads=4, dropout=0.1):
+    def __init__(self, feat_dim=128, num_heads=4, dropout=0.1, num_regions=3, use_adj=True):
         super().__init__()
         self.feat_dim = feat_dim
         self.num_heads = num_heads
         self.head_dim = feat_dim // num_heads
+        self.num_regions = num_regions
+        self.use_adj = use_adj
         
         assert feat_dim % num_heads == 0, "feat_dim must be divisible by num_heads"
         
@@ -347,6 +361,9 @@ class GraphAttentionLayer(nn.Module):
         
         self.dropout = nn.Dropout(dropout)
         self.leaky_relu = nn.LeakyReLU(0.2)
+
+        if self.use_adj:
+            self.adj = nn.Parameter(torch.randn(num_regions, num_regions))
     
     def forward(self, node_features):
         """
@@ -371,6 +388,10 @@ class GraphAttentionLayer(nn.Module):
         # Compute attention scores
         scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.head_dim)  # (B, H, N, N)
         scores = self.leaky_relu(scores)
+
+        if self.use_adj:
+            adj = torch.softmax(self.adj, dim=-1)
+            scores = scores * adj
         
         # Apply softmax to get attention weights
         attention_weights = F.softmax(scores, dim=-1)  # (B, H, N, N)
@@ -392,10 +413,10 @@ class GraphAttentionLayer(nn.Module):
 
 class GraphModule(nn.Module):
     """Multi-layer graph attention for relational modeling"""
-    def __init__(self, feat_dim=128, num_layers=2, num_heads=4):
+    def __init__(self, feat_dim=128, num_layers=2, num_heads=4, num_regions=3, use_adj=True):
         super().__init__()
         self.layers = nn.ModuleList([
-            GraphAttentionLayer(feat_dim, num_heads) 
+            GraphAttentionLayer(feat_dim, num_heads, num_regions=num_regions, use_adj=use_adj)
             for _ in range(num_layers)
         ])
     
@@ -518,12 +539,19 @@ class FERAdvancedModel(nn.Module):
                  num_graph_layers=2,
                  num_heads=4,
                  dropout=0.3,
-                 use_vgg=True):
+                 use_vgg=True,
+                 motifs_per_class=2,
+                 attention_temperature=0.5,
+                 attention_power=2.0,
+                 region_dropout=0.2,
+                 graph_use_adj=True):
         super().__init__()
         
         self.feat_dim = feat_dim
         self.num_emotions = num_emotions
         self.num_regions = num_regions
+        self.motifs_per_class = motifs_per_class
+        self.region_dropout = float(region_dropout)
         
         # Components - Use VGG by default
         if use_vgg:
@@ -531,14 +559,42 @@ class FERAdvancedModel(nn.Module):
         else:
             self.backbone = CNNBackbone(feat_dim=feat_dim, in_channels=1)
         
-        self.region_attention = RegionAttentionModule(feat_dim=feat_dim, num_regions=num_regions)
-        self.graph_module = GraphModule(feat_dim=feat_dim, num_layers=num_graph_layers, num_heads=num_heads)
-        self.motif_module = MotifModule(feat_dim=feat_dim, num_emotions=num_emotions, num_regions=num_regions)
+        self.region_attention = RegionAttentionModule(
+            feat_dim=feat_dim,
+            num_regions=num_regions,
+            attention_temperature=attention_temperature,
+            attention_power=attention_power,
+        )
+        self.graph_module = GraphModule(
+            feat_dim=feat_dim,
+            num_layers=num_graph_layers,
+            num_heads=num_heads,
+            num_regions=num_regions,
+            use_adj=graph_use_adj,
+        )
+        self.motif_module = MotifModule(
+            feat_dim=feat_dim,
+            num_emotions=num_emotions,
+            num_regions=num_regions,
+            motifs_per_class=motifs_per_class,
+        )
         
+        self.motif_project = nn.Sequential(
+            nn.Linear(num_emotions, feat_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
+        self.fusion_gate = nn.Sequential(
+            nn.Linear(feat_dim * 2, feat_dim),
+            nn.ReLU(),
+            nn.Linear(feat_dim, feat_dim),
+            nn.Sigmoid(),
+        )
+
         # Classifier
-        # Input: (B, num_regions, feat_dim) from graph + (B, num_regions*num_emotions) from motif
-        combined_dim = feat_dim + num_regions * num_emotions
-        
+        # Input: fused feature + pooled motif scores (avoid flat K*E vector)
+        combined_dim = feat_dim + num_emotions
+
         self.classifier = nn.Sequential(
             nn.Linear(combined_dim, 256),
             nn.ReLU(),
@@ -553,7 +609,7 @@ class FERAdvancedModel(nn.Module):
         self.diversity_loss = AttentionDiversityLoss()
         self.sparsity_loss = AttentionSparsityLoss()
     
-    def forward(self, x, return_auxiliary=False):
+    def forward(self, x, targets=None, return_auxiliary=False):
         """
         Args:
             x: (B, 1, 48, 48) - Grayscale image
@@ -568,6 +624,12 @@ class FERAdvancedModel(nn.Module):
         
         # Step 2: Learnable region attention
         region_features, attention_maps = self.region_attention(feat_map)  # (B, K, C), (B, K, H, W)
+
+        # Region dropout to prevent reliance on a single region
+        if self.training and self.region_dropout > 0.0:
+            drop_mask = (torch.rand(region_features.size(0), self.num_regions, 1, device=region_features.device) > self.region_dropout).float()
+            drop_mask = drop_mask / (1.0 - self.region_dropout)
+            region_features = region_features * drop_mask
         
         # Cache attention maps for get_landmark_outputs() (trainer.py compatibility)
         self._last_attention_maps = attention_maps
@@ -576,28 +638,48 @@ class FERAdvancedModel(nn.Module):
         graph_features = self.graph_module(region_features)  # (B, K, C)
         
         # Step 4: Motif module - emotion prototype matching
-        motif_scores, motif_features = self.motif_module(graph_features)  # (B, K, E), (B, K*E)
+        motif_scores, motif_features, motif_scores_full = self.motif_module(graph_features)  # (B, K, E), (B, K*E)
         
         # Step 5: Fusion - combine graph features and motif features
         # Average graph features across regions: (B, K, C) -> (B, C)
         graph_pooled = graph_features.mean(dim=1)  # (B, C)
-        
-        # Concatenate: (B, C + K*E)
-        combined_features = torch.cat([graph_pooled, motif_features], dim=1)
+
+        # Pool motif scores across regions: (B, K, E) -> (B, E)
+        motif_pooled = motif_scores.mean(dim=1)
+        motif_proj = self.motif_project(motif_pooled)
+        gate = self.fusion_gate(torch.cat([graph_pooled, motif_proj], dim=1))
+        fused = gate * graph_pooled + (1.0 - gate) * motif_proj
+
+        # Concatenate fused features with pooled motif scores
+        combined_features = torch.cat([fused, motif_pooled], dim=1)
         
         # Step 6: Classification
         logits = self.classifier(combined_features)  # (B, num_emotions)
         
         # Compute auxiliary losses
         auxiliary = None
+        aux_losses = {
+            'landmark_diversity': self.diversity_loss(attention_maps),
+            'landmark_entropy': self.sparsity_loss(attention_maps),
+        }
+
+        # Prototype classification loss (update prototypes; avoid pulling backbone too hard)
+        if targets is not None:
+            class_proto = self.motif_module.prototypes.mean(dim=1)  # (E, C)
+            proto_logits = torch.matmul(graph_pooled.detach(), class_proto.t())
+            aux_losses['proto_ce'] = F.cross_entropy(proto_logits, targets)
+
+        # Cache aux losses for trainer
+        self._last_aux_losses = aux_losses
         if return_auxiliary:
             auxiliary = {
                 'attention_maps': attention_maps,
                 'motif_scores': motif_scores,
+                'motif_scores_full': motif_scores_full,
                 'region_features': region_features,
                 'graph_features': graph_features,
-                'diversity_loss': self.diversity_loss(attention_maps),
-                'sparsity_loss': self.sparsity_loss(attention_maps),
+                'diversity_loss': aux_losses['landmark_diversity'],
+                'sparsity_loss': aux_losses['landmark_entropy'],
             }
         
         return logits, auxiliary
@@ -613,6 +695,10 @@ class FERAdvancedModel(nn.Module):
             return self._last_attention_maps, None
         else:
             return None, None
+
+    def get_aux_losses(self):
+        """Return cached auxiliary losses for trainer aggregation."""
+        return getattr(self, '_last_aux_losses', {})
     
     def get_auxiliary_losses(self, attention_maps):
         """Compute auxiliary regularization losses"""

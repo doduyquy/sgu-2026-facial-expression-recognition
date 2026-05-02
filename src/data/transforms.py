@@ -4,7 +4,8 @@ import torch
 from torchvision import transforms
 
 def build_transform(config, split="train") -> Compose: # train | val | test
-    """Buid transform (augmentatio) for our data
+    """Build transform with TenCrop for test-time augmentation (val/test only)
+    
     Args: 
         config: for image size
         split: train | val | test (transform for train is diff from val and test)
@@ -16,6 +17,7 @@ def build_transform(config, split="train") -> Compose: # train | val | test
     st = 0.5
     
     if split == "train":
+        # Standard augmentation for training (NO TenCrop - too slow)
         trans = transforms.Compose([
             transforms.RandomResizedCrop(image_size, scale=(0.8, 1.2)),
             transforms.RandomApply([transforms.RandomAffine(0, translate=(0.2, 0.2))], p=0.5),
@@ -25,13 +27,21 @@ def build_transform(config, split="train") -> Compose: # train | val | test
             transforms.Normalize(mean=(mu,), std=(st,))
         ])
     else:
+        # Test-time augmentation with TenCrop for val/test
+        # TenCrop: crops 10 patches (40x40) from 48x48 image
         trans = transforms.Compose([
-            transforms.Resize((image_size, image_size)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=(mu,), std=(st,))
+            transforms.TenCrop(40),  # Crop 10 patches (40x40) from 48x48
+            transforms.Lambda(lambda crops: torch.stack([
+                transforms.ToTensor()(crop) for crop in crops
+            ])),  # Convert to tensor: (10, 1, 40, 40)
+            transforms.Lambda(lambda tensors: torch.stack([
+                transforms.Normalize(mean=(mu,), std=(st,))(t) for t in tensors
+            ])),  # Normalize each crop: (10, 1, 40, 40)
         ])
 
     return trans
+
+
 
 
 # With transfer learning: VGG hay ResNet:

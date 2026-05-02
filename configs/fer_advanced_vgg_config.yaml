@@ -22,7 +22,12 @@ model:
   num_graph_layers: 2      # Graph reasoning layers
   num_heads: 4             # Multi-head attention heads
   dropout: 0.3
-  use_vgg: true            # Use VGG backbone (set false for CNN)
+  use_vgg: False            # Use VGG backbone (set false for CNN)
+  motifs_per_class: 2
+  attention_temperature: 0.5
+  attention_power: 2.0
+  region_dropout: 0.2
+  graph_use_adj: true
 
 training:
   epochs: 150
@@ -44,4 +49,9 @@ training:
   # Auxiliary loss weights (if using combined loss)
   diversity_loss_weight: 0.1
   sparsity_loss_weight: 0.05
+  proto_ce_weight: 0.3
 
+use_scn: true
+  scn_warmup_epochs: 10
+  scn_alpha: 1.0
+  scn_rank_lambda: 0.15 
