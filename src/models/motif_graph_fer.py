@@ -112,75 +112,106 @@ class GraphAttentionLayer(nn.Module):
         out = out.transpose(1, 2).contiguous().view(B, N, -1)
         return F.relu(self.out_lin(out))
 
-class CrossAttentionMatching(nn.Module):
+class GraphMotifModule(nn.Module):
     """
-    Matches subgraphs to motifs using Cross-Attention (Soft Alignment).
+    Research-grade Graph Motif Learning Module (CVPR/ICCV Level).
+    Models structured relationships between facial regions using learnable motifs
+    and edge-aware structural matching.
     """
-    def __init__(self, feat_dim):
-        super().__init__()
-        self.feat_dim = feat_dim
-        self.q_lin = nn.Linear(feat_dim, feat_dim)
-        self.k_lin = nn.Linear(feat_dim, feat_dim)
-        
-    def forward(self, candidates, motifs):
-        B_c, N, D = candidates.shape
-        M, _, _ = motifs.shape
-        
-        # Project
-        q = self.q_lin(candidates) 
-        k = self.k_lin(motifs)    
-        
-        # (3) Matching Normalization: Use Cosine Similarity for stability
-        q = F.normalize(q, dim=-1)
-        k = F.normalize(k, dim=-1)
-        
-        sim_matrix = torch.einsum('bid,mjd->bmij', q, k) 
-        
-        # Soft alignment
-        align_cand = sim_matrix.max(dim=-1)[0].mean(dim=-1)
-        align_motif = sim_matrix.max(dim=-2)[0].mean(dim=-1)
-        
-        return (align_cand + align_motif) / 2.0
-
-class MotifBank(nn.Module):
-    def __init__(self, num_classes=7, motifs_per_class=8, num_nodes=9, feat_dim=128):
+    def __init__(self, num_classes, motifs_per_class, K, C, top_k=None):
         super().__init__()
         self.num_classes = num_classes
         self.motifs_per_class = motifs_per_class
-        self.num_nodes = num_nodes
+        self.K = K  # number of regions (e.g., 9)
+        self.C = C  # feature dimension
+        self.top_k = top_k
         
-        self.motifs = nn.Parameter(torch.randn(num_classes, motifs_per_class, num_nodes, feat_dim))
+        # Motif Representation: (Classes, Motifs, K, Dim)
+        # Each motif is a structured pattern across K regions
+        self.motifs = nn.Parameter(torch.randn(num_classes, motifs_per_class, K, C))
         nn.init.xavier_uniform_(self.motifs)
         
-        adj = self._generate_3x3_grid_adj()
-        self.register_buffer('motif_adj', adj)
+        # Edge-aware Motifs: (Classes, Motifs, K, K)
+        # Learnable structural relationships for each motif
+        self.motif_edges = nn.Parameter(torch.randn(num_classes, motifs_per_class, K, K))
+        nn.init.xavier_uniform_(self.motif_edges)
         
-        rel_coords = self._generate_3x3_rel_coords()
-        self.register_buffer('rel_coords', rel_coords)
+        # Learnable temperature for stable similarity scaling
+        self.temperature = nn.Parameter(torch.ones(1) * 0.1)
+        
+    def compute_diversity_loss(self):
+        """
+        Diversity regularization: encourages motifs to represent distinct patterns.
+        """
+        # (Classes, Motifs, K*Dim)
+        m = self.motifs.view(self.num_classes, self.motifs_per_class, -1)
+        m = F.normalize(m, dim=-1)
+        
+        # Intra-class diversity: push motifs of the same class apart
+        sim_intra = torch.matmul(m, m.transpose(1, 2)) # (C, M, M)
+        eye = torch.eye(self.motifs_per_class, device=m.device).unsqueeze(0)
+        l_intra = (sim_intra * (1 - eye)).mean()
+        
+        # Inter-class diversity: push class prototypes apart
+        class_centers = m.mean(dim=1) # (C, K*D)
+        class_centers = F.normalize(class_centers, dim=-1)
+        sim_inter = torch.matmul(class_centers, class_centers.transpose(0, 1)) # (C, C)
+        eye_c = torch.eye(self.num_classes, device=m.device)
+        l_inter = (sim_inter * (1 - eye_c)).mean()
+        
+        return l_intra + l_inter
 
-    def _generate_3x3_grid_adj(self):
-        adj = torch.zeros(9, 9)
-        for i in range(3):
-            for j in range(3):
-                idx = i * 3 + j
-                for di in [-1, 0, 1]:
-                    for dj in [-1, 0, 1]:
-                        ni, nj = i + di, j + dj
-                        if 0 <= ni < 3 and 0 <= nj < 3:
-                            n_idx = ni * 3 + nj
-                            adj[idx, n_idx] = 1.0
-        return adj
-
-    def _generate_3x3_rel_coords(self):
-        y, x = torch.meshgrid(torch.linspace(0, 1, 3), torch.linspace(0, 1, 3), indexing='ij')
-        return torch.stack([x, y], dim=-1).view(9, 2) 
-
-    def get_motifs(self):
-        flat_motifs = self.motifs.view(-1, self.num_nodes, self.motifs.shape[-1])
-        Total_Motifs = flat_motifs.shape[0]
-        coords = self.rel_coords.unsqueeze(0).expand(Total_Motifs, -1, -1)
-        motifs_with_coords = torch.cat([flat_motifs, coords], dim=-1)
-        return motifs_with_coords, self.motif_adj
+    def forward(self, region_features, adj=None, return_attention=False):
+        """
+        Args:
+            region_features: (B, K, C)
+            adj: (B, K, K) optional edge relationships
+            return_attention: bool
+            
+        Returns:
+            logits: (B, num_classes)
+            motif_scores: (B, num_classes, motifs_per_class)
+        """
+        B, K, C = region_features.shape
+        eps = 1e-8
+        
+        # Step 1: Normalize region features and motifs
+        region_features = F.normalize(region_features, p=2, dim=-1) # (B, K, C)
+        motifs = F.normalize(self.motifs, p=2, dim=-1) # (C_out, M, K, C)
+        
+        # Step 2: Node-wise Similarity (B, num_classes, motifs_per_class, K)
+        # Computes similarity between each input region and corresponding motif region
+        # Vectorized implementation using einsum
+        similarity = torch.einsum('bkc,lmkc->blmk', region_features, motifs)
+        
+        # Step 3: Edge-aware matching (Structural similarity)
+        if adj is not None:
+            # Flatten structures for Frobenius-style similarity
+            adj_flat = F.normalize(adj.reshape(B, -1), dim=-1)
+            motif_edges_flat = F.normalize(self.motif_edges.reshape(self.num_classes, self.motifs_per_class, -1), dim=-1)
+            # (B, Classes, Motifs)
+            edge_sim = torch.einsum('bi,cmi->bcm', adj_flat, motif_edges_flat)
+            # Combine node similarity with structural bias
+            similarity = similarity + edge_sim.unsqueeze(-1)
+            
+        # Step 4: Subgraph selection (Optional Top-K)
+        if self.top_k is not None:
+            similarity, _ = torch.topk(similarity, k=min(self.top_k, K), dim=-1)
+            
+        # Step 5: Attention-weighted aggregation
+        # temperature-scaled softmax over regions
+        attn = F.softmax(similarity / self.temperature.clamp(min=1e-3), dim=-1)
+        
+        # motif_score: (B, num_classes, motifs_per_class)
+        motif_scores = torch.sum(attn * similarity, dim=-1)
+        
+        # Step 6: Motif Selection (Max over motifs_per_class)
+        # logits: (B, num_classes)
+        logits, _ = torch.max(motif_scores, dim=-1)
+        
+        if return_attention:
+            return logits, motif_scores, attn
+        return logits, motif_scores
 
 class MotifGraphModel(nn.Module):
     def __init__(self, config):
@@ -218,11 +249,14 @@ class MotifGraphModel(nn.Module):
         self.pos_embed = nn.Parameter(torch.randn(1, 9, self.feat_dim))
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
         
-        self.motif_bank = MotifBank(
-            num_classes=self.num_classes, 
+        self.register_buffer('grid_adj', self._generate_3x3_grid_adj())
+        
+        self.motif_module = GraphMotifModule(
+            num_classes=self.num_classes,
             motifs_per_class=self.motifs_per_class,
-            num_nodes=9,
-            feat_dim=self.feat_dim
+            K=9, # 3x3 region nodes
+            C=self.feat_dim,
+            top_k=self.top_k
         )
         
         self.logit_scale = nn.Parameter(torch.ones(1) * 10.0)
@@ -274,7 +308,7 @@ class MotifGraphModel(nn.Module):
         sampled_feats = F.grid_sample(feat_map, sampling_grid, align_corners=True)
         sampled_feats = sampled_feats.view(B, C_feat, num_cands, 9).permute(0, 2, 3, 1) 
         
-        adj = self.motif_bank.motif_adj.unsqueeze(0).unsqueeze(0).expand(B, num_cands, -1, -1)
+        adj = self.grid_adj.unsqueeze(0).unsqueeze(0).expand(B, num_cands, -1, -1)
         
         centers_coords = []
         for idx in center_indices:
@@ -317,46 +351,41 @@ class MotifGraphModel(nn.Module):
         candidates, cand_adjs, centers = self._extract_deformable_subgraphs(feat_map, H, W, node_feats)
         num_cands = candidates.shape[1]
         
+        # Advanced Motif Module Forward
+        # 1. Prepare candidate subgraphs: (B*num_cands, 9, Dim)
         flat_cands = candidates.reshape(B * num_cands, 9, -1)
         if flat_cands.shape[-1] != self.feat_dim:
             flat_cands = self.proj_node(flat_cands)
         flat_cands = flat_cands + self.pos_embed
         
-        motifs_with_coords, _ = self.motif_bank.get_motifs()
-        motif_feats = motifs_with_coords[:, :, :-2]
-        if motif_feats.shape[-1] != self.feat_dim:
-            motif_feats = self.proj_node(motif_feats)
-        motif_feats = motif_feats + self.pos_embed
+        # 2. Prepare candidate adjacencies: (B*num_cands, 9, 9)
+        flat_adjs = cand_adjs.reshape(B * num_cands, 9, 9)
         
-        if not hasattr(self, 'matching_layer'):
-            self.matching_layer = CrossAttentionMatching(self.feat_dim).to(x.device)
-            
-        scores = self.matching_layer(flat_cands, motif_feats).view(B, num_cands, -1)
+        # 3. Match against Learnable Motifs
+        logits_cand, motif_scores_cand = self.motif_module(flat_cands, adj=flat_adjs)
         
-        # 4. Prototype Decision Logic
-        class_motif_scores = scores.view(B, num_cands, self.num_classes, self.motifs_per_class)
+        # 4. Aggregate across all candidate subgraphs
+        # logits_cand: (B*num_cands, num_classes)
+        logits_cand = logits_cand.view(B, num_cands, self.num_classes)
         
-        # (3) Matching Logic Upgrade: Mean of top-2 motifs instead of just Max
-        # best_motif_per_cand_per_class: (B, num_cands, num_classes)
-        best_motif_per_cand_per_class = class_motif_scores.topk(k=min(2, self.motifs_per_class), dim=-1)[0].mean(dim=-1)
-        
-        # (2) Selection Temperature Upgrade: T=0.3 for broader context
-        cand_relevance = best_motif_per_cand_per_class.max(dim=-1)[0]
+        # Compute selection weights based on max motif score per candidate
+        # relevance: (B, num_cands)
+        cand_relevance = logits_cand.max(dim=-1)[0]
         selection_temp = 0.3 
         attn_weights = F.softmax(cand_relevance / selection_temp, dim=1).unsqueeze(-1) 
         
-        logits_motif = torch.sum(best_motif_per_cand_per_class * attn_weights, dim=1)
+        logits_motif = torch.sum(logits_cand * attn_weights, dim=1)
         logits_motif = logits_motif * self.logit_scale 
         
         # Final combined logits
         logits = logits_motif + torch.sigmoid(self.alpha) * logits_global
         
-        self._latest_scores = scores
+        self._latest_scores = motif_scores_cand.view(B, num_cands, self.num_classes, self.motifs_per_class)
         _, top_k_idx = torch.topk(cand_relevance, k=self.top_k, dim=1)
         self._latest_top_k = top_k_idx
         
         if return_selection:
-            return logits, top_k_idx, centers, scores
+            return logits, top_k_idx, centers, self._latest_scores
             
         return logits
 
@@ -392,10 +421,23 @@ class MotifGraphModel(nn.Module):
     def get_current_prior_strength(self):
         return 0.0
 
+    def _generate_3x3_grid_adj(self):
+        adj = torch.zeros(9, 9)
+        for i in range(3):
+            for j in range(3):
+                idx = i * 3 + j
+                for di in [-1, 0, 1]:
+                    for dj in [-1, 0, 1]:
+                        ni, nj = i + di, j + dj
+                        if 0 <= ni < 3 and 0 <= nj < 3:
+                            n_idx = ni * 3 + nj
+                            adj[idx, n_idx] = 1.0
+        return adj
+
     def get_aux_losses(self):
         if not hasattr(self, '_latest_scores') or self._latest_scores is None:
             return {}
-        l_div = self.compute_motif_diversity_loss()
+        l_div = self.motif_module.compute_diversity_loss()
         return {"motif_diversity": l_div}
 
 

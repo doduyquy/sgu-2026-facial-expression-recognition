@@ -44,6 +44,10 @@ def plot_prediction_grid(images, true_labels, pred_labels, title, save_path=None
         if torch.is_tensor(img):
             img = img.cpu().detach().numpy()
         
+        # Handle TenCrop input: (10, C, H, W) -> select center crop for visualization
+        if img.ndim == 4 and img.shape[0] == 10:
+            img = img[4] # Index 4 is the center crop
+            
         # Nếu ảnh có dạng (1, H, W) thì bóp về (H, W)
         if img.ndim == 3 and img.shape[0] == 1:
             img = img.squeeze(0)
@@ -68,3 +72,23 @@ def plot_prediction_grid(images, true_labels, pred_labels, title, save_path=None
 
     # Trả về fig object để log lên wandb
     return fig
+
+if __name__ == "__main__":
+    # Test with standard 3D image
+    dummy_imgs_3d = [torch.randn(1, 48, 48) for _ in range(10)]
+    labels = [0, 1, 2, 3, 4, 5, 6, 0, 1, 2]
+    preds = [0, 1, 0, 3, 4, 6, 6, 0, 1, 3] # some wrong
+    
+    print("Testing 3D visualization...")
+    # Mock show to avoid opening windows
+    import matplotlib
+    matplotlib.use('Agg') 
+    
+    plot_prediction_grid(dummy_imgs_3d, labels, preds, "Test 3D")
+    
+    # Test with TenCrop 4D image
+    dummy_imgs_4d = [torch.randn(10, 1, 40, 40) for _ in range(10)]
+    print("Testing 4D (TenCrop) visualization...")
+    plot_prediction_grid(dummy_imgs_4d, labels, preds, "Test 4D TenCrop")
+    
+    print("Visualization tests completed.")
