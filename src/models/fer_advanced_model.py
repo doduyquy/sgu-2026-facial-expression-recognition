@@ -569,6 +569,9 @@ class FERAdvancedModel(nn.Module):
         # Step 2: Learnable region attention
         region_features, attention_maps = self.region_attention(feat_map)  # (B, K, C), (B, K, H, W)
         
+        # Cache attention maps for get_landmark_outputs() (trainer.py compatibility)
+        self._last_attention_maps = attention_maps
+        
         # Step 3: Graph module for relational reasoning
         graph_features = self.graph_module(region_features)  # (B, K, C)
         
@@ -598,6 +601,18 @@ class FERAdvancedModel(nn.Module):
             }
         
         return logits, auxiliary
+    
+    def get_landmark_outputs(self):
+        """
+        Get last attention maps (for compatibility with trainer.py)
+        Returns: (attention_maps, None) tuple
+        
+        Note: This requires a forward pass first to cache the attention maps
+        """
+        if hasattr(self, '_last_attention_maps'):
+            return self._last_attention_maps, None
+        else:
+            return None, None
     
     def get_auxiliary_losses(self, attention_maps):
         """Compute auxiliary regularization losses"""
