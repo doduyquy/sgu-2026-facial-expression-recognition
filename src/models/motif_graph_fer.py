@@ -282,6 +282,10 @@ class MotifGraphModel(nn.Module):
         self.logit_scale = nn.Parameter(torch.ones(1) * 10.0)
         # Weight for combining Motif and Global logits
         self.alpha = nn.Parameter(torch.ones(1) * 0.5)
+        
+        # Learnable query for candidate-level attention
+        self.cand_query = nn.Parameter(torch.randn(1, 1, self.num_classes))
+        nn.init.xavier_uniform_(self.cand_query)
 
     def compute_motif_diversity_loss(self):
         # Point 1: Replace motif_bank with motif_module
@@ -391,10 +395,7 @@ class MotifGraphModel(nn.Module):
         # logits_cand: (B*num_cands, num_classes)
         logits_cand = logits_cand.view(B, num_cands, self.num_classes)
         
-        # Point 5: Replace softmax weighting with attention over candidates using temperature
-        if not hasattr(self, 'cand_query'):
-            self.cand_query = nn.Parameter(torch.randn(1, 1, self.num_classes))
-            
+        # Point 5: Candidate-level attention using learnable query
         cand_scores = (logits_cand * self.cand_query).sum(dim=-1) # (B, num_cands)
         cand_tau = 0.3
         attn_weights = F.softmax(cand_scores / cand_tau, dim=1).unsqueeze(-1) 
