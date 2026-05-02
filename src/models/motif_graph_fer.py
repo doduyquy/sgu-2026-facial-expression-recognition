@@ -76,41 +76,79 @@ class MotifBackbone(nn.Module):
         x = self.final_cbam(x)
         return x
 
-class GraphAttentionLayer(nn.Module):
+class GraphTransformerBlock(nn.Module):
     """
-    Simple Graph Attention Layer (GAT) for small graphs.
+    Research-grade Graph Transformer Block.
+    Integrates Multi-head Graph Attention with Pre-Norm Residual structure and FFN.
     """
-    def __init__(self, in_dim, out_dim, heads=4):
+    def __init__(self, dim, heads=4, ff_expansion=2):
         super().__init__()
         self.heads = heads
-        self.d_k = out_dim // heads
+        self.d_k = dim // heads
         
-        self.q_lin = nn.Linear(in_dim, out_dim)
-        self.k_lin = nn.Linear(in_dim, out_dim)
-        self.v_lin = nn.Linear(in_dim, out_dim)
+        # Multi-head Attention components
+        self.norm1 = nn.LayerNorm(dim)
+        self.q_lin = nn.Linear(dim, dim)
+        self.k_lin = nn.Linear(dim, dim)
+        self.v_lin = nn.Linear(dim, dim)
+        self.attn_out = nn.Linear(dim, dim)
         
-        self.out_lin = nn.Linear(out_dim, out_dim)
+        # Feed Forward Network (FFN) components
+        self.norm2 = nn.LayerNorm(dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(dim, dim * ff_expansion),
+            nn.GELU(),
+            nn.Linear(dim * ff_expansion, dim)
+        )
+        
+        # Edge Gating components (Efficient xi || xj implementation)
+        self.gate_i = nn.Linear(dim, 1, bias=False)
+        self.gate_j = nn.Linear(dim, 1, bias=True)
 
     def forward(self, x, adj):
-        # x: (B, N, in_dim), adj: (B, N, N)
-        B, N, _ = x.shape
+        # x: (B, N, dim), adj: (B, N, N)
+        B, N, C = x.shape
         
-        q = self.q_lin(x).view(B, N, self.heads, self.d_k).transpose(1, 2)
-        k = self.k_lin(x).view(B, N, self.heads, self.d_k).transpose(1, 2)
-        v = self.v_lin(x).view(B, N, self.heads, self.d_k).transpose(1, 2)
+        # 1. Multi-head Graph Attention Branch (Pre-Norm)
+        identity = x
+        z = self.norm1(x)
+        
+        q = self.q_lin(z).view(B, N, self.heads, self.d_k).transpose(1, 2)
+        k = self.k_lin(z).view(B, N, self.heads, self.d_k).transpose(1, 2)
+        v = self.v_lin(z).view(B, N, self.heads, self.d_k).transpose(1, 2)
         
         # (B, H, N, N)
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
         
-        # Apply adjacency mask (binary or weighted)
+        # 1.1 Apply Edge-wise Gating: gate = sigmoid(Linear(xi) + Linear(xj))
+        gate_i = self.gate_i(z).unsqueeze(2) # (B, N, 1, 1)
+        gate_j = self.gate_j(z).unsqueeze(1) # (B, 1, N, 1)
+        gate = torch.sigmoid(gate_i + gate_j).squeeze(-1) # (B, N, N)
+        scores = scores * gate.unsqueeze(1) # Broadcast over heads
+        
+        # 1.2 Apply structural adjacency mask
         if adj is not None:
-            scores = scores.masked_fill(adj.unsqueeze(1) == 0, -1e9)
+            # Mask nodes that are not connected in the graph
+            scores = scores.masked_fill(adj.unsqueeze(1) == 0, -float('inf'))
             
         attn = F.softmax(scores, dim=-1)
-        out = torch.matmul(attn, v) # (B, H, N, d_k)
+        # Handle potential NaNs if a node has no neighbors
+        attn = torch.nan_to_num(attn)
         
+        out = torch.matmul(attn, v) # (B, H, N, d_k)
         out = out.transpose(1, 2).contiguous().view(B, N, -1)
-        return F.relu(self.out_lin(out))
+        out = self.attn_out(out)
+        
+        # First Residual Connection
+        x = identity + out
+        
+        # 2. Feed Forward Network Branch (Pre-Norm)
+        identity = x
+        z = self.norm2(x)
+        out = self.ffn(z)
+        
+        # Second Residual Connection
+        return identity + out
 
 class GraphMotifModule(nn.Module):
     """
@@ -255,8 +293,8 @@ class MotifGraphModel(nn.Module):
         )
         
         self.gnn_layers = nn.ModuleList([
-            GraphAttentionLayer(self.feat_dim, self.feat_dim),
-            GraphAttentionLayer(self.feat_dim, self.feat_dim)
+            GraphTransformerBlock(self.feat_dim, heads=4),
+            GraphTransformerBlock(self.feat_dim, heads=4)
         ])
         
         self.offset_predictor = nn.Sequential(
@@ -286,6 +324,9 @@ class MotifGraphModel(nn.Module):
         # Learnable query for candidate-level attention
         self.cand_query = nn.Parameter(torch.randn(1, 1, self.num_classes))
         nn.init.xavier_uniform_(self.cand_query)
+        
+        # Learnable temperature for global graph structure
+        self.graph_temperature = nn.Parameter(torch.ones(1) * 0.1)
 
     def compute_motif_diversity_loss(self):
         # Point 1: Replace motif_bank with motif_module
@@ -428,14 +469,25 @@ class MotifGraphModel(nn.Module):
         nodes = feat_map.permute(0, 2, 3, 1).reshape(B, N, C)
         nodes_with_coords = torch.cat([nodes, coords], dim=-1)
         
+        # 1. Similarity Matrix
         nodes_norm = F.normalize(nodes, dim=-1)
-        sim = torch.matmul(nodes_norm, nodes_norm.transpose(1, 2))
+        sim = torch.matmul(nodes_norm, nodes_norm.transpose(1, 2)) # (B, N, N)
         
-        k_neighbors = 4 
-        topk_sim, topk_idx = torch.topk(sim, k=k_neighbors, dim=-1)
+        # 2. Soft Attention Adjacency with learnable temperature
+        tau = F.softplus(self.graph_temperature)
+        adj = F.softmax(sim / tau, dim=-1)
         
-        adj = torch.zeros_like(sim)
-        adj.scatter_(-1, topk_idx, topk_sim)
+        # 3. Enforce Symmetry
+        adj = (adj + adj.transpose(1, 2)) / 2
+        
+        # 4. Add Self-loops
+        identity = torch.eye(N, device=feat_map.device).unsqueeze(0)
+        adj = adj + identity
+        
+        # 5. GCN-style Symmetric Normalization: D^-1/2 * A * D^-1/2
+        d = adj.sum(dim=-1) # Degree matrix
+        d_inv_sqrt = torch.pow(d + 1e-6, -0.5)
+        adj = d_inv_sqrt.unsqueeze(-1) * adj * d_inv_sqrt.unsqueeze(-2)
         
         return nodes_with_coords, adj
 
@@ -446,7 +498,14 @@ class MotifGraphModel(nn.Module):
         return None
 
     def set_training_progress(self, progress):
-        pass
+        """
+        Point 4: Temperature annealing tau from 0.5 -> 0.1
+        Curriculum learning to stabilize motif matching.
+        """
+        tau = 0.5 - (0.5 - 0.1) * progress
+        # Update both module and candidate aggregation temperatures
+        self.motif_module.temperature.data.fill_(tau)
+        self._current_progress = progress
         
     def get_current_prior_strength(self):
         return 0.0

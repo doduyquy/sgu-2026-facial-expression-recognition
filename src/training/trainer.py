@@ -14,16 +14,20 @@ class Trainer:
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.criterion = criterion
-        # keep base criterion available for runtime switching (focal vs base)
+        # 1. FER2013 Class-Balanced Weights & Label Smoothing (Point 1 & 2)
+        # Counts: Angry(3995), Disgust(436), Fear(4097), Happy(7215), Sad(4830), Surprise(3171), Neutral(4965)
+        weights = torch.tensor([1.026, 9.406, 1.001, 0.568, 0.849, 1.293, 0.826], device=device)
+        ls = 0.1 # Standard label smoothing for research stability
+        self.criterion = torch.nn.CrossEntropyLoss(weight=weights, label_smoothing=ls)
         self._base_criterion = self.criterion
-        # optionally enable label smoothing for CrossEntropy if configured
-        ls = float(config.get('training', {}).get('label_smoothing', 0.0)) if isinstance(config, dict) else 0.0
-        if ls and isinstance(self._base_criterion, torch.nn.CrossEntropyLoss):
-            try:
-                self.criterion = torch.nn.CrossEntropyLoss(label_smoothing=ls)
-                self._base_criterion = self.criterion
-            except Exception:
-                pass
+        
+        # 2. Motif Consistency Loss initialization
+        from src.training.losses import MotifConsistencyLoss
+        self.motif_criterion = MotifConsistencyLoss(
+            num_classes=self.config['model'].get('num_classes', 7),
+            motifs_per_class=self.config['model'].get('motifs_per_class', 8),
+            tau=0.1
+        ).to(device)
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.device = device
@@ -296,6 +300,13 @@ class Trainer:
             # Compose simplified loss: classification + diversity + overlap (light)
             loss = cls_loss + (div_lambda_t * div_loss)
             
+            # 3. Motif Consistency Loss with Curriculum (Point 3)
+            motif_lambda = getattr(self, '_runtime_motif_lambda', 0.1)
+            scores_m, topk_m = getattr(self.model, 'get_landmark_outputs', lambda: (None, None))()
+            if scores_m is not None and topk_m is not None:
+                l_motif = self.motif_criterion(scores_m, topk_m, labels)
+                loss = loss + motif_lambda * l_motif
+            
             # Aggregate ALL other auxiliary losses automatically
             for k, v in aux_losses.items():
                 if k not in ["landmark_diversity", "landmark_entropy", "landmark_sparsity", "landmark_overlap"]:
@@ -559,6 +570,7 @@ class Trainer:
                 self._runtime_aux_consistency_lambda = 0.0
                 self._runtime_use_scn = False
                 self._runtime_use_mixup = True
+                self._runtime_motif_lambda = 0.1 # Start low
                 self._runtime_phase = 1
             elif progress <= 0.38:
                 # Phase 2 (20-70%): enable SCN and stronger landmark auxiliaries
@@ -571,6 +583,7 @@ class Trainer:
                 self._runtime_aux_consistency_lambda = 0.0
                 self._runtime_use_scn = True
                 self._runtime_use_mixup = False
+                self._runtime_motif_lambda = 0.5 # Increase
                 self._runtime_phase = 2
             else:
                 # Phase 3 (70-100%): strong refinement — increase landmark lambdas
@@ -583,6 +596,7 @@ class Trainer:
                 self._runtime_aux_consistency_lambda = 0.0
                 self._runtime_use_scn = True
                 self._runtime_use_mixup = False
+                self._runtime_motif_lambda = 1.0 # Maximum focus
                 self._runtime_phase = 3
 
             train_loss, train_acc = self.train_one_epoch()
