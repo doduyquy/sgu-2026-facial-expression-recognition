@@ -12,7 +12,7 @@ model:
   
   # ===== Region Attention (NEW) =====
   use_region_attention: true
-  num_attention_regions: 3  # mouth, eyes, face
+  num_attention_regions: 4  # mouth, eyes, face
   attention_channels: 64
   attention_dropout: 0.2
 
@@ -40,8 +40,8 @@ training:
   motif_div_weight: 0.05
   motif_tau: 0.1
   
-  # ===== Confusion Matrix Loss (NEW) =====
-  confusion_loss_weight: 0.6
+  # ===== Confusion Matrix Loss (NEW - FIXED 6.3) =====
+  confusion_loss_weight: 0.3                # REDUCED: 0.6 → 0.3 (was too high)
   confusion_margin: 0.5
   # Hard pairs to focus: Fear-Sad, Sad-Anger, Anger-Disgust
   
@@ -55,6 +55,12 @@ training:
   scn_warmup_epochs: 10
   scn_alpha: 1.0
   scn_rank_lambda: 0.15                 # REDUCED: avoid double up-weighting
+
+# ===== Auxiliary Loss Weights (NEW - FIX 6.5) =====
+auxiliary_losses:
+  landmark_diversity_weight: 0.1        # Motif diversity regularization
+  landmark_sparsity_weight: 0.05        # Attention sparsity
+  prototype_orthogonal_weight: 0.1      # Prevent prototype collapse
 
 # ===== Augmentation (SOFTENED for 48x48) =====
 augmentation:

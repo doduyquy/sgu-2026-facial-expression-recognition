@@ -478,7 +478,7 @@ class FERAdvancedModel(nn.Module):
         graph_features = self.graph_module(region_features)  # (B, K, C)
         
         # Step 4: Motif module - emotion prototype matching
-        motif_scores, motif_features = self.motif_module(region_features)  # (B, K, E), (B, K*E)
+        motif_scores, motif_features = self.motif_module(graph_features)  # (B, K, E), (B, K*E)
         
         # Step 5: Fusion - combine graph features and motif features
         # Average graph features across regions: (B, K, C) -> (B, C)
