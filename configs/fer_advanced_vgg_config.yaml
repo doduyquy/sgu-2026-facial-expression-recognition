@@ -31,11 +31,11 @@ model:
 
 training:
   epochs: 150
-  patience: 30
+  patience: 25
   weight_decay: 0.0001
   loss: 'cross_entropy'
   optimizer: "sgd"              # ✅ SGD Nesterov (best from analysis)
-  lr: 0.01                       # ✅ SGD uses higher LR than Adam
+  lr: 0.001                       # ✅ SGD uses higher LR than Adam
   momentum: 0.9                 # ✅ SGD momentum
   nesterov: true                # ✅ Nesterov variant
   scheduler: "reduce_lr_on_plateau"  # ✅ Best scheduler
@@ -50,8 +50,7 @@ training:
   diversity_loss_weight: 0.1
   sparsity_loss_weight: 0.05
   proto_ce_weight: 0.3
-
-use_scn: true
+  use_scn: true
   scn_warmup_epochs: 10
   scn_alpha: 1.0
-  scn_rank_lambda: 0.15 
+  scn_rank_lambda: 0.15
