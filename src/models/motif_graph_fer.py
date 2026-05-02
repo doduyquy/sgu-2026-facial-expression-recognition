@@ -4,14 +4,6 @@ import torch.nn.functional as F
 import math
 
 try:
-    from .attention import RegionAttention, ConfusionAwareAttention
-except ImportError:
-    import sys
-    import os
-    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-    from attention import RegionAttention, ConfusionAwareAttention
-
-try:
     from .CBAM import CBAM
 except ImportError:
     import sys
@@ -236,16 +228,6 @@ class MotifGraphModel(nn.Module):
         self.logit_scale = nn.Parameter(torch.ones(1) * 10.0)
         # Weight for combining Motif and Global logits
         self.alpha = nn.Parameter(torch.ones(1) * 0.5)
-        
-        # ===== Region Attention (NEW) =====
-        self.use_region_attention = config.get('use_region_attention', False)
-        if self.use_region_attention:
-            num_regions = config.get('num_attention_regions', 3)
-            self.region_attention = RegionAttention(
-                in_channels=self.feat_dim,
-                num_regions=num_regions,
-                reduction=16
-            )
 
     def compute_motif_diversity_loss(self):
         m = self.motif_bank.motifs 

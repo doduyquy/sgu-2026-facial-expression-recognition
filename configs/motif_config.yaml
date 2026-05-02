@@ -30,7 +30,3 @@ training:
   scn_alpha: 1.0
   scn_rank_lambda: 0.3
 
-augmentation:
-  flip: true
-  rotation: 10
-  zoom: 0.1

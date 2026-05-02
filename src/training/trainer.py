@@ -193,20 +193,6 @@ class Trainer:
         for images, labels in self.train_loader:
             images, labels = images.to(self.device), labels.to(self.device)
             self.optimizer.zero_grad()
-            
-            # Handle TenCrop batches: (B, 10, 1, H, W) -> (B*10, 1, H, W)
-            # TenCrop returns stacked crops that need to be flattened for inference
-            if len(images.shape) == 5:  # (B, 10, 1, H, W)
-                B, num_crops, C, H, W = images.shape
-                images = images.view(B * num_crops, C, H, W)
-                # Repeat labels for each crop: (B,) -> (B*10,)
-                labels = labels.repeat_interleave(num_crops)
-                # After inference, predictions will be (B*10, 7)
-                # We'll reshape to (B, 10, 7) and average to (B, 7)
-                use_tencrop = True
-            else:
-                B = images.shape[0]
-                use_tencrop = False
 
             # MixUp: disabled by default in FER pipeline (SCN preferred)
             mixup_active = bool(getattr(self, '_runtime_use_mixup', False)) and self.model.training
@@ -227,12 +213,6 @@ class Trainer:
             else:
                 outputs = self.model(images)
             logits = self._extract_logits(outputs)
-            
-            # Handle TenCrop: reshape (B*10, 7) -> (B, 10, 7) and average to (B, 7)
-            if use_tencrop:
-                # num_crops = 10 for TenCrop
-                logits = logits.view(B, 10, -1)  # (B, 10, num_classes)
-                logits = logits.mean(dim=1)  # Average across crops: (B, num_classes)
 
             # batch confidence used to scale landmark diversity: low-confidence batches
             # should emphasize landmark regularizers more (helps hard samples)
@@ -470,17 +450,6 @@ class Trainer:
         with torch.no_grad():
             for images, labels in self.val_loader:
                 images, labels = images.to(self.device), labels.to(self.device)
-                
-                # Handle TenCrop batches: (B, 10, 1, H, W) -> (B*10, 1, H, W)
-                if len(images.shape) == 5:  # (B, 10, 1, H, W)
-                    B, num_crops, C, H, W = images.shape
-                    images = images.view(B * num_crops, C, H, W)
-                    # Repeat labels for each crop: (B,) -> (B*10,)
-                    labels = labels.repeat_interleave(num_crops)
-                    use_tencrop = True
-                else:
-                    B = images.shape[0]
-                    use_tencrop = False
 
                 # sync runtime pos_sup lambda into model (validate path)
                 try:
@@ -495,11 +464,6 @@ class Trainer:
                     outputs = self.model(images)
                 
                 logits = self._extract_logits(outputs)
-                
-                # Handle TenCrop: reshape (B*10, 7) -> (B, 10, 7) and average to (B, 7)
-                if use_tencrop:
-                    logits = logits.view(B, 10, -1)  # (B, 10, num_classes)
-                    logits = logits.mean(dim=1)  # Average across crops: (B, num_classes)
                 cls_loss = self.criterion(logits, labels)
                 aux_losses = self._extract_aux_losses(outputs)
                 div_loss = aux_losses.get("landmark_diversity", torch.tensor(0.0, device=self.device))
@@ -562,7 +526,6 @@ class Trainer:
             init_wandb(config=self.config, run_name=self.run_name)
 
         best_val_loss = float("inf")
-        best_val_acc = 0.0
         patience_counter = 0
         all_train_loss = []
         all_val_loss = []
@@ -661,35 +624,25 @@ class Trainer:
                 else:
                     self.scheduler.step()
 
-            # CHECKPOINT: Save best model based on validation accuracy (highest val_acc)
-            val_acc_value = val_acc.item() if isinstance(val_acc, torch.Tensor) else val_acc
-            if val_acc_value > best_val_acc:
-                best_val_acc = val_acc_value
+            # save checkpoint
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                patience_counter = 0
+
                 torch.save({
                     "model_state_dict": self.model.state_dict(),
                     "optimizer_state_dict": self.optimizer.state_dict(),
-                    "epoch": ep,
-                    "best_val_acc": best_val_acc
+                    "epoch": ep
                 }, self.path_save_ckpt)
-                print(f"\t✓ [Checkpoint] Saved best model at ep {ep+1}, val_acc: {best_val_acc:.4f} - {self.path_save_ckpt}")
+                print(f"\t--- Save best at ep {ep+1}, val_loss: {val_loss:.4f}, path: {self.path_save_ckpt} ---")
 
-            # EARLY STOPPING: Monitor validation loss (stop if no improvement)
-            val_loss_value = val_loss.item() if isinstance(val_loss, torch.Tensor) else val_loss
-            if val_loss_value < best_val_loss:
-                best_val_loss = val_loss_value
-                patience_counter = 0
-                print(f"\t→ Val loss improved: {best_val_loss:.4f}")
             else:
                 patience_counter += 1
-                print(f"\t⚠ No val loss improvement: {patience_counter}/{self.patience}")
+                print(f"\t-!- No improvement: {patience_counter}/{self.patience}")
                 if patience_counter >= self.patience:
-                    print(f"\n🛑 Early stopping triggered at ep={ep+1} (patience exhausted)")
-                    print(f"   Best validation accuracy: {best_val_acc:.4f}")
+                    print(f"\t-_- Early stopping at ep={ep+1}")
                     break
 
-        print(f"\n✓ Training completed!")
-        print(f"   Best validation accuracy: {best_val_acc:.4f}")
-        print(f"   Checkpoint saved to: {self.path_save_ckpt}")
         return all_train_loss, all_val_loss
 
 
