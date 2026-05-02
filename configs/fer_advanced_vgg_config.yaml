@@ -18,7 +18,7 @@ model:
   name: "fer_advanced"
   # Model-specific params
   feat_dim: 128
-  num_regions: 3           # Attention regions: mouth, eyes, face
+  num_regions: 4           # Attention regions: mouth, eyes, face
   num_graph_layers: 2      # Graph reasoning layers
   num_heads: 4             # Multi-head attention heads
   dropout: 0.3
@@ -44,11 +44,4 @@ training:
   # Auxiliary loss weights (if using combined loss)
   diversity_loss_weight: 0.1
   sparsity_loss_weight: 0.05
-
-# Augmentation settings
-augmentation:
-  crop_scale: [0.8, 1.2]
-  rotation: 10
-  translation: [0.2, 0.2]
-  horizontal_flip: true
 
