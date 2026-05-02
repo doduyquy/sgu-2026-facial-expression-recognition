@@ -416,13 +416,28 @@ class Trainer:
                 except Exception:
                     # if any issue with augment or TF, skip augment consistency for this batch
                     pass
-            loss.backward()
-            try:
-                # gradient clipping to stabilize training when combining SCN and landmark auxes
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
-            except Exception:
-                pass
-            self.optimizer.step()
+            # Point 6: Sharpness-Aware Minimization (SAM) & Gradient Clipping
+            if getattr(self, '_runtime_use_sam', False) and hasattr(self.optimizer, 'first_step'):
+                loss.backward()
+                self.optimizer.first_step(zero_grad=True)
+                
+                # Step 2: Second pass for SAM refinement (Classification + Motif)
+                # To maintain stability, we re-run the classification and motif parts
+                out_sam = self.model(images, targets=labels)
+                logits_sam = self._extract_logits(out_sam)
+                loss_sam = F.cross_entropy(logits_sam, labels, label_smoothing=0.1)
+                
+                scores_m_sam, topk_m_sam = getattr(self.model, 'get_landmark_outputs', lambda: (None, None))()
+                if scores_m_sam is not None and topk_m_sam is not None:
+                    loss_sam = loss_sam + motif_lambda * self.motif_criterion(scores_m_sam, topk_m_sam, labels)
+                
+                loss_sam.backward()
+                self.optimizer.second_step(zero_grad=True)
+            else:
+                loss.backward()
+                # Point 6: Gradient Clipping (1.0 for stability)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                self.optimizer.step()
 
             running_loss += loss.item() * images.size(0)
             _, preds = torch.max(logits, dim=1)
@@ -556,49 +571,29 @@ class Trainer:
                 except Exception:
                     pass
 
-            # apply 3-phase staged lambda schedule tuned for noisy FER datasets
-            # Phase 1: very early (0-20%): SCN OFF, MixUp ON
-            # Phase 2: (20-70%): SCN ON, stronger landmark signals
-            # Phase 3: (70-100%): heavy refinement for landmark branch
-            if progress <= 0.08:
-                # Phase 1 (0-20%): conservative — 
-                self._runtime_diversity_lambda = 0.0
-                self._runtime_entropy_lambda = 0.0
-                self._runtime_overlap_lambda = 0.0
-                self._runtime_augment_lambda = 0.0
-                self._runtime_edge_consistency_lambda = 0.0
-                self._runtime_aux_cls_lambda = 0.0
-                self._runtime_aux_consistency_lambda = 0.0
-                self._runtime_use_scn = False
+            # Point 5: 3-Stage Training Pipeline (Research Grade)
+            if ep < 10:
+                # Stage 1: Backbone + Classifier only (Motif disabled)
+                self._runtime_motif_lambda = 0.0
                 self._runtime_use_mixup = True
-                self._runtime_motif_lambda = 0.1 # Start low
+                self._runtime_use_sam = False
                 self._runtime_phase = 1
-            elif progress <= 0.38:
-                # Phase 2 (20-70%): enable SCN and stronger landmark auxiliaries
-                self._runtime_diversity_lambda = 0.18
-                self._runtime_entropy_lambda = 0.004
-                self._runtime_overlap_lambda = 0.07
-                self._runtime_augment_lambda = 0.0
-                self._runtime_edge_consistency_lambda = 0.0
-                self._runtime_aux_cls_lambda = 0.1
-                self._runtime_aux_consistency_lambda = 0.0
-                self._runtime_use_scn = True
+                if callable(set_progress): set_progress(0.0)
+            elif ep < 30:
+                # Stage 2: Enable Motif Module (Soft matching - High Temp)
+                self._runtime_motif_lambda = 0.5
                 self._runtime_use_mixup = False
-                self._runtime_motif_lambda = 0.5 # Increase
+                self._runtime_use_sam = False
                 self._runtime_phase = 2
+                if callable(set_progress): set_progress(0.2)
             else:
-                # Phase 3 (70-100%): strong refinement — increase landmark lambdas
-                self._runtime_diversity_lambda = 0.30
-                self._runtime_entropy_lambda = 0.008
-                self._runtime_overlap_lambda = 0.10
-                self._runtime_augment_lambda = 0.0
-                self._runtime_edge_consistency_lambda = 0.0
-                self._runtime_aux_cls_lambda = 0.2
-                self._runtime_aux_consistency_lambda = 0.0
-                self._runtime_use_scn = True
+                # Stage 3: Low Temp + Contrastive Motif + SAM (Final Refinement)
+                self._runtime_motif_lambda = 1.0
                 self._runtime_use_mixup = False
-                self._runtime_motif_lambda = 1.0 # Maximum focus
+                self._runtime_use_sam = True
                 self._runtime_phase = 3
+                prog = 0.5 + 0.5 * ((ep - 30) / max(1, self.epochs - 30))
+                if callable(set_progress): set_progress(prog)
 
             train_loss, train_acc = self.train_one_epoch()
             val_loss, val_acc = self.validate()

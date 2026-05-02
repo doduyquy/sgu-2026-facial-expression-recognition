@@ -13,73 +13,83 @@ except ImportError:
 
 class MotifBackbone(nn.Module):
     """
-    Advanced Backbone with Residual connections and CBAM.
+    Robust Multi-Scale Backbone (STABLE VERSION).
+    Uses 2 scales (mid/high) with gated fusion and LayerNorm for stability.
     """
     def __init__(self, in_channels=1, feat_dim=128):
         super().__init__()
+        self.feat_dim = feat_dim
+        
+        # Stage 1: Initial reduction
         self.conv1 = nn.Sequential(
             nn.Conv2d(in_channels, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
+            nn.GroupNorm(8, 64), # Stable alternative to BatchNorm
             nn.ReLU(),
             nn.MaxPool2d(2) # 24x24
         )
         
-        # Residual Block 1
+        # Residual Block 1 (Mid-level focus)
         self.res1 = nn.Sequential(
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.GroupNorm(16, 128),
             nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64)
+            nn.Conv2d(128, 128, kernel_size=3, padding=1),
+            nn.GroupNorm(16, 128)
         )
-        self.cbam1 = CBAM(64)
+        self.down1 = nn.MaxPool2d(2) # 12x12
         
-        self.down1 = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1), # 12x12
-            nn.BatchNorm2d(128),
-            nn.ReLU()
-        )
-        
-        # Residual Block 2
+        # Residual Block 2 (High-level focus)
         self.res2 = nn.Sequential(
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
+            nn.Conv2d(128, feat_dim, kernel_size=3, padding=1),
+            nn.GroupNorm(16, feat_dim),
             nn.ReLU(),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128)
+            nn.Conv2d(feat_dim, feat_dim, kernel_size=3, padding=1),
+            nn.GroupNorm(16, feat_dim)
         )
-        self.cbam2 = CBAM(128)
+        self.down2 = nn.MaxPool2d(2) # 6x6
         
-        self.down2 = nn.Sequential(
-            nn.Conv2d(128, feat_dim, kernel_size=3, stride=2, padding=1), # 6x6
-            nn.BatchNorm2d(feat_dim),
-            nn.ReLU()
+        # Stable Gated Fusion (Point 1)
+        # f_fused = gate * f_mid + (1 - gate) * f_high
+        self.proj_high = nn.Conv2d(feat_dim, 128, kernel_size=1)
+        self.gate_conv = nn.Sequential(
+            nn.Conv2d(128 + 128, 1, kernel_size=1),
+            nn.Sigmoid()
         )
-        self.final_cbam = CBAM(feat_dim)
+        self.proj_final = nn.Conv2d(128, feat_dim, kernel_size=1)
+        
+        self.cbam = CBAM(feat_dim)
 
     def forward(self, x):
         x = self.conv1(x)
         
-        identity = x
-        x = self.res1(x)
-        x = self.cbam1(x)
-        x = F.relu(x + identity)
+        # f_mid (12x12)
+        f_mid = self.res1(x)
+        f_mid_down = self.down1(f_mid)
         
-        x = self.down1(x)
+        # f_high (6x6)
+        f_high = self.res2(f_mid_down)
+        f_high_final = self.down2(f_high)
         
-        identity = x
-        x = self.res2(x)
-        x = self.cbam2(x)
-        x = F.relu(x + identity)
+        # 2-Scale Gated Fusion (Point 1)
+        # Upsample high to mid for gated reasoning
+        f_high_up = F.interpolate(f_high_final, size=f_mid_down.shape[2:], mode='bilinear', align_corners=True)
         
-        x = self.down2(x)
-        x = self.final_cbam(x)
-        return x
+        # Compute gate: (B, 1, 12, 12)
+        gate = self.gate_conv(torch.cat([f_mid_down, self.proj_high(f_high_up)], dim=1))
+        
+        # Weighted fusion in 12x12 space
+        f_fused = gate * f_mid_down + (1 - gate) * self.proj_high(f_high_up)
+        
+        # Project back to 6x6 and target feat_dim
+        out = self.proj_final(F.max_pool2d(f_fused, kernel_size=2))
+        out = self.cbam(out)
+        
+        return out
 
 class GraphTransformerBlock(nn.Module):
     """
-    Research-grade Graph Transformer Block.
-    Integrates Multi-head Graph Attention with Pre-Norm Residual structure and FFN.
+    Robust Graph Transformer Block (ROBUST VERSION).
+    Integrates Multi-head Attention with normalized relative positional bias.
     """
     def __init__(self, dim, heads=4, ff_expansion=2):
         super().__init__()
@@ -93,6 +103,13 @@ class GraphTransformerBlock(nn.Module):
         self.v_lin = nn.Linear(dim, dim)
         self.attn_out = nn.Linear(dim, dim)
         
+        # Relative Positional Bias (Point 2)
+        self.pos_bias_mlp = nn.Sequential(
+            nn.Linear(1, 16),
+            nn.ReLU(),
+            nn.Linear(16, heads)
+        )
+        
         # Feed Forward Network (FFN) components
         self.norm2 = nn.LayerNorm(dim)
         self.ffn = nn.Sequential(
@@ -101,12 +118,12 @@ class GraphTransformerBlock(nn.Module):
             nn.Linear(dim * ff_expansion, dim)
         )
         
-        # Edge Gating components (Efficient xi || xj implementation)
+        # Edge Gating components
         self.gate_i = nn.Linear(dim, 1, bias=False)
         self.gate_j = nn.Linear(dim, 1, bias=True)
 
-    def forward(self, x, adj):
-        # x: (B, N, dim), adj: (B, N, N)
+    def forward(self, x, adj, pos_dist=None):
+        # x: (B, N, dim), adj: (B, N, N), pos_dist: (B, N, N)
         B, N, C = x.shape
         
         # 1. Multi-head Graph Attention Branch (Pre-Norm)
@@ -120,20 +137,24 @@ class GraphTransformerBlock(nn.Module):
         # (B, H, N, N)
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
         
-        # 1.1 Apply Edge-wise Gating: gate = sigmoid(Linear(xi) + Linear(xj))
+        # 1.1 Apply Relative Positional Bias (Point 2)
+        if pos_dist is not None:
+            # pos_dist is normalized distance: (B, N, N)
+            bias = self.pos_bias_mlp(pos_dist.unsqueeze(-1)).permute(0, 3, 1, 2)
+            scores = scores + bias
+            
+        # 1.2 Apply Edge-wise Gating
         gate_i = self.gate_i(z).unsqueeze(2) # (B, N, 1, 1)
         gate_j = self.gate_j(z).unsqueeze(1) # (B, 1, N, 1)
         gate = torch.sigmoid(gate_i + gate_j).squeeze(-1) # (B, N, N)
-        scores = scores * gate.unsqueeze(1) # Broadcast over heads
+        scores = scores * gate.unsqueeze(1)
         
-        # 1.2 Apply structural adjacency mask
+        # 1.3 Apply soft structural adjacency integration (NO -inf masking)
         if adj is not None:
-            # Mask nodes that are not connected in the graph
-            scores = scores.masked_fill(adj.unsqueeze(1) == 0, -float('inf'))
+            scores = scores + torch.log(adj.unsqueeze(1) + 1e-9)
             
         attn = F.softmax(scores, dim=-1)
-        # Handle potential NaNs if a node has no neighbors
-        attn = torch.nan_to_num(attn)
+        attn = torch.nan_to_num(attn, nan=0.0)
         
         out = torch.matmul(attn, v) # (B, H, N, d_k)
         out = out.transpose(1, 2).contiguous().view(B, N, -1)
@@ -147,7 +168,6 @@ class GraphTransformerBlock(nn.Module):
         z = self.norm2(x)
         out = self.ffn(z)
         
-        # Second Residual Connection
         return identity + out
 
 class GraphMotifModule(nn.Module):
@@ -197,6 +217,25 @@ class GraphMotifModule(nn.Module):
         eye = torch.eye(self.motifs_per_class, device=m.device).unsqueeze(0)
         return torch.norm(sim - eye, p='fro', dim=(1, 2)).mean()
 
+    def compute_contrastive_loss(self, tau=0.07):
+        """
+        Inter-class Contrastive Loss (InfoNCE).
+        Pushes class-level motif representations apart to prevent inter-class collapse.
+        """
+        L, M, K, C = self.motifs.shape
+        # Compute class-level prototypes (centroids)
+        # Flatten motifs first: (L, M, K*C)
+        m_flat = self.motifs.view(L, M, -1)
+        centroids = m_flat.mean(dim=1) # (L, K*C)
+        centroids = F.normalize(centroids, dim=-1)
+        
+        # Similarity matrix between classes
+        sim = torch.matmul(centroids, centroids.T) / tau
+        # Labels for InfoNCE: diagonal should be max
+        labels = torch.arange(L, device=centroids.device)
+        
+        return F.cross_entropy(sim, labels)
+
     def forward(self, region_features, adj=None, return_attention=False):
         """
         Args:
@@ -227,7 +266,13 @@ class GraphMotifModule(nn.Module):
         # Align structural relationships Ri-Rj with Mi-Mj
         # edge_sim_raw: (B, L, M, K, K)
         edge_sim_raw = torch.einsum('bijk,lmijk->blmij', diff_R, diff_M)
-        edge_sim = edge_sim_raw.mean(dim=(-1, -2)) # (B, L, M)
+        
+        # Point 3: Preserve structural patterns using Combined Max-Mean pooling
+        # Max-pooling captures the strongest local structural match, 
+        # while mean-pooling ensures global geometric alignment.
+        edge_sim_max = F.adaptive_max_pool2d(edge_sim_raw.view(B*L*M, K, K), (1, 1)).view(B, L, M)
+        edge_sim_mean = edge_sim_raw.mean(dim=(-1, -2))
+        edge_sim = 0.5 * edge_sim_max + 0.5 * edge_sim_mean # (B, L, M)
         
         # 4. Topology matching using Low-Rank Motif Edges
         # motif_adj: (L, M, K, K)
@@ -321,9 +366,13 @@ class MotifGraphModel(nn.Module):
         # Weight for combining Motif and Global logits
         self.alpha = nn.Parameter(torch.ones(1) * 0.5)
         
-        # Learnable query for candidate-level attention
-        self.cand_query = nn.Parameter(torch.randn(1, 1, self.num_classes))
-        nn.init.xavier_uniform_(self.cand_query)
+        # Point 4: Replace shallow query with MLP-based importance scorer
+        # This allows for more expressive reasoning over extracted candidates.
+        self.cand_scorer = nn.Sequential(
+            nn.Linear(self.num_classes, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1)
+        )
         
         # Learnable temperature for global graph structure
         self.graph_temperature = nn.Parameter(torch.ones(1) * 0.1)
@@ -406,15 +455,16 @@ class MotifGraphModel(nn.Module):
         logits_global = self.global_fc(self.global_pool(feat_map))
         
         # Motif Branch
-        nodes_with_coords, adj = self._get_global_graph(feat_map)
+        nodes_with_coords, adj, pos_dist = self._get_global_graph(feat_map)
         node_feats = nodes_with_coords[:, :, :-2]
+        
         if node_feats.shape[-1] != self.feat_dim:
             if not hasattr(self, 'proj_node'):
                 self.proj_node = nn.Linear(node_feats.shape[-1], self.feat_dim).to(x.device)
             node_feats = self.proj_node(node_feats)
             
         for gnn in self.gnn_layers:
-            node_feats = gnn(node_feats, adj)
+            node_feats = gnn(node_feats, adj, pos_dist=pos_dist)
             
         candidates, cand_adjs, centers = self._extract_deformable_subgraphs(feat_map, H, W, node_feats)
         num_cands = candidates.shape[1]
@@ -429,17 +479,22 @@ class MotifGraphModel(nn.Module):
         # 2. Prepare candidate adjacencies: (B*num_cands, 9, 9)
         flat_adjs = cand_adjs.reshape(B * num_cands, 9, 9)
         
-        # 3. Match against Learnable Motifs (Research Grade)
-        logits_cand, motif_scores_cand, metadata = self.motif_module(flat_cands, adj=flat_adjs, return_attention=True)
+        # 3. Match against Learnable Motifs
+        logits_cand_raw, motif_scores_cand, metadata = self.motif_module(flat_cands, adj=flat_adjs, return_attention=True)
+        
+        # Point 4: Entropy-based filtering (Noise Reduction)
+        probs = F.softmax(logits_cand_raw, dim=-1)
+        ent = -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).view(B, num_cands)
+        # Weight regions by (1 - normalized_entropy)
+        ent_weight = (1.0 - (ent / math.log(self.num_classes))).unsqueeze(-1) # (B, num_cands, 1)
         
         # 4. Aggregate across all candidate subgraphs
-        # logits_cand: (B*num_cands, num_classes)
-        logits_cand = logits_cand.view(B, num_cands, self.num_classes)
+        logits_cand = logits_cand_raw.view(B, num_cands, self.num_classes)
         
-        # Point 5: Candidate-level attention using learnable query
-        cand_scores = (logits_cand * self.cand_query).sum(dim=-1) # (B, num_cands)
-        cand_tau = 0.3
-        attn_weights = F.softmax(cand_scores / cand_tau, dim=1).unsqueeze(-1) 
+        # MLP-based Candidate Scoring (Point 4)
+        cand_scores = self.cand_scorer(logits_cand) # (B, num_cands, 1)
+        # Combine MLP attention with Entropy weight to focus on confident, relevant regions
+        attn_weights = F.softmax(cand_scores + torch.log(ent_weight + 1e-9), dim=1) 
         
         logits_motif = torch.sum(logits_cand * attn_weights, dim=1)
         logits_motif = logits_motif * self.logit_scale 
@@ -447,10 +502,9 @@ class MotifGraphModel(nn.Module):
         # Final combined logits
         logits = logits_motif + torch.sigmoid(self.alpha) * logits_global
         
-        # Point 2: Reshape for MotifConsistencyLoss (B, num_cands, num_classes * motifs_per_class)
         self._latest_scores = motif_scores_cand.view(B, num_cands, -1)
         # Relevance for Top-K visualization
-        cand_relevance = cand_scores
+        cand_relevance = cand_scores.squeeze(-1) # (B, num_cands)
         _, top_k_idx = torch.topk(cand_relevance, k=self.top_k, dim=1)
         self._latest_top_k = top_k_idx
         self._latest_metadata = metadata
@@ -469,27 +523,36 @@ class MotifGraphModel(nn.Module):
         nodes = feat_map.permute(0, 2, 3, 1).reshape(B, N, C)
         nodes_with_coords = torch.cat([nodes, coords], dim=-1)
         
+        # Point 2: Normalized Relative Positional Bias
+        pos_dist = torch.cdist(coords, coords) # (B, N, N)
+        max_dist = pos_dist.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+        pos_dist = pos_dist / (max_dist + 1e-9) # Normalize distances
+        
         # 1. Similarity Matrix
         nodes_norm = F.normalize(nodes, dim=-1)
         sim = torch.matmul(nodes_norm, nodes_norm.transpose(1, 2)) # (B, N, N)
         
-        # 2. Soft Attention Adjacency with learnable temperature
+        # 2. Hybrid Adjacency (Point 2)
         tau = F.softplus(self.graph_temperature)
-        adj = F.softmax(sim / tau, dim=-1)
         
-        # 3. Enforce Symmetry
+        # Top-K sparsification (k=8)
+        k = 8
+        topk_sim, _ = torch.topk(sim, k=min(k, N), dim=-1)
+        min_sim = topk_sim[:, :, -1].unsqueeze(-1)
+        mask = (sim >= min_sim).float()
+        
+        adj = F.softmax((sim / tau).masked_fill(mask == 0, -1e9), dim=-1)
+        
+        # 3. Enforce Symmetry & Self-loops
         adj = (adj + adj.transpose(1, 2)) / 2
+        adj = adj + torch.eye(N, device=feat_map.device).unsqueeze(0)
         
-        # 4. Add Self-loops
-        identity = torch.eye(N, device=feat_map.device).unsqueeze(0)
-        adj = adj + identity
-        
-        # 5. GCN-style Symmetric Normalization: D^-1/2 * A * D^-1/2
-        d = adj.sum(dim=-1) # Degree matrix
-        d_inv_sqrt = torch.pow(d + 1e-6, -0.5)
+        # 4. GCN-style Symmetric Normalization
+        d = adj.sum(dim=-1) 
+        d_inv_sqrt = torch.pow(d + 1e-9, -0.5)
         adj = d_inv_sqrt.unsqueeze(-1) * adj * d_inv_sqrt.unsqueeze(-2)
         
-        return nodes_with_coords, adj
+        return nodes_with_coords, adj, pos_dist
 
     def get_landmark_outputs(self):
         return getattr(self, '_latest_scores', None), getattr(self, '_latest_top_k', None)
@@ -527,17 +590,21 @@ class MotifGraphModel(nn.Module):
         if not hasattr(self, '_latest_scores') or self._latest_scores is None:
             return {}
             
-        # 1. Motif Diversity (Orthogonality)
+        # 1. Motif Diversity (Intra-class Orthogonality)
         l_div = self.motif_module.compute_diversity_loss()
         
-        # 2. Attention Entropy (Prevent collapse)
+        # 2. Motif Contrastive (Inter-class Separation)
+        l_cont = self.motif_module.compute_contrastive_loss()
+        
+        # 3. Attention Entropy (Prevent collapse)
         l_ent = getattr(self.motif_module, '_latest_attn_entropy', 0.0)
         
-        # 3. Offset Regularization
+        # 4. Offset Regularization
         l_off = torch.norm(getattr(self, '_latest_offsets', 0.0), p=2, dim=-1).mean()
         
         return {
             "motif_diversity": l_div,
+            "motif_contrastive": l_cont,
             "attn_entropy": l_ent,
             "offset_reg": l_off
         }
