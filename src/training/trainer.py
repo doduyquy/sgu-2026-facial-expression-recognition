@@ -526,6 +526,7 @@ class Trainer:
             init_wandb(config=self.config, run_name=self.run_name)
 
         best_val_loss = float("inf")
+        best_val_acc = 0.0
         patience_counter = 0
         all_train_loss = []
         all_val_loss = []
@@ -624,23 +625,28 @@ class Trainer:
                 else:
                     self.scheduler.step()
 
-            # save checkpoint
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                patience_counter = 0
-
+            # save checkpoint (tracking val_acc)
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
                 torch.save({
                     "model_state_dict": self.model.state_dict(),
                     "optimizer_state_dict": self.optimizer.state_dict(),
-                    "epoch": ep
+                    "epoch": ep,
+                    "val_acc": val_acc.item() if hasattr(val_acc, 'item') else val_acc,
+                    "val_loss": val_loss
                 }, self.path_save_ckpt)
-                print(f"\t--- Save best at ep {ep+1}, val_loss: {val_loss:.4f}, path: {self.path_save_ckpt} ---")
+                print(f"\t--- Save best Accuracy at ep {ep+1}, val_acc: {val_acc:.4f}, path: {self.path_save_ckpt} ---")
 
+            # early stopping (tracking val_loss)
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                patience_counter = 0
+                print(f"\t--- Best Loss updated: {val_loss:.4f} ---")
             else:
                 patience_counter += 1
-                print(f"\t-!- No improvement: {patience_counter}/{self.patience}")
+                print(f"\t-!- No loss improvement: {patience_counter}/{self.patience}")
                 if patience_counter >= self.patience:
-                    print(f"\t-_- Early stopping at ep={ep+1}")
+                    print(f"\t-_- Early stopping triggered at ep={ep+1}")
                     break
 
         return all_train_loss, all_val_loss

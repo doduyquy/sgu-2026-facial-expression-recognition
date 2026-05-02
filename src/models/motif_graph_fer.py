@@ -283,8 +283,19 @@ class MotifGraphModel(nn.Module):
         return sampled_feats, adj, centers_coords
 
     def forward(self, x, return_selection=False, targets=None):
+        if targets is not None:
+            self._latest_targets = targets
+            
+        # Handle TenCrop input: (B, 10, C, H, W)
+        if x.dim() == 5:
+            B, T, C, H, W = x.shape
+            x = x.view(B * T, C, H, W)
+            # Recursive call to handle all crops (targets already set)
+            logits = self.forward(x) 
+            # Average predictions across all 10 crops
+            return logits.view(B, T, -1).mean(dim=1)
+
         B = x.shape[0]
-        self._latest_targets = targets
         
         feat_map = self.backbone(x) # (B, C, H, W)
         _, _, H, W = feat_map.shape
@@ -387,50 +398,6 @@ class MotifGraphModel(nn.Module):
         l_div = self.compute_motif_diversity_loss()
         return {"motif_diversity": l_div}
 
-    def _get_global_graph(self, feat_map):
-        """ (1) Sparse Semantic Graph (k=4) """
-        B, C, H, W = feat_map.shape
-        N = H * W
-        
-        y, x = torch.meshgrid(torch.linspace(0, 1, H), torch.linspace(0, 1, W), indexing='ij')
-        coords = torch.stack([x, y], dim=-1).to(feat_map.device).view(1, N, 2).expand(B, -1, -1)
-        nodes = feat_map.permute(0, 2, 3, 1).reshape(B, N, C)
-        nodes_with_coords = torch.cat([nodes, coords], dim=-1)
-        
-        nodes_norm = F.normalize(nodes, dim=-1)
-        sim = torch.matmul(nodes_norm, nodes_norm.transpose(1, 2))
-        
-        # Sparse Graph: k=4 to reduce noise
-        k_neighbors = 4 
-        topk_sim, topk_idx = torch.topk(sim, k=k_neighbors, dim=-1)
-        
-        adj = torch.zeros_like(sim)
-        adj.scatter_(-1, topk_idx, topk_sim)
-        
-        return nodes_with_coords, adj
-
-    def get_landmark_outputs(self):
-        return getattr(self, '_latest_scores', None), getattr(self, '_latest_top_k', None)
-
-    def get_landmark_aux_logits(self):
-        return None
-
-    def set_training_progress(self, progress):
-        pass
-        
-    def get_current_prior_strength(self):
-        return 0.0
-
-    def get_aux_losses(self):
-        if not hasattr(self, '_latest_scores') or self._latest_scores is None:
-            return {}
-        l_div = self.compute_motif_diversity_loss()
-        return {"motif_diversity": l_div}
-        
-        if return_selection:
-            return logits, top_k_idx, centers, scores
-            
-        return logits
 
     def _get_grid_graph(self, feat_map):
         """ Vectorized version of graph building """
@@ -465,6 +432,13 @@ if __name__ == "__main__":
         'top_k': 4
     }
     model = MotifGraphModel(config)
-    dummy_img = torch.randn(2, 1, 48, 48)
-    out = model(dummy_img)
-    print(f"Output shape: {out.shape}") # Should be (2, 7)
+    
+    # Test 4D
+    dummy_img_4d = torch.randn(2, 1, 48, 48)
+    out_4d = model(dummy_img_4d)
+    print(f"4D Output shape: {out_4d.shape}") # (2, 7)
+    
+    # Test 5D (TenCrop)
+    dummy_img_5d = torch.randn(2, 10, 1, 40, 40)
+    out_5d = model(dummy_img_5d)
+    print(f"5D Output shape: {out_5d.shape}") # (2, 7)
