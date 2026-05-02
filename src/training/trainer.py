@@ -13,7 +13,11 @@ class Trainer:
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
-        self.criterion = criterion
+        self.config = config
+        self.device = device
+        self.run_name = run_name
+        self.path_save_ckpt = save_dir
+        
         # 1. FER2013 Class-Balanced Weights & Label Smoothing (Point 1 & 2)
         # Counts: Angry(3995), Disgust(436), Fear(4097), Happy(7215), Sad(4830), Surprise(3171), Neutral(4965)
         weights = torch.tensor([1.026, 9.406, 1.001, 0.568, 0.849, 1.293, 0.826], device=device)
@@ -28,16 +32,13 @@ class Trainer:
             motifs_per_class=self.config['model'].get('motifs_per_class', 8),
             tau=0.1
         ).to(device)
+        
         self.optimizer = optimizer
         self.scheduler = scheduler
-        self.device = device
         self.epochs = config['training'].get('epochs', 100)
         self.patience = config['training'].get('patience', 10)
         self.model_name = config['model'].get('name', 'simple_cnn')
         self.use_wandb = config['logging'].get('use_wandb', True)
-        self.run_name = run_name
-        self.config = config
-        self.path_save_ckpt = save_dir
         # Tuned defaults to avoid over-constraint (Sunset suggestions)
         self.landmark_diversity_lambda = config['training'].get('landmark_diversity_lambda', 0.25)
         # keep entropy off by default for low-res FER unless explicitly enabled
