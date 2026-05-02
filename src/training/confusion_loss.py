@@ -1,8 +1,8 @@
 """
-Confusable Pair Learning Loss
-- ConfusionMatrixLoss: Weight hard emotion pairs
-- Applied as: loss = CE + lambda * ConfusionMatrixLoss
+Confusion Matrix Loss: Margin-based loss for hard emotion pairs
+Purpose: Penalize confusion between similar emotions (Fear↔Sad, Sad↔Anger, etc.)
 """
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,161 +10,172 @@ import torch.nn.functional as F
 
 class ConfusionMatrixLoss(nn.Module):
     """
-    Loss that focuses on hard confusion pairs.
-    Emotion confusion hierarchy (from confusion matrix):
-    - Fear ↔ Sad: 49.1% vs 55.1% (WORST)
-    - Sad ↔ Anger: 55.1% vs 60.9%
-    - Anger ↔ Disgust: 60.9% vs 54.5%
-    - Fear ↔ Anger: 49.1% vs 60.9%
+    Margin-based loss for hard-to-distinguish emotion pairs.
     
-    Strategy: Increase margin for hard pairs using triplet-style loss
+    Encourages: logit_true > logit_false + margin
+    With higher weight for known confusion pairs.
     """
+    
+    def __init__(self, num_classes=7, margin=0.5):
+        super().__init__()
+        self.num_classes = num_classes
+        self.margin = margin
+        
+        # Define confusion pairs and their weights
+        # (class_i, class_j, weight) -> penalize confusion between i and j
+        self.confusion_pairs = [
+            (3, 5, 2.5),   # Fear (3) ↔ Sad (5): weight 2.5×
+            (5, 0, 2.0),   # Sad (5) ↔ Angry (0): weight 2.0×
+            (0, 1, 1.8),   # Angry (0) ↔ Disgust (1): weight 1.8×
+            (1, 2, 1.6),   # Disgust (1) ↔ Fear (2): weight 1.6×
+            (4, 6, 1.2),   # Neutral (4) ↔ Surprise (6): weight 1.2×
+        ]
+        # Classes: 0=Angry, 1=Disgust, 2=Fear, 3=Happy, 4=Neutral, 5=Sad, 6=Surprise
+    
+    def forward(self, logits, labels, reduction='mean'):
+        """
+        Args:
+            logits: (B, num_classes) - raw model outputs
+            labels: (B,) - ground truth labels
+            reduction: 'mean' or 'none'
+        
+        Returns:
+            loss: scalar or (B,) tensor depending on reduction
+        """
+        B = logits.shape[0]
+        losses = []
+        
+        for b in range(B):
+            logit_b = logits[b]  # (num_classes,)
+            label_b = labels[b].item()  # scalar
+            
+            # Initialize as Tensor, NOT float (critical!)
+            pair_loss = torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
+            
+            # Apply margin loss for each confusion pair
+            for class_i, class_j, weight in self.confusion_pairs:
+                # When true label is class_i, penalize high score for class_j
+                if label_b == class_i:
+                    score_true = logit_b[class_i]
+                    score_false = logit_b[class_j]
+                    # Loss: max(0, margin + score_false - score_true)
+                    pair_loss_ij = weight * F.relu(self.margin + score_false - score_true)
+                    # IMPORTANT: Use explicit assignment (=) not in-place (+=)
+                    pair_loss = pair_loss + pair_loss_ij
+                
+                # When true label is class_j, penalize high score for class_i
+                if label_b == class_j:
+                    score_true = logit_b[class_j]
+                    score_false = logit_b[class_i]
+                    pair_loss_ji = weight * F.relu(self.margin + score_false - score_true)
+                    pair_loss = pair_loss + pair_loss_ji
+            
+            losses.append(pair_loss)
+        
+        # Stack losses - all must be Tensors now (no type mismatch)
+        losses = torch.stack(losses)
+        
+        if reduction == 'mean':
+            return losses.mean()
+        elif reduction == 'sum':
+            return losses.sum()
+        else:
+            return losses
+
+
+class ContrastiveConfusionLoss(nn.Module):
+    """
+    Alternative: Contrastive learning approach for confusion pairs.
+    Pulls together similar classes while pushing apart dissimilar ones.
+    """
+    
     def __init__(self, num_classes=7, margin=0.5, temperature=0.1):
         super().__init__()
         self.num_classes = num_classes
         self.margin = margin
         self.temperature = temperature
         
-        # Define confusion pairs: (class_i, class_j, weight)
-        # Emotion indices: 0=angry, 1=disgust, 2=fear, 3=happy, 4=sad, 5=surprise, 6=neutral
+        # Define which classes should be similar/dissimilar
         self.confusion_pairs = [
-            (2, 4, 2.5),  # fear <-> sad: highest weight - MOST confused
-            (4, 0, 2.0),  # sad <-> anger
-            (0, 1, 1.8),  # anger <-> disgust
-            (0, 2, 2.2),  # anger <-> fear
-            (1, 2, 1.7),  # disgust <-> fear
-            (4, 6, 1.5),  # sad <-> neutral
-            (2, 6, 1.6),  # fear <-> neutral
-            (0, 6, 1.4),  # anger <-> neutral
+            (3, 5, 2.5),   # Fear ↔ Sad
+            (5, 0, 2.0),   # Sad ↔ Angry
+            (0, 1, 1.8),   # Angry ↔ Disgust
         ]
     
     def forward(self, logits, labels, reduction='mean'):
-        """
-        Args:
-            logits: (B, num_classes) - model predictions
-            labels: (B,) - ground truth labels
-            reduction: 'mean' or 'none'
-        
-        Returns:
-            loss: scalar or (B,) depending on reduction
-        """
+        """Contrastive loss for confusion pairs"""
         B = logits.shape[0]
-        
-        # Compute per-sample confusion loss
         losses = []
         
         for b in range(B):
-            logit_b = logits[b]  # (num_classes,)
+            logit_b = logits[b]
             label_b = labels[b].item()
             
-            # Check if this sample belongs to a hard confusion pair
-            pair_loss = torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
-            is_hard_pair = False
+            loss_b = torch.tensor(0.0, device=logits.device, dtype=logits.dtype)
             
             for class_i, class_j, weight in self.confusion_pairs:
-                # Case 1: True label is class_i, penalize predicting class_j
-                if label_b == class_i:
-                    score_true = logit_b[class_i]
-                    score_false = logit_b[class_j]
-                    # Margin-based loss: want score_true > score_false + margin
-                    pair_loss_ij = weight * F.relu(self.margin + score_false - score_true)
-                    pair_loss = pair_loss + pair_loss_ij
-                    is_hard_pair = True
-                
-                # Case 2: True label is class_j, penalize predicting class_i
-                if label_b == class_j:
-                    score_true = logit_b[class_j]
-                    score_false = logit_b[class_i]
-                    pair_loss_ji = weight * F.relu(self.margin + score_false - score_true)
-                    pair_loss = pair_loss + pair_loss_ji
-                    is_hard_pair = True
+                if label_b == class_i or label_b == class_j:
+                    # Get true class logit
+                    true_logit = logit_b[label_b]
+                    
+                    # Get confusion class logit
+                    confusion_class = class_j if label_b == class_i else class_i
+                    confusion_logit = logit_b[confusion_class]
+                    
+                    # Contrastive: penalize small gap
+                    gap = true_logit - confusion_logit
+                    contrastive_loss = weight * F.relu(self.margin - gap)
+                    loss_b = loss_b + contrastive_loss
             
-            losses.append(pair_loss)
+            losses.append(loss_b)
         
         losses = torch.stack(losses)
         
         if reduction == 'mean':
             return losses.mean()
-        elif reduction == 'none':
-            return losses
         else:
-            raise ValueError(f"Unsupported reduction: {reduction}")
+            return losses
 
 
-class ContrastiveConfusionLoss(nn.Module):
+class CombinedConfusionLoss(nn.Module):
     """
-    Contrastive loss for confusion pairs.
-    Push similar emotions apart in logit space.
+    Combined loss: CrossEntropy + Confusion Loss
+    Used as unified loss function in training
     """
-    def __init__(self, num_classes=7, tau=0.1):
-        super().__init__()
-        self.num_classes = num_classes
-        self.tau = tau
-        
-        # Confusion pairs
-        self.confusion_pairs = {
-            2: [4, 0, 6],      # fear: avoid sad, anger, neutral
-            4: [2, 0, 6],      # sad: avoid fear, anger, neutral
-            0: [2, 4, 1, 6],   # anger: avoid fear, sad, disgust, neutral
-            1: [0, 2],         # disgust: avoid anger, fear
-        }
     
-    def forward(self, logits, labels):
+    def __init__(self, num_classes=7, confusion_weight=0.6, confusion_margin=0.5, 
+                 label_smoothing=0.1, class_weights=None):
+        super().__init__()
+        self.confusion_weight = confusion_weight
+        self.ce_weight = 1.0 - confusion_weight
+        
+        # Cross-entropy component
+        self.ce_loss = nn.CrossEntropyLoss(
+            weight=class_weights,
+            label_smoothing=label_smoothing
+        )
+        
+        # Confusion component
+        self.confusion_loss = ConfusionMatrixLoss(
+            num_classes=num_classes,
+            margin=confusion_margin
+        )
+    
+    def forward(self, logits, labels, reduction='mean'):
         """
         Args:
             logits: (B, num_classes)
             labels: (B,)
+            reduction: 'mean' or 'none'
+        
         Returns:
-            loss: scalar
+            Combined loss = CE_weight * CE + Confusion_weight * Confusion
         """
-        B = logits.shape[0]
+        # Compute both losses
+        ce = self.ce_loss(logits, labels)
+        confusion = self.confusion_loss(logits, labels, reduction='mean')
         
-        # Apply softmax
-        probs = F.softmax(logits / self.tau, dim=1)  # (B, num_classes)
+        # Combine
+        total_loss = self.ce_weight * ce + self.confusion_weight * confusion
         
-        losses = []
-        for b in range(B):
-            true_label = labels[b].item()
-            
-            # Get logits for this sample
-            logit_true = logits[b, true_label]  # scalar
-            probs_b = probs[b]  # (num_classes,)
-            
-            if true_label in self.confusion_pairs:
-                # Get confused classes
-                confused_classes = self.confusion_pairs[true_label]
-                
-                # Penalize logits of confused classes
-                for confused_class in confused_classes:
-                    logit_confused = logits[b, confused_class]
-                    # We want logit_true >> logit_confused
-                    # Use softmax cross-entropy style loss
-                    loss_pair = -torch.log(probs_b[true_label] + 1e-8)
-                    losses.append(loss_pair)
-        
-        if losses:
-            return torch.stack(losses).mean()
-        else:
-            return torch.tensor(0.0, device=logits.device)
-
-
-if __name__ == "__main__":
-    # Test ConfusionMatrixLoss
-    print("Testing ConfusionMatrixLoss...")
-    loss_fn = ConfusionMatrixLoss(num_classes=7, margin=0.5)
-    
-    # Create mock data with hard confusion pair
-    B = 4
-    logits = torch.randn(B, 7)
-    labels = torch.tensor([2, 4, 0, 1])  # fear, sad, anger, disgust - all hard pairs
-    
-    loss = loss_fn(logits, labels, reduction='mean')
-    print(f"Loss: {loss.item():.4f}")
-    print("✓ ConfusionMatrixLoss passed!")
-    
-    # Test ContrastiveConfusionLoss
-    print("\nTesting ContrastiveConfusionLoss...")
-    loss_fn2 = ContrastiveConfusionLoss(num_classes=7, tau=0.1)
-    loss2 = loss_fn2(logits, labels)
-    print(f"Contrastive Loss: {loss2.item():.4f}")
-    print("✓ ContrastiveConfusionLoss passed!")
+        return total_loss

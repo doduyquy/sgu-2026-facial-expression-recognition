@@ -1,204 +1,215 @@
 """
-Attention Mechanisms for FER
-- Region Attention: Focus on mouth/eyes/eyebrows
-- Confusion Pair Attention: Weight hard emotion pairs
+Region Attention: Spatial and channel attention for FER
+Purpose: Focus model on discriminative facial regions (mouth, eyes, eyebrows)
 """
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
-
-
-class SpatialAttention(nn.Module):
-    """Spatial Attention - focus on specific face regions"""
-    def __init__(self, kernel_size=7):
-        super().__init__()
-        self.conv = nn.Conv2d(2, 1, kernel_size=kernel_size, padding=kernel_size//2, bias=False)
-        self.sigmoid = nn.Sigmoid()
-    
-    def forward(self, x):
-        """
-        Args:
-            x: (B, C, H, W)
-        Returns:
-            x_att: (B, C, H, W) - spatially weighted
-        """
-        avg_out = torch.mean(x, dim=1, keepdim=True)
-        max_out, _ = torch.max(x, dim=1, keepdim=True)
-        cat = torch.cat([avg_out, max_out], dim=1)
-        att = self.sigmoid(self.conv(cat))
-        return x * att
 
 
 class RegionAttention(nn.Module):
     """
-    Focus network on specific face regions:
-    - Mouth: distinguish fear/sad/disgust/anger
-    - Eyes: distinguish fear/surprise/sad
-    - Eyebrows: distinguish anger/fear/sad
-    
-    Face regions (48x48):
-    - Top region (eyes): rows 8-20
-    - Mid region (nose/cheeks): rows 18-32  
-    - Bottom region (mouth): rows 28-42
+    Generate spatial attention maps for K regions of interest.
+    Applies softmax-normalized attention to extract region-specific features.
     """
-    def __init__(self, feat_dim=128, num_regions=3):
+    
+    def __init__(self, in_channels=128, num_regions=3, reduction=16):
+        """
+        Args:
+            in_channels: Number of input channels
+            num_regions: Number of spatial regions to attend to (e.g., 3 for mouth/eyes/face)
+            reduction: Channel reduction ratio for bottleneck
+        """
         super().__init__()
-        self.feat_dim = feat_dim
         self.num_regions = num_regions
+        self.in_channels = in_channels
         
-        # Spatial attention per region
-        self.mouth_attention = SpatialAttention(kernel_size=5)  # Fine details
-        self.eye_attention = SpatialAttention(kernel_size=5)
-        self.eyebrow_attention = SpatialAttention(kernel_size=5)
-        
-        # Channel attention per region (learn which channels matter)
-        self.mouth_se = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(feat_dim, feat_dim // 16, 1),
-            nn.ReLU(),
-            nn.Conv2d(feat_dim // 16, feat_dim, 1),
-            nn.Sigmoid()
-        )
-        self.eye_se = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(feat_dim, feat_dim // 16, 1),
-            nn.ReLU(),
-            nn.Conv2d(feat_dim // 16, feat_dim, 1),
-            nn.Sigmoid()
-        )
-        self.eyebrow_se = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(feat_dim, feat_dim // 16, 1),
-            nn.ReLU(),
-            nn.Conv2d(feat_dim // 16, feat_dim, 1),
-            nn.Sigmoid()
+        # Generate K attention maps via 1×1 convolution
+        # Each map focuses on different region
+        self.attention_gen = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels // reduction, kernel_size=1),
+            nn.BatchNorm2d(in_channels // reduction),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(in_channels // reduction, num_regions, kernel_size=1)
         )
         
-        # Learn region weights
-        self.region_weights = nn.Parameter(torch.ones(3) / 3.0)
+        # Per-region feature refinement
+        self.region_refine = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(in_channels),
+            nn.ReLU(inplace=True)
+        )
     
     def forward(self, x):
         """
         Args:
-            x: (B, C, H, W) - feature map from backbone (e.g., 128x6x6)
+            x: (B, C, H, W) - feature maps
+        
         Returns:
-            x_enhanced: (B, C, H, W) - region-weighted features
+            region_features: (B, num_regions, C) - attended region features
         """
         B, C, H, W = x.shape
         
-        # Define region boundaries (relative to 6x6 feature map from 48x48 input)
-        # 48x48 input -> 6x6 feature map (8x downsampling)
-        # Eye region: ~rows 8-20 → ~rows 1-2.5 in 6x6
-        # Mouth region: ~rows 28-42 → ~rows 3.5-5 in 6x6
+        # Generate K attention maps: (B, K, H, W)
+        attention_maps = self.attention_gen(x)  # (B, num_regions, H, W)
         
-        # For simplicity with 6x6 feature map:
-        # Top third (eyes): rows 0-2
-        # Mid third (nose): rows 2-4
-        # Bottom third (mouth): rows 4-6
+        # Normalize attention maps: softmax over spatial dimensions
+        # Reshape for softmax: (B, K, H*W)
+        attention_flat = attention_maps.view(B, self.num_regions, -1)
+        attention_weights = F.softmax(attention_flat, dim=-1)  # Normalize over spatial locations
         
-        h_split = H // 3
+        # Extract region features: weighted pooling per region
+        region_features = []
+        x_flat = x.view(B, C, -1)  # (B, C, H*W)
         
-        # Extract regions
-        eye_region = x[:, :, :h_split, :]  # Top third
-        mid_region = x[:, :, h_split:2*h_split, :]  # Middle third
-        mouth_region = x[:, :, 2*h_split:, :]  # Bottom third
+        for k in range(self.num_regions):
+            # Weighted sum: (B, C, H*W) × (B, 1, H*W) = (B, C)
+            weight_k = attention_weights[:, k:k+1, :]  # (B, 1, H*W)
+            feat_k = (x_flat * weight_k).sum(dim=2)  # (B, C)
+            region_features.append(feat_k)
         
-        # Apply spatial + channel attention per region
-        eye_att = eye_region * self.eye_se(eye_region)
-        eye_att = self.eye_attention(eye_att)
+        # Stack: (B, K, C)
+        region_features = torch.stack(region_features, dim=1)
         
-        mid_att = mid_region  # Middle region less critical for emotion
+        return region_features, attention_maps
+
+
+class SpatialAttentionMap(nn.Module):
+    """
+    Create predefined spatial attention for specific facial regions.
+    Examples: mouth, eyes, eyebrows, face center
+    """
+    
+    def __init__(self, region_type='mouth', image_size=48):
+        """
+        Args:
+            region_type: 'mouth' | 'eyes' | 'eyebrows' | 'face'
+            image_size: Input image resolution (e.g., 48×48)
+        """
+        super().__init__()
+        self.region_type = region_type
+        self.image_size = image_size
         
-        mouth_att = mouth_region * self.mouth_se(mouth_region)
-        mouth_att = self.mouth_attention(mouth_att)
+        # Create predefined attention masks
+        mask = self._create_mask(image_size, region_type)
+        self.register_buffer('mask', mask)
+    
+    @staticmethod
+    def _create_mask(size, region_type):
+        """Create Gaussian-like mask for region"""
+        # (1, 1, size, size)
+        y = torch.linspace(-1, 1, size).view(-1, 1).expand(size, size)
+        x = torch.linspace(-1, 1, size).view(1, -1).expand(size, size)
         
-        # Combine regions with learned weights
-        weights = F.softmax(self.region_weights, dim=0)
+        if region_type == 'mouth':
+            # Lower part of face, center: y ∈ [0.3, 1.0], x ∈ [-0.6, 0.6]
+            mask = torch.exp(-((y - 0.6)**2 / 0.15 + (x**2) / 0.4))
         
-        # Reconstruct feature map with attended regions
-        x_enhanced = x.clone()
-        x_enhanced[:, :, :h_split, :] = eye_att * weights[0]
-        x_enhanced[:, :, h_split:2*h_split, :] = mid_att * weights[1]
-        x_enhanced[:, :, 2*h_split:, :] = mouth_att * weights[2]
+        elif region_type == 'eyes':
+            # Upper part, wide: y ∈ [-1.0, -0.2], x ∈ [-1.0, 1.0]
+            mask = torch.exp(-(((y + 0.6)**2 / 0.2 + (x**2) / 0.8)))
+        
+        elif region_type == 'eyebrows':
+            # Top part, narrow: y ∈ [-1.0, -0.6]
+            mask = torch.exp(-((y + 0.8)**2 / 0.12 + (x**2) / 1.0))
+        
+        else:  # 'face'
+            # Whole face with soft edges
+            mask = torch.exp(-((y**2 + x**2) / 2.0))
         
         # Normalize
-        x_enhanced = x_enhanced / (weights.sum() + 1e-6)
+        mask = mask / (mask.max() + 1e-8)
         
-        return x_enhanced
+        return mask.unsqueeze(0).unsqueeze(0)  # (1, 1, size, size)
+    
+    def forward(self, x):
+        """Apply spatial attention to features"""
+        # x: (B, C, H, W)
+        return x * self.mask
 
 
 class ConfusionAwareAttention(nn.Module):
     """
-    Attention that weights hard confusion pairs higher.
-    Pairs: (fear, sad), (sad, anger), (anger, disgust)
+    Learnable region weighting specialized for hard emotion pairs.
+    Automatically learns to focus on discriminative regions for confusion classes.
     """
-    def __init__(self, num_classes=7):
+    
+    def __init__(self, in_channels=128, num_classes=7):
+        """
+        Args:
+            in_channels: Feature channels
+            num_classes: Number of emotion classes
+        """
         super().__init__()
         self.num_classes = num_classes
         
-        # Define confusion pairs and their weights
-        # Emotion indices: 0=angry, 1=disgust, 2=fear, 3=happy, 4=sad, 5=surprise, 6=neutral
-        self.register_buffer('confusion_matrix', torch.zeros(num_classes, num_classes))
+        # Learn per-class region importance
+        # Shape: (num_classes, num_regions)
+        self.confusion_weights = nn.Parameter(
+            torch.ones(num_classes, 3) / 3.0,  # 3 regions: mouth, eyes, face
+            requires_grad=True
+        )
         
-        # High confusion pairs (bidirectional)
-        confusion_pairs = [
-            (2, 4, 2.0),  # fear <-> sad: highest weight
-            (4, 0, 1.8),  # sad <-> anger
-            (0, 1, 1.6),  # anger <-> disgust
-            (0, 2, 1.7),  # anger <-> fear
-            (1, 2, 1.5),  # disgust <-> fear
-            (4, 6, 1.4),  # sad <-> neutral
-            (2, 6, 1.3),  # fear <-> neutral
-        ]
-        
-        for i, j, weight in confusion_pairs:
-            self.confusion_matrix[i, j] = weight
-            self.confusion_matrix[j, i] = weight
+        # Attention regularization
+        self.register_buffer('confusion_pairs', torch.tensor([
+            [3, 5],  # Fear ↔ Sad
+            [5, 0],  # Sad ↔ Angry
+            [0, 1],  # Angry ↔ Disgust
+        ]))
     
-    def forward(self, logits, labels):
+    def forward(self, region_features, predicted_class):
         """
         Args:
-            logits: (B, num_classes)
-            labels: (B,) - ground truth labels
+            region_features: (B, num_regions, C) from RegionAttention
+            predicted_class: (B,) - predicted emotion class
+        
         Returns:
-            attention_weights: (B,) - per-sample weight for confusion pairs
+            weighted_features: (B, C) - fused with confusion awareness
         """
-        B = logits.shape[0]
+        B, num_regions, C = region_features.shape
         
-        # Get predicted class
-        preds = torch.argmax(logits, dim=1)
+        # Get class-specific attention weights
+        # (B, num_regions)
+        weights = self.confusion_weights[predicted_class]
         
-        # Check if prediction is a hard confusion pair
-        weights = torch.ones(B, device=logits.device)
+        # Normalize weights
+        weights = F.softmax(weights, dim=-1)  # (B, num_regions)
         
-        for b in range(B):
-            pred_c = preds[b].item()
-            true_c = labels[b].item()
-            
-            confusion_weight = self.confusion_matrix[true_c, pred_c].item()
-            if confusion_weight > 0:
-                # This is a hard pair - weight it higher
-                weights[b] = confusion_weight
+        # Weighted fusion: (B, C)
+        weighted_feat = (region_features * weights.unsqueeze(-1)).sum(dim=1)
         
-        return weights
+        return weighted_feat
 
 
-if __name__ == "__main__":
-    # Test RegionAttention
-    print("Testing RegionAttention...")
-    region_att = RegionAttention(feat_dim=128, num_regions=3)
-    x = torch.randn(2, 128, 6, 6)
-    y = region_att(x)
-    print(f"Input shape: {x.shape}, Output shape: {y.shape}")
-    assert y.shape == x.shape, "Shape mismatch!"
-    print("✓ RegionAttention passed!")
+class CombinedAttentionModule(nn.Module):
+    """
+    Complete attention module: Region Attention + Confusion-Aware Weighting
+    """
     
-    # Test ConfusionAwareAttention
-    print("\nTesting ConfusionAwareAttention...")
-    conf_att = ConfusionAwareAttention(num_classes=7)
-    logits = torch.randn(4, 7)
-    labels = torch.tensor([2, 4, 0, 1])  # fear, sad, anger, disgust
-    weights = conf_att(logits, labels)
-    print(f"Attention weights: {weights}")
-    print("✓ ConfusionAwareAttention passed!")
+    def __init__(self, in_channels=128, num_regions=3, num_classes=7):
+        super().__init__()
+        self.region_attention = RegionAttention(in_channels, num_regions)
+        self.confusion_attention = ConfusionAwareAttention(in_channels, num_classes)
+    
+    def forward(self, x, predicted_class=None):
+        """
+        Args:
+            x: (B, C, H, W) - input features
+            predicted_class: (B,) - optional predicted class for confusion awareness
+        
+        Returns:
+            attended_features: (B, C) - attended features
+            attention_maps: (B, num_regions, H, W) - visualization
+        """
+        # Step 1: Generate region-wise attention
+        region_features, attention_maps = self.region_attention(x)  # (B, K, C), (B, K, H, W)
+        
+        # Step 2: Apply confusion-aware weighting
+        if predicted_class is not None:
+            attended_feat = self.confusion_attention(region_features, predicted_class)
+        else:
+            # Default: equal weighting
+            attended_feat = region_features.mean(dim=1)  # (B, C)
+        
+        return attended_feat, attention_maps
