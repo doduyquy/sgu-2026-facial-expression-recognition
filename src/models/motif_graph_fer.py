@@ -114,104 +114,124 @@ class GraphAttentionLayer(nn.Module):
 
 class GraphMotifModule(nn.Module):
     """
-    Research-grade Graph Motif Learning Module (CVPR/ICCV Level).
-    Models structured relationships between facial regions using learnable motifs
-    and edge-aware structural matching.
+    Research-grade Structured Graph Matching Module.
+    suitable for publication in CVPR/ICCV.
+    
+    Features:
+    - Combined Node & Edge Structure Matching
+    - Learnable weighting between Node/Edge similarity
+    - Low-rank Factorized Motif Topology
+    - Fully vectorized structure alignment using einsum
+    - Interpretability via attention and activation maps
     """
-    def __init__(self, num_classes, motifs_per_class, K, C, top_k=None):
+    def __init__(self, num_classes, motifs_per_class, K, C, top_k=None, rank=4):
         super().__init__()
         self.num_classes = num_classes
         self.motifs_per_class = motifs_per_class
-        self.K = K  # number of regions (e.g., 9)
-        self.C = C  # feature dimension
+        self.K = K  
+        self.C = C  
         self.top_k = top_k
         
-        # Motif Representation: (Classes, Motifs, K, Dim)
-        # Each motif is a structured pattern across K regions
+        # 1. Motif Representation: (Classes, Motifs, K, Dim)
         self.motifs = nn.Parameter(torch.randn(num_classes, motifs_per_class, K, C))
         nn.init.xavier_uniform_(self.motifs)
         
-        # Edge-aware Motifs: (Classes, Motifs, K, K)
-        # Learnable structural relationships for each motif
-        self.motif_edges = nn.Parameter(torch.randn(num_classes, motifs_per_class, K, K))
-        nn.init.xavier_uniform_(self.motif_edges)
+        # 2. Factorized Motif Topology: (Classes, Motifs, K, Rank)
+        # Motif edges A = U @ U^T
+        self.motif_low_rank = nn.Parameter(torch.randn(num_classes, motifs_per_class, K, rank))
+        nn.init.xavier_uniform_(self.motif_low_rank)
         
-        # Learnable temperature for stable similarity scaling
+        # 3. Learnable weights for Node vs Edge similarity
+        self.alpha = nn.Parameter(torch.zeros(1)) # Node weight (logit scale)
+        self.beta = nn.Parameter(torch.zeros(1))  # Edge weight (logit scale)
+        
+        # 4. Stability parameters
         self.temperature = nn.Parameter(torch.ones(1) * 0.1)
         
     def compute_diversity_loss(self):
         """
-        Diversity regularization: encourages motifs to represent distinct patterns.
+        Orthogonality constraint for motifs.
+        L = || M M^T - I ||
         """
-        # (Classes, Motifs, K*Dim)
         m = self.motifs.view(self.num_classes, self.motifs_per_class, -1)
         m = F.normalize(m, dim=-1)
-        
-        # Intra-class diversity: push motifs of the same class apart
-        sim_intra = torch.matmul(m, m.transpose(1, 2)) # (C, M, M)
+        sim = torch.matmul(m, m.transpose(1, 2))
         eye = torch.eye(self.motifs_per_class, device=m.device).unsqueeze(0)
-        l_intra = (sim_intra * (1 - eye)).mean()
-        
-        # Inter-class diversity: push class prototypes apart
-        class_centers = m.mean(dim=1) # (C, K*D)
-        class_centers = F.normalize(class_centers, dim=-1)
-        sim_inter = torch.matmul(class_centers, class_centers.transpose(0, 1)) # (C, C)
-        eye_c = torch.eye(self.num_classes, device=m.device)
-        l_inter = (sim_inter * (1 - eye_c)).mean()
-        
-        return l_intra + l_inter
+        return torch.norm(sim - eye, p='fro', dim=(1, 2)).mean()
 
     def forward(self, region_features, adj=None, return_attention=False):
         """
         Args:
             region_features: (B, K, C)
-            adj: (B, K, K) optional edge relationships
-            return_attention: bool
+            adj: (B, K, K) input graph adjacency
             
         Returns:
             logits: (B, num_classes)
             motif_scores: (B, num_classes, motifs_per_class)
+            metadata: dict containing attention and activation maps
         """
         B, K, C = region_features.shape
-        eps = 1e-8
+        L, M = self.num_classes, self.motifs_per_class
         
-        # Step 1: Normalize region features and motifs
-        region_features = F.normalize(region_features, p=2, dim=-1) # (B, K, C)
-        motifs = F.normalize(self.motifs, p=2, dim=-1) # (C_out, M, K, C)
+        # 1. Normalize Inputs
+        region_features = F.normalize(region_features, p=2, dim=-1)
+        motifs = F.normalize(self.motifs, p=2, dim=-1)
         
-        # Step 2: Node-wise Similarity (B, num_classes, motifs_per_class, K)
-        # Computes similarity between each input region and corresponding motif region
-        # Vectorized implementation using einsum
-        similarity = torch.einsum('bkc,lmkc->blmk', region_features, motifs)
+        # 2. Node Similarity matching: (B, L, M, K)
+        node_sim = torch.einsum('bkc,lmkc->blmk', region_features, motifs)
         
-        # Step 3: Edge-aware matching (Structural similarity)
+        # 3. Edge Structure Matching (Pairwise differences)
+        # diff_R: (B, K, K, C)
+        diff_R = region_features.unsqueeze(2) - region_features.unsqueeze(1)
+        # diff_M: (L, M, K, K, C)
+        diff_M = motifs.unsqueeze(3) - motifs.unsqueeze(2)
+        
+        # Align structural relationships Ri-Rj with Mi-Mj
+        # edge_sim_raw: (B, L, M, K, K)
+        edge_sim_raw = torch.einsum('bijk,lmijk->blmij', diff_R, diff_M)
+        edge_sim = edge_sim_raw.mean(dim=(-1, -2)) # (B, L, M)
+        
+        # 4. Topology matching using Low-Rank Motif Edges
+        # motif_adj: (L, M, K, K)
+        motif_adj = torch.matmul(self.motif_low_rank, self.motif_low_rank.transpose(-1, -2))
+        motif_adj = F.softmax(motif_adj, dim=-1)
+        
+        topo_sim = 0
         if adj is not None:
-            # Flatten structures for Frobenius-style similarity
-            adj_flat = F.normalize(adj.reshape(B, -1), dim=-1)
-            motif_edges_flat = F.normalize(self.motif_edges.reshape(self.num_classes, self.motifs_per_class, -1), dim=-1)
-            # (B, Classes, Motifs)
-            edge_sim = torch.einsum('bi,cmi->bcm', adj_flat, motif_edges_flat)
-            # Combine node similarity with structural bias
-            similarity = similarity + edge_sim.unsqueeze(-1)
+            topo_sim = torch.einsum('bij,lmij->blm', adj, motif_adj)
             
-        # Step 4: Subgraph selection (Optional Top-K)
-        if self.top_k is not None:
-            similarity, _ = torch.topk(similarity, k=min(self.top_k, K), dim=-1)
-            
-        # Step 5: Attention-weighted aggregation
-        # temperature-scaled softmax over regions
-        attn = F.softmax(similarity / self.temperature.clamp(min=1e-3), dim=-1)
+        # 5. Combined Similarity
+        # s_node: (B, L, M, K)
+        s_node = node_sim
+        # s_struct: (B, L, M)
+        s_struct = edge_sim + topo_sim
         
-        # motif_score: (B, num_classes, motifs_per_class)
-        motif_scores = torch.sum(attn * similarity, dim=-1)
+        # Aggregate node similarity per motif
+        tau = F.softplus(self.temperature)
+        node_attn = F.softmax(s_node / tau.clamp(min=1e-3), dim=-1)
+        node_sim_agg = torch.sum(node_attn * s_node, dim=-1) # (B, L, M)
         
-        # Step 6: Motif Selection (Max over motifs_per_class)
-        # logits: (B, num_classes)
-        logits, _ = torch.max(motif_scores, dim=-1)
+        # Final combined score: (B, L, M)
+        # Learnable balance between node and structural information
+        w_node = torch.sigmoid(self.alpha)
+        w_edge = torch.sigmoid(self.beta)
+        S = w_node * node_sim_agg + w_edge * s_struct
+        
+        # 6. Smooth Selection via logsumexp
+        logits = torch.logsumexp(S / tau.clamp(min=1e-3), dim=-1)
+        
+        # 7. Entropy for stability
+        entropy = -(node_attn * torch.log(node_attn + 1e-8)).sum(dim=-1).mean()
+        self._latest_attn_entropy = entropy
         
         if return_attention:
-            return logits, motif_scores, attn
-        return logits, motif_scores
+            metadata = {
+                "node_attention": node_attn,
+                "motif_activations": S,
+                "edge_sim_matrix": edge_sim_raw
+            }
+            return logits, S, metadata
+        return logits, S
 
 class MotifGraphModel(nn.Module):
     def __init__(self, config):
@@ -264,7 +284,8 @@ class MotifGraphModel(nn.Module):
         self.alpha = nn.Parameter(torch.ones(1) * 0.5)
 
     def compute_motif_diversity_loss(self):
-        m = self.motif_bank.motifs 
+        # Point 1: Replace motif_bank with motif_module
+        m = self.motif_module.motifs 
         C, M, N, D = m.shape
         m_flat = m.view(C, M, -1) 
         m_flat = F.normalize(m_flat, dim=-1)
@@ -293,6 +314,8 @@ class MotifGraphModel(nn.Module):
         
         center_feats = node_feats[:, center_indices, :] 
         offsets = self.offset_predictor(center_feats) 
+        # Point 3: Stabilize offset predictor with regularization
+        self._latest_offsets = offsets
         
         rel_y, rel_x = torch.meshgrid(torch.linspace(-1, 1, 3), torch.linspace(-1, 1, 3), indexing='ij')
         rel_grid = torch.stack([rel_x, rel_y], dim=-1).to(feat_map.device) 
@@ -361,18 +384,20 @@ class MotifGraphModel(nn.Module):
         # 2. Prepare candidate adjacencies: (B*num_cands, 9, 9)
         flat_adjs = cand_adjs.reshape(B * num_cands, 9, 9)
         
-        # 3. Match against Learnable Motifs
-        logits_cand, motif_scores_cand = self.motif_module(flat_cands, adj=flat_adjs)
+        # 3. Match against Learnable Motifs (Research Grade)
+        logits_cand, motif_scores_cand, metadata = self.motif_module(flat_cands, adj=flat_adjs, return_attention=True)
         
         # 4. Aggregate across all candidate subgraphs
         # logits_cand: (B*num_cands, num_classes)
         logits_cand = logits_cand.view(B, num_cands, self.num_classes)
         
-        # Compute selection weights based on max motif score per candidate
-        # relevance: (B, num_cands)
-        cand_relevance = logits_cand.max(dim=-1)[0]
-        selection_temp = 0.3 
-        attn_weights = F.softmax(cand_relevance / selection_temp, dim=1).unsqueeze(-1) 
+        # Point 5: Replace softmax weighting with attention over candidates using temperature
+        if not hasattr(self, 'cand_query'):
+            self.cand_query = nn.Parameter(torch.randn(1, 1, self.num_classes))
+            
+        cand_scores = (logits_cand * self.cand_query).sum(dim=-1) # (B, num_cands)
+        cand_tau = 0.3
+        attn_weights = F.softmax(cand_scores / cand_tau, dim=1).unsqueeze(-1) 
         
         logits_motif = torch.sum(logits_cand * attn_weights, dim=1)
         logits_motif = logits_motif * self.logit_scale 
@@ -380,9 +405,13 @@ class MotifGraphModel(nn.Module):
         # Final combined logits
         logits = logits_motif + torch.sigmoid(self.alpha) * logits_global
         
-        self._latest_scores = motif_scores_cand.view(B, num_cands, self.num_classes, self.motifs_per_class)
+        # Point 2: Reshape for MotifConsistencyLoss (B, num_cands, num_classes * motifs_per_class)
+        self._latest_scores = motif_scores_cand.view(B, num_cands, -1)
+        # Relevance for Top-K visualization
+        cand_relevance = cand_scores
         _, top_k_idx = torch.topk(cand_relevance, k=self.top_k, dim=1)
         self._latest_top_k = top_k_idx
+        self._latest_metadata = metadata
         
         if return_selection:
             return logits, top_k_idx, centers, self._latest_scores
@@ -437,8 +466,21 @@ class MotifGraphModel(nn.Module):
     def get_aux_losses(self):
         if not hasattr(self, '_latest_scores') or self._latest_scores is None:
             return {}
+            
+        # 1. Motif Diversity (Orthogonality)
         l_div = self.motif_module.compute_diversity_loss()
-        return {"motif_diversity": l_div}
+        
+        # 2. Attention Entropy (Prevent collapse)
+        l_ent = getattr(self.motif_module, '_latest_attn_entropy', 0.0)
+        
+        # 3. Offset Regularization
+        l_off = torch.norm(getattr(self, '_latest_offsets', 0.0), p=2, dim=-1).mean()
+        
+        return {
+            "motif_diversity": l_div,
+            "attn_entropy": l_ent,
+            "offset_reg": l_off
+        }
 
 
     def _get_grid_graph(self, feat_map):
