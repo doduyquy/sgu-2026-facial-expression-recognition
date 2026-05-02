@@ -21,7 +21,97 @@ import math
 
 
 # ============================================================================
-# 1. LIGHTWEIGHT CNN BACKBONE
+# 1. VGG BACKBONE (Replaces CNN Backbone)
+# ============================================================================
+
+class VggBackbone(nn.Module):
+    """
+    VGG-based backbone for 48x48 grayscale images.
+    Following standard VGG architecture with 2 conv per block.
+    
+    Architecture:
+    - Block 1: 2 Conv (64) + Pool → 24x24
+    - Block 2: 2 Conv (128) + Pool → 12x12
+    - Block 3: 2 Conv (256) + Pool → 6x6
+    - Block 4: 2 Conv (512) → 6x6 (NO POOL - keep spatial size)
+    - Project to feat_dim
+    
+    Output: (B, feat_dim, 6, 6) feature map for region attention
+    """
+    def __init__(self, feat_dim=128, in_channels=1):
+        super().__init__()
+        self.feat_dim = feat_dim
+        
+        # Pool layer (shared)
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        
+        # ========== Block 1: (B, 1, 48, 48) -> (B, 64, 24, 24) ==========
+        self.conv1a = nn.Conv2d(in_channels=in_channels, out_channels=64, kernel_size=3, padding=1)
+        self.conv1b = nn.Conv2d(64, out_channels=64, kernel_size=3, padding=1)
+        self.bn1a = nn.BatchNorm2d(64)
+        self.bn1b = nn.BatchNorm2d(64)
+        
+        # ========== Block 2: (B, 64, 24, 24) -> (B, 128, 12, 12) ==========
+        self.conv2a = nn.Conv2d(64, 128, 3, padding=1)
+        self.conv2b = nn.Conv2d(128, 128, 3, padding=1)
+        self.bn2a = nn.BatchNorm2d(128)
+        self.bn2b = nn.BatchNorm2d(128)
+        
+        # ========== Block 3: (B, 128, 12, 12) -> (B, 256, 6, 6) ==========
+        self.conv3a = nn.Conv2d(128, 256, 3, padding=1)
+        self.conv3b = nn.Conv2d(256, 256, 3, padding=1)
+        self.bn3a = nn.BatchNorm2d(256)
+        self.bn3b = nn.BatchNorm2d(256)
+        
+        # ========== Block 4: (B, 256, 6, 6) -> (B, 512, 6, 6) ==========
+        # NO POOLING - keep 6x6 spatial resolution for region attention
+        self.conv4a = nn.Conv2d(256, 512, 3, padding=1)
+        self.conv4b = nn.Conv2d(512, 512, 3, padding=1)
+        self.bn4a = nn.BatchNorm2d(512)
+        self.bn4b = nn.BatchNorm2d(512)
+        
+        # Project to feat_dim
+        self.feat_project = nn.Sequential(
+            nn.Conv2d(512, feat_dim, kernel_size=1),
+            nn.BatchNorm2d(feat_dim),
+            nn.ReLU(inplace=True)
+        )
+    
+    def forward(self, x):
+        """
+        Args:
+            x: (B, 1, 48, 48) - Grayscale image
+        
+        Returns:
+            feat_map: (B, feat_dim, 6, 6) - Feature map
+        """
+        # Block 1
+        x = F.relu(self.bn1a(self.conv1a(x)))
+        x = F.relu(self.bn1b(self.conv1b(x)))
+        x = self.pool(x)  # 48 -> 24
+        
+        # Block 2
+        x = F.relu(self.bn2a(self.conv2a(x)))
+        x = F.relu(self.bn2b(self.conv2b(x)))
+        x = self.pool(x)  # 24 -> 12
+        
+        # Block 3
+        x = F.relu(self.bn3a(self.conv3a(x)))
+        x = F.relu(self.bn3b(self.conv3b(x)))
+        x = self.pool(x)  # 12 -> 6
+        
+        # Block 4 (NO POOL - maintain 6x6)
+        x = F.relu(self.bn4a(self.conv4a(x)))
+        x = F.relu(self.bn4b(self.conv4b(x)))
+        # NO: x = self.pool(x)  ← Removed to keep 6x6
+        
+        # Project to feat_dim
+        x = self.feat_project(x)  # (B, feat_dim, 6, 6)
+        return x
+
+
+# ============================================================================
+# 1. LIGHTWEIGHT CNN BACKBONE (Legacy - kept for compatibility)
 # ============================================================================
 
 class CNNBackbone(nn.Module):
@@ -406,7 +496,7 @@ class AttentionSparsityLoss(nn.Module):
 class FERAdvancedModel(nn.Module):
     """
     Complete Facial Emotion Recognition model with:
-    - CNN Backbone
+    - VGG Backbone (improved over CNN)
     - Learnable Region Attention
     - Graph Module for relational reasoning
     - Motif (Prototype) learning
@@ -414,7 +504,7 @@ class FERAdvancedModel(nn.Module):
     
     Architecture flow:
     Input (48x48) 
-      -> CNN Backbone -> feat_map (B, 128, 6, 6)
+      -> VGG Backbone -> feat_map (B, 128, 6, 6) - 36 spatial regions
       -> Region Attention -> regions (B, 3, 128)
       -> Graph Module -> updated_regions (B, 3, 128)
       -> Motif Module -> emotion_scores (B, 3, 7)
@@ -427,15 +517,20 @@ class FERAdvancedModel(nn.Module):
                  num_regions=3,
                  num_graph_layers=2,
                  num_heads=4,
-                 dropout=0.3):
+                 dropout=0.3,
+                 use_vgg=True):
         super().__init__()
         
         self.feat_dim = feat_dim
         self.num_emotions = num_emotions
         self.num_regions = num_regions
         
-        # Components
-        self.backbone = CNNBackbone(feat_dim=feat_dim, in_channels=1)
+        # Components - Use VGG by default
+        if use_vgg:
+            self.backbone = VggBackbone(feat_dim=feat_dim, in_channels=1)
+        else:
+            self.backbone = CNNBackbone(feat_dim=feat_dim, in_channels=1)
+        
         self.region_attention = RegionAttentionModule(feat_dim=feat_dim, num_regions=num_regions)
         self.graph_module = GraphModule(feat_dim=feat_dim, num_layers=num_graph_layers, num_heads=num_heads)
         self.motif_module = MotifModule(feat_dim=feat_dim, num_emotions=num_emotions, num_regions=num_regions)

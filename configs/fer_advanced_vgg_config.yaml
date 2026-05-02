@@ -1,0 +1,54 @@
+# FER Advanced Model with VGG Backbone Configuration
+# Facial Emotion Recognition on FER2013 with attention, graph, and motif learning
+
+data:
+  name: "fer13-split"
+  num_classes: 7
+  image_size: 48
+  batch_size: 64
+  num_workers: 2
+  channels: 1
+  mean: [0.5]
+  std: [0.5]
+
+seed:
+  random_seed: 42
+
+model:
+  name: "fer_advanced"
+  # Model-specific params
+  feat_dim: 128
+  num_regions: 3           # Attention regions: mouth, eyes, face
+  num_graph_layers: 2      # Graph reasoning layers
+  num_heads: 4             # Multi-head attention heads
+  dropout: 0.3
+  use_vgg: true            # Use VGG backbone (set false for CNN)
+
+training:
+  epochs: 150
+  patience: 30
+  weight_decay: 0.0001
+  loss: 'cross_entropy'
+  optimizer: "sgd"              # ✅ SGD Nesterov (best from analysis)
+  lr: 0.01                       # ✅ SGD uses higher LR than Adam
+  momentum: 0.9                 # ✅ SGD momentum
+  nesterov: true                # ✅ Nesterov variant
+  scheduler: "reduce_lr_on_plateau"  # ✅ Best scheduler
+  label_smoothing: 0.1
+  
+  # Scheduler params
+  scheduler_factor: 0.5         # Reduce LR by factor
+  scheduler_patience: 5         # Wait 5 epochs before reducing
+  scheduler_min_lr: 0.00001     # Minimum LR threshold
+  
+  # Auxiliary loss weights (if using combined loss)
+  diversity_loss_weight: 0.1
+  sparsity_loss_weight: 0.05
+
+# Augmentation settings
+augmentation:
+  crop_scale: [0.8, 1.2]
+  rotation: 10
+  translation: [0.2, 0.2]
+  horizontal_flip: true
+

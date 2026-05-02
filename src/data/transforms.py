@@ -1,7 +1,7 @@
 from torchvision.transforms import Compose
 from posixpath import split
 import torch 
-from torchvision.transforms import v2
+from torchvision import transforms
 
 def build_transform(config, split="train") -> Compose: # train | val | test
     """Buid transform (augmentatio) for our data
@@ -12,29 +12,23 @@ def build_transform(config, split="train") -> Compose: # train | val | test
         compose: a transform compose
     """
     image_size = config['data']['image_size']
+    mu = 0.5
+    st = 0.5
+    
     if split == "train":
-        trans = v2.Compose([
-            # v2.Grayscale(num_output_channels=1),
-            
-            # Augmentation
-            v2.Resize(size=(image_size, image_size)),
-            v2.RandomHorizontalFlip(p=0.5),
-            v2.RandomRotation(15), # Giảm xuống 15 độ cho "nhẹ nhàng"
-            v2.RandomPerspective(distortion_scale=0.2, p=0.5), # Thêm perspective để test Deformable
-            # crop image with output shape: (image_size, image_size), small zoom 
-            v2.RandomResizedCrop(size=(image_size), scale=(0.8, 1)),
-
-            v2.ToImage(),
-            v2.ToDtype(torch.float32, scale=True), # scale=True: / 255
-            v2.Normalize(mean=[0.5], std=[0.5])
+        trans = transforms.Compose([
+            transforms.RandomResizedCrop(image_size, scale=(0.8, 1.2)),
+            transforms.RandomApply([transforms.RandomAffine(0, translate=(0.2, 0.2))], p=0.5),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomApply([transforms.RandomRotation(10)], p=0.5),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=(mu,), std=(st,))
         ])
     else:
-        trans = v2.Compose([
-            # v2.Grayscale(num_output_channels=1),
-            v2.Resize(size=(image_size, image_size)),
-            v2.ToImage(),
-            v2.ToDtype(torch.float32, scale=True),
-            v2.Normalize(mean=[0.5], std=[0.5])
+        trans = transforms.Compose([
+            transforms.Resize((image_size, image_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=(mu,), std=(st,))
         ])
 
     return trans

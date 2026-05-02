@@ -12,8 +12,10 @@ def build_optimizer(model, config):
     if opt_name == 'adam':
         return optim.Adam(params, lr=lr, weight_decay=weight_decay)
     elif opt_name == 'sgd':
-        gamma = train_cfg.get('gamma', 0.9) 
-        return optim.SGD(params, lr=lr, weight_decay=weight_decay, momentum=gamma)
+        momentum = train_cfg.get('momentum', train_cfg.get('gamma', 0.9))
+        nesterov = train_cfg.get('nesterov', False)
+        print(f"--> [Optimizer] SGD (lr={lr}, momentum={momentum}, nesterov={nesterov})")
+        return optim.SGD(params, lr=lr, momentum=momentum, weight_decay=weight_decay, nesterov=nesterov)
     # add another optimizer
     else:
         raise ValueError(f"Optimizer {opt_name} unsupported!")
@@ -26,16 +28,18 @@ def build_scheduler(optimizer, config):
         return None
 
     elif scheduler_name == 'reduce_lr_on_plateau':
-        # reduce when val loss stopping reduce
-        factor = float(config['training'].get('lr_factor', 0.5)) 
-        patience = int(config['training'].get('lr_patience', 3)) 
-        print(f"--> [Scheduler] ReduceLROnPlateau (factor={factor}, patience={patience})")
+        # Reduce when validation loss stops decreasing
+        factor = float(config['training'].get('scheduler_factor', config['training'].get('lr_factor', 0.5)))
+        patience = int(config['training'].get('scheduler_patience', config['training'].get('lr_patience', 5)))
+        min_lr = float(config['training'].get('scheduler_min_lr', 0.00001))
+        print(f"--> [Scheduler] ReduceLROnPlateau (factor={factor}, patience={patience}, min_lr={min_lr})")
         
         return lr_scheduler.ReduceLROnPlateau(
             optimizer,
             mode='min',
             factor=factor,
             patience=patience,
+            min_lr=min_lr,
         )
     elif scheduler_name == 'step':
         # decay(decrease) every n epochs
