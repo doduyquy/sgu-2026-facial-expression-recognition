@@ -484,10 +484,17 @@ class RegionAlignedFER(nn.Module):
             )
             print("--> Loaded Standard Transformer Architecture")
 
-        # Positional Encoding cho region tokens
-        self.pos_embed = nn.Parameter(
-            torch.randn(1, self.num_regions, self.embed_dim) * 0.02
-        )
+        # Positional Encoding cho region tokens chỉ train khi Q là region tokens.
+        # Với visual_query, encoder xử lý 18 visual tokens nên pos_embed 6 vùng không tham gia loss.
+        if self.cross_attention_direction == 'visual_query':
+            self.register_buffer(
+                'pos_embed',
+                torch.zeros(1, self.num_regions, self.embed_dim)
+            )
+        else:
+            self.pos_embed = nn.Parameter(
+                torch.randn(1, self.num_regions, self.embed_dim) * 0.02
+            )
         self.visual_residual_norm = nn.LayerNorm(self.embed_dim)
 
         # ===== 6. Classification Head =====

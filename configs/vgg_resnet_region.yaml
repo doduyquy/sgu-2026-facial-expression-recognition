@@ -57,7 +57,7 @@ env:
 
 ddp:
   batch_size_is_global: true
-  find_unused_parameters: false
+  find_unused_parameters: true
   broadcast_buffers: true
   sync_batchnorm: false
 
