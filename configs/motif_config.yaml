@@ -29,4 +29,3 @@ training:
   scn_warmup_epochs: 10
   scn_alpha: 1.0
   scn_rank_lambda: 0.3
-

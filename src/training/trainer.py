@@ -549,7 +549,7 @@ class Trainer:
             # Phase 2: (20-70%): SCN ON, stronger landmark signals
             # Phase 3: (70-100%): heavy refinement for landmark branch
             if progress <= 0.08:
-                # Phase 1 (0-20%): conservative — 
+                # Phase 1 (0-20%): SCN ON, MixUp OFF
                 self._runtime_diversity_lambda = 0.0
                 self._runtime_entropy_lambda = 0.0
                 self._runtime_overlap_lambda = 0.0
@@ -557,11 +557,11 @@ class Trainer:
                 self._runtime_edge_consistency_lambda = 0.0
                 self._runtime_aux_cls_lambda = 0.0
                 self._runtime_aux_consistency_lambda = 0.0
-                self._runtime_use_scn = False
-                self._runtime_use_mixup = True
+                self._runtime_use_scn = True
+                self._runtime_use_mixup = False
                 self._runtime_phase = 1
             elif progress <= 0.38:
-                # Phase 2 (20-70%): enable SCN and stronger landmark auxiliaries
+                # Phase 2 (20-70%): SCN ON, stronger landmark signals
                 self._runtime_diversity_lambda = 0.18
                 self._runtime_entropy_lambda = 0.004
                 self._runtime_overlap_lambda = 0.07
@@ -573,7 +573,7 @@ class Trainer:
                 self._runtime_use_mixup = False
                 self._runtime_phase = 2
             else:
-                # Phase 3 (70-100%): strong refinement — increase landmark lambdas
+                # Phase 3 (70-100%): strong refinement
                 self._runtime_diversity_lambda = 0.30
                 self._runtime_entropy_lambda = 0.008
                 self._runtime_overlap_lambda = 0.10
