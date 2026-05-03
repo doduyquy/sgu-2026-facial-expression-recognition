@@ -4,6 +4,7 @@ import torch
 import argparse
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed.elastic.multiprocessing.errors import record
 from src.utils.config import load_config
 from src.utils.seed import set_seed
 from src.utils.logger_wandb import init_wandb
@@ -33,6 +34,13 @@ def setup_distributed():
     if not torch.cuda.is_available():
         raise RuntimeError("DDP needs CUDA GPUs. Run without torchrun for CPU/single process.")
 
+    cuda_count = torch.cuda.device_count()
+    if local_rank >= cuda_count:
+        raise RuntimeError(
+            f"DDP launched local_rank={local_rank}, but torch sees only {cuda_count} CUDA device(s). "
+            "On Kaggle, switch Accelerator to GPU T4 x2 or set --nproc_per_node to the number of visible GPUs."
+        )
+
     torch.cuda.set_device(local_rank)
     dist.init_process_group(backend="nccl", timeout=timedelta(minutes=30))
     return True, rank, world_size, local_rank
@@ -61,6 +69,7 @@ def resolve_data_path(data_path):
         f"Could not find train.csv, val.csv, test.csv under data_path: {data_path}"
     )
 
+@record
 def main():
     distributed, rank, world_size, local_rank = setup_distributed()
     try:
