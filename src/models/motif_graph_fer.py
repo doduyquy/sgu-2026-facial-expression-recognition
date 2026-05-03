@@ -83,9 +83,9 @@ class MotifBackbone(nn.Module):
         # Upsample f6 to 12x12
         f6_up = F.interpolate(f6, size=f12.shape[2:], mode='bilinear', align_corners=True)
         
-        # Gated fusion
+        # Gated fusion (Point 1 stability)
         gate = self.fuse_gate(torch.cat([f12_proj, f6_up], dim=1))
-        f_fused = gate * f12_proj + (1 - gate) * f6_up
+        f_fused = gate * f12_proj + (1.0 - gate + 1e-8) * f6_up
         
         # Final output is matched to f6 resolution
         out = F.adaptive_avg_pool2d(f_fused, f6.shape[2:]) + f6
@@ -501,6 +501,9 @@ class MotifGraphModel(nn.Module):
         
         adj = torch.zeros_like(sim)
         adj.scatter_(-1, topk_idx, topk_sim)
+        
+        # Point 1: Ensure non-negativity before log operations (Fix NaN)
+        adj = F.relu(adj)
         
         # Point 4: Fix Top-K asymmetry
         adj = (adj + adj.transpose(-1, -2)) / 2
