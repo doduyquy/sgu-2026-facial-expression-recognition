@@ -206,6 +206,40 @@ class SemanticVisualAlignment(nn.Module):
         return region_enriched, attn_weights
 
 
+class VisualPatchRegionAlignment(nn.Module):
+    """
+    Cross-Attention ngược chiều so với RegionAlignment gốc:
+    Q = visual patch tokens [B, 18, D]
+    K/V = region tokens [B, 6, D]
+    Output giữ số token ảnh [B, 18, D] để đưa qua shifted axis-window encoder.
+    """
+    def __init__(self, embed_dim=512, num_heads=4, dropout=0.1):
+        super().__init__()
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim, num_heads, batch_first=True, dropout=dropout
+        )
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(embed_dim * 2, embed_dim)
+        )
+        self.norm2 = nn.LayerNorm(embed_dim)
+        self.drop_path = DropPath(dropout if dropout > 0. else 0.)
+
+    def forward(self, visual_features, region_tokens):
+        attn_out, attn_weights = self.cross_attn(
+            query=visual_features,
+            key=region_tokens,
+            value=region_tokens
+        )
+        visual_enriched = self.norm1(visual_features + self.drop_path(attn_out))
+        ffn_out = self.ffn(visual_enriched)
+        visual_enriched = self.norm2(visual_enriched + self.drop_path(ffn_out))
+        return visual_enriched, attn_weights
+
+
 # =====================================================================
 # 3. Sub-Graph Fusion (Upper/Lower Face Division)
 # =====================================================================
@@ -258,6 +292,85 @@ class SubGraphFusion(nn.Module):
         return out
 
 
+class ShiftedAxisWindowBlock(nn.Module):
+    """
+    Shifted axis-window encoder nhẹ cho 18 visual tokens.
+    Xem VGG 3x3 và ResNet 3x3 như một grid 3x6:
+    [VGG row | ResNet row], attention theo hàng/cột rồi shifted attention.
+    """
+    def __init__(self, embed_dim, num_heads, grid_size=(3, 6), dropout=0.1):
+        super().__init__()
+        self.grid_h, self.grid_w = grid_size
+        self.row_attn = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, batch_first=True)
+        self.col_attn = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, batch_first=True)
+        self.shift_row_attn = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, batch_first=True)
+        self.shift_col_attn = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, batch_first=True)
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.norm2 = nn.LayerNorm(embed_dim)
+        self.norm3 = nn.LayerNorm(embed_dim)
+        self.norm4 = nn.LayerNorm(embed_dim)
+        self.norm5 = nn.LayerNorm(embed_dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(embed_dim * 2, embed_dim),
+        )
+        self.drop_path = DropPath(dropout if dropout > 0. else 0.)
+
+    def _axis_attention(self, x, row_attn, col_attn):
+        B, N, D = x.shape
+        grid = x.view(B, self.grid_h, self.grid_w, D)
+
+        row_tokens = grid.reshape(B * self.grid_h, self.grid_w, D)
+        row_out, _ = row_attn(row_tokens, row_tokens, row_tokens)
+        row_out = row_out.view(B, self.grid_h, self.grid_w, D).reshape(B, N, D)
+
+        grid = x.view(B, self.grid_h, self.grid_w, D).transpose(1, 2).contiguous()
+        col_tokens = grid.reshape(B * self.grid_w, self.grid_h, D)
+        col_out, _ = col_attn(col_tokens, col_tokens, col_tokens)
+        col_out = col_out.view(B, self.grid_w, self.grid_h, D).transpose(1, 2).contiguous().reshape(B, N, D)
+        return row_out, col_out
+
+    def forward(self, x):
+        B, N, D = x.shape
+        expected_tokens = self.grid_h * self.grid_w
+        if N != expected_tokens:
+            raise ValueError(f"ShiftedAxisWindowBlock expects {expected_tokens} tokens arranged as a {self.grid_h}x{self.grid_w} grid.")
+
+        row_out, col_out = self._axis_attention(x, self.row_attn, self.col_attn)
+        x = self.norm1(x + self.drop_path(row_out))
+        x = self.norm2(x + self.drop_path(col_out))
+
+        shift_h = max(self.grid_h // 2, 1)
+        shift_w = max(self.grid_w // 2, 1)
+        shifted = x.view(B, self.grid_h, self.grid_w, D)
+        shifted = torch.roll(shifted, shifts=(-shift_h, -shift_w), dims=(1, 2)).reshape(B, N, D)
+
+        shift_row_out, shift_col_out = self._axis_attention(shifted, self.shift_row_attn, self.shift_col_attn)
+        shifted = self.norm3(shifted + self.drop_path(shift_row_out))
+        shifted = self.norm4(shifted + self.drop_path(shift_col_out))
+
+        x = shifted.view(B, self.grid_h, self.grid_w, D)
+        x = torch.roll(x, shifts=(shift_h, shift_w), dims=(1, 2)).reshape(B, N, D)
+
+        ffn_out = self.ffn(x)
+        x = self.norm5(x + self.drop_path(ffn_out))
+        return x
+
+
+class ShiftedAxisWindowEncoder(nn.Module):
+    def __init__(self, embed_dim, num_heads, num_layers, grid_size=(3, 6), dropout=0.1):
+        super().__init__()
+        self.layers = nn.Sequential(*[
+            ShiftedAxisWindowBlock(embed_dim=embed_dim, num_heads=num_heads, grid_size=grid_size, dropout=dropout)
+            for _ in range(num_layers)
+        ])
+
+    def forward(self, x):
+        return self.layers(x)
+
+
 # =====================================================================
 # 4. Model chính: RegionAlignedFER
 # =====================================================================
@@ -284,7 +397,8 @@ class RegionAlignedFER(nn.Module):
         # Project ResNet 1024-d → 512-d để đồng bộ với VGG
         self.proj_res = nn.Linear(1024, self.embed_dim)
 
-        # ===== 2. Facial Region Dictionary =====
+        # ===== 2. Region Tokens =====
+        self.cross_attention_direction = model_cfg.get('cross_attention_direction', 'region_query')
         self.use_clip_dictionary = model_cfg.get('use_clip_dictionary', False)
         if self.use_clip_dictionary:
             clip_model_name = model_cfg.get('clip_model_name', "openai/clip-vit-base-patch32")
@@ -300,11 +414,20 @@ class RegionAlignedFER(nn.Module):
             )
 
         # ===== 3. Semantic-Visual Alignment =====
-        self.alignment = SemanticVisualAlignment(
-            embed_dim=self.embed_dim,
-            num_heads=self.num_heads,
-            dropout=self.dropout_rate
-        )
+        if self.cross_attention_direction == 'visual_query':
+            self.alignment = VisualPatchRegionAlignment(
+                embed_dim=self.embed_dim,
+                num_heads=self.num_heads,
+                dropout=self.dropout_rate
+            )
+            print("--> Cross-attention direction: visual patch tokens query region tokens")
+        else:
+            self.alignment = SemanticVisualAlignment(
+                embed_dim=self.embed_dim,
+                num_heads=self.num_heads,
+                dropout=self.dropout_rate
+            )
+            print("--> Cross-attention direction: region tokens query visual patch tokens")
         
         # Positional Encoding Cố Định 2D (Sin-Cos) cho lưới 3x3 tokens
         # Sinh 1 ma trận tọa độ, xài chung hệ quy chiếu cho cả VGG và ResNet
@@ -314,6 +437,8 @@ class RegionAlignedFER(nn.Module):
         # Type Embeddings để phân biệt VGG và ResNet khi nối lại
         self.vgg_type_embed = nn.Parameter(torch.randn(1, 1, self.embed_dim) * 0.02)
         self.res_type_embed = nn.Parameter(torch.randn(1, 1, self.embed_dim) * 0.02)
+        visual_pos_embed = torch.cat([sincos, sincos], dim=1)  # [1, 18, 512]
+        self.register_buffer('visual_pos_embed', visual_pos_embed)
 
         # ===== 4. Hyper-visual Representation =====
         # Pool visual features → single vector, rồi broadcast cộng vào Φ_sem
@@ -325,6 +450,8 @@ class RegionAlignedFER(nn.Module):
 
         # ===== 5. Transformer / SubGraph Encoder =====
         self.fusion_type = model_cfg.get('fusion_type', 'transformer')
+        if self.cross_attention_direction == 'visual_query' and self.fusion_type == 'subgraph':
+            raise ValueError("fusion_type='subgraph' expects 6 region tokens, but visual_query produces 18 visual tokens.")
         
         if self.fusion_type == 'subgraph':
             self.transformer_encoder = nn.Sequential(*[
@@ -332,6 +459,16 @@ class RegionAlignedFER(nn.Module):
                 for _ in range(self.num_layers)
             ])
             print("--> Loaded SubGraph Fusion Architecture (Upper/Lower Face decoupled)")
+        elif self.fusion_type == 'swin':
+            swin_grid_size = (3, 6) if self.cross_attention_direction == 'visual_query' else (2, 3)
+            self.transformer_encoder = ShiftedAxisWindowEncoder(
+                embed_dim=self.embed_dim,
+                num_heads=self.num_heads,
+                num_layers=self.num_layers,
+                grid_size=swin_grid_size,
+                dropout=self.dropout_rate
+            )
+            print(f"--> Loaded Shifted Axis-window Architecture ({swin_grid_size[0]}x{swin_grid_size[1]} visual grid)")
         else:
             encoder_layer = nn.TransformerEncoderLayer(
                 d_model=self.embed_dim,
@@ -351,6 +488,7 @@ class RegionAlignedFER(nn.Module):
         self.pos_embed = nn.Parameter(
             torch.randn(1, self.num_regions, self.embed_dim) * 0.02
         )
+        self.visual_residual_norm = nn.LayerNorm(self.embed_dim)
 
         # ===== 6. Classification Head =====
         self.classifier = nn.Sequential(
@@ -446,29 +584,45 @@ class RegionAlignedFER(nn.Module):
         region_tokens = self.region_dict(B)      # [B, 6, 512]
 
         # ── 3. Semantic-Visual Alignment (Cross-Attention) ──
-        # region Q "soi" vào visual K,V
-        phi_sem, attn_weights = self.alignment(
-            region_tokens, visual_features
-        )                                        # [B, 6, 512], [B, 6, 18]
+        if self.cross_attention_direction == 'visual_query':
+            # Q = visual patch tokens, K/V = region tokens
+            phi_sem, attn_weights = self.alignment(
+                visual_features, region_tokens
+            )                                    # [B, 18, 512], [B, 18, 6]
+        else:
+            # Q = region tokens, K/V = visual patch tokens
+            phi_sem, attn_weights = self.alignment(
+                region_tokens, visual_features
+            )                                    # [B, 6, 512], [B, 6, 18]
 
         # ── 4. Hyper-visual Representation ──
         # Pool toàn bộ visual features → 1 vector, broadcast cộng vào Φ_sem
         phi_visual = visual_features.mean(dim=1, keepdim=True)  # [B, 1, 512]
         phi_visual = self.visual_proj(phi_visual)               # [B, 1, 512]
-        hyper_visual = phi_sem + phi_visual                     # [B, 6, 512]
+        hyper_visual = phi_sem + phi_visual                     # [B, 6/18, 512]
 
-        # ── 5. Transformer Encoder ──
-        hyper_visual = hyper_visual + self.pos_embed            # [B, 6, 512]
-        encoded = self.transformer_encoder(hyper_visual)        # [B, 6, 512]
+        # ── 5. Transformer/Swin Encoder ──
+        if self.cross_attention_direction == 'visual_query':
+            hyper_visual = hyper_visual + self.visual_pos_embed # [B, 18, 512]
+        else:
+            hyper_visual = hyper_visual + self.pos_embed        # [B, 6, 512]
+        encoded = self.transformer_encoder(hyper_visual)        # [B, 6/18, 512]
+        if self.cross_attention_direction == 'visual_query':
+            encoded = self.visual_residual_norm(encoded + visual_features)
 
         # ── 6. Classification ──
         pooled = encoded.mean(dim=1)             # [B, 512]
         logits = self.classifier(pooled)         # [B, num_classes]
 
         # ── 7. Orthogonal Loss (Tránh việc tập trung trùng vùng) ──
-        attn_norm = F.normalize(attn_weights, p=2, dim=-1)
-        sim = torch.bmm(attn_norm, attn_norm.transpose(1, 2))  # [B, 6, 6]
-        mask = torch.eye(self.num_regions, device=sim.device).bool()
+        if self.cross_attention_direction == 'visual_query':
+            region_attn = attn_weights.transpose(1, 2)  # [B, 6, 18]
+        else:
+            region_attn = attn_weights                 # [B, 6, 18]
+
+        attn_norm = F.normalize(region_attn, p=2, dim=-1)
+        sim = torch.bmm(attn_norm, attn_norm.transpose(1, 2))
+        mask = torch.eye(sim.size(1), device=sim.device).bool()
         off_diag_sim = sim[:, ~mask]
         ortho_loss = off_diag_sim.mean()
 
@@ -476,6 +630,8 @@ class RegionAlignedFER(nn.Module):
             return logits, ortho_loss
             
         if hasattr(self, 'return_attn') and self.return_attn:
+            if self.cross_attention_direction == 'visual_query':
+                return logits, attn_weights.transpose(1, 2)
             return logits, attn_weights
             
         return logits

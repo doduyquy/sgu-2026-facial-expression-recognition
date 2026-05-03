@@ -4,7 +4,7 @@ from torch.utils.data.distributed import DistributedSampler
 from .dataset import FER2013
 from .transforms import build_transform
 
-def build_dataloader(config, data_path, distributed=False):
+def build_dataloader(config, data_path, distributed=False, world_size=1):
     """ Dataloader: Group dataset into batch (mini-batch) 
     Args: 
         config: config for data, dataloader (Q cho ca config goc)
@@ -26,24 +26,30 @@ def build_dataloader(config, data_path, distributed=False):
     val_sampler = DistributedSampler(data_val, shuffle=False) if distributed else None
     test_sampler = None
 
+    batch_size = config['data']['batch_size']
+    ddp_cfg = config.get('ddp', {})
+    if distributed and ddp_cfg.get('batch_size_is_global', True):
+        batch_size = max(batch_size // max(world_size, 1), 1)
+        print(f"--> DDP per-process batch_size: {batch_size}")
+
     # batch the dataset
     train_loader = DataLoader(
         data_train, 
-        batch_size=config['data']['batch_size'],
+        batch_size=batch_size,
         num_workers=config['data'].get('num_workers', 2),
         pin_memory=True, # push data to cache (-> send to GPU)
         sampler=train_sampler,
         shuffle=(train_sampler is None))
     val_loader = DataLoader(
         data_val, 
-        batch_size=config['data']['batch_size'], 
+        batch_size=batch_size, 
         num_workers=config['data'].get('num_workers', 2),
         pin_memory=True, # push data to cache (-> send to GPU)
         sampler=val_sampler,
         shuffle=False)
     test_loader = DataLoader(
         data_test, 
-        batch_size=config['data']['batch_size'], 
+        batch_size=batch_size, 
         num_workers=config['data'].get('num_workers', 2),
         pin_memory=True, # push data to cache (-> send to GPU)
         sampler=test_sampler,

@@ -8,11 +8,12 @@ model:
   num_heads: 4
   num_regions: 6          # Trán, Mắt trái, Mắt phải, Mũi, Miệng, Cằm
   num_encoder_layers: 2   # Số lớp Transformer Encoder
-  transformer_dropout: 0.4
+  transformer_dropout: 0.2
   
-  # CLIP + Region Attention Config
-  use_clip_dictionary: true
-  fusion_type: "subgraph" # Kích hoạt chia đồ thị Upper-Face & Lower-Face
+  # Region Attention Config
+  cross_attention_direction: "visual_query" # Q = 18 visual tokens, K/V = 6 region tokens
+  use_clip_dictionary: false
+  fusion_type: "swin" # Cross-attention xong đưa 18 tokens qua shifted axis-window 3x6 encoder
   clip_model_name: "openai/clip-vit-base-patch32"
   ortho_loss_weight: 0.015 # Tăng nhẹ để phân tách vùng tốt hơn
 
@@ -53,6 +54,12 @@ training:
 
 env:
   platform: "kaggle"
+
+ddp:
+  batch_size_is_global: true
+  find_unused_parameters: false
+  broadcast_buffers: true
+  sync_batchnorm: false
 
 kaggle:
   data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"

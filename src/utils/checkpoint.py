@@ -10,7 +10,7 @@ def load_checkpoints(model, optimizer, checkpoint_path, device):
 
     print(f"--> Loading ckpt from {checkpoint_path}")
 
-    ckpt = torch.load(checkpoint_path)
+    ckpt = torch.load(checkpoint_path, map_location=device)
     # load weight -> model
     target_model = model.module if hasattr(model, "module") else model
     target_model.load_state_dict(ckpt['model_state_dict'])
