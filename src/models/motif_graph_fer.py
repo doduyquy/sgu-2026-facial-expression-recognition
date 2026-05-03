@@ -332,21 +332,33 @@ class MotifGraphModel(nn.Module):
         logits_cand, motif_scores_cand = self.motif_module(flat_cands, adj=self.grid_adj.unsqueeze(0).expand(B*num_cands, -1, -1))
         
         logits_motif = logits_cand.view(B, num_cands, -1).mean(dim=1) * self.logit_scale
+        
+        # Store for consistency loss (InfoNCE)
+        # S shape is (B*num_cands, num_classes, motifs_per_class)
         self._latest_scores = motif_scores_cand.view(B, num_cands, -1)
         self._latest_offsets = offsets
         
+        # Select top-k subgraphs for landmark visualization/loss
+        # Based on matching confidence of the most likely class
+        max_scores, _ = motif_scores_cand.max(dim=-1) # (B_large, num_classes)
+        max_scores, _ = max_scores.max(dim=-1) # (B_large,)
+        max_scores = max_scores.view(B, num_cands)
+        _, self._top_k_idx = torch.topk(max_scores, k=min(4, num_cands), dim=-1)
+        
         return logits_motif + torch.sigmoid(self.alpha_fuse) * logits_global
 
+    def compute_motif_diversity_loss(self):
+        return self.motif_module.compute_diversity_loss()
+
     def get_landmark_outputs(self): 
-        return getattr(self, '_latest_scores', None), None
-    def get_landmark_aux_logits(self): 
-        return None
-    def set_training_progress(self, progress): 
-        pass
-    def get_current_prior_strength(self): 
-        return 0.0
+        return getattr(self, '_latest_scores', None), getattr(self, '_top_k_idx', None)
+    
+    def get_landmark_aux_logits(self): return None
+    def set_training_progress(self, progress): pass
+    def get_current_prior_strength(self): return 0.0
+    
     def get_aux_losses(self):
         return {
-            "motif_diversity": self.motif_module.compute_diversity_loss(), 
+            "motif_diversity": self.compute_motif_diversity_loss(), 
             "offset_reg": torch.norm(getattr(self, '_latest_offsets', 0.0), p=2, dim=-1).mean()
         }
