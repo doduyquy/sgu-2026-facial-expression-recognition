@@ -23,7 +23,7 @@ training:
   motif_div_weight: 0.05
   motif_tau: 0.1
   scheduler: "reduce_lr_on_plateau"
-  patience: 25
+  patience: 30
   factor: 0.5
   use_scn: true
   scn_warmup_epochs: 10

@@ -13,101 +13,125 @@ except ImportError:
 
 class MotifBackbone(nn.Module):
     """
-    Advanced Backbone with Residual connections and CBAM.
+    Research-grade Multi-Scale Backbone (CVPR Style).
+    Extracts features at 24x24, 12x12, 6x6 and fuses them via a feature pyramid.
     """
     def __init__(self, in_channels=1, feat_dim=128):
         super().__init__()
-        self.conv1 = nn.Sequential(
+        # Stage 0: 48x48 -> 24x24
+        self.stem = nn.Sequential(
             nn.Conv2d(in_channels, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
+            nn.GroupNorm(8, 64),
             nn.ReLU(),
-            nn.MaxPool2d(2) # 24x24
+            nn.MaxPool2d(2)
         )
         
-        # Residual Block 1
-        self.res1 = nn.Sequential(
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64)
-        )
-        self.cbam1 = CBAM(64)
-        
-        self.down1 = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1), # 12x12
-            nn.BatchNorm2d(128),
-            nn.ReLU()
-        )
-        
-        # Residual Block 2
-        self.res2 = nn.Sequential(
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
+        # Stage 1: 24x24 (Mid-level textures)
+        self.layer1 = nn.Sequential(
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.GroupNorm(16, 128),
             nn.ReLU(),
             nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128)
+            nn.GroupNorm(16, 128)
         )
-        self.cbam2 = CBAM(128)
+        self.cbam1 = CBAM(128)
         
-        self.down2 = nn.Sequential(
-            nn.Conv2d(128, feat_dim, kernel_size=3, stride=2, padding=1), # 6x6
-            nn.BatchNorm2d(feat_dim),
-            nn.ReLU()
+        # Stage 2: 12x12 (Object parts)
+        self.down1 = nn.MaxPool2d(2)
+        self.layer2 = nn.Sequential(
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.GroupNorm(32, 256),
+            nn.ReLU(),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.GroupNorm(32, 256)
         )
-        self.final_cbam = CBAM(feat_dim)
+        self.cbam2 = CBAM(256)
+        
+        # Stage 3: 6x6 (Global shapes)
+        self.down2 = nn.MaxPool2d(2)
+        self.layer3 = nn.Sequential(
+            nn.Conv2d(256, feat_dim, kernel_size=3, padding=1),
+            nn.GroupNorm(16, feat_dim),
+            nn.ReLU(),
+            nn.Conv2d(feat_dim, feat_dim, kernel_size=3, padding=1),
+            nn.GroupNorm(16, feat_dim)
+        )
+        self.cbam3 = CBAM(feat_dim)
+        
+        # Multi-scale Fusion Projections
+        self.proj_mid = nn.Conv2d(256, feat_dim, kernel_size=1)
+        self.fuse_gate = nn.Sequential(
+            nn.Conv2d(feat_dim * 2, 1, kernel_size=1),
+            nn.Sigmoid()
+        )
 
     def forward(self, x):
-        x = self.conv1(x)
+        f24 = self.stem(x)
+        f24 = self.layer1(f24)
+        f24 = self.cbam1(f24)
         
-        identity = x
-        x = self.res1(x)
-        x = self.cbam1(x)
-        x = F.relu(x + identity)
+        f12 = self.down1(f24)
+        f12 = self.layer2(f12)
+        f12 = self.cbam2(f12)
         
-        x = self.down1(x)
+        f6 = self.down2(f12)
+        f6 = self.layer3(f6)
+        f6 = self.cbam3(f6)
         
-        identity = x
-        x = self.res2(x)
-        x = self.cbam2(x)
-        x = F.relu(x + identity)
+        # Multi-scale Fusion (Point 1)
+        f12_proj = self.proj_mid(f12)
+        # Upsample f6 to 12x12
+        f6_up = F.interpolate(f6, size=f12.shape[2:], mode='bilinear', align_corners=True)
         
-        x = self.down2(x)
-        x = self.final_cbam(x)
-        return x
+        # Gated fusion
+        gate = self.fuse_gate(torch.cat([f12_proj, f6_up], dim=1))
+        f_fused = gate * f12_proj + (1 - gate) * f6_up
+        
+        # Final output is matched to f6 resolution
+        out = F.adaptive_avg_pool2d(f_fused, f6.shape[2:]) + f6
+        return out
 
-class GraphAttentionLayer(nn.Module):
+class GraphTransformerBlock(nn.Module):
     """
-    Stabilized Graph Transformer Block (Point 1, 2, 6).
+    Research-grade Graph Transformer Block (CVPR Style).
+    Features: Pre-Norm, Residuals, FFN (GELU), and Relative Positional Encoding.
     """
     def __init__(self, dim, heads=4, dropout=0.2):
         super().__init__()
         self.heads = heads
         self.d_k = dim // heads
         
-        # Multi-head Attention
+        # 1. Multi-head Attention Branch
         self.norm1 = nn.LayerNorm(dim)
         self.q_lin = nn.Linear(dim, dim)
         self.k_lin = nn.Linear(dim, dim)
         self.v_lin = nn.Linear(dim, dim)
+        
+        # Relative Positional Bias MLP (Point 3)
+        self.pos_bias_mlp = nn.Sequential(
+            nn.Linear(2, 16),
+            nn.ReLU(),
+            nn.Linear(16, heads)
+        )
+        
         self.attn_drop = nn.Dropout(dropout)
         self.out_lin = nn.Linear(dim, dim)
         
-        # FFN
+        # 2. Feed Forward Network Branch
         self.norm2 = nn.LayerNorm(dim)
         self.ffn = nn.Sequential(
             nn.Linear(dim, dim * 2),
-            nn.GELU(), # Point 6
+            nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(dim * 2, dim),
             nn.Dropout(dropout)
         )
 
-    def forward(self, x, adj):
-        # x: (B, N, dim), adj: (B, N, N)
+    def forward(self, x, adj, coords=None):
+        # x: (B, N, dim), adj: (B, N, N), coords: (B, N, 2)
         B, N, C = x.shape
         
-        # 1. Attention Branch (Pre-Norm)
+        # --- Multi-head Attention Branch (Pre-Norm) ---
         identity = x
         z = self.norm1(x)
         
@@ -115,13 +139,22 @@ class GraphAttentionLayer(nn.Module):
         k = self.k_lin(z).view(B, N, self.heads, self.d_k).transpose(1, 2)
         v = self.v_lin(z).view(B, N, self.heads, self.d_k).transpose(1, 2)
         
+        # (B, H, N, N)
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
         
+        # Relative Positional Encoding (Point 3)
+        if coords is not None:
+            # rel_pos: (B, N, N, 2)
+            rel_pos = coords.unsqueeze(2) - coords.unsqueeze(1)
+            # bias: (B, N, N, H) -> (B, H, N, N)
+            bias = self.pos_bias_mlp(rel_pos).permute(0, 3, 1, 2)
+            scores = scores + bias
+        
         if adj is not None:
-            # Point 1: Use -inf for stable masking
-            scores = scores.masked_fill(adj.unsqueeze(1) == 0, -float('inf'))
+            # Edge-aware masking (Point 5)
+            # Use log-masking to maintain gradient flow
+            scores = scores + torch.log(adj.unsqueeze(1) + 1e-9)
             
-        # Point 2: Stabilize softmax
         attn = F.softmax(scores, dim=-1)
         attn = torch.nan_to_num(attn, nan=0.0)
         attn = self.attn_drop(attn)
@@ -130,16 +163,14 @@ class GraphAttentionLayer(nn.Module):
         out = out.transpose(1, 2).contiguous().view(B, N, -1)
         out = self.out_lin(out)
         
-        # Residual 1
-        x = identity + out
+        x = identity + out # First Residual
         
-        # 2. FFN Branch (Pre-Norm)
+        # --- FFN Branch (Pre-Norm) ---
         identity = x
         z = self.norm2(x)
         out = self.ffn(z)
         
-        # Residual 2
-        return identity + out
+        return identity + out # Second Residual
 
 class GraphMotifModule(nn.Module):
     """
@@ -284,8 +315,8 @@ class MotifGraphModel(nn.Module):
         )
         
         self.gnn_layers = nn.ModuleList([
-            GraphAttentionLayer(self.feat_dim, heads=4, dropout=0.2),
-            GraphAttentionLayer(self.feat_dim, heads=4, dropout=0.2)
+            GraphTransformerBlock(self.feat_dim, heads=4, dropout=0.2),
+            GraphTransformerBlock(self.feat_dim, heads=4, dropout=0.2)
         ])
         
         self.offset_predictor = nn.Sequential(
@@ -395,13 +426,15 @@ class MotifGraphModel(nn.Module):
         # Motif Branch
         nodes_with_coords, adj = self._get_global_graph(feat_map)
         node_feats = nodes_with_coords[:, :, :-2]
+        coords = nodes_with_coords[:, :, -2:] # (B, N, 2)
+        
         if node_feats.shape[-1] != self.feat_dim:
             if not hasattr(self, 'proj_node'):
                 self.proj_node = nn.Linear(node_feats.shape[-1], self.feat_dim).to(x.device)
             node_feats = self.proj_node(node_feats)
             
         for gnn in self.gnn_layers:
-            node_feats = gnn(node_feats, adj)
+            node_feats = gnn(node_feats, adj, coords=coords)
             
         candidates, cand_adjs, centers = self._extract_deformable_subgraphs(feat_map, H, W, node_feats)
         num_cands = candidates.shape[1]
