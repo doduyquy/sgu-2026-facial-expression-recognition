@@ -142,21 +142,23 @@ class GraphTransformerBlock(nn.Module):
         # (B, H, N, N)
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
         
-        # Relative Positional Encoding (Point 3)
+        # Point 3: Relative Positional Encoding
         if coords is not None:
-            # rel_pos: (B, N, N, 2)
             rel_pos = coords.unsqueeze(2) - coords.unsqueeze(1)
-            # bias: (B, N, N, H) -> (B, H, N, N)
             bias = self.pos_bias_mlp(rel_pos).permute(0, 3, 1, 2)
             scores = scores + bias
         
         if adj is not None:
-            # Edge-aware masking (Point 5)
-            # Use log-masking to maintain gradient flow
+            # Edge-aware masking with stability padding
+            # scores = scores.masked_fill(adj.unsqueeze(1) == 0, -1e4) # Safer than -inf for some optimizers
             scores = scores + torch.log(adj.unsqueeze(1) + 1e-9)
             
+        # Point 1: Numerical stability clamp
+        scores = torch.clamp(scores, min=-100, max=100)
+        
         attn = F.softmax(scores, dim=-1)
-        attn = torch.nan_to_num(attn, nan=0.0)
+        # Point 2: Prevent NaN propagation
+        attn = torch.nan_to_num(attn, nan=0.0, posinf=0.0, neginf=0.0)
         attn = self.attn_drop(attn)
         
         out = torch.matmul(attn, v)
@@ -274,10 +276,12 @@ class GraphMotifModule(nn.Module):
         node_sim_agg = torch.sum(node_attn * s_node, dim=-1) # (B, L, M)
         
         # Final combined score: (B, L, M)
-        # Learnable balance between node and structural information
         w_node = torch.sigmoid(self.alpha)
         w_edge = torch.sigmoid(self.beta)
         S = w_node * node_sim_agg + w_edge * s_struct
+        
+        # Point 5: Numerical stability clamp for selection
+        S = torch.clamp(S, min=-50, max=50)
         
         # 6. Smooth Selection via logsumexp
         logits = torch.logsumexp(S / tau, dim=-1)

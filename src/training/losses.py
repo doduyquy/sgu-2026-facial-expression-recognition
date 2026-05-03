@@ -31,6 +31,8 @@ class MotifConsistencyLoss(nn.Module):
         
         # 1. Similarity to SAME class motifs (Positive)
         # Point 7: Use -inf instead of -1e9 for cleaner logsumexp
+        # Stabilize with clamp to avoid inf/nan
+        selected_scores = torch.clamp(selected_scores, min=-50, max=50)
         pos_scores = selected_scores.masked_fill(mask == 0, -float('inf'))
         log_sum_exp_pos = torch.logsumexp(pos_scores / self.tau, dim=-1)
         
