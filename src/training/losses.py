@@ -130,9 +130,18 @@ def build_loss(config, class_weights=None):
                 else:
                     loss = l_ce
                 
-                if model is not None and hasattr(model, 'compute_motif_diversity_loss'):
-                    l_div = model.compute_motif_diversity_loss()
-                    loss = loss + self.div_weight * l_div
+                if model is not None:
+                    aux = model.get_aux_losses()
+                    # 1. Motif Diversity (Orthogonality)
+                    if "motif_diversity" in aux:
+                        loss = loss + self.div_weight * aux["motif_diversity"]
+                    # 2. Usage Entropy (Encourage balanced usage)
+                    if "usage_entropy" in aux:
+                        # We minimize -entropy to maximize diversity
+                        loss = loss - 0.01 * aux["usage_entropy"]
+                    # 3. Offset Regularization
+                    if "offset_reg" in aux:
+                        loss = loss + 0.05 * aux["offset_reg"]
                 return loss
 
         loss = CombinedMotifLoss(

@@ -470,15 +470,15 @@ class MotifGraphModel(nn.Module):
         # 1. Motif Diversity (Orthogonality)
         l_div = self.motif_module.compute_diversity_loss()
         
-        # 2. Attention Entropy (Prevent collapse)
-        l_ent = getattr(self.motif_module, '_latest_attn_entropy', 0.0)
+        # 2. Motif Usage Regularization (Prevent collapse)
+        l_usage = getattr(self.motif_module, '_latest_usage_entropy', 0.0)
         
         # 3. Offset Regularization
         l_off = torch.norm(getattr(self, '_latest_offsets', 0.0), p=2, dim=-1).mean()
         
         return {
             "motif_diversity": l_div,
-            "attn_entropy": l_ent,
+            "usage_entropy": l_usage,
             "offset_reg": l_off
         }
 
