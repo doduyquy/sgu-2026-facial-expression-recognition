@@ -53,12 +53,12 @@ class MotifConsistencyLoss(nn.Module):
         loss = -(log_sum_exp_pos - log_sum_exp_all).mean()
         return loss
 
-def build_loss(config):
+def build_loss(config, class_weights=None):
     loss_name = config['training'].get('loss', 'cross_entropy')
     use_ohem = config['training'].get('use_ohem', True)
     
-    # Base CrossEntropy
-    base_ce = nn.CrossEntropyLoss()
+    # Base CrossEntropy with optional weighting
+    base_ce = nn.CrossEntropyLoss(weight=class_weights)
     ce_loss = OHEMLoss(base_ce, ratio=0.7) if use_ohem else base_ce
     
     if loss_name == 'cross_entropy':
