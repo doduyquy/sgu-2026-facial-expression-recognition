@@ -390,14 +390,17 @@ class MotifGraphModel(nn.Module):
         for gnn in self.gnn_layers:
             node_feats = gnn(node_feats, adj)
             
-        candidates, cand_adjs, centers = self._extract_deformable_subgraphs(feat_map, H, W, node_feats)
+        # Refactor: Create a graph-refined feature map for deformable sampling
+        # This ensures motif matching depends on graph reasoning (Requirement 1)
+        feat_map_refined = node_feats.view(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+        
+        candidates, cand_adjs, centers = self._extract_deformable_subgraphs(feat_map_refined, H, W, node_feats)
         num_cands = candidates.shape[1]
         
         # Advanced Motif Module Forward
         # 1. Prepare candidate subgraphs: (B*num_cands, 9, Dim)
         flat_cands = candidates.reshape(B * num_cands, 9, -1)
-        if flat_cands.shape[-1] != self.feat_dim:
-            flat_cands = self.proj_node(flat_cands)
+        # Position embedding for subgraphs
         flat_cands = flat_cands + self.pos_embed
         
         # 2. Prepare candidate adjacencies: (B*num_cands, 9, 9)
