@@ -22,18 +22,15 @@ class MotifConsistencyLoss(nn.Module):
         batch_idx = torch.arange(B, device=scores.device).unsqueeze(1).expand(-1, top_k)
         selected_scores = scores[batch_idx, top_k_idx] # (B, top_k, Total_Motifs)
         
-        # Create vectorized mask for correct class motifs (Point 7)
-        motif_indices = torch.arange(Total_Motifs, device=scores.device).view(1, -1)
-        start_idx = (targets * self.motifs_per_class).view(-1, 1)
-        end_idx = start_idx + self.motifs_per_class
-        mask = (motif_indices >= start_idx) & (motif_indices < end_idx)
-        mask = mask.float().unsqueeze(1) # (B, 1, Total_Motifs)
+        # Create mask for correct class motifs
+        mask = torch.zeros(B, Total_Motifs, device=scores.device)
+        for i in range(B):
+            c = targets[i]
+            mask[i, c*self.motifs_per_class : (c+1)*self.motifs_per_class] = 1.0
+        mask = mask.unsqueeze(1) # (B, 1, Total_Motifs)
         
         # 1. Similarity to SAME class motifs (Positive)
-        # Point 7: Use -inf instead of -1e9 for cleaner logsumexp
-        # Stabilize with clamp to avoid inf/nan
-        selected_scores = torch.clamp(selected_scores, min=-50, max=50)
-        pos_scores = selected_scores.masked_fill(mask == 0, -float('inf'))
+        pos_scores = selected_scores.masked_fill(mask == 0, -1e9)
         log_sum_exp_pos = torch.logsumexp(pos_scores / self.tau, dim=-1)
         
         # 2. Similarity to ALL motifs
