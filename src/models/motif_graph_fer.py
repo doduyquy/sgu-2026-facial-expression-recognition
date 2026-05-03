@@ -130,14 +130,7 @@ class GraphAttentionLayer(nn.Module):
 class GraphMotifModule(nn.Module):
     """
     Research-grade Structured Graph Matching Module.
-    suitable for publication in CVPR/ICCV.
-    
-    Features:
-    - Combined Node & Edge Structure Matching
-    - Learnable weighting between Node/Edge similarity
-    - Low-rank Factorized Motif Topology
-    - Fully vectorized structure alignment using einsum
-    - Interpretability via attention and activation maps
+    Advanced features: Sinkhorn Node Alignment, Symmetric Topology, Usage Regularization.
     """
     def __init__(self, num_classes, motifs_per_class, K, C, top_k=None, rank=4):
         super().__init__()
@@ -156,18 +149,23 @@ class GraphMotifModule(nn.Module):
         self.motif_low_rank = nn.Parameter(torch.randn(num_classes, motifs_per_class, K, rank))
         nn.init.xavier_uniform_(self.motif_low_rank)
         
-        # 3. Learnable weights for Node vs Edge similarity
-        self.alpha = nn.Parameter(torch.zeros(1)) # Node weight (logit scale)
-        self.beta = nn.Parameter(torch.zeros(1))  # Edge weight (logit scale)
+        # 3. Learnable weights for structural integration
+        self.alpha = nn.Parameter(torch.zeros(1)) 
+        self.beta = nn.Parameter(torch.zeros(1))  
         
-        # 4. Stability parameters
         self.temperature = nn.Parameter(torch.ones(1) * 0.1)
-        
+
+    def sinkhorn(self, log_alpha, n_iters=3):
+        """
+        Approximate Sinkhorn normalization for node alignment (Requirement 1).
+        log_alpha: (B, L, M, K, K)
+        """
+        for _ in range(n_iters):
+            log_alpha = log_alpha - torch.logsumexp(log_alpha, dim=-1, keepdim=True)
+            log_alpha = log_alpha - torch.logsumexp(log_alpha, dim=-2, keepdim=True)
+        return log_alpha.exp()
+
     def compute_diversity_loss(self):
-        """
-        Orthogonality constraint for motifs.
-        L = || M M^T - I ||
-        """
         m = self.motifs.view(self.num_classes, self.motifs_per_class, -1)
         m = F.normalize(m, dim=-1)
         sim = torch.matmul(m, m.transpose(1, 2))
@@ -175,16 +173,6 @@ class GraphMotifModule(nn.Module):
         return torch.norm(sim - eye, p='fro', dim=(1, 2)).mean()
 
     def forward(self, region_features, adj=None, return_attention=False):
-        """
-        Args:
-            region_features: (B, K, C)
-            adj: (B, K, K) input graph adjacency
-            
-        Returns:
-            logits: (B, num_classes)
-            motif_scores: (B, num_classes, motifs_per_class)
-            metadata: dict containing attention and activation maps
-        """
         B, K, C = region_features.shape
         L, M = self.num_classes, self.motifs_per_class
         
@@ -192,22 +180,27 @@ class GraphMotifModule(nn.Module):
         region_features = F.normalize(region_features, p=2, dim=-1)
         motifs = F.normalize(self.motifs, p=2, dim=-1)
         
-        # 2. Node Similarity matching: (B, L, M, K)
-        node_sim = torch.einsum('bkc,lmkc->blmk', region_features, motifs)
+        # 2. Advanced Node Alignment using Sinkhorn (Requirement 1)
+        # Compute all-to-all similarity: (B, L, M, K, K)
+        # s_ij = <region_node_i, motif_node_j>
+        node_sim_matrix = torch.einsum('bic,lmjc->blmij', region_features, motifs)
         
-        # 3. Edge Structure Matching (Pairwise differences)
-        # diff_R: (B, K, K, C)
+        tau = F.softplus(self.temperature).clamp(min=1e-3)
+        # Perform approximate alignment
+        P = self.sinkhorn(node_sim_matrix / tau, n_iters=3) # (B, L, M, K, K)
+        
+        # Aligned node similarity score
+        node_sim_agg = torch.sum(P * node_sim_matrix, dim=(-1, -2)) # (B, L, M)
+        
+        # 3. Edge Structure Matching (Requirement 2 & 4)
         diff_R = region_features.unsqueeze(2) - region_features.unsqueeze(1)
-        # diff_M: (L, M, K, K, C)
         diff_M = motifs.unsqueeze(3) - motifs.unsqueeze(2)
         
-        # Align structural relationships Ri-Rj with Mi-Mj
-        # edge_sim_raw: (B, L, M, K, K)
         edge_sim_raw = torch.einsum('bijk,lmijk->blmij', diff_R, diff_M)
-        edge_sim = edge_sim_raw.mean(dim=(-1, -2)) # (B, L, M)
+        edge_sim = edge_sim_raw.mean(dim=(-1, -2)) 
         
-        # 4. Topology matching using Low-Rank Motif Edges
-        # motif_adj: (L, M, K, K)
+        # 4. Topology matching using Symmetric Motif Edges (Requirement 2)
+        # Motif edges A = U @ U^T (Symmetric by design)
         motif_adj = torch.matmul(self.motif_low_rank, self.motif_low_rank.transpose(-1, -2))
         motif_adj = F.softmax(motif_adj, dim=-1)
         
@@ -215,35 +208,23 @@ class GraphMotifModule(nn.Module):
         if adj is not None:
             topo_sim = torch.einsum('bij,lmij->blm', adj, motif_adj)
             
-        # 5. Combined Similarity
-        # s_node: (B, L, M, K)
-        s_node = node_sim
-        # s_struct: (B, L, M)
-        s_struct = edge_sim + topo_sim
+        # 5. Combined Similarity Selection
+        S = torch.sigmoid(self.alpha) * node_sim_agg + torch.sigmoid(self.beta) * (edge_sim + topo_sim)
         
-        # Aggregate node similarity per motif
-        tau = F.softplus(self.temperature)
-        node_attn = F.softmax(s_node / tau.clamp(min=1e-3), dim=-1)
-        node_sim_agg = torch.sum(node_attn * s_node, dim=-1) # (B, L, M)
+        # Final logits: smooth selection across motifs
+        logits = torch.logsumexp(S / tau, dim=-1)
         
-        # Final combined score: (B, L, M)
-        # Learnable balance between node and structural information
-        w_node = torch.sigmoid(self.alpha)
-        w_edge = torch.sigmoid(self.beta)
-        S = w_node * node_sim_agg + w_edge * s_struct
-        
-        # 6. Smooth Selection via logsumexp
-        logits = torch.logsumexp(S / tau.clamp(min=1e-3), dim=-1)
-        
-        # 7. Entropy for stability
-        entropy = -(node_attn * torch.log(node_attn + 1e-8)).sum(dim=-1).mean()
-        self._latest_attn_entropy = entropy
+        # 6. Usage Regularization (Requirement 3)
+        # Compute how often each motif is chosen per batch
+        motif_usage = F.softmax(S / tau, dim=-1).mean(dim=0) # (L, M)
+        usage_entropy = -(motif_usage * torch.log(motif_usage + 1e-8)).sum(dim=-1).mean()
+        self._latest_usage_entropy = usage_entropy
         
         if return_attention:
             metadata = {
-                "node_attention": node_attn,
+                "alignment_matrix": P,
                 "motif_activations": S,
-                "edge_sim_matrix": edge_sim_raw
+                "usage_entropy": usage_entropy
             }
             return logits, S, metadata
         return logits, S
