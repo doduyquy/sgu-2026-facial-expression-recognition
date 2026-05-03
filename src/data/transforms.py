@@ -17,16 +17,14 @@ def build_transform(config, split="train") -> Compose: # train | val | test
     st = 0.5
     
     if split == "train":
-        # FER-specific augmentation (Occlusion & Lighting robust)
+        # Standard augmentation for training (NO TenCrop - too slow)
         trans = transforms.Compose([
             transforms.RandomResizedCrop(image_size, scale=(0.8, 1.2)),
+            transforms.RandomApply([transforms.RandomAffine(0, translate=(0.2, 0.2))], p=0.5),
             transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomApply([transforms.RandomRotation(15)], p=0.5),
-            transforms.RandomApply([transforms.RandomAffine(0, translate=(0.1, 0.1))], p=0.5),
-            transforms.RandomAutocontrast(p=0.5), # Handle lighting variations
+            transforms.RandomApply([transforms.RandomRotation(10)], p=0.5),
             transforms.ToTensor(),
-            transforms.Normalize(mean=(mu,), std=(st,)),
-            transforms.RandomErasing(p=0.5, scale=(0.02, 0.2), ratio=(0.3, 3.3)) # Occlusion simulation
+            transforms.Normalize(mean=(mu,), std=(st,))
         ])
     else:
         # Test-time augmentation with TenCrop for val/test
