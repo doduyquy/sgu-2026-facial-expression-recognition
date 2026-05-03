@@ -78,21 +78,17 @@ class GraphAttentionLayer(nn.Module):
         self.q_lin = nn.Linear(in_dim, out_dim)
         self.k_lin = nn.Linear(in_dim, out_dim)
         self.v_lin = nn.Linear(in_dim, out_dim)
-        # Structural bias is optional and size-dependent
         self.edge_bias = nn.Parameter(torch.zeros(heads, num_nodes, num_nodes))
         self.out_lin = nn.Linear(out_dim, out_dim)
 
     def forward(self, x, adj):
-        B, N, _ = x.shape
+        B, N, C = x.shape
         q = self.q_lin(x).view(B, N, self.heads, self.d_k).transpose(1, 2)
         k = self.k_lin(x).view(B, N, self.heads, self.d_k).transpose(1, 2)
         v = self.v_lin(x).view(B, N, self.heads, self.d_k).transpose(1, 2)
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
-        
-        # Apply bias only if shapes match
         if N == self.edge_bias.shape[-1]:
             scores = scores + self.edge_bias.unsqueeze(0)
-            
         if adj is not None:
             scores = scores * torch.sigmoid(adj.unsqueeze(1))
         attn = F.softmax(scores, dim=-1)
@@ -121,7 +117,6 @@ class GraphMotifModule(nn.Module):
 
     def forward(self, region_features, adj=None):
         B, K, C = region_features.shape
-        L, M = self.num_classes, self.motifs_per_class
         region_features = F.normalize(region_features, p=2, dim=-1)
         motifs = F.normalize(self.motifs, p=2, dim=-1)
         node_sim = torch.einsum('bkc,lmkc->blmk', region_features, motifs)
@@ -148,13 +143,7 @@ class MotifGraphModel(nn.Module):
         self.backbone = MotifBackbone(feat_dim=self.feat_dim)
         self.global_pool = nn.AdaptiveAvgPool2d(1)
         self.global_fc = nn.Sequential(nn.Flatten(), nn.Linear(self.feat_dim, 128), nn.ReLU(inplace=True), nn.Dropout(0.3), nn.Linear(128, self.num_classes))
-        
-        # GNN for global reasoning (36 nodes)
-        self.gnn_layers = nn.ModuleList([
-            GraphAttentionLayer(self.feat_dim, self.feat_dim, num_nodes=36),
-            GraphAttentionLayer(self.feat_dim, self.feat_dim, num_nodes=36)
-        ])
-        
+        self.gnn_layers = nn.ModuleList([GraphAttentionLayer(self.feat_dim, self.feat_dim, num_nodes=36), GraphAttentionLayer(self.feat_dim, self.feat_dim, num_nodes=36)])
         self.offset_predictor = nn.Sequential(nn.Linear(self.feat_dim, 64), nn.ReLU(inplace=True), nn.Linear(64, 2), nn.Tanh())
         self.pos_embed = nn.Parameter(torch.randn(1, 9, self.feat_dim))
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
@@ -174,57 +163,35 @@ class MotifGraphModel(nn.Module):
         return adj
 
     def forward(self, x, targets=None):
-        if targets is not None: self._latest_targets = targets
         if x.dim() == 5:
             B, T, C, H, W = x.shape
             logits = self.forward(x.view(B*T, C, H, W))
             return logits.view(B, T, -1).mean(dim=1)
-            
-        B, C, H, W = x.shape
-        feat_map = self.backbone(x) # (B, 128, 6, 6)
+        B, C, H_in, W_in = x.shape
+        feat_map = self.backbone(x)
+        B, C_feat, H, W = feat_map.shape
         logits_global = self.global_fc(self.global_pool(feat_map))
-        
-        # Build spatial graph
-        nodes = feat_map.permute(0, 2, 3, 1).reshape(B, H*W, -1)
+        nodes = feat_map.permute(0, 2, 3, 1).reshape(B, H*W, C_feat)
         sim = torch.matmul(F.normalize(nodes, dim=-1), F.normalize(nodes, dim=-1).transpose(1, 2))
-        _, topk_idx = torch.topk(sim, k=8, dim=-1)
+        _, topk_idx = torch.topk(sim, k=min(8, H*W), dim=-1)
         adj = torch.zeros_like(sim).scatter_(-1, topk_idx, 1.0)
-        
         node_feats = nodes
         for gnn in self.gnn_layers:
             node_feats = gnn(node_feats, adj)
-            
-        feat_map_refined = node_feats.view(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
-        
-        # Deformable Subgraph Sampling
+        feat_map_refined = node_feats.view(B, H, W, C_feat).permute(0, 3, 1, 2).contiguous()
         center_idx = torch.tensor([i*W+j for i in range(1,H-1) for j in range(1,W-1)], device=x.device)
         num_cands = len(center_idx)
         offsets = self.offset_predictor(node_feats[:, center_idx, :])
-        self._latest_offsets = offsets
-        
         rel_grid = torch.stack(torch.meshgrid(torch.linspace(-1,1,3), torch.linspace(-1,1,3), indexing='ij'), dim=-1).to(x.device).view(1,1,9,2)
         centers_grid = torch.stack([(center_idx % W).float()/(W-1)*2-1, (center_idx // W).float()/(H-1)*2-1], dim=-1).view(1, num_cands, 1, 2)
         sampling_grid = (centers_grid + offsets.unsqueeze(2) + rel_grid*(1.0/(W-1))).view(B, num_cands*9, 1, 2)
-        
-        candidates = F.grid_sample(feat_map_refined, sampling_grid, align_corners=True).view(B, -1, num_cands, 9).permute(0, 2, 3, 1)
-        
-        flat_cands = (candidates.reshape(B*num_cands, 9, -1) + self.pos_embed)
-        flat_adjs = self.grid_adj.unsqueeze(0).expand(B*num_cands, -1, -1)
-        
-        logits_cand, motif_scores_cand = self.motif_module(flat_cands, adj=flat_adjs)
+        candidates = F.grid_sample(feat_map_refined, sampling_grid, align_corners=True).view(B, C_feat, num_cands, 9).permute(0, 2, 3, 1)
+        flat_cands = (candidates.reshape(B*num_cands, 9, C_feat) + self.pos_embed)
+        logits_cand, motif_scores_cand = self.motif_module(flat_cands, adj=self.grid_adj.unsqueeze(0).expand(B*num_cands, -1, -1))
         logits_motif = logits_cand.view(B, num_cands, -1).mean(dim=1) * self.logit_scale
-        
         self._latest_scores = motif_scores_cand.view(B, num_cands, -1)
+        self._latest_offsets = offsets
         return logits_motif + torch.sigmoid(self.alpha_fuse) * logits_global
 
     def get_aux_losses(self):
-        return {
-            "motif_diversity": self.motif_module.compute_diversity_loss(),
-            "offset_reg": torch.norm(getattr(self, '_latest_offsets', 0.0), p=2, dim=-1).mean()
-        }
-
-if __name__ == "__main__":
-    config = {'feat_dim': 128, 'num_classes': 7, 'motifs_per_class': 8}
-    model = MotifGraphModel(config)
-    dummy = torch.randn(2, 1, 48, 48)
-    print("Output shape:", model(dummy).shape)
+        return {"motif_diversity": self.motif_module.compute_diversity_loss(), "offset_reg": torch.norm(getattr(self, '_latest_offsets', 0.0), p=2, dim=-1).mean()}
