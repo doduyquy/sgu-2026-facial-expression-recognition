@@ -193,5 +193,18 @@ class MotifGraphModel(nn.Module):
         self._latest_offsets = offsets
         return logits_motif + torch.sigmoid(self.alpha_fuse) * logits_global
 
+    def get_landmark_outputs(self):
+        """ Returns latest motif scores for visualization """
+        return getattr(self, '_latest_scores', None), None
+
+    def get_landmark_aux_logits(self):
+        return None
+
+    def set_training_progress(self, progress):
+        pass
+
+    def get_current_prior_strength(self):
+        return 0.0
+
     def get_aux_losses(self):
         return {"motif_diversity": self.motif_module.compute_diversity_loss(), "offset_reg": torch.norm(getattr(self, '_latest_offsets', 0.0), p=2, dim=-1).mean()}
