@@ -1,4 +1,3 @@
-import torch
 import torch.optim as optim  
 import torch.optim.lr_scheduler as lr_scheduler
 
@@ -12,52 +11,12 @@ def build_optimizer(model, config):
 
     if opt_name == 'adam':
         return optim.Adam(params, lr=lr, weight_decay=weight_decay)
-    elif opt_name == 'adamw':
-        return optim.AdamW(params, lr=lr, weight_decay=weight_decay)
     elif opt_name == 'sgd':
-        momentum = train_cfg.get('momentum', 0.9) 
-        return optim.SGD(params, lr=lr, weight_decay=weight_decay, momentum=momentum)
-    elif opt_name == 'sam':
-        # SAM requires a base optimizer. We'll use AdamW as default base.
-        base_opt = optim.AdamW(params, lr=lr, weight_decay=weight_decay)
-        return SAM(params, base_opt, rho=0.05)
+        gamma = train_cfg.get('gamma', 0.9) 
+        return optim.SGD(params, lr=lr, weight_decay=weight_decay, momentum=gamma)
+    # add another optimizer
     else:
         raise ValueError(f"Optimizer {opt_name} unsupported!")
-
-class SAM(optim.Optimizer):
-    def __init__(self, params, base_optimizer, rho=0.05):
-        assert rho >= 0.0, f"Invalid rho, should be non-negative: {rho}"
-        self.base_optimizer = base_optimizer
-        self.rho = rho
-        super(SAM, self).__init__(params, dict(rho=rho))
-        self.param_groups = self.base_optimizer.param_groups
-
-    @torch.no_grad()
-    def first_step(self, zero_grad=False):
-        grad_norm = self._grad_norm()
-        for group in self.param_groups:
-            scale = self.rho / (grad_norm + 1e-12)
-            for p in group["params"]:
-                if p.grad is None: continue
-                e_w = p.grad * scale.to(p)
-                p.add_(e_w)  # climb to local maximum
-                self.state[p]["e_w"] = e_w
-        if zero_grad: self.zero_grad()
-
-    @torch.no_grad()
-    def second_step(self, zero_grad=False):
-        for group in self.param_groups:
-            for p in group["params"]:
-                if p.grad is None: continue
-                p.sub_(self.state[p]["e_w"])  # get back to w
-        self.base_optimizer.step()
-        if zero_grad: self.zero_grad()
-
-    def _grad_norm(self):
-        norm = torch.norm(torch.stack([
-            p.grad.norm(p=2) for group in self.param_groups for p in group["params"] if p.grad is not None
-        ]), p=2)
-        return norm
 
 
 def build_scheduler(optimizer, config):
