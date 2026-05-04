@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torchvision.models as models
 import math
 
 try:
@@ -12,43 +11,115 @@ except ImportError:
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
     from models.CBAM import CBAM
 
-class MotifBackbone(nn.Module):
-    """
-    ResNet18 backbone with spatial feature map output.
-    """
-    def __init__(self, in_channels=1, feat_dim=128):
+class DropPath(nn.Module):
+    def __init__(self, drop_prob=0.0):
         super().__init__()
-        resnet = models.resnet18(pretrained=True)
-
-        if in_channels != 3:
-            resnet.conv1 = nn.Conv2d(
-                in_channels,
-                resnet.conv1.out_channels,
-                kernel_size=resnet.conv1.kernel_size,
-                stride=resnet.conv1.stride,
-                padding=resnet.conv1.padding,
-                bias=False,
-            )
-
-        self.backbone = nn.Sequential(
-            resnet.conv1,
-            resnet.bn1,
-            resnet.relu,
-            resnet.maxpool,
-            resnet.layer1,
-            resnet.layer2,
-            resnet.layer3,
-            resnet.layer4,
-        )
-
-        out_channels = 512
-        self.proj = nn.Identity()
-        if out_channels != feat_dim:
-            self.proj = nn.Conv2d(out_channels, feat_dim, kernel_size=1)
+        self.drop_prob = float(drop_prob)
 
     def forward(self, x):
-        x = self.backbone(x)
-        x = self.proj(x)
+        if self.drop_prob == 0.0 or not self.training:
+            return x
+        keep_prob = 1.0 - self.drop_prob
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+        random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
+        random_tensor.floor_()
+        return x.div(keep_prob) * random_tensor
+
+
+class ModernMotifBlock(nn.Module):
+    def __init__(self, dim, kernel_size=7, drop_path=0.0, drop_out=0.0):
+        super().__init__()
+        self.dwconv = nn.Conv2d(dim, dim, kernel_size=kernel_size, padding=kernel_size // 2, groups=dim)
+        self.norm = nn.LayerNorm(dim)
+        self.pw1 = nn.Linear(dim, 4 * dim)
+        self.act = nn.GELU()
+        self.pw2 = nn.Linear(4 * dim, dim)
+        self.drop = nn.Dropout(drop_out) if drop_out > 0.0 else nn.Identity()
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
+
+    def forward(self, x):
+        identity = x
+        x = self.dwconv(x)
+        x = x.permute(0, 2, 3, 1)
+        x = self.norm(x)
+        x = self.pw1(x)
+        x = self.act(x)
+        x = self.pw2(x)
+        x = self.drop(x)
+        x = x.permute(0, 3, 1, 2)
+        x = identity + self.drop_path(x)
+        return x
+
+
+class MotifBackbone(nn.Module):
+    """
+    ConvNeXt-inspired backbone with CBAM between stages.
+    """
+    def __init__(self, in_channels=1, feat_dim=128, kernel_size=7, drop_path=0.0, drop_out=0.0):
+        super().__init__()
+        base_dim = 64
+
+        self.stem = nn.Sequential(
+            nn.Conv2d(in_channels, base_dim, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(base_dim),
+            nn.ReLU(inplace=True),
+        )
+
+        self.stage1 = nn.Sequential(
+            ModernMotifBlock(base_dim, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
+            ModernMotifBlock(base_dim, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
+        )
+        self.cbam1 = CBAM(base_dim)
+        self.down1 = nn.Sequential(
+            nn.Conv2d(base_dim, base_dim * 2, kernel_size=2, stride=2),
+            nn.BatchNorm2d(base_dim * 2),
+            nn.ReLU(inplace=True),
+        )
+
+        self.stage2 = nn.Sequential(
+            ModernMotifBlock(base_dim * 2, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
+            ModernMotifBlock(base_dim * 2, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
+        )
+        self.cbam2 = CBAM(base_dim * 2)
+        self.down2 = nn.Sequential(
+            nn.Conv2d(base_dim * 2, base_dim * 4, kernel_size=2, stride=2),
+            nn.BatchNorm2d(base_dim * 4),
+            nn.ReLU(inplace=True),
+        )
+
+        self.stage3 = nn.Sequential(
+            ModernMotifBlock(base_dim * 4, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
+            ModernMotifBlock(base_dim * 4, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
+        )
+        self.cbam3 = CBAM(base_dim * 4)
+        self.down3 = nn.Sequential(
+            nn.Conv2d(base_dim * 4, feat_dim, kernel_size=2, stride=2),
+            nn.BatchNorm2d(feat_dim),
+            nn.ReLU(inplace=True),
+        )
+
+        self.stage4 = nn.Sequential(
+            ModernMotifBlock(feat_dim, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
+            ModernMotifBlock(feat_dim, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
+        )
+        self.cbam4 = CBAM(feat_dim)
+
+    def forward(self, x):
+        x = self.stem(x)
+        x = self.stage1(x)
+        x = self.cbam1(x)
+        x = self.down1(x)
+
+        x = self.stage2(x)
+        x = self.cbam2(x)
+        x = self.down2(x)
+
+        x = self.stage3(x)
+        x = self.cbam3(x)
+        x = self.down3(x)
+
+        x = self.stage4(x)
+        x = self.cbam4(x)
         return x
 
 class GraphAttentionLayer(nn.Module):
@@ -233,6 +304,10 @@ class MotifGraphModel(nn.Module):
             batch_first=True,
         )
         self.global_fc = nn.Linear(self.feat_dim, self.num_classes)
+        self.scn_weight_branch = nn.Sequential(
+            nn.Linear(self.feat_dim, 1),
+            nn.Sigmoid()
+        )
         
         self.gnn_layers = nn.ModuleList([
             GraphAttentionLayer(self.feat_dim, self.feat_dim),
@@ -348,6 +423,11 @@ class MotifGraphModel(nn.Module):
         seq = self.global_encoder(seq)
         pooled_feat = seq.mean(dim=1)
         logits_global = self.global_fc(pooled_feat)
+        if hasattr(self, "scn_weight_branch"):
+            try:
+                self._latest_scn_weights = self.scn_weight_branch(pooled_feat)
+            except Exception:
+                pass
         
         # Motif Branch
         nodes_with_coords, adj = self._get_global_graph(feat_map)
