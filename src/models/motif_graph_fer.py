@@ -243,7 +243,7 @@ class GraphMotifModule(nn.Module):
         L = || M M^T - I ||
         """
         m = self.motifs.view(self.num_classes, self.motifs_per_class, -1)
-        m = F.normalize(m, dim=-1)
+        m = F.normalize(m, dim=-1, eps=1e-6)
         sim = torch.matmul(m, m.transpose(1, 2))
         eye = torch.eye(self.motifs_per_class, device=m.device).unsqueeze(0)
         return torch.norm(sim - eye, p='fro', dim=(1, 2)).mean()
@@ -263,8 +263,8 @@ class GraphMotifModule(nn.Module):
         L, M = self.num_classes, self.motifs_per_class
         
         # 1. Normalize Inputs
-        region_features = F.normalize(region_features, p=2, dim=-1)
-        motifs = F.normalize(self.motifs, p=2, dim=-1)
+        region_features = F.normalize(region_features, p=2, dim=-1, eps=1e-6)
+        motifs = F.normalize(self.motifs, p=2, dim=-1, eps=1e-6)
         
         # 2. Node Similarity matching: (B, L, M, K)
         node_sim = torch.einsum('bkc,lmkc->blmk', region_features, motifs)
@@ -307,10 +307,10 @@ class GraphMotifModule(nn.Module):
         S = w_node * node_sim_agg + w_edge * s_struct
         
         # 6. Smooth Selection via logsumexp
-        logits = torch.logsumexp(S / tau.clamp(min=1e-3), dim=-1)
+        logits = torch.logsumexp(S.float() / tau.float().clamp(min=1e-3), dim=-1).to(S.dtype)
         
         # 7. Entropy for stability
-        entropy = -(node_attn * torch.log(node_attn + 1e-8)).sum(dim=-1).mean()
+        entropy = -(node_attn * torch.log(node_attn + 1e-5)).sum(dim=-1).mean()
         self._latest_attn_entropy = entropy
         
         if return_attention:
@@ -387,14 +387,14 @@ class MotifGraphModel(nn.Module):
         m = self.motif_module.motifs 
         C, M, N, D = m.shape
         m_flat = m.view(C, M, -1) 
-        m_flat = F.normalize(m_flat, dim=-1)
+        m_flat = F.normalize(m_flat, p=2, dim=-1, eps=1e-6)
         
         sim_intra = torch.matmul(m_flat, m_flat.transpose(1, 2))
         eye = torch.eye(M, device=m.device).unsqueeze(0)
         l_intra = (sim_intra * (1 - eye)).mean()
         
         class_centers = m_flat.mean(dim=1) 
-        class_centers = F.normalize(class_centers, dim=-1)
+        class_centers = F.normalize(class_centers, p=2, dim=-1, eps=1e-6)
         sim_inter = torch.matmul(class_centers, class_centers.transpose(0, 1))
         eye_c = torch.eye(C, device=m.device)
         l_inter = (sim_inter * (1 - eye_c)).mean()
@@ -498,7 +498,7 @@ class MotifGraphModel(nn.Module):
         # Point 5: Candidate-level attention using learnable query
         cand_scores = (logits_cand * self.cand_query).sum(dim=-1) # (B, num_cands)
         cand_tau = 0.3
-        attn_weights = F.softmax(cand_scores / cand_tau, dim=1).unsqueeze(-1) 
+        attn_weights = F.softmax(cand_scores.float() / cand_tau, dim=1).to(cand_scores.dtype).unsqueeze(-1) 
         
         logits_motif = torch.sum(logits_cand * attn_weights, dim=1)
         logits_motif = logits_motif * self.logit_scale 
@@ -530,7 +530,7 @@ class MotifGraphModel(nn.Module):
         nodes = feat_map.permute(0, 2, 3, 1).reshape(B, N, C)
         nodes_with_coords = torch.cat([nodes, coords], dim=-1)
         
-        nodes_norm = F.normalize(nodes, dim=-1)
+        nodes_norm = F.normalize(nodes, p=2, dim=-1, eps=1e-6)
         sim = torch.matmul(nodes_norm, nodes_norm.transpose(1, 2))
         
         k_neighbors = 4 
