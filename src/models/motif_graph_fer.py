@@ -362,6 +362,8 @@ class MotifGraphModel(nn.Module):
             
         candidates, cand_adjs, centers = self._extract_deformable_subgraphs(feat_map, H, W, node_feats)
         num_cands = candidates.shape[1]
+        if num_cands == 0:
+            return logits_global
         
         # Advanced Motif Module Forward
         # 1. Prepare candidate subgraphs: (B*num_cands, 9, Dim)
