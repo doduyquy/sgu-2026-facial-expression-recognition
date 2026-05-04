@@ -295,7 +295,7 @@ class MotifGraphModel(nn.Module):
         for i in range(1, H-1):
             for j in range(1, W-1):
                 center_indices.append(i * W + j)
-        center_indices = torch.tensor(center_indices, device=feat_map.device)
+        center_indices = torch.tensor(center_indices, device=feat_map.device, dtype=torch.long)
         num_cands = len(center_indices)
         
         center_feats = node_feats[:, center_indices, :] 
