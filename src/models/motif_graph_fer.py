@@ -187,7 +187,7 @@ class GraphAttentionLayer(nn.Module):
         
         # Apply adjacency mask (binary or weighted)
         if adj is not None:
-            scores = scores.masked_fill(adj.unsqueeze(1) == 0, -1e9)
+            scores = scores.masked_fill(adj.unsqueeze(1) == 0, -1e4)
             
         attn = F.softmax(scores, dim=-1)
         attn = self.attn_drop(attn)  # Dropout on attention scores
