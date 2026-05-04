@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision.models as models
 import math
 
 try:
@@ -13,67 +14,41 @@ except ImportError:
 
 class MotifBackbone(nn.Module):
     """
-    Advanced Backbone with Residual connections and CBAM.
+    ResNet18 backbone with spatial feature map output.
     """
     def __init__(self, in_channels=1, feat_dim=128):
         super().__init__()
-        self.conv1 = nn.Sequential(
-            nn.Conv2d(in_channels, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.MaxPool2d(2) # 24x24
+        resnet = models.resnet18(pretrained=True)
+
+        if in_channels != 3:
+            resnet.conv1 = nn.Conv2d(
+                in_channels,
+                resnet.conv1.out_channels,
+                kernel_size=resnet.conv1.kernel_size,
+                stride=resnet.conv1.stride,
+                padding=resnet.conv1.padding,
+                bias=False,
+            )
+
+        self.backbone = nn.Sequential(
+            resnet.conv1,
+            resnet.bn1,
+            resnet.relu,
+            resnet.maxpool,
+            resnet.layer1,
+            resnet.layer2,
+            resnet.layer3,
+            resnet.layer4,
         )
-        
-        # Residual Block 1
-        self.res1 = nn.Sequential(
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64)
-        )
-        self.cbam1 = CBAM(64)
-        
-        self.down1 = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1), # 12x12
-            nn.BatchNorm2d(128),
-            nn.ReLU()
-        )
-        
-        # Residual Block 2
-        self.res2 = nn.Sequential(
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128)
-        )
-        self.cbam2 = CBAM(128)
-        
-        self.down2 = nn.Sequential(
-            nn.Conv2d(128, feat_dim, kernel_size=3, stride=2, padding=1), # 6x6
-            nn.BatchNorm2d(feat_dim),
-            nn.ReLU()
-        )
-        self.final_cbam = CBAM(feat_dim)
+
+        out_channels = 512
+        self.proj = nn.Identity()
+        if out_channels != feat_dim:
+            self.proj = nn.Conv2d(out_channels, feat_dim, kernel_size=1)
 
     def forward(self, x):
-        x = self.conv1(x)
-        
-        identity = x
-        x = self.res1(x)
-        x = self.cbam1(x)
-        x = F.relu(x + identity)
-        
-        x = self.down1(x)
-        
-        identity = x
-        x = self.res2(x)
-        x = self.cbam2(x)
-        x = F.relu(x + identity)
-        
-        x = self.down2(x)
-        x = self.final_cbam(x)
+        x = self.backbone(x)
+        x = self.proj(x)
         return x
 
 class GraphAttentionLayer(nn.Module):
@@ -250,15 +225,14 @@ class MotifGraphModel(nn.Module):
         
         self.backbone = MotifBackbone(feat_dim=self.feat_dim)
         
-        # 4. Global Branch: Capture overall face context
-        self.global_pool = nn.AdaptiveAvgPool2d(1)
-        self.global_fc = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(self.feat_dim, 128),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(128, self.num_classes)
+        self.global_encoder = nn.TransformerEncoderLayer(
+            d_model=self.feat_dim,
+            nhead=4,
+            dim_feedforward=256,
+            dropout=0.2,
+            batch_first=True,
         )
+        self.global_fc = nn.Linear(self.feat_dim, self.num_classes)
         
         self.gnn_layers = nn.ModuleList([
             GraphAttentionLayer(self.feat_dim, self.feat_dim),
@@ -370,7 +344,10 @@ class MotifGraphModel(nn.Module):
         _, _, H, W = feat_map.shape
         
         # 4. Global Branch prediction
-        logits_global = self.global_fc(self.global_pool(feat_map))
+        seq = feat_map.flatten(2).transpose(1, 2)
+        seq = self.global_encoder(seq)
+        pooled_feat = seq.mean(dim=1)
+        logits_global = self.global_fc(pooled_feat)
         
         # Motif Branch
         nodes_with_coords, adj = self._get_global_graph(feat_map)

@@ -17,14 +17,12 @@ def build_transform(config, split="train") -> Compose: # train | val | test
     st = 0.5
     
     if split == "train":
-        # Standard augmentation for training (NO TenCrop - too slow)
         trans = transforms.Compose([
-            transforms.RandomResizedCrop(image_size, scale=(0.8, 1.2)),
-            transforms.RandomApply([transforms.RandomAffine(0, translate=(0.2, 0.2))], p=0.5),
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomApply([transforms.RandomRotation(10)], p=0.5),
+            transforms.Resize((48, 48)),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomRotation(10),
             transforms.ToTensor(),
-            transforms.Normalize(mean=(mu,), std=(st,))
+            transforms.RandomErasing(p=0.5, scale=(0.02, 0.2), ratio=(0.3, 3.3), value=0),
         ])
     else:
         # Test-time augmentation with TenCrop for val/test
