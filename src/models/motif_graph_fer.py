@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision.models as models
 import math
 
 class DropPath(nn.Module):
@@ -23,7 +24,7 @@ class CoordinateAttention(nn.Module):
         super().__init__()
         mid_channels = max(8, channels // reduction)
         self.conv1 = nn.Conv2d(channels, mid_channels, kernel_size=1, bias=False)
-        self.bn1 = nn.GroupNorm(1, mid_channels)
+        self.bn1 = nn.BatchNorm2d(mid_channels)
         self.act = nn.ReLU(inplace=True)
         self.conv_h = nn.Conv2d(mid_channels, channels, kernel_size=1, bias=False)
         self.conv_w = nn.Conv2d(mid_channels, channels, kernel_size=1, bias=False)
@@ -70,92 +71,40 @@ class ModernMotifBlock(nn.Module):
 
 class MotifBackbone(nn.Module):
     """
-    ConvNeXt-inspired backbone with Coordinate Attention and cross-scale fusion.
+    MobileNetV3-Small backbone with Coordinate Attention.
+    Optimized for 48x48 grayscale inputs.
     """
     def __init__(self, in_channels=1, feat_dim=128, kernel_size=7, drop_path=0.0, drop_out=0.0):
         super().__init__()
-        base_dim = 64
+        weights = models.MobileNet_V3_Small_Weights.DEFAULT
+        backbone = models.mobilenet_v3_small(weights=weights)
+        if in_channels != 3:
+            first_conv = backbone.features[0][0]
+            new_conv = nn.Conv2d(
+                in_channels,
+                first_conv.out_channels,
+                kernel_size=first_conv.kernel_size,
+                stride=first_conv.stride,
+                padding=first_conv.padding,
+                bias=False,
+            )
+            new_conv.weight.data = first_conv.weight.data.mean(dim=1, keepdim=True)
+            backbone.features[0][0] = new_conv
 
-        self.stem = nn.Sequential(
-            nn.Conv2d(in_channels, base_dim, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.GroupNorm(1, base_dim),
+        self.backbone = backbone.features[:9]
+        out_channels = self.backbone[-1].out_channels
+        self.ca = CoordinateAttention(out_channels)
+        self.proj = nn.Sequential(
+            nn.Conv2d(out_channels, feat_dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(feat_dim),
             nn.ReLU(inplace=True),
-        )
-
-        self.stage1 = nn.Sequential(
-            ModernMotifBlock(base_dim, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
-            ModernMotifBlock(base_dim, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
-        )
-        self.ca1 = CoordinateAttention(base_dim)
-        self.down1 = nn.Sequential(
-            nn.Conv2d(base_dim, base_dim * 2, kernel_size=2, stride=2),
-            nn.GroupNorm(1, base_dim * 2),
-            nn.ReLU(inplace=True),
-        )
-
-        self.stage2 = nn.Sequential(
-            ModernMotifBlock(base_dim * 2, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
-            ModernMotifBlock(base_dim * 2, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
-        )
-        self.ca2 = CoordinateAttention(base_dim * 2)
-        self.down2 = nn.Sequential(
-            nn.Conv2d(base_dim * 2, base_dim * 4, kernel_size=2, stride=2),
-            nn.GroupNorm(1, base_dim * 4),
-            nn.ReLU(inplace=True),
-        )
-
-        self.stage3 = nn.Sequential(
-            ModernMotifBlock(base_dim * 4, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
-            ModernMotifBlock(base_dim * 4, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
-        )
-        self.ca3 = CoordinateAttention(base_dim * 4)
-        self.down3 = nn.Sequential(
-            nn.Conv2d(base_dim * 4, feat_dim, kernel_size=2, stride=2),
-            nn.GroupNorm(1, feat_dim),
-            nn.ReLU(inplace=True),
-        )
-
-        self.stage4 = nn.Sequential(
-            ModernMotifBlock(feat_dim, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
-            ModernMotifBlock(feat_dim, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
-        )
-        self.ca4 = CoordinateAttention(feat_dim)
-
-        self.proj_s1 = nn.Sequential(
-            nn.Conv2d(base_dim, base_dim * 4, kernel_size=1, bias=False),
-            nn.GroupNorm(1, base_dim * 4),
-        )
-        self.proj_s2 = nn.Sequential(
-            nn.Conv2d(base_dim * 2, feat_dim, kernel_size=1, bias=False),
-            nn.GroupNorm(1, feat_dim),
         )
 
     def forward(self, x):
-        x = self.stem(x)
-
-        s1 = self.stage1(x)
-        s1 = self.ca1(s1)
-        x = self.down1(s1)
-
-        s2 = self.stage2(x)
-        s2 = self.ca2(s2)
-        x = self.down2(s2)
-
-        s3 = self.stage3(x)
-        s3 = self.ca3(s3)
-        s1_proj = self.proj_s1(s1)
-        if s1_proj.shape[-2:] != s3.shape[-2:]:
-            s1_proj = F.interpolate(s1_proj, size=s3.shape[-2:], mode="bilinear", align_corners=False)
-        s3 = s3 + s1_proj
-        x = self.down3(s3)
-
-        s4 = self.stage4(x)
-        s4 = self.ca4(s4)
-        s2_proj = self.proj_s2(s2)
-        if s2_proj.shape[-2:] != s4.shape[-2:]:
-            s2_proj = F.interpolate(s2_proj, size=s4.shape[-2:], mode="bilinear", align_corners=False)
-        s4 = s4 + s2_proj
-        return s4
+        x = self.backbone(x)
+        x = self.ca(x)
+        x = self.proj(x)
+        return x
 
 class GraphAttentionLayer(nn.Module):
     """
@@ -187,8 +136,7 @@ class GraphAttentionLayer(nn.Module):
         
         # Apply adjacency mask (binary or weighted)
         if adj is not None:
-            scores = scores.masked_fill(adj.unsqueeze(1) == 0, -1e4)
-        scores = torch.nan_to_num(scores, nan=-1e4, posinf=1e4, neginf=-1e4)
+            scores = scores.masked_fill(adj.unsqueeze(1) == 0, -1e9)
             
         attn = F.softmax(scores, dim=-1)
         attn = self.attn_drop(attn)  # Dropout on attention scores
@@ -198,7 +146,6 @@ class GraphAttentionLayer(nn.Module):
         out = self.out_lin(out)
         out = out + x  # Residual connection to reduce over-smoothing
         out = self.norm(out)  # Normalize output features
-        out = torch.nan_to_num(out)
         return F.relu(out)
 
 class GraphMotifModule(nn.Module):
@@ -243,7 +190,7 @@ class GraphMotifModule(nn.Module):
         L = || M M^T - I ||
         """
         m = self.motifs.view(self.num_classes, self.motifs_per_class, -1)
-        m = F.normalize(m, dim=-1, eps=1e-6)
+        m = F.normalize(m, dim=-1)
         sim = torch.matmul(m, m.transpose(1, 2))
         eye = torch.eye(self.motifs_per_class, device=m.device).unsqueeze(0)
         return torch.norm(sim - eye, p='fro', dim=(1, 2)).mean()
@@ -263,8 +210,8 @@ class GraphMotifModule(nn.Module):
         L, M = self.num_classes, self.motifs_per_class
         
         # 1. Normalize Inputs
-        region_features = F.normalize(region_features, p=2, dim=-1, eps=1e-6)
-        motifs = F.normalize(self.motifs, p=2, dim=-1, eps=1e-6)
+        region_features = F.normalize(region_features, p=2, dim=-1)
+        motifs = F.normalize(self.motifs, p=2, dim=-1)
         
         # 2. Node Similarity matching: (B, L, M, K)
         node_sim = torch.einsum('bkc,lmkc->blmk', region_features, motifs)
@@ -307,10 +254,10 @@ class GraphMotifModule(nn.Module):
         S = w_node * node_sim_agg + w_edge * s_struct
         
         # 6. Smooth Selection via logsumexp
-        logits = torch.logsumexp(S.float() / tau.float().clamp(min=1e-3), dim=-1).to(S.dtype)
+        logits = torch.logsumexp(S / tau.clamp(min=1e-3), dim=-1)
         
         # 7. Entropy for stability
-        entropy = -(node_attn * torch.log(node_attn + 1e-5)).sum(dim=-1).mean()
+        entropy = -(node_attn * torch.log(node_attn + 1e-8)).sum(dim=-1).mean()
         self._latest_attn_entropy = entropy
         
         if return_attention:
@@ -333,18 +280,14 @@ class MotifGraphModel(nn.Module):
         
         self.backbone = MotifBackbone(feat_dim=self.feat_dim)
         
-        self.global_encoder = nn.TransformerEncoderLayer(
-            d_model=self.feat_dim,
-            nhead=4,
-            dim_feedforward=256,
-            dropout=0.2,
-            batch_first=True,
-            norm_first=True,
-        )
-        self.global_fc = nn.Linear(self.feat_dim, self.num_classes)
-        self.scn_weight_branch = nn.Sequential(
-            nn.Linear(self.feat_dim, 1),
-            nn.Sigmoid()
+        # 4. Global Branch: Capture overall face context
+        self.global_pool = nn.AdaptiveAvgPool2d(1)
+        self.global_fc = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(self.feat_dim, 128),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(128, self.num_classes)
         )
         
         self.gnn_layers = nn.ModuleList([
@@ -387,14 +330,14 @@ class MotifGraphModel(nn.Module):
         m = self.motif_module.motifs 
         C, M, N, D = m.shape
         m_flat = m.view(C, M, -1) 
-        m_flat = F.normalize(m_flat, p=2, dim=-1, eps=1e-6)
+        m_flat = F.normalize(m_flat, dim=-1)
         
         sim_intra = torch.matmul(m_flat, m_flat.transpose(1, 2))
         eye = torch.eye(M, device=m.device).unsqueeze(0)
         l_intra = (sim_intra * (1 - eye)).mean()
         
         class_centers = m_flat.mean(dim=1) 
-        class_centers = F.normalize(class_centers, p=2, dim=-1, eps=1e-6)
+        class_centers = F.normalize(class_centers, dim=-1)
         sim_inter = torch.matmul(class_centers, class_centers.transpose(0, 1))
         eye_c = torch.eye(C, device=m.device)
         l_inter = (sim_inter * (1 - eye_c)).mean()
@@ -408,7 +351,7 @@ class MotifGraphModel(nn.Module):
         for i in range(1, H-1):
             for j in range(1, W-1):
                 center_indices.append(i * W + j)
-        center_indices = torch.tensor(center_indices, device=feat_map.device, dtype=torch.long)
+        center_indices = torch.tensor(center_indices, device=feat_map.device)
         num_cands = len(center_indices)
         
         center_feats = node_feats[:, center_indices, :] 
@@ -457,10 +400,7 @@ class MotifGraphModel(nn.Module):
         _, _, H, W = feat_map.shape
         
         # 4. Global Branch prediction
-        seq = feat_map.flatten(2).transpose(1, 2)
-        seq = self.global_encoder(seq)
-        pooled_feat = seq.mean(dim=1)
-        logits_global = self.global_fc(pooled_feat)
+        logits_global = self.global_fc(self.global_pool(feat_map))
         
         # Motif Branch
         nodes_with_coords, adj = self._get_global_graph(feat_map)
@@ -475,11 +415,6 @@ class MotifGraphModel(nn.Module):
             
         candidates, cand_adjs, centers = self._extract_deformable_subgraphs(feat_map, H, W, node_feats)
         num_cands = candidates.shape[1]
-        if num_cands == 0:
-            self._latest_scores = None
-            self._latest_top_k = None
-            self._latest_metadata = None
-            return logits_global
         
         # Advanced Motif Module Forward
         # 1. Prepare candidate subgraphs: (B*num_cands, 9, Dim)
@@ -501,21 +436,19 @@ class MotifGraphModel(nn.Module):
         # Point 5: Candidate-level attention using learnable query
         cand_scores = (logits_cand * self.cand_query).sum(dim=-1) # (B, num_cands)
         cand_tau = 0.3
-        attn_weights = F.softmax(cand_scores.float() / cand_tau, dim=1).to(cand_scores.dtype).unsqueeze(-1) 
+        attn_weights = F.softmax(cand_scores / cand_tau, dim=1).unsqueeze(-1) 
         
         logits_motif = torch.sum(logits_cand * attn_weights, dim=1)
         logits_motif = logits_motif * self.logit_scale 
         
         # Final combined logits
         logits = logits_motif + torch.sigmoid(self.alpha) * logits_global
-        logits = torch.nan_to_num(logits)
         
         # Point 2: Reshape for MotifConsistencyLoss (B, num_cands, num_classes * motifs_per_class)
         self._latest_scores = motif_scores_cand.view(B, num_cands, -1)
         # Relevance for Top-K visualization
         cand_relevance = cand_scores
-        k = min(self.top_k, num_cands)
-        _, top_k_idx = torch.topk(cand_relevance, k=k, dim=1)
+        _, top_k_idx = torch.topk(cand_relevance, k=self.top_k, dim=1)
         self._latest_top_k = top_k_idx
         self._latest_metadata = metadata
         
@@ -533,7 +466,7 @@ class MotifGraphModel(nn.Module):
         nodes = feat_map.permute(0, 2, 3, 1).reshape(B, N, C)
         nodes_with_coords = torch.cat([nodes, coords], dim=-1)
         
-        nodes_norm = F.normalize(nodes, p=2, dim=-1, eps=1e-6)
+        nodes_norm = F.normalize(nodes, dim=-1)
         sim = torch.matmul(nodes_norm, nodes_norm.transpose(1, 2))
         
         k_neighbors = 4 
