@@ -461,63 +461,53 @@ class Trainer:
                         self.model.pos_supervision_weight = float(getattr(self, '_runtime_pos_sup_lambda', self.landmark_pos_sup_lambda))
                 except Exception:
                     pass
-                # Pass labels to forward for internal loss calculation
-                if hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
-                    outputs = self.model(images, targets=labels)
-                else:
-                    outputs = self.model(images)
-                
-                logits = self._extract_logits(outputs)
-                cls_loss = self.criterion(logits, labels)
-                aux_losses = self._extract_aux_losses(outputs)
-                div_loss = aux_losses.get("landmark_diversity", torch.tensor(0.0, device=self.device))
-                # entropy auxiliary is present but not used as an explicit regularizer
-                entropy_loss = aux_losses.get(
-                    "landmark_entropy",
-                    aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
-                )
-                overlap_loss = aux_losses.get("landmark_overlap", torch.tensor(0.0, device=self.device))
-                edge_align_loss = aux_losses.get("landmark_edge_align", torch.tensor(0.0, device=self.device))
-                edge_consistency_loss = aux_losses.get("landmark_edge_consistency", torch.tensor(0.0, device=self.device))
-                edge_conv_reg = aux_losses.get("landmark_edge_conv_reg", torch.tensor(0.0, device=self.device))
-                edge_tv = aux_losses.get("landmark_edge_tv", torch.tensor(0.0, device=self.device))
-                # Use runtime lambdas if scheduled by fit(), otherwise fall back to configured defaults
-                div_lambda = getattr(self, '_runtime_diversity_lambda', self.landmark_diversity_lambda)
-                edge_consistency_lambda = getattr(self, '_runtime_edge_consistency_lambda', self.landmark_edge_consistency_lambda)
-                # convert to tensors to avoid type-mixing errors
-                div_lambda_t = torch.tensor(float(div_lambda), device=self.device)
-                edge_consistency_lambda_t = torch.tensor(float(edge_consistency_lambda), device=self.device)
-                entropy_lambda_t = torch.tensor(float(getattr(self, '_runtime_entropy_lambda', self.landmark_entropy_lambda)), device=self.device)
-                overlap_lambda_t = torch.tensor(float(getattr(self, '_runtime_overlap_lambda', self.landmark_overlap_lambda)), device=self.device)
-                loss = (
-                    cls_loss
-                    + (div_lambda_t * div_loss)
-                    + (edge_consistency_lambda_t * edge_consistency_loss)
-                )
-                if not torch.isfinite(loss):
-                    aux_check = {k: float(v.detach().cpu()) for k, v in aux_losses.items() if torch.is_tensor(v)}
-                    raise RuntimeError(
-                        "validate: loss is NaN/Inf | "
-                        f"cls_loss={float(cls_loss.detach().cpu())} "
-                        f"div_loss={float(div_loss.detach().cpu())} "
-                        f"edge_consistency_loss={float(edge_consistency_loss.detach().cpu())} "
-                        f"overlap_loss={float(overlap_loss.detach().cpu())} "
-                        f"entropy_loss={float(entropy_loss.detach().cpu())} "
-                        f"aux={aux_check}"
+                with torch.amp.autocast("cuda", enabled=torch.cuda.is_available()):
+                    # Pass labels to forward for internal loss calculation
+                    if hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
+                        outputs = self.model(images, targets=labels)
+                    else:
+                        outputs = self.model(images)
+                    
+                    logits = self._extract_logits(outputs)
+                    cls_loss = self.criterion(logits, labels)
+                    aux_losses = self._extract_aux_losses(outputs)
+                    div_loss = aux_losses.get("landmark_diversity", torch.tensor(0.0, device=self.device))
+                    # entropy auxiliary is present but not used as an explicit regularizer
+                    entropy_loss = aux_losses.get(
+                        "landmark_entropy",
+                        aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
                     )
-                
-                # Aggregate ALL other auxiliary losses automatically
-                for k, v in aux_losses.items():
-                    if k not in ["landmark_diversity", "landmark_entropy", "landmark_sparsity", "landmark_overlap"]:
-                        w = self.config.get('training', {}).get(f'{k}_weight', 0.1)
-                        loss = loss + float(w) * v
-                try:
-                    if overlap_lambda_t.item() > 0.0:
-                        loss = loss + (overlap_lambda_t * overlap_loss)
-                    if entropy_lambda_t.item() > 0.0:
-                        loss = loss + (entropy_lambda_t * entropy_loss)
-                except Exception:
-                    pass
+                    overlap_loss = aux_losses.get("landmark_overlap", torch.tensor(0.0, device=self.device))
+                    edge_align_loss = aux_losses.get("landmark_edge_align", torch.tensor(0.0, device=self.device))
+                    edge_consistency_loss = aux_losses.get("landmark_edge_consistency", torch.tensor(0.0, device=self.device))
+                    edge_conv_reg = aux_losses.get("landmark_edge_conv_reg", torch.tensor(0.0, device=self.device))
+                    edge_tv = aux_losses.get("landmark_edge_tv", torch.tensor(0.0, device=self.device))
+                    # Use runtime lambdas if scheduled by fit(), otherwise fall back to configured defaults
+                    div_lambda = getattr(self, '_runtime_diversity_lambda', self.landmark_diversity_lambda)
+                    edge_consistency_lambda = getattr(self, '_runtime_edge_consistency_lambda', self.landmark_edge_consistency_lambda)
+                    # convert to tensors to avoid type-mixing errors
+                    div_lambda_t = torch.tensor(float(div_lambda), device=self.device)
+                    edge_consistency_lambda_t = torch.tensor(float(edge_consistency_lambda), device=self.device)
+                    entropy_lambda_t = torch.tensor(float(getattr(self, '_runtime_entropy_lambda', self.landmark_entropy_lambda)), device=self.device)
+                    overlap_lambda_t = torch.tensor(float(getattr(self, '_runtime_overlap_lambda', self.landmark_overlap_lambda)), device=self.device)
+                    loss = (
+                        cls_loss
+                        + (div_lambda_t * div_loss)
+                        + (edge_consistency_lambda_t * edge_consistency_loss)
+                    )
+                    
+                    # Aggregate ALL other auxiliary losses automatically
+                    for k, v in aux_losses.items():
+                        if k not in ["landmark_diversity", "landmark_entropy", "landmark_sparsity", "landmark_overlap"]:
+                            w = self.config.get('training', {}).get(f'{k}_weight', 0.1)
+                            loss = loss + float(w) * v
+                    try:
+                        if overlap_lambda_t.item() > 0.0:
+                            loss = loss + (overlap_lambda_t * overlap_loss)
+                        if entropy_lambda_t.item() > 0.0:
+                            loss = loss + (entropy_lambda_t * entropy_loss)
+                    except Exception:
+                        pass
                 running_loss += loss.item() * images.size(0)
 
                 _, preds = torch.max(logits, dim=1)

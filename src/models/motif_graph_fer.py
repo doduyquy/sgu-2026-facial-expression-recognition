@@ -23,7 +23,7 @@ class CoordinateAttention(nn.Module):
         super().__init__()
         mid_channels = max(8, channels // reduction)
         self.conv1 = nn.Conv2d(channels, mid_channels, kernel_size=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(mid_channels)
+        self.bn1 = nn.GroupNorm(1, mid_channels)
         self.act = nn.ReLU(inplace=True)
         self.conv_h = nn.Conv2d(mid_channels, channels, kernel_size=1, bias=False)
         self.conv_w = nn.Conv2d(mid_channels, channels, kernel_size=1, bias=False)
@@ -78,7 +78,7 @@ class MotifBackbone(nn.Module):
 
         self.stem = nn.Sequential(
             nn.Conv2d(in_channels, base_dim, kernel_size=3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(base_dim),
+            nn.GroupNorm(1, base_dim),
             nn.ReLU(inplace=True),
         )
 
@@ -89,7 +89,7 @@ class MotifBackbone(nn.Module):
         self.ca1 = CoordinateAttention(base_dim)
         self.down1 = nn.Sequential(
             nn.Conv2d(base_dim, base_dim * 2, kernel_size=2, stride=2),
-            nn.BatchNorm2d(base_dim * 2),
+            nn.GroupNorm(1, base_dim * 2),
             nn.ReLU(inplace=True),
         )
 
@@ -100,7 +100,7 @@ class MotifBackbone(nn.Module):
         self.ca2 = CoordinateAttention(base_dim * 2)
         self.down2 = nn.Sequential(
             nn.Conv2d(base_dim * 2, base_dim * 4, kernel_size=2, stride=2),
-            nn.BatchNorm2d(base_dim * 4),
+            nn.GroupNorm(1, base_dim * 4),
             nn.ReLU(inplace=True),
         )
 
@@ -111,7 +111,7 @@ class MotifBackbone(nn.Module):
         self.ca3 = CoordinateAttention(base_dim * 4)
         self.down3 = nn.Sequential(
             nn.Conv2d(base_dim * 4, feat_dim, kernel_size=2, stride=2),
-            nn.BatchNorm2d(feat_dim),
+            nn.GroupNorm(1, feat_dim),
             nn.ReLU(inplace=True),
         )
 
@@ -123,11 +123,11 @@ class MotifBackbone(nn.Module):
 
         self.proj_s1 = nn.Sequential(
             nn.Conv2d(base_dim, base_dim * 4, kernel_size=1, bias=False),
-            nn.BatchNorm2d(base_dim * 4),
+            nn.GroupNorm(1, base_dim * 4),
         )
         self.proj_s2 = nn.Sequential(
             nn.Conv2d(base_dim * 2, feat_dim, kernel_size=1, bias=False),
-            nn.BatchNorm2d(feat_dim),
+            nn.GroupNorm(1, feat_dim),
         )
 
     def forward(self, x):
@@ -333,15 +333,15 @@ class MotifGraphModel(nn.Module):
         
         self.backbone = MotifBackbone(feat_dim=self.feat_dim)
         
-        # 4. Global Branch: Capture overall face context
-        self.global_pool = nn.AdaptiveAvgPool2d(1)
-        self.global_fc = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(self.feat_dim, 128),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(128, self.num_classes)
+        self.global_encoder = nn.TransformerEncoderLayer(
+            d_model=self.feat_dim,
+            nhead=4,
+            dim_feedforward=256,
+            dropout=0.2,
+            batch_first=True,
+            norm_first=True,
         )
+        self.global_fc = nn.Linear(self.feat_dim, self.num_classes)
         self.scn_weight_branch = nn.Sequential(
             nn.Linear(self.feat_dim, 1),
             nn.Sigmoid()
@@ -457,7 +457,10 @@ class MotifGraphModel(nn.Module):
         _, _, H, W = feat_map.shape
         
         # 4. Global Branch prediction
-        logits_global = self.global_fc(self.global_pool(feat_map))
+        seq = feat_map.flatten(2).transpose(1, 2)
+        seq = self.global_encoder(seq)
+        pooled_feat = seq.mean(dim=1)
+        logits_global = self.global_fc(pooled_feat)
         
         # Motif Branch
         nodes_with_coords, adj = self._get_global_graph(feat_map)
