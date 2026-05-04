@@ -77,7 +77,7 @@ class MotifBackbone(nn.Module):
         base_dim = 64
 
         self.stem = nn.Sequential(
-            nn.Conv2d(in_channels, base_dim, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.Conv2d(in_channels, base_dim, kernel_size=3, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(base_dim),
             nn.ReLU(inplace=True),
         )
@@ -340,6 +340,10 @@ class MotifGraphModel(nn.Module):
             nn.Dropout(0.3),
             nn.Linear(128, self.num_classes)
         )
+        self.scn_weight_branch = nn.Sequential(
+            nn.Linear(self.feat_dim, 1),
+            nn.Sigmoid()
+        )
         
         self.gnn_layers = nn.ModuleList([
             GraphAttentionLayer(self.feat_dim, self.feat_dim),
@@ -499,7 +503,8 @@ class MotifGraphModel(nn.Module):
         self._latest_scores = motif_scores_cand.view(B, num_cands, -1)
         # Relevance for Top-K visualization
         cand_relevance = cand_scores
-        _, top_k_idx = torch.topk(cand_relevance, k=self.top_k, dim=1)
+        k = min(self.top_k, num_cands)
+        _, top_k_idx = torch.topk(cand_relevance, k=k, dim=1)
         self._latest_top_k = top_k_idx
         self._latest_metadata = metadata
         
