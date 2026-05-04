@@ -468,27 +468,19 @@ class Trainer:
                     outputs = self.model(images)
                 
                 logits = self._extract_logits(outputs)
-                logits = torch.nan_to_num(logits)
                 cls_loss = self.criterion(logits, labels)
                 aux_losses = self._extract_aux_losses(outputs)
                 div_loss = aux_losses.get("landmark_diversity", torch.tensor(0.0, device=self.device))
-                div_loss = torch.nan_to_num(div_loss)
                 # entropy auxiliary is present but not used as an explicit regularizer
                 entropy_loss = aux_losses.get(
                     "landmark_entropy",
                     aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
                 )
-                entropy_loss = torch.nan_to_num(entropy_loss)
                 overlap_loss = aux_losses.get("landmark_overlap", torch.tensor(0.0, device=self.device))
-                overlap_loss = torch.nan_to_num(overlap_loss)
                 edge_align_loss = aux_losses.get("landmark_edge_align", torch.tensor(0.0, device=self.device))
-                edge_align_loss = torch.nan_to_num(edge_align_loss)
                 edge_consistency_loss = aux_losses.get("landmark_edge_consistency", torch.tensor(0.0, device=self.device))
-                edge_consistency_loss = torch.nan_to_num(edge_consistency_loss)
                 edge_conv_reg = aux_losses.get("landmark_edge_conv_reg", torch.tensor(0.0, device=self.device))
-                edge_conv_reg = torch.nan_to_num(edge_conv_reg)
                 edge_tv = aux_losses.get("landmark_edge_tv", torch.tensor(0.0, device=self.device))
-                edge_tv = torch.nan_to_num(edge_tv)
                 # Use runtime lambdas if scheduled by fit(), otherwise fall back to configured defaults
                 div_lambda = getattr(self, '_runtime_diversity_lambda', self.landmark_diversity_lambda)
                 edge_consistency_lambda = getattr(self, '_runtime_edge_consistency_lambda', self.landmark_edge_consistency_lambda)
@@ -503,7 +495,16 @@ class Trainer:
                     + (edge_consistency_lambda_t * edge_consistency_loss)
                 )
                 if not torch.isfinite(loss):
-                    raise RuntimeError("validate: loss is NaN/Inf")
+                    aux_check = {k: float(v.detach().cpu()) for k, v in aux_losses.items() if torch.is_tensor(v)}
+                    raise RuntimeError(
+                        "validate: loss is NaN/Inf | "
+                        f"cls_loss={float(cls_loss.detach().cpu())} "
+                        f"div_loss={float(div_loss.detach().cpu())} "
+                        f"edge_consistency_loss={float(edge_consistency_loss.detach().cpu())} "
+                        f"overlap_loss={float(overlap_loss.detach().cpu())} "
+                        f"entropy_loss={float(entropy_loss.detach().cpu())} "
+                        f"aux={aux_check}"
+                    )
                 
                 # Aggregate ALL other auxiliary losses automatically
                 for k, v in aux_losses.items():
@@ -517,7 +518,6 @@ class Trainer:
                         loss = loss + (entropy_lambda_t * entropy_loss)
                 except Exception:
                     pass
-                loss = torch.nan_to_num(loss)
                 running_loss += loss.item() * images.size(0)
 
                 _, preds = torch.max(logits, dim=1)
