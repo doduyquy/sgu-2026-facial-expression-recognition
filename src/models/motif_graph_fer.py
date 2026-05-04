@@ -188,6 +188,7 @@ class GraphAttentionLayer(nn.Module):
         # Apply adjacency mask (binary or weighted)
         if adj is not None:
             scores = scores.masked_fill(adj.unsqueeze(1) == 0, -1e4)
+        scores = torch.nan_to_num(scores, nan=-1e4, posinf=1e4, neginf=-1e4)
             
         attn = F.softmax(scores, dim=-1)
         attn = self.attn_drop(attn)  # Dropout on attention scores
@@ -197,6 +198,7 @@ class GraphAttentionLayer(nn.Module):
         out = self.out_lin(out)
         out = out + x  # Residual connection to reduce over-smoothing
         out = self.norm(out)  # Normalize output features
+        out = torch.nan_to_num(out)
         return F.relu(out)
 
 class GraphMotifModule(nn.Module):
@@ -500,6 +502,7 @@ class MotifGraphModel(nn.Module):
         
         # Final combined logits
         logits = logits_motif + torch.sigmoid(self.alpha) * logits_global
+        logits = torch.nan_to_num(logits)
         
         # Point 2: Reshape for MotifConsistencyLoss (B, num_cands, num_classes * motifs_per_class)
         self._latest_scores = motif_scores_cand.view(B, num_cands, -1)
