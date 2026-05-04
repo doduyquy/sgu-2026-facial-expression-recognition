@@ -3,14 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
-try:
-    from .CBAM import CBAM
-except ImportError:
-    import sys
-    import os
-    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-    from models.CBAM import CBAM
-
 class DropPath(nn.Module):
     def __init__(self, drop_prob=0.0):
         super().__init__()
@@ -24,6 +16,31 @@ class DropPath(nn.Module):
         random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
         random_tensor.floor_()
         return x.div(keep_prob) * random_tensor
+
+
+class CoordinateAttention(nn.Module):
+    def __init__(self, channels, reduction=16):
+        super().__init__()
+        mid_channels = max(8, channels // reduction)
+        self.conv1 = nn.Conv2d(channels, mid_channels, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(mid_channels)
+        self.act = nn.ReLU(inplace=True)
+        self.conv_h = nn.Conv2d(mid_channels, channels, kernel_size=1, bias=False)
+        self.conv_w = nn.Conv2d(mid_channels, channels, kernel_size=1, bias=False)
+
+    def forward(self, x):
+        b, c, h, w = x.shape
+        x_h = F.adaptive_avg_pool2d(x, (h, 1))
+        x_w = F.adaptive_avg_pool2d(x, (1, w)).transpose(2, 3)
+        y = torch.cat([x_h, x_w], dim=2)
+        y = self.conv1(y)
+        y = self.bn1(y)
+        y = self.act(y)
+        y_h, y_w = torch.split(y, [h, w], dim=2)
+        y_w = y_w.transpose(2, 3)
+        a_h = torch.sigmoid(self.conv_h(y_h))
+        a_w = torch.sigmoid(self.conv_w(y_w))
+        return x * a_h * a_w
 
 
 class ModernMotifBlock(nn.Module):
@@ -53,7 +70,7 @@ class ModernMotifBlock(nn.Module):
 
 class MotifBackbone(nn.Module):
     """
-    ConvNeXt-inspired backbone with CBAM between stages.
+    ConvNeXt-inspired backbone with Coordinate Attention and cross-scale fusion.
     """
     def __init__(self, in_channels=1, feat_dim=128, kernel_size=7, drop_path=0.0, drop_out=0.0):
         super().__init__()
@@ -69,7 +86,7 @@ class MotifBackbone(nn.Module):
             ModernMotifBlock(base_dim, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
             ModernMotifBlock(base_dim, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
         )
-        self.cbam1 = CBAM(base_dim)
+        self.ca1 = CoordinateAttention(base_dim)
         self.down1 = nn.Sequential(
             nn.Conv2d(base_dim, base_dim * 2, kernel_size=2, stride=2),
             nn.BatchNorm2d(base_dim * 2),
@@ -80,7 +97,7 @@ class MotifBackbone(nn.Module):
             ModernMotifBlock(base_dim * 2, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
             ModernMotifBlock(base_dim * 2, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
         )
-        self.cbam2 = CBAM(base_dim * 2)
+        self.ca2 = CoordinateAttention(base_dim * 2)
         self.down2 = nn.Sequential(
             nn.Conv2d(base_dim * 2, base_dim * 4, kernel_size=2, stride=2),
             nn.BatchNorm2d(base_dim * 4),
@@ -91,7 +108,7 @@ class MotifBackbone(nn.Module):
             ModernMotifBlock(base_dim * 4, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
             ModernMotifBlock(base_dim * 4, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
         )
-        self.cbam3 = CBAM(base_dim * 4)
+        self.ca3 = CoordinateAttention(base_dim * 4)
         self.down3 = nn.Sequential(
             nn.Conv2d(base_dim * 4, feat_dim, kernel_size=2, stride=2),
             nn.BatchNorm2d(feat_dim),
@@ -102,25 +119,43 @@ class MotifBackbone(nn.Module):
             ModernMotifBlock(feat_dim, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
             ModernMotifBlock(feat_dim, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
         )
-        self.cbam4 = CBAM(feat_dim)
+        self.ca4 = CoordinateAttention(feat_dim)
+
+        self.proj_s1 = nn.Sequential(
+            nn.Conv2d(base_dim, base_dim * 4, kernel_size=1, bias=False),
+            nn.BatchNorm2d(base_dim * 4),
+        )
+        self.proj_s2 = nn.Sequential(
+            nn.Conv2d(base_dim * 2, feat_dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(feat_dim),
+        )
 
     def forward(self, x):
         x = self.stem(x)
-        x = self.stage1(x)
-        x = self.cbam1(x)
-        x = self.down1(x)
 
-        x = self.stage2(x)
-        x = self.cbam2(x)
-        x = self.down2(x)
+        s1 = self.stage1(x)
+        s1 = self.ca1(s1)
+        x = self.down1(s1)
 
-        x = self.stage3(x)
-        x = self.cbam3(x)
-        x = self.down3(x)
+        s2 = self.stage2(x)
+        s2 = self.ca2(s2)
+        x = self.down2(s2)
 
-        x = self.stage4(x)
-        x = self.cbam4(x)
-        return x
+        s3 = self.stage3(x)
+        s3 = self.ca3(s3)
+        s1_proj = self.proj_s1(s1)
+        if s1_proj.shape[-2:] != s3.shape[-2:]:
+            s1_proj = F.interpolate(s1_proj, size=s3.shape[-2:], mode="bilinear", align_corners=False)
+        s3 = s3 + s1_proj
+        x = self.down3(s3)
+
+        s4 = self.stage4(x)
+        s4 = self.ca4(s4)
+        s2_proj = self.proj_s2(s2)
+        if s2_proj.shape[-2:] != s4.shape[-2:]:
+            s2_proj = F.interpolate(s2_proj, size=s4.shape[-2:], mode="bilinear", align_corners=False)
+        s4 = s4 + s2_proj
+        return s4
 
 class GraphAttentionLayer(nn.Module):
     """
@@ -296,17 +331,14 @@ class MotifGraphModel(nn.Module):
         
         self.backbone = MotifBackbone(feat_dim=self.feat_dim)
         
-        self.global_encoder = nn.TransformerEncoderLayer(
-            d_model=self.feat_dim,
-            nhead=4,
-            dim_feedforward=256,
-            dropout=0.2,
-            batch_first=True,
-        )
-        self.global_fc = nn.Linear(self.feat_dim, self.num_classes)
-        self.scn_weight_branch = nn.Sequential(
-            nn.Linear(self.feat_dim, 1),
-            nn.Sigmoid()
+        # 4. Global Branch: Capture overall face context
+        self.global_pool = nn.AdaptiveAvgPool2d(1)
+        self.global_fc = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(self.feat_dim, 128),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(128, self.num_classes)
         )
         
         self.gnn_layers = nn.ModuleList([
@@ -370,7 +402,7 @@ class MotifGraphModel(nn.Module):
         for i in range(1, H-1):
             for j in range(1, W-1):
                 center_indices.append(i * W + j)
-        center_indices = torch.tensor(center_indices, device=feat_map.device, dtype=torch.long)
+        center_indices = torch.tensor(center_indices, device=feat_map.device)
         num_cands = len(center_indices)
         
         center_feats = node_feats[:, center_indices, :] 
@@ -419,15 +451,7 @@ class MotifGraphModel(nn.Module):
         _, _, H, W = feat_map.shape
         
         # 4. Global Branch prediction
-        seq = feat_map.flatten(2).transpose(1, 2)
-        seq = self.global_encoder(seq)
-        pooled_feat = seq.mean(dim=1)
-        logits_global = self.global_fc(pooled_feat)
-        if hasattr(self, "scn_weight_branch"):
-            try:
-                self._latest_scn_weights = self.scn_weight_branch(pooled_feat)
-            except Exception:
-                pass
+        logits_global = self.global_fc(self.global_pool(feat_map))
         
         # Motif Branch
         nodes_with_coords, adj = self._get_global_graph(feat_map)
@@ -442,8 +466,6 @@ class MotifGraphModel(nn.Module):
             
         candidates, cand_adjs, centers = self._extract_deformable_subgraphs(feat_map, H, W, node_feats)
         num_cands = candidates.shape[1]
-        if num_cands == 0:
-            return logits_global
         
         # Advanced Motif Module Forward
         # 1. Prepare candidate subgraphs: (B*num_cands, 9, Dim)
