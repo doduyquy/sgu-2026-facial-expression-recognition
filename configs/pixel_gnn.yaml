@@ -12,7 +12,7 @@ model:
   # 2304 pixel nodes -> motif_vector [B, 2304, 17]
   # -> soft assignment -> K motif/semantic nodes -> region GNN -> classifier
   use_motif_hierarchy: true
-  num_motif_nodes: 6
+  num_motif_nodes: 12
   region_gnn_layers: 2
   region_tau: 0.2
   pool_loss_weight: 0.01
