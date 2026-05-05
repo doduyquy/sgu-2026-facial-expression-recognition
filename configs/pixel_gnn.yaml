@@ -14,6 +14,7 @@ model:
 data:
   image_size: 48
   channels: 1
+  # Global batch size. With DDP 2 GPU, each GPU receives 8 samples.
   batch_size: 16
 
 training:
@@ -28,6 +29,13 @@ training:
 
 env:
   platform: "kaggle"
+
+ddp:
+  # Use torchrun --nproc_per_node=2. train.py will split data with DistributedSampler.
+  batch_size_is_global: true
+  find_unused_parameters: false
+  broadcast_buffers: true
+  sync_batchnorm: false
 
 kaggle:
   data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"

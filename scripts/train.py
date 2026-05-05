@@ -42,7 +42,10 @@ def setup_distributed():
         )
 
     torch.cuda.set_device(local_rank)
-    dist.init_process_group(backend="nccl", timeout=timedelta(minutes=30))
+    backend = "nccl" if dist.is_nccl_available() else "gloo"
+    dist.init_process_group(backend=backend, timeout=timedelta(minutes=30))
+    if rank == 0:
+        print(f"--- DDP backend: {backend}")
     return True, rank, world_size, local_rank
 
 
