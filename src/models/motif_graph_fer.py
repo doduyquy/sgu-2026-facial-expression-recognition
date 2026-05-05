@@ -113,6 +113,32 @@ class GraphAttentionLayer(nn.Module):
         out = out.transpose(1, 2).contiguous().view(B, N, -1)
         return F.relu(self.out_lin(out))
 
+class ArcFaceLayer(nn.Module):
+    # UPDATE: ArcFace / cosine margin classifier for stronger inter-class separation
+    def __init__(self, in_features, out_features, margin=0.35, scale=30.0):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.margin = float(margin)
+        self.scale = float(scale)
+        self.weight = nn.Parameter(torch.randn(out_features, in_features))
+        nn.init.xavier_uniform_(self.weight)
+        self.cos_m = math.cos(self.margin)
+        self.sin_m = math.sin(self.margin)
+
+    def forward(self, x, labels=None):
+        x_norm = F.normalize(x, dim=1)
+        w_norm = F.normalize(self.weight, dim=1)
+        cos_theta = F.linear(x_norm, w_norm).clamp(-1.0 + 1e-7, 1.0 - 1e-7)
+        if labels is None:
+            return cos_theta * self.scale
+        sin_theta = torch.sqrt(1.0 - cos_theta.pow(2))
+        cos_theta_m = (cos_theta * self.cos_m) - (sin_theta * self.sin_m)
+        one_hot = torch.zeros_like(cos_theta)
+        one_hot.scatter_(1, labels.view(-1, 1), 1.0)
+        output = (one_hot * cos_theta_m) + ((1.0 - one_hot) * cos_theta)
+        return output * self.scale
+
 class GraphMotifModule(nn.Module):
     """
     Research-grade Structured Graph Matching Module.
@@ -252,8 +278,8 @@ class MotifGraphModel(nn.Module):
             nn.Linear(self.feat_dim, 128),
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(128, self.num_classes)
         )
+        self.global_arcface = ArcFaceLayer(128, self.num_classes)  # UPDATE: ArcFace classifier
         
         self.gnn_layers = nn.ModuleList([
             GraphAttentionLayer(self.feat_dim, self.feat_dim),
@@ -368,7 +394,9 @@ class MotifGraphModel(nn.Module):
         _, _, H, W = feat_map.shape
         
         # 4. Global Branch prediction
-        logits_global = self.global_fc(self.global_pool(feat_map))
+        global_feat = self.global_fc(self.global_pool(feat_map))
+        # UPDATE: ArcFace uses targets during training, cosine logits for inference
+        logits_global = self.global_arcface(global_feat, targets)
         
         # Motif Branch
         nodes_with_coords, adj = self._get_global_graph(feat_map)

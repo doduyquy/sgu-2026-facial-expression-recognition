@@ -24,6 +24,28 @@ class Trainer:
                 self._base_criterion = self.criterion
             except Exception:
                 pass
+        # UPDATE: class weights for imbalanced FER (Fear/Disgust/Sad)
+        class_weights = None
+        try:
+            num_classes = int(config.get('model', {}).get('num_classes', 7)) if isinstance(config, dict) else 7
+            class_counts = torch.zeros(num_classes, dtype=torch.float32)
+            for _, labels in self.train_loader:
+                labels = labels.view(-1).to(torch.long)
+                class_counts += torch.bincount(labels, minlength=num_classes).float()
+            if class_counts.sum() > 0:
+                inv_freq = class_counts.sum() / (class_counts + 1e-6)
+                class_weights = (inv_freq / inv_freq.mean()).to(self.device)
+        except Exception:
+            class_weights = torch.tensor([1.0, 1.5, 1.7, 1.0, 1.0, 1.4, 1.0], device=self.device)
+        if class_weights is not None:
+            try:
+                self._base_criterion = torch.nn.CrossEntropyLoss(
+                    weight=class_weights,
+                    label_smoothing=ls,
+                )
+                self.criterion = self._base_criterion
+            except Exception:
+                pass
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.device = device
@@ -564,7 +586,7 @@ class Trainer:
                 # Phase 2 (20-70%): enable SCN and stronger landmark auxiliaries
                 self._runtime_diversity_lambda = 0.18
                 self._runtime_entropy_lambda = 0.004
-                self._runtime_overlap_lambda = 0.07
+                self._runtime_overlap_lambda = 0.25  # UPDATE: stronger overlap penalty
                 self._runtime_augment_lambda = 0.0
                 self._runtime_edge_consistency_lambda = 0.0
                 self._runtime_aux_cls_lambda = 0.1
