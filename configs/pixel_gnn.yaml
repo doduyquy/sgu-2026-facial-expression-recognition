@@ -8,6 +8,19 @@ model:
   hidden_dim: 128
   num_layers: 3
 
+  # Pixel motif hierarchy:
+  # 2304 pixel nodes -> motif_vector [B, 2304, 17]
+  # -> soft assignment -> K motif/semantic nodes -> region GNN -> classifier
+  use_motif_hierarchy: true
+  num_motif_nodes: 6
+  region_gnn_layers: 2
+  region_tau: 0.2
+  pool_loss_weight: 0.01
+  region_prior_strength: 1.0
+  region_prior_loss_weight: 0.05
+  region_balance_loss_weight: 0.1
+  motif_entropy_loss_weight: 1.0
+
   # Regularization
   dropout: 0.3
 
