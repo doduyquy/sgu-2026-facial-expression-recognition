@@ -14,6 +14,7 @@ class Trainer:
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.criterion = criterion
+        self.device = device
         # keep base criterion available for runtime switching (focal vs base)
         self._base_criterion = self.criterion
         # optionally enable label smoothing for CrossEntropy if configured
@@ -48,7 +49,6 @@ class Trainer:
                 pass
         self.optimizer = optimizer
         self.scheduler = scheduler
-        self.device = device
         self.epochs = config['training'].get('epochs', 100)
         self.patience = config['training'].get('patience', 10)
         self.model_name = config['model'].get('name', 'simple_cnn')
