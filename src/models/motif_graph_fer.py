@@ -2,203 +2,79 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from facenet_pytorch import InceptionResnetV1
 
-class DropPath(nn.Module):
-    def __init__(self, drop_prob=0.0):
-        super().__init__()
-        self.drop_prob = float(drop_prob)
-
-    def forward(self, x):
-        if self.drop_prob == 0.0 or not self.training:
-            return x
-        keep_prob = 1.0 - self.drop_prob
-        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
-        random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
-        random_tensor.floor_()
-        return x.div(keep_prob) * random_tensor
-
-
-class CoordinateAttention(nn.Module):
-    def __init__(self, channels, reduction=16):
-        super().__init__()
-        mid_channels = max(8, channels // reduction)
-        self.conv1 = nn.Conv2d(channels, mid_channels, kernel_size=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(mid_channels)
-        self.act = nn.ReLU(inplace=True)
-        self.conv_h = nn.Conv2d(mid_channels, channels, kernel_size=1, bias=False)
-        self.conv_w = nn.Conv2d(mid_channels, channels, kernel_size=1, bias=False)
-
-    def forward(self, x):
-        b, c, h, w = x.shape
-        x_h = F.adaptive_avg_pool2d(x, (h, 1))
-        x_w = F.adaptive_avg_pool2d(x, (1, w)).transpose(2, 3)
-        y = torch.cat([x_h, x_w], dim=2)
-        y = self.conv1(y)
-        y = self.bn1(y)
-        y = self.act(y)
-        y_h, y_w = torch.split(y, [h, w], dim=2)
-        y_w = y_w.transpose(2, 3)
-        a_h = torch.sigmoid(self.conv_h(y_h))
-        a_w = torch.sigmoid(self.conv_w(y_w))
-        return x * a_h * a_w
-
-
-class ModernMotifBlock(nn.Module):
-    def __init__(self, dim, kernel_size=7, drop_path=0.0, drop_out=0.0):
-        super().__init__()
-        self.dwconv = nn.Conv2d(dim, dim, kernel_size=kernel_size, padding=kernel_size // 2, groups=dim)
-        self.norm = nn.LayerNorm(dim)
-        self.pw1 = nn.Linear(dim, 4 * dim)
-        self.act = nn.GELU()
-        self.pw2 = nn.Linear(4 * dim, dim)
-        self.drop = nn.Dropout(drop_out) if drop_out > 0.0 else nn.Identity()
-        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-
-    def forward(self, x):
-        identity = x
-        x = self.dwconv(x)
-        x = x.permute(0, 2, 3, 1)
-        x = self.norm(x)
-        x = self.pw1(x)
-        x = self.act(x)
-        x = self.pw2(x)
-        x = self.drop(x)
-        x = x.permute(0, 3, 1, 2)
-        x = identity + self.drop_path(x)
-        return x
-
+try:
+    from .CBAM import CBAM
+except ImportError:
+    import sys
+    import os
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    from models.CBAM import CBAM
 
 class MotifBackbone(nn.Module):
     """
-    ConvNeXt-inspired backbone with Coordinate Attention and cross-scale fusion.
+    Advanced Backbone with Residual connections and CBAM.
     """
-    def __init__(self, in_channels=1, feat_dim=128, kernel_size=7, drop_path=0.0, drop_out=0.0):
+    def __init__(self, in_channels=1, feat_dim=128):
         super().__init__()
-        base_dim = 64
-
-        # VGGFace2 pretrained stem (InceptionResnetV1)
-        vgg = InceptionResnetV1(pretrained="vggface2").eval()
-        # Convert first conv to 1-channel by summing RGB weights
-        conv1 = vgg.conv2d_1a.conv
-        with torch.no_grad():
-            weight_rgb = conv1.weight
-            weight_gray = weight_rgb.sum(dim=1, keepdim=True)
-        conv1_1ch = nn.Conv2d(
-            1,
-            conv1.out_channels,
-            kernel_size=conv1.kernel_size,
-            stride=conv1.stride,
-            padding=conv1.padding,
-            dilation=conv1.dilation,
-            groups=conv1.groups,
-            bias=(conv1.bias is not None),
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(in_channels, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(2) # 24x24
         )
-        conv1_1ch.weight.data.copy_(weight_gray)
-        if conv1.bias is not None:
-            conv1_1ch.bias.data.copy_(conv1.bias.data)
-        vgg.conv2d_1a.conv = conv1_1ch
-
-        # Stem up to repeat_1 (output channels = 256)
-        self.vgg_stem = nn.Sequential(
-            vgg.conv2d_1a,
-            vgg.conv2d_2a,
-            vgg.conv2d_2b,
-            vgg.maxpool_3a,
-            vgg.conv2d_3b,
-            vgg.conv2d_4a,
-            vgg.maxpool_5a,
-            vgg.repeat_1,
+        
+        # Residual Block 1
+        self.res1 = nn.Sequential(
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64)
         )
-        for p in self.vgg_stem.parameters():
-            p.requires_grad = False
-
-        self.stem_proj = nn.Sequential(
-            nn.Conv2d(256, base_dim, kernel_size=1, bias=False),
-            nn.BatchNorm2d(base_dim),
-            nn.ReLU(inplace=True),
-        )
-
-        self.stage1 = nn.Sequential(
-            ModernMotifBlock(base_dim, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
-            ModernMotifBlock(base_dim, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
-        )
-        self.ca1 = CoordinateAttention(base_dim)
+        self.cbam1 = CBAM(64)
+        
         self.down1 = nn.Sequential(
-            nn.Conv2d(base_dim, base_dim * 2, kernel_size=2, stride=2),
-            nn.BatchNorm2d(base_dim * 2),
-            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1), # 12x12
+            nn.BatchNorm2d(128),
+            nn.ReLU()
         )
-
-        self.stage2 = nn.Sequential(
-            ModernMotifBlock(base_dim * 2, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
-            ModernMotifBlock(base_dim * 2, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
+        
+        # Residual Block 2
+        self.res2 = nn.Sequential(
+            nn.Conv2d(128, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.Conv2d(128, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128)
         )
-        self.ca2 = CoordinateAttention(base_dim * 2)
+        self.cbam2 = CBAM(128)
+        
         self.down2 = nn.Sequential(
-            nn.Conv2d(base_dim * 2, base_dim * 4, kernel_size=2, stride=2),
-            nn.BatchNorm2d(base_dim * 4),
-            nn.ReLU(inplace=True),
-        )
-
-        self.stage3 = nn.Sequential(
-            ModernMotifBlock(base_dim * 4, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
-            ModernMotifBlock(base_dim * 4, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
-        )
-        self.ca3 = CoordinateAttention(base_dim * 4)
-        self.down3 = nn.Sequential(
-            nn.Conv2d(base_dim * 4, feat_dim, kernel_size=2, stride=2),
+            nn.Conv2d(128, feat_dim, kernel_size=3, stride=2, padding=1), # 6x6
             nn.BatchNorm2d(feat_dim),
-            nn.ReLU(inplace=True),
+            nn.ReLU()
         )
-
-        self.stage4 = nn.Sequential(
-            ModernMotifBlock(feat_dim, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
-            ModernMotifBlock(feat_dim, kernel_size=kernel_size, drop_path=drop_path, drop_out=drop_out),
-        )
-        self.ca4 = CoordinateAttention(feat_dim)
-
-        self.proj_s1 = nn.Sequential(
-            nn.Conv2d(base_dim, base_dim * 4, kernel_size=1, bias=False),
-            nn.BatchNorm2d(base_dim * 4),
-        )
-        self.proj_s2 = nn.Sequential(
-            nn.Conv2d(base_dim * 2, feat_dim, kernel_size=1, bias=False),
-            nn.BatchNorm2d(feat_dim),
-        )
+        self.final_cbam = CBAM(feat_dim)
 
     def forward(self, x):
-        _, _, H, W = x.shape
-        # Upsample to VGGFace2 input size, then project back to base_dim
-        x_up = F.interpolate(x, size=(160, 160), mode="bilinear", align_corners=False)
-        x = self.vgg_stem(x_up)
-        x = self.stem_proj(x)
-        # Restore original spatial size for downstream stages
-        x = F.interpolate(x, size=(H, W), mode="bilinear", align_corners=False)
-
-        s1 = self.stage1(x)
-        s1 = self.ca1(s1)
-        x = self.down1(s1)
-
-        s2 = self.stage2(x)
-        s2 = self.ca2(s2)
-        x = self.down2(s2)
-
-        s3 = self.stage3(x)
-        s3 = self.ca3(s3)
-        s1_proj = self.proj_s1(s1)
-        if s1_proj.shape[-2:] != s3.shape[-2:]:
-            s1_proj = F.interpolate(s1_proj, size=s3.shape[-2:], mode="bilinear", align_corners=False)
-        s3 = s3 + s1_proj
-        x = self.down3(s3)
-
-        s4 = self.stage4(x)
-        s4 = self.ca4(s4)
-        s2_proj = self.proj_s2(s2)
-        if s2_proj.shape[-2:] != s4.shape[-2:]:
-            s2_proj = F.interpolate(s2_proj, size=s4.shape[-2:], mode="bilinear", align_corners=False)
-        s4 = s4 + s2_proj
-        return s4
+        x = self.conv1(x)
+        
+        identity = x
+        x = self.res1(x)
+        x = self.cbam1(x)
+        x = F.relu(x + identity)
+        
+        x = self.down1(x)
+        
+        identity = x
+        x = self.res2(x)
+        x = self.cbam2(x)
+        x = F.relu(x + identity)
+        
+        x = self.down2(x)
+        x = self.final_cbam(x)
+        return x
 
 class GraphAttentionLayer(nn.Module):
     """
