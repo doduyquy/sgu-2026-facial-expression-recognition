@@ -416,7 +416,11 @@ class MotifGraphModel(nn.Module):
         self._latest_scores = motif_scores_cand.view(B, num_cands, -1)
         # Relevance for Top-K visualization
         cand_relevance = cand_scores
-        _, top_k_idx = torch.topk(cand_relevance, k=self.top_k, dim=1)
+        k = min(self.top_k, cand_relevance.size(1))
+        if k > 0:
+            _, top_k_idx = torch.topk(cand_relevance, k=k, dim=1)
+        else:
+            top_k_idx = torch.empty(B, 0, dtype=torch.long, device=cand_relevance.device)
         self._latest_top_k = top_k_idx
         self._latest_metadata = metadata
         
