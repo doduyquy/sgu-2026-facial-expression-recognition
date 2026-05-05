@@ -40,17 +40,16 @@ class MotifConsistencyLoss(nn.Module):
         # Average over top-k subgraphs
         loss_intra = -(log_sum_exp_pos - log_sum_exp_all).mean(dim=1) # (B,)
         
-        # 3. Inter-class Separation (Hard Negative Mining)
-        # We want Avg(pos_scores) > Max(neg_scores) + margin
+        # 3. Inter-class Separation (Contrastive/Triplet style)
+        # We want Avg(pos_scores) > Avg(neg_scores) + margin
         pos_avg = (selected_scores * mask).sum(dim=-1) / self.motifs_per_class
-        neg_scores = selected_scores.masked_fill(mask == 1, -1e9)
-        hard_neg_max = neg_scores.max(dim=-1).values
+        neg_avg = (selected_scores * (1 - mask)).sum(dim=-1) / (Total_Motifs - self.motifs_per_class)
         
         # Contrastive margin loss per sample
         margin = 0.2
-        loss_inter = F.relu(margin + hard_neg_max - pos_avg).mean(dim=1) # (B,)
+        loss_inter = F.relu(margin + neg_avg - pos_avg).mean(dim=1) # (B,)
         
-        total_loss = loss_intra + 1.5 * loss_inter
+        total_loss = loss_intra + loss_inter
         
         if reduction == 'mean':
             return total_loss.mean()

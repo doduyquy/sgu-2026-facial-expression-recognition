@@ -4,8 +4,9 @@ model:
   name: "motif_graph_fer"
   feat_dim: 128
   num_classes: 7
-  motifs_per_class: 8
-  top_k: 4
+  motifs_per_class: 16
+  top_k: 6
+  offset_amplitude: 0.35
   dropout: 0.3
 
 data:
@@ -28,4 +29,5 @@ training:
   use_scn: true
   scn_warmup_epochs: 10
   scn_alpha: 1.0
-  scn_rank_lambda: 0.3
+  scn_rank_lambda: 0.5
+  scn_margin: 0.6

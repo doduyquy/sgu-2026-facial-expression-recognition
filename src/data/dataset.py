@@ -1,4 +1,3 @@
-
 from PIL.Image import fromarray
 import os
 import pandas as pd

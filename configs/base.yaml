@@ -25,10 +25,8 @@ training:
   patience: 20
   weight_decay: 0.0001
   loss: 'cross_entropy'
-  optimizer: "sgd"        # adam | sgd(*)
-  lr: 0.01
-  gamma: 0.9              # SGD momentum
-  nesterov: true
+  optimizer: "adam"       # adam(*) | sgd 
+  lr: 0.001
   scheduler: "reduce_lr_on_plateau"  # none | step | cosine | reduce_lr_on_plateau (*)
 
 

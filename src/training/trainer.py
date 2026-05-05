@@ -68,10 +68,10 @@ class Trainer:
         self.scn_warmup_epochs = int(config['training'].get('scn_warmup_epochs', 0))
         self.scn_alpha = float(config['training'].get('scn_alpha', 1.0))
         # ranking influence tuned for FER (raise to emphasize hard/easy separation)
-        self.scn_rank_lambda = float(config['training'].get('scn_rank_lambda', 0.3))
+        self.scn_rank_lambda = float(config['training'].get('scn_rank_lambda', 0.5))  # UPDATE: stronger SCN ranking
         self.scn_min_weight = float(config['training'].get('scn_min_weight', 0.2))
         # margin for ranking loss
-        self.scn_margin = float(config['training'].get('scn_margin', 0.4))
+        self.scn_margin = float(config['training'].get('scn_margin', 0.6))  # UPDATE: larger margin for easy vs hard
         # runtime flags (set by fit staging)
         self._runtime_use_scn = None
         # mixup defaults

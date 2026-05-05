@@ -12,15 +12,8 @@ def build_optimizer(model, config):
     if opt_name == 'adam':
         return optim.Adam(params, lr=lr, weight_decay=weight_decay)
     elif opt_name == 'sgd':
-        gamma = train_cfg.get('gamma', 0.9)
-        nesterov = bool(train_cfg.get('nesterov', False))
-        return optim.SGD(
-            params,
-            lr=lr,
-            weight_decay=weight_decay,
-            momentum=gamma,
-            nesterov=nesterov,
-        )
+        gamma = train_cfg.get('gamma', 0.9) 
+        return optim.SGD(params, lr=lr, weight_decay=weight_decay, momentum=gamma)
     # add another optimizer
     else:
         raise ValueError(f"Optimizer {opt_name} unsupported!")

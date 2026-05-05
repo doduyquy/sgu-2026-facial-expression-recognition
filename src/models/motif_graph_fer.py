@@ -80,18 +80,17 @@ class GraphAttentionLayer(nn.Module):
     """
     Simple Graph Attention Layer (GAT) for small graphs.
     """
-    def __init__(self, in_dim, out_dim, heads=4):
+    def __init__(self, in_dim, out_dim, heads=8):
         super().__init__()
         self.heads = heads
         self.d_k = out_dim // heads
+        # UPDATE: increase heads for richer attention capacity
         
         self.q_lin = nn.Linear(in_dim, out_dim)
         self.k_lin = nn.Linear(in_dim, out_dim)
         self.v_lin = nn.Linear(in_dim, out_dim)
         
         self.out_lin = nn.Linear(out_dim, out_dim)
-        self.attn_drop = nn.Dropout(p=0.2)
-        self.norm = nn.LayerNorm(out_dim)
 
     def forward(self, x, adj):
         # x: (B, N, in_dim), adj: (B, N, N)
@@ -109,14 +108,10 @@ class GraphAttentionLayer(nn.Module):
             scores = scores.masked_fill(adj.unsqueeze(1) == 0, -1e9)
             
         attn = F.softmax(scores, dim=-1)
-        attn = self.attn_drop(attn)  # Dropout on attention scores
         out = torch.matmul(attn, v) # (B, H, N, d_k)
         
         out = out.transpose(1, 2).contiguous().view(B, N, -1)
-        out = self.out_lin(out)
-        out = out + x  # Residual connection to reduce over-smoothing
-        out = self.norm(out)  # Normalize output features
-        return F.relu(out)
+        return F.relu(self.out_lin(out))
 
 class GraphMotifModule(nn.Module):
     """
@@ -244,8 +239,8 @@ class MotifGraphModel(nn.Module):
         super().__init__()
         self.feat_dim = config.get('feat_dim', 128)
         self.num_classes = config.get('num_classes', 7)
-        self.motifs_per_class = config.get('motifs_per_class', 8)
-        self.top_k = config.get('top_k', 4) 
+        self.motifs_per_class = config.get('motifs_per_class', 16)  # UPDATE: more motif diversity
+        self.top_k = config.get('top_k', 6)  # UPDATE: more candidate diversity for 4x4
         self.temperature = config.get('motif_tau', 0.1) 
         
         self.backbone = MotifBackbone(feat_dim=self.feat_dim)
@@ -267,22 +262,21 @@ class MotifGraphModel(nn.Module):
         
         self.offset_predictor = nn.Sequential(
             nn.Linear(self.feat_dim, 64),
-            nn.LayerNorm(64),
             nn.ReLU(),
             nn.Linear(64, 2), 
             nn.Tanh() 
         )
-        self.offset_amplitude = 0.5
+        self.offset_amplitude = float(config.get('offset_amplitude', 0.35))  # UPDATE: stabilize 4x4 offsets
         
-        self.pos_embed = nn.Parameter(torch.randn(1, 9, self.feat_dim))
+        self.pos_embed = nn.Parameter(torch.randn(1, 16, self.feat_dim))  # UPDATE: 4x4 grid
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
         
-        self.register_buffer('grid_adj', self._generate_3x3_grid_adj())
+        self.register_buffer('grid_adj', self._generate_4x4_grid_adj())  # UPDATE: 4x4 grid
         
         self.motif_module = GraphMotifModule(
             num_classes=self.num_classes,
             motifs_per_class=self.motifs_per_class,
-            K=9, # 3x3 region nodes
+            K=16, # UPDATE: 4x4 region nodes
             C=self.feat_dim,
             top_k=self.top_k
         )
@@ -318,30 +312,34 @@ class MotifGraphModel(nn.Module):
         B, C_feat, _, _ = feat_map.shape
         
         center_indices = []
-        for i in range(1, H-1):
-            for j in range(1, W-1):
+        for i in range(2, H - 2):  # UPDATE: margin for 4x4 sampling
+            for j in range(2, W - 2):
                 center_indices.append(i * W + j)
         center_indices = torch.tensor(center_indices, device=feat_map.device)
         num_cands = len(center_indices)
         
         center_feats = node_feats[:, center_indices, :] 
-        offsets = self.offset_predictor(center_feats) * self.offset_amplitude
+        offsets = self.offset_predictor(center_feats) * self.offset_amplitude  # UPDATE: scale offsets
         # Point 3: Stabilize offset predictor with regularization
         self._latest_offsets = offsets
         
-        rel_y, rel_x = torch.meshgrid(torch.linspace(-1, 1, 3), torch.linspace(-1, 1, 3), indexing='ij')
+        rel_y, rel_x = torch.meshgrid(
+            torch.linspace(-1.5, 1.5, 4),
+            torch.linspace(-1.5, 1.5, 4),
+            indexing='ij'
+        )  # UPDATE: 4x4 grid offsets
         rel_grid = torch.stack([rel_x, rel_y], dim=-1).to(feat_map.device) 
-        rel_grid = rel_grid.view(1, 1, 9, 2) 
+        rel_grid = rel_grid.view(1, 1, 16, 2) 
         
         c_y = (center_indices // W).float() / (H - 1) * 2 - 1
         c_x = (center_indices % W).float() / (W - 1) * 2 - 1
         centers_grid = torch.stack([c_x, c_y], dim=-1).view(1, num_cands, 1, 2) 
         
         sampling_grid = centers_grid + offsets.unsqueeze(2) + rel_grid * (1.0 / (W-1))
-        sampling_grid = sampling_grid.view(B, num_cands * 9, 1, 2)
+        sampling_grid = sampling_grid.view(B, num_cands * 16, 1, 2)
         
         sampled_feats = F.grid_sample(feat_map, sampling_grid, align_corners=True)
-        sampled_feats = sampled_feats.view(B, C_feat, num_cands, 9).permute(0, 2, 3, 1) 
+        sampled_feats = sampled_feats.view(B, C_feat, num_cands, 16).permute(0, 2, 3, 1) 
         
         adj = self.grid_adj.unsqueeze(0).unsqueeze(0).expand(B, num_cands, -1, -1)
         
@@ -387,14 +385,14 @@ class MotifGraphModel(nn.Module):
         num_cands = candidates.shape[1]
         
         # Advanced Motif Module Forward
-        # 1. Prepare candidate subgraphs: (B*num_cands, 9, Dim)
-        flat_cands = candidates.reshape(B * num_cands, 9, -1)
+        # 1. Prepare candidate subgraphs: (B*num_cands, 16, Dim)
+        flat_cands = candidates.reshape(B * num_cands, 16, -1)
         if flat_cands.shape[-1] != self.feat_dim:
             flat_cands = self.proj_node(flat_cands)
         flat_cands = flat_cands + self.pos_embed
         
-        # 2. Prepare candidate adjacencies: (B*num_cands, 9, 9)
-        flat_adjs = cand_adjs.reshape(B * num_cands, 9, 9)
+        # 2. Prepare candidate adjacencies: (B*num_cands, 16, 16)
+        flat_adjs = cand_adjs.reshape(B * num_cands, 16, 16)
         
         # 3. Match against Learnable Motifs (Research Grade)
         logits_cand, motif_scores_cand, metadata = self.motif_module(flat_cands, adj=flat_adjs, return_attention=True)
@@ -459,16 +457,17 @@ class MotifGraphModel(nn.Module):
     def get_current_prior_strength(self):
         return 0.0
 
-    def _generate_3x3_grid_adj(self):
-        adj = torch.zeros(9, 9)
-        for i in range(3):
-            for j in range(3):
-                idx = i * 3 + j
+    def _generate_4x4_grid_adj(self):
+        # UPDATE: 4x4 grid adjacency for K=16
+        adj = torch.zeros(16, 16)
+        for i in range(4):
+            for j in range(4):
+                idx = i * 4 + j
                 for di in [-1, 0, 1]:
                     for dj in [-1, 0, 1]:
                         ni, nj = i + di, j + dj
-                        if 0 <= ni < 3 and 0 <= nj < 3:
-                            n_idx = ni * 3 + nj
+                        if 0 <= ni < 4 and 0 <= nj < 4:
+                            n_idx = ni * 4 + nj
                             adj[idx, n_idx] = 1.0
         return adj
 
