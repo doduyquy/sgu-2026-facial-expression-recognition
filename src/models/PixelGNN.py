@@ -75,7 +75,8 @@ def precompute_pixel_region_prior(
 
     For num_regions=6, regions roughly follow face layout:
     forehead, left eye, right eye, nose, mouth, chin.
-    For other K, anchors are spread vertically as motif bins.
+    For other K, anchors are spread as a coarse 2D face grid so K=8/12
+    can behave like finer motif regions instead of only vertical bands.
     """
     rows, cols = torch.meshgrid(
         torch.linspace(0, 1, H),
@@ -97,9 +98,12 @@ def precompute_pixel_region_prior(
             dtype=coords.dtype,
         )
     else:
-        y = torch.linspace(0.12, 0.88, num_regions, dtype=coords.dtype).unsqueeze(1)
-        x = torch.full_like(y, 0.5)
-        anchors = torch.cat([y, x], dim=1)
+        grid_h = int(torch.ceil(torch.sqrt(torch.tensor(float(num_regions)))).item())
+        grid_w = int(torch.ceil(torch.tensor(float(num_regions)) / grid_h).item())
+        y = torch.linspace(0.16, 0.88, grid_h, dtype=coords.dtype)
+        x = torch.linspace(0.22, 0.78, grid_w, dtype=coords.dtype)
+        yy, xx = torch.meshgrid(y, x, indexing="ij")
+        anchors = torch.stack([yy.flatten(), xx.flatten()], dim=-1)[:num_regions]
 
     dy = (coords[:, None, 0] - anchors[None, :, 0]) / sigma_y
     dx = (coords[:, None, 1] - anchors[None, :, 1]) / sigma_x
