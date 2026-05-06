@@ -114,7 +114,7 @@ class GraphAttentionLayer(nn.Module):
         return F.relu(self.out_lin(out))
 
 class ArcFaceLayer(nn.Module):
-    # UPDATE: ArcFace / cosine margin classifier for stronger inter-class separation
+    # UPDATE: ArcFace classifier to increase inter-class margin
     def __init__(self, in_features, out_features, margin=0.35, scale=30.0):
         super().__init__()
         self.in_features = in_features
@@ -395,7 +395,7 @@ class MotifGraphModel(nn.Module):
         
         # 4. Global Branch prediction
         global_feat = self.global_fc(self.global_pool(feat_map))
-        # UPDATE: ArcFace uses targets during training, cosine logits for inference
+        # UPDATE: ArcFace uses targets during training, cosine logits otherwise
         logits_global = self.global_arcface(global_feat, targets)
         
         # Motif Branch
