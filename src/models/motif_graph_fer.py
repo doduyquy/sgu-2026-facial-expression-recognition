@@ -82,62 +82,61 @@ class GraphAttentionLayer(nn.Module):
     """
     def __init__(self, in_dim, out_dim, heads=8):
         super().__init__()
-        self.heads = heads
-        self.d_k = out_dim // heads
+        self.heads = heads #Số lượng attention head để tăng khả năng biểu diễn
+        self.d_k = out_dim // heads # Dimension per head, đảm bảo out_dim chia hết cho heads
         # UPDATE: increase heads for richer attention capacity
         
-        self.q_lin = nn.Linear(in_dim, out_dim)
+        self.q_lin = nn.Linear(in_dim, out_dim) #Linear layers có tác dụng biến đổi đặc trưng đầu vào thành không gian đặc trưng mới phù hợp cho attention
         self.k_lin = nn.Linear(in_dim, out_dim)
         self.v_lin = nn.Linear(in_dim, out_dim)
-        
         self.out_lin = nn.Linear(out_dim, out_dim)
+        # UPDATE: edge-aware attention + learnable adjacency gating
+        self.edge_gate = nn.Sequential(
+            nn.Linear(2 * in_dim, out_dim),
+            nn.ReLU(),
+            nn.Linear(out_dim, 1)
+        )
+        self.edge_bias = nn.Sequential(
+            nn.Linear(2 * in_dim, out_dim),
+            nn.ReLU(),
+            nn.Linear(out_dim, 1)
+        )
+        # UPDATE: residual + norm + attention dropout
+        self.attn_drop = nn.Dropout(p=0.1)
+        self.norm = nn.LayerNorm(out_dim)
 
     def forward(self, x, adj):
-        # x: (B, N, in_dim), adj: (B, N, N)
+        # x: (B, N, in_dim) B: batch size,N: number of nodes,in_dim: input dimension, adj: (B, N, N) matrix kề của đồ thị, có thể là binary hoặc weighted
         B, N, _ = x.shape
         
-        q = self.q_lin(x).view(B, N, self.heads, self.d_k).transpose(1, 2)
+        q = self.q_lin(x).view(B, N, self.heads, self.d_k).transpose(1, 2) 
         k = self.k_lin(x).view(B, N, self.heads, self.d_k).transpose(1, 2)
         v = self.v_lin(x).view(B, N, self.heads, self.d_k).transpose(1, 2)
         
         # (B, H, N, N)
-        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
-        
-        # Apply adjacency mask (binary or weighted)
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k) #matmul có tác dụng tính toán điểm số attention giữa các node, chia cho sqrt(d_k) để ổn định gradient khi d_k lớn
+
+        # UPDATE: edge-aware bias + learnable gate per edge
+        x_i = x.unsqueeze(2).expand(B, N, N, -1)
+        x_j = x.unsqueeze(1).expand(B, N, N, -1)
+        edge_feat = torch.cat([x_i, x_j], dim=-1)
+        edge_gate = torch.sigmoid(self.edge_gate(edge_feat)).squeeze(-1) # (B, N, N)
+        edge_bias = self.edge_bias(edge_feat).squeeze(-1) # (B, N, N)
+
         if adj is not None:
-            scores = scores.masked_fill(adj.unsqueeze(1) == 0, -1e9)
-            
+            edge_gate = edge_gate * adj
+
+        scores = scores + edge_bias.unsqueeze(1)
+        scores = scores * edge_gate.unsqueeze(1)
+
         attn = F.softmax(scores, dim=-1)
+        attn = self.attn_drop(attn)
         out = torch.matmul(attn, v) # (B, H, N, d_k)
-        
-        out = out.transpose(1, 2).contiguous().view(B, N, -1)
-        return F.relu(self.out_lin(out))
 
-class ArcFaceLayer(nn.Module):
-    # UPDATE: ArcFace classifier to increase inter-class margin
-    def __init__(self, in_features, out_features, margin=0.35, scale=30.0):
-        super().__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-        self.margin = float(margin)
-        self.scale = float(scale)
-        self.weight = nn.Parameter(torch.randn(out_features, in_features))
-        nn.init.xavier_uniform_(self.weight)
-        self.cos_m = math.cos(self.margin)
-        self.sin_m = math.sin(self.margin)
-
-    def forward(self, x, labels=None):
-        x_norm = F.normalize(x, dim=1)
-        w_norm = F.normalize(self.weight, dim=1)
-        cos_theta = F.linear(x_norm, w_norm).clamp(-1.0 + 1e-7, 1.0 - 1e-7)
-        if labels is None:
-            return cos_theta * self.scale
-        sin_theta = torch.sqrt(1.0 - cos_theta.pow(2))
-        cos_theta_m = (cos_theta * self.cos_m) - (sin_theta * self.sin_m)
-        one_hot = torch.zeros_like(cos_theta)
-        one_hot.scatter_(1, labels.view(-1, 1), 1.0)
-        output = (one_hot * cos_theta_m) + ((1.0 - one_hot) * cos_theta)
-        return output * self.scale
+        out = out.transpose(1, 2).contiguous().view(B, N, -1) #kết hợp các head lại với nhau bằng cách transpose và reshape
+        out = self.out_lin(out)
+        out = self.norm(out + x) # UPDATE: residual + norm
+        return F.relu(out)
 
 class GraphMotifModule(nn.Module):
     """
@@ -160,21 +159,23 @@ class GraphMotifModule(nn.Module):
         self.top_k = top_k
         
         # 1. Motif Representation: (Classes, Motifs, K, Dim)
-        self.motifs = nn.Parameter(torch.randn(num_classes, motifs_per_class, K, C))
+        self.motifs = nn.Parameter(torch.randn(num_classes, motifs_per_class, K, C)) 
+        # motifs là các mẫu con đồ thị học được, mỗi motif đại diện cho một cấu trúc đặc trưng có thể xuất hiện trong biểu cảm khuôn mặt, được tổ chức theo lớp và số lượng motif trên mỗi lớp
         nn.init.xavier_uniform_(self.motifs)
-        
+        # Khởi tạo các motif bằng phương pháp Xavier để đảm bảo phân phối hợp lý của trọng số, giúp quá trình huấn luyện ổn định và hiệu quả hơn.
         # 2. Factorized Motif Topology: (Classes, Motifs, K, Rank)
         # Motif edges A = U @ U^T
         self.motif_low_rank = nn.Parameter(torch.randn(num_classes, motifs_per_class, K, rank))
+        # Khởi tạo ma trận low-rank để biểu diễn cấu trúc cạnh của motif, giúp giảm số lượng tham số và tăng khả năng tổng quát hóa của mô hình khi học các cấu trúc đồ thị phức tạp.
         nn.init.xavier_uniform_(self.motif_low_rank)
         
         # 3. Learnable weights for Node vs Edge similarity
-        self.alpha = nn.Parameter(torch.zeros(1)) # Node weight (logit scale)
-        self.beta = nn.Parameter(torch.zeros(1))  # Edge weight (logit scale)
+        self.alpha = nn.Parameter(torch.zeros(1)) # Node similarity weight (logit scale)
+        self.beta = nn.Parameter(torch.zeros(1))  # Edge similarity weight (logit scale)
         
         # 4. Stability parameters
         self.temperature = nn.Parameter(torch.ones(1) * 0.1)
-        
+        # Temperature parameter để điều chỉnh độ mềm của phân phối attention, giúp quá trình huấn luyện ổn định hơn và tránh overfitting vào các motif cụ thể.
     def compute_diversity_loss(self):
         """
         Orthogonality constraint for motifs.
@@ -197,8 +198,8 @@ class GraphMotifModule(nn.Module):
             motif_scores: (B, num_classes, motifs_per_class)
             metadata: dict containing attention and activation maps
         """
-        B, K, C = region_features.shape
-        L, M = self.num_classes, self.motifs_per_class
+        B, K, C = region_features.shape # B: batch size, K: number of regions, C: feature dimension
+        L, M = self.num_classes, self.motifs_per_class # L: number of classes, M: motifs per class
         
         # 1. Normalize Inputs
         region_features = F.normalize(region_features, p=2, dim=-1)
@@ -278,8 +279,8 @@ class MotifGraphModel(nn.Module):
             nn.Linear(self.feat_dim, 128),
             nn.ReLU(),
             nn.Dropout(0.3),
+            nn.Linear(128, self.num_classes)
         )
-        self.global_arcface = ArcFaceLayer(128, self.num_classes)  # UPDATE: ArcFace classifier
         
         self.gnn_layers = nn.ModuleList([
             GraphAttentionLayer(self.feat_dim, self.feat_dim),
@@ -394,9 +395,7 @@ class MotifGraphModel(nn.Module):
         _, _, H, W = feat_map.shape
         
         # 4. Global Branch prediction
-        global_feat = self.global_fc(self.global_pool(feat_map))
-        # UPDATE: ArcFace uses targets during training, cosine logits otherwise
-        logits_global = self.global_arcface(global_feat, targets)
+        logits_global = self.global_fc(self.global_pool(feat_map))
         
         # Motif Branch
         nodes_with_coords, adj = self._get_global_graph(feat_map)
