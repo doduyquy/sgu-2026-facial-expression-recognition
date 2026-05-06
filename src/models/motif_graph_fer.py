@@ -176,6 +176,17 @@ class GraphMotifModule(nn.Module):
         # 4. Stability parameters
         self.temperature = nn.Parameter(torch.ones(1) * 0.1)
         # Temperature parameter để điều chỉnh độ mềm của phân phối attention, giúp quá trình huấn luyện ổn định hơn và tránh overfitting vào các motif cụ thể.
+        # UPDATE: dynamic topology conditioned on input
+        self.topo_gate = nn.Sequential(
+            nn.Linear(C, C // 2),
+            nn.ReLU(),
+            nn.Linear(C // 2, num_classes * motifs_per_class)
+        )
+        # UPDATE: motif interaction (self-attention across motifs)
+        self.motif_q = nn.Linear(1, 8)
+        self.motif_k = nn.Linear(1, 8)
+        self.motif_v = nn.Linear(1, 8)
+        self.motif_out = nn.Linear(8, 1)
     def compute_diversity_loss(self):
         """
         Orthogonality constraint for motifs.
@@ -205,8 +216,12 @@ class GraphMotifModule(nn.Module):
         region_features = F.normalize(region_features, p=2, dim=-1)
         motifs = F.normalize(self.motifs, p=2, dim=-1)
         
-        # 2. Node Similarity matching: (B, L, M, K)
-        node_sim = torch.einsum('bkc,lmkc->blmk', region_features, motifs)
+        # 2. Soft node alignment: align motifs to input regions
+        align_scores = torch.einsum('bkc,lmkc->blmk', region_features, motifs)
+        align_weights = F.softmax(align_scores, dim=-1)
+        aligned_motifs = torch.einsum('blmk,lmkc->blmkc', align_weights, motifs)
+        # Node similarity after alignment: (B, L, M, K)
+        node_sim = torch.einsum('bkc,blmkc->blmk', region_features, aligned_motifs)
         
         # 3. Edge Structure Matching (Pairwise differences)
         # diff_R: (B, K, K, C)
@@ -219,14 +234,18 @@ class GraphMotifModule(nn.Module):
         edge_sim_raw = torch.einsum('bijk,lmijk->blmij', diff_R, diff_M)
         edge_sim = edge_sim_raw.mean(dim=(-1, -2)) # (B, L, M)
         
-        # 4. Topology matching using Low-Rank Motif Edges
+        # 4. Topology matching using Low-Rank Motif Edges (dynamic)
         # motif_adj: (L, M, K, K)
         motif_adj = torch.matmul(self.motif_low_rank, self.motif_low_rank.transpose(-1, -2))
         motif_adj = F.softmax(motif_adj, dim=-1)
+        # UPDATE: dynamic topology conditioned on input
+        context = region_features.mean(dim=1)
+        gate = torch.sigmoid(self.topo_gate(context)).view(B, L, M, 1, 1)
+        motif_adj = motif_adj.unsqueeze(0) * gate
         
         topo_sim = 0
         if adj is not None:
-            topo_sim = torch.einsum('bij,lmij->blm', adj, motif_adj)
+            topo_sim = torch.einsum('bij,blmij->blm', adj, motif_adj)
             
         # 5. Combined Similarity
         # s_node: (B, L, M, K)
@@ -244,6 +263,15 @@ class GraphMotifModule(nn.Module):
         w_node = torch.sigmoid(self.alpha)
         w_edge = torch.sigmoid(self.beta)
         S = w_node * node_sim_agg + w_edge * s_struct
+        # UPDATE: motif interaction (self-attention across motifs)
+        S_in = S.unsqueeze(-1)  # (B, L, M, 1)
+        q = self.motif_q(S_in)
+        k = self.motif_k(S_in)
+        v = self.motif_v(S_in)
+        attn_scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(q.size(-1))
+        attn_weights = F.softmax(attn_scores, dim=-1)
+        S_refined = torch.matmul(attn_weights, v)
+        S = S + self.motif_out(S_refined).squeeze(-1)
         
         # 6. Smooth Selection via logsumexp
         logits = torch.logsumexp(S / tau.clamp(min=1e-3), dim=-1)
