@@ -28,9 +28,10 @@ def build_transform(config, split="train") -> Compose: # train | val | test
         ])
     else:
         # Test-time augmentation with TenCrop for val/test
-        # TenCrop: crops 10 patches (40x40) from 48x48 image
+        # Resize to 56, then crop 10 patches of exactly 48x48 to match training dimensions
         trans = transforms.Compose([
-            transforms.TenCrop(40),  # Crop 10 patches (40x40) from 48x48
+            transforms.Resize((56, 56)),
+            transforms.TenCrop(48),
             transforms.Lambda(lambda crops: torch.stack([
                 transforms.ToTensor()(crop) for crop in crops
             ])),  # Convert to tensor: (10, 1, 40, 40)

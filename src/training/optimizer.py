@@ -7,13 +7,26 @@ def build_optimizer(model, config):
     lr = float(train_cfg.get('lr', train_cfg.get('learning_rate', 0.001)))
     weight_decay = float(train_cfg.get('weight_decay', 0.0001))
 
-    params = model.parameters()
+    # Differential learning rate for transfer learning
+    backbone_params = []
+    head_params = []
+    for name, param in model.named_parameters():
+        # Backbone ResNet layers get standard LR. New heads/reducers get 10x LR.
+        if 'backbone' in name and 'dim_reducer' not in name and 'final_cbam' not in name:
+            backbone_params.append(param)
+        else:
+            head_params.append(param)
+            
+    param_groups = [
+        {'params': backbone_params, 'lr': lr},
+        {'params': head_params, 'lr': lr * 10.0}
+    ]
 
     if opt_name == 'adam':
-        return optim.Adam(params, lr=lr, weight_decay=weight_decay)
+        return optim.Adam(param_groups, lr=lr, weight_decay=weight_decay)
     elif opt_name == 'sgd':
         gamma = train_cfg.get('gamma', 0.9) 
-        return optim.SGD(params, lr=lr, weight_decay=weight_decay, momentum=gamma)
+        return optim.SGD(param_groups, lr=lr, weight_decay=weight_decay, momentum=gamma)
     # add another optimizer
     else:
         raise ValueError(f"Optimizer {opt_name} unsupported!")
