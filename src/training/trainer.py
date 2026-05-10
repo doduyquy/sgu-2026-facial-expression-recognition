@@ -294,7 +294,10 @@ class Trainer:
             except Exception:
                 pass
             # (entropy regularization removed) keep raw value if needed elsewhere
-            heatmaps_now, _ = self.model.get_landmark_outputs()
+            if hasattr(self.model, 'get_landmark_outputs'):
+                heatmaps_now, _ = self.model.get_landmark_outputs()
+            else:
+                heatmaps_now = None
             if heatmaps_now is not None:
                 try:
                     _, _, H_att, W_att = heatmaps_now.shape
