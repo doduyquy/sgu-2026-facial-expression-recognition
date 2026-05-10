@@ -14,67 +14,51 @@ except ImportError:
 
 class MotifBackbone(nn.Module):
     """
-    Advanced Backbone with Residual connections and CBAM.
+    Advanced Backbone with Pretrained ResNet18 for stronger feature extraction.
     """
     def __init__(self, in_channels=1, feat_dim=128):
         super().__init__()
-        self.conv1 = nn.Sequential(
-            nn.Conv2d(in_channels, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.MaxPool2d(2) # 24x24
-        )
+        import torchvision.models as models
+        try:
+            resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+        except Exception:
+            resnet = models.resnet18(pretrained=True)
+            
+        # Adapt for 1-channel 48x48 input
+        self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = resnet.bn1
+        self.relu = resnet.relu
         
-        # Residual Block 1
-        self.res1 = nn.Sequential(
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64)
-        )
-        self.cbam1 = CBAM(64)
+        # Skip maxpool to keep spatial size 6x6 at the end (48->48->24->12->6)
+        self.maxpool = nn.Identity()
         
-        self.down1 = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1), # 12x12
-            nn.BatchNorm2d(128),
-            nn.ReLU()
-        )
+        self.layer1 = resnet.layer1 # 48x48
+        self.layer2 = resnet.layer2 # 24x24
+        self.layer3 = resnet.layer3 # 12x12
+        self.layer4 = resnet.layer4 # 6x6, 512 channels
         
-        # Residual Block 2
-        self.res2 = nn.Sequential(
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128)
-        )
-        self.cbam2 = CBAM(128)
+        self.final_cbam = CBAM(512)
         
-        self.down2 = nn.Sequential(
-            nn.Conv2d(128, feat_dim, kernel_size=3, stride=2, padding=1), # 6x6
+        # Reduce dimension to expected feat_dim (128)
+        self.dim_reducer = nn.Sequential(
+            nn.Conv2d(512, feat_dim, kernel_size=1, bias=False),
             nn.BatchNorm2d(feat_dim),
             nn.ReLU()
         )
-        self.final_cbam = CBAM(feat_dim)
 
     def forward(self, x):
         x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
         
-        identity = x
-        x = self.res1(x)
-        x = self.cbam1(x)
-        x = F.relu(x + identity)
-        
-        x = self.down1(x)
-        
-        identity = x
-        x = self.res2(x)
-        x = self.cbam2(x)
-        x = F.relu(x + identity)
-        
-        x = self.down2(x)
         x = self.final_cbam(x)
+        x = self.dim_reducer(x)
         return x
 
 class GraphAttentionLayer(nn.Module):
