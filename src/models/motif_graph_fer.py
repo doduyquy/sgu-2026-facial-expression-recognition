@@ -398,8 +398,12 @@ class MotifGraphModel(nn.Module):
         if x.dim() == 5:
             B, T, C, H, W = x.shape
             x = x.view(B * T, C, H, W)
-            # Recursive call to handle all crops (targets already set)
-            logits = self.forward(x) 
+            # Recursive call to handle all crops (expand targets to match B*T)
+            if targets is not None:
+                targets_expanded = targets.unsqueeze(1).expand(-1, T).reshape(-1)
+                logits = self.forward(x, targets=targets_expanded)
+            else:
+                logits = self.forward(x) 
             # Average predictions across all 10 crops
             return logits.view(B, T, -1).mean(dim=1)
 
@@ -497,7 +501,7 @@ class MotifGraphModel(nn.Module):
         return None
 
     def set_training_progress(self, progress):
-        pass
+        self.training_progress = progress
         
     def get_current_prior_strength(self):
         return 0.0
@@ -537,11 +541,16 @@ class MotifGraphModel(nn.Module):
         
         # 4. Kích hoạt Motif Consistency Loss tại đây
         if hasattr(self, '_latest_targets') and self._latest_targets is not None:
-            l_motif_consist = self.motif_consistency_loss(
-                self._latest_scores, 
-                self._latest_top_k, 
-                self._latest_targets
-            )
+            progress = getattr(self, 'training_progress', 1.0)
+            # Tạm tắt Motif Consistency trong Phase 1 (progress <= 0.08) vì Mixup trộn nhãn
+            if self.training and progress <= 0.08:
+                l_motif_consist = torch.tensor(0.0, device=self._latest_scores.device)
+            else:
+                l_motif_consist = self.motif_consistency_loss(
+                    self._latest_scores, 
+                    self._latest_top_k, 
+                    self._latest_targets
+                )
             aux_dict["motif_consistency"] = l_motif_consist
             
         return aux_dict

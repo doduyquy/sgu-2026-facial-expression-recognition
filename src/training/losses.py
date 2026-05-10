@@ -25,7 +25,7 @@ class MotifConsistencyLoss(nn.Module):
         # Create mask for correct class motifs
         mask = torch.zeros(B, Total_Motifs, device=scores.device)
         for i in range(B):
-            c = targets[i]
+            c = int(targets[i].item())
             mask[i, c*self.motifs_per_class : (c+1)*self.motifs_per_class] = 1.0
         mask = mask.unsqueeze(1) # (B, 1, Total_Motifs)
         
