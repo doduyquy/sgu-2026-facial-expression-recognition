@@ -46,9 +46,26 @@ def build_scheduler(optimizer, config):
 
     elif scheduler_name == 'cosine':
         # decay with cosine
-        T_max = config['training'].get('epochs', 101) 
+        T_max = config['training'].get('epochs', 100) 
         print(f"--> [Scheduler] CosineAnnealingLR (T_max={T_max})")
         return lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max)
+
+    elif scheduler_name == 'cosine_annealing_warmup':
+        warmup_epochs = int(config['training'].get('warmup_epochs', 5))
+        total_epochs = int(config['training'].get('epochs', 100))
+        
+        print(f"--> [Scheduler] CosineAnnealingWarmup (Warmup={warmup_epochs}, Total={total_epochs})")
+        
+        # Warmup from 0.1 * lr to lr
+        warmup_sch = lr_scheduler.LinearLR(optimizer, start_factor=0.1, total_iters=warmup_epochs)
+        # Cosine from lr down
+        cosine_sch = lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_epochs - warmup_epochs)
+        
+        return lr_scheduler.SequentialLR(
+            optimizer, 
+            schedulers=[warmup_sch, cosine_sch], 
+            milestones=[warmup_epochs]
+        )
 
     else:
         raise ValueError(f"Not supported this {scheduler_name} scheduler!") 
