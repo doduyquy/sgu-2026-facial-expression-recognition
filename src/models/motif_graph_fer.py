@@ -212,15 +212,15 @@ class GraphMotifModule(nn.Module):
         aligned_motifs = torch.einsum('blmkj,lmjc->blmkc', align_weights, motifs)
         node_sim = torch.einsum('bkc,blmkc->blmk', region_features, aligned_motifs)
         
-        # 3. Edge Structure Matching (Pairwise differences)
-        # diff_R: (B, K, K, C)
-        diff_R = region_features.unsqueeze(2) - region_features.unsqueeze(1)
-        # diff_M: (B, L, M, K, K, C) aligned to input
-        diff_M = aligned_motifs.unsqueeze(3) - aligned_motifs.unsqueeze(2)
+        # 3. Edge Structure Matching (Pairwise differences) - Memory Efficient Formulation
+        # Mathematically equivalent to: (Ri - Rj) * (Mi - Mj) = Ri*Mi + Rj*Mj - Ri*Mj - Rj*Mi
+        # cross_sim: (B, L, M, K, K) where cross_sim[b,l,m,i,j] = Ri * Mj
+        cross_sim = torch.einsum('bic,blmjc->blmij', region_features, aligned_motifs)
+        node_sim_i = node_sim.unsqueeze(-1) # (B, L, M, K, 1) -> Ri*Mi
+        node_sim_j = node_sim.unsqueeze(-2) # (B, L, M, 1, K) -> Rj*Mj
         
-        # Align structural relationships Ri-Rj with Mi-Mj
         # edge_sim_raw: (B, L, M, K, K)
-        edge_sim_raw = torch.einsum('bijk,blmijk->blmij', diff_R, diff_M)
+        edge_sim_raw = node_sim_i + node_sim_j - cross_sim - cross_sim.transpose(-1, -2)
         # structure-preserving aggregation with node-attn outer product
         tau = F.softplus(self.temperature)
         node_attn = F.softmax(node_sim / tau.clamp(min=1e-3), dim=-1)
