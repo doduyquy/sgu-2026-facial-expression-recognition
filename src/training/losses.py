@@ -107,11 +107,6 @@ class EMOGNPCombinedLoss(nn.Module):
         loss = self.ce_weight * self.ce(logits, targets)
         
         if model is not None:
-            # Prototype repulsion loss
-            aux_losses = model.get_aux_losses()
-            if 'repulsion_loss' in aux_losses:
-                loss = loss + self.repulsion_weight * aux_losses['repulsion_loss']
-                
             # Class-balanced SupCon Loss
             if self.use_supcon and hasattr(model, '_latest_features'):
                 features = model._latest_features

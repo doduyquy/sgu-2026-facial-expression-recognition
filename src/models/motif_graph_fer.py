@@ -10,13 +10,15 @@ class LearnableStem(nn.Module):
     """
     def __init__(self, in_channels=1, out_channels=3):
         super().__init__()
-        self.proj = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True)
-        )
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        self.bn = nn.BatchNorm2d(out_channels)
+        
+        # Initialize as identity-like: copy the single channel to all 3 RGB channels
+        nn.init.constant_(self.conv.weight, 1.0)
+        nn.init.constant_(self.conv.bias, 0.0)
+
     def forward(self, x):
-        return self.proj(x)
+        return self.bn(self.conv(x))
 
 class ConvNeXtBackbone(nn.Module):
     def __init__(self, backbone_name='convnextv2_tiny', pretrained=True):
@@ -62,7 +64,18 @@ class SemanticTokenExtractor(nn.Module):
         q = self.query_embed.expand(B, -1, -1) # (B, K, d_model)
         
         # Cross Attention
-        attn_out, attn_weights = self.cross_attn(q, k, v)
+        attn_out, attn_weights = self.cross_attn(q, k, v) # attn_weights: (B, K, H*W)
+        
+        # Token Diversity Loss: Prevent tokens from collapsing to the same region
+        # We want to minimize the overlap (dot product) between different attention maps
+        with torch.cuda.amp.autocast(enabled=False):
+            attn_norm = F.normalize(attn_weights.float(), p=2, dim=-1)
+            similarity = torch.matmul(attn_norm, attn_norm.transpose(1, 2)) # (B, K, K)
+            # Minimize off-diagonal (inter-token similarity)
+            identity = torch.eye(self.num_tokens, device=x.device).unsqueeze(0)
+            div_loss = ((similarity - identity) ** 2).mean()
+            self._latest_div_loss = div_loss
+
         q = self.norm1(q + attn_out)
         
         # FFN
@@ -217,8 +230,17 @@ class MotifGraphModel(nn.Module):
         cnn_out_dim = self.backbone.out_channels
         self.token_extractor = SemanticTokenExtractor(in_dim=cnn_out_dim, num_tokens=self.num_tokens, d_model=self.feat_dim)
         
-        # Learnable virtual coordinates for tokens (for geometric priors)
-        self.token_coords = nn.Parameter(torch.randn(1, self.num_tokens, 2))
+        # Grid Initialization for tokens to ensure spatial coverage
+        grid_size = int(math.sqrt(self.num_tokens))
+        y, x_coord = torch.meshgrid(torch.linspace(-1, 1, grid_size), torch.linspace(-1, 1, grid_size), indexing='ij')
+        coords = torch.stack([x_coord.flatten(), y.flatten()], dim=-1).unsqueeze(0) # (1, K, 2)
+        
+        # If num_tokens is not a perfect square, pad with random
+        if coords.shape[1] < self.num_tokens:
+            extra = torch.randn(1, self.num_tokens - coords.shape[1], 2)
+            coords = torch.cat([coords, extra], dim=1)
+            
+        self.token_coords = nn.Parameter(coords)
         
         self.gnn = nn.Sequential(
             RelativePositionalGAT(self.feat_dim, self.feat_dim),
@@ -276,7 +298,8 @@ class MotifGraphModel(nn.Module):
         
     def get_aux_losses(self):
         return {
-            "repulsion_loss": getattr(self, '_latest_rep_loss', 0.0)
+            "repulsion_loss": getattr(self, '_latest_rep_loss', 0.0),
+            "token_diversity": getattr(self.token_extractor, '_latest_div_loss', 0.0)
         }
 
 if __name__ == "__main__":

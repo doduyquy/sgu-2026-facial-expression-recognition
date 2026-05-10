@@ -17,22 +17,26 @@ data:
 
 training:
   epochs: 100  # 3-phase strategy total
-  warmup_epochs: 10
+  warmup_epochs: 15
   hard_mining_start_epoch: 70
-  lr: 0.001
-  weight_decay: 1e-4
-  loss: "emo_gnp_combined"
-  ce_weight: 1.0
-  circle_weight: 0.3
-  circle_margin: 0.25
-  circle_gamma: 256
-  supcon_weight: 0.5
-  repulsion_weight: 0.1
-  motif_div_weight: 0.05
-  motif_tau: 0.1
+  lr: 0.0002
+  weight_decay: 0.0001
+  optimizer: "adam"
+  scheduler: "cosine_annealing_warmup"
   use_ema: true
   ema_decay: 0.999
-  scheduler: "cosine_annealing_warmup"
+  
+  # Loss weights
+  loss: "emo_gnp_combined"
+  ce_weight: 1.0
+  circle_weight: 0.2
+  circle_margin: 0.25
+  circle_gamma: 256
+  supcon_weight: 0.3
+  repulsion_weight: 0.05
+  motif_diversity_weight: 0.05
+  motif_div_weight: 0.05
+  motif_tau: 0.1
   use_scn: true
   scn_warmup_epochs: 10
   scn_alpha: 1.0
