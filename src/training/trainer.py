@@ -34,6 +34,18 @@ class Trainer:
         self.run_name = run_name
         self.config = config
         self.path_save_ckpt = save_dir
+        
+        # EMA setup
+        self.use_ema = config['training'].get('use_ema', False)
+        self.ema_decay = float(config['training'].get('ema_decay', 0.999))
+        if self.use_ema:
+            import copy
+            self.ema_model = copy.deepcopy(self.model)
+            self.ema_model.eval()
+            self.global_step = 0
+        else:
+            self.ema_model = None
+            
         # Tuned defaults to avoid over-constraint (Sunset suggestions)
         self.landmark_diversity_lambda = config['training'].get('landmark_diversity_lambda', 0.25)
         # keep entropy off by default for low-res FER unless explicitly enabled
@@ -97,6 +109,11 @@ class Trainer:
             if isinstance(aux, dict):
                 return aux
         return {}
+
+    def _compute_base_loss(self, logits, labels):
+        if hasattr(self._base_criterion, 'forward') and 'model' in self._base_criterion.forward.__code__.co_varnames:
+            return self._base_criterion(logits, labels, model=self.model)
+        return self._base_criterion(logits, labels)
 
     def _scn_loss(self, logits, labels):
         """
@@ -232,7 +249,7 @@ class Trainer:
                     cls_loss = lam * F.cross_entropy(logits, labels_a) + (1.0 - lam) * F.cross_entropy(logits, labels_b)
                     scn_logs = None
                 except Exception:
-                    cls_loss = self._base_criterion(logits, labels)
+                    cls_loss = self._compute_base_loss(logits, labels)
                     scn_logs = None
             else:
                 # apply SCN-light after warmup epochs if enabled by runtime flag
@@ -248,10 +265,10 @@ class Trainer:
                             pass
                     except Exception:
                         # fallback to base criterion
-                        cls_loss = self._base_criterion(logits, labels)
+                        cls_loss = self._compute_base_loss(logits, labels)
                 else:
                     # use base criterion when SCN not active
-                    cls_loss = self._base_criterion(logits, labels)
+                    cls_loss = self._compute_base_loss(logits, labels)
             aux_losses = self._extract_aux_losses(outputs)
 
             # (no target) use raw entropy directly for both train and val
@@ -411,6 +428,12 @@ class Trainer:
             except Exception:
                 pass
             self.optimizer.step()
+            
+            if self.ema_model is not None:
+                alpha = min(1 - 1 / (self.global_step + 1), self.ema_decay)
+                for ema_param, param in zip(self.ema_model.parameters(), self.model.parameters()):
+                    ema_param.data.mul_(alpha).add_(param.data, alpha=1 - alpha)
+                self.global_step += 1
 
             running_loss += loss.item() * images.size(0)
             _, preds = torch.max(logits, dim=1)

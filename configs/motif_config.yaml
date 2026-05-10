@@ -1,12 +1,12 @@
-# Motif-based Graph FER Configuration
+# EMO-GNP (Emotion-aware Graph Network with Prototypes) Configuration
 
 model:
-  name: "motif_graph_fer"
+  name: "emo_gnp"
+  backbone_name: "convnextv2_tiny"
   feat_dim: 128
   num_classes: 7
+  num_tokens: 16  # Semantic Region Queries
   motifs_per_class: 16
-  top_k: 6
-  offset_amplitude: 0.35
   dropout: 0.3
 
 data:
@@ -16,16 +16,23 @@ data:
   in_channels: 1
 
 training:
-  epochs: 1000
+  epochs: 100  # 3-phase strategy total
+  warmup_epochs: 10
+  hard_mining_start_epoch: 70
   lr: 0.001
   weight_decay: 1e-4
-  loss: "motif_combined"
-  motif_loss_weight: 0.5
+  loss: "emo_gnp_combined"
+  ce_weight: 1.0
+  circle_weight: 0.3
+  circle_margin: 0.25
+  circle_gamma: 256
+  supcon_weight: 0.5
+  repulsion_weight: 0.1
   motif_div_weight: 0.05
   motif_tau: 0.1
-  scheduler: "reduce_lr_on_plateau"
-  patience: 25
-  factor: 0.5
+  use_ema: true
+  ema_decay: 0.999
+  scheduler: "cosine_annealing_warmup"
   use_scn: true
   scn_warmup_epochs: 10
   scn_alpha: 1.0
