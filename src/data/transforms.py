@@ -20,11 +20,13 @@ def build_transform(config, split="train") -> Compose: # train | val | test
         # Standard augmentation for training (NO TenCrop - too slow)
         trans = transforms.Compose([
             transforms.RandomResizedCrop(image_size, scale=(0.8, 1.2)),
+            transforms.RandomApply([transforms.ColorJitter(brightness=0.2, contrast=0.2)], p=0.5),
             transforms.RandomApply([transforms.RandomAffine(0, translate=(0.2, 0.2))], p=0.5),
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomApply([transforms.RandomRotation(10)], p=0.5),
             transforms.ToTensor(),
-            transforms.Normalize(mean=(mu,), std=(st,))
+            transforms.Normalize(mean=(mu,), std=(st,)),
+            transforms.RandomErasing(p=0.5, scale=(0.02, 0.1), ratio=(0.3, 3.3), value=0)
         ])
     else:
         # Test-time augmentation with TenCrop for val/test
@@ -34,10 +36,10 @@ def build_transform(config, split="train") -> Compose: # train | val | test
             transforms.TenCrop(48),
             transforms.Lambda(lambda crops: torch.stack([
                 transforms.ToTensor()(crop) for crop in crops
-            ])),  # Convert to tensor: (10, 1, 40, 40)
+            ])),  # Convert to tensor: (10, 1, 48, 48)
             transforms.Lambda(lambda tensors: torch.stack([
                 transforms.Normalize(mean=(mu,), std=(st,))(t) for t in tensors
-            ])),  # Normalize each crop: (10, 1, 40, 40)
+            ])),  # Normalize each crop: (10, 1, 48, 48)
         ])
 
     return trans
