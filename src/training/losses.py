@@ -1,132 +1,159 @@
 import torch
-import torch.nn as nn
+import torch.nn as nn 
 import torch.nn.functional as F
 
-class CircleLoss(nn.Module):
-    def __init__(self, m=0.25, gamma=256):
-        super(CircleLoss, self).__init__()
-        self.m = m
-        self.gamma = gamma
-        self.soft_plus = nn.Softplus()
-
-    def forward(self, sp, sn):
-        # sp: (B, K) positive similarity
-        # sn: (B, L) negative similarity
-        ap = torch.clamp_min(-sp.detach() + 1 + self.m, min=0.)
-        an = torch.clamp_min(sn.detach() + self.m, min=0.)
-
-        delta_p = 1 - self.m
-        delta_n = self.m
-
-        logit_p = -ap * (sp - delta_p) * self.gamma
-        logit_n = an * (sn - delta_n) * self.gamma
-
-        loss = self.soft_plus(torch.logsumexp(logit_n, dim=1) + torch.logsumexp(logit_p, dim=1))
-        return loss.mean()
-
-class ClassBalancedSupConLoss(nn.Module):
-    """
-    Supervised Contrastive Learning with Class Balancing to mitigate noisy labels.
-    """
-    def __init__(self, temperature=0.07, base_temperature=0.07):
+class MotifConsistencyLoss(nn.Module):
+    def __init__(self, num_classes=7, motifs_per_class=8, tau=0.1):
         super().__init__()
-        self.temperature = temperature
-        self.base_temperature = base_temperature
+        self.num_classes = num_classes
+        self.motifs_per_class = motifs_per_class
+        self.tau = tau
 
-    def forward(self, features, labels):
-        # features: (B, D)
-        device = features.device
-        batch_size = features.shape[0]
-
-        features = F.normalize(features, dim=1)
+    def forward(self, scores, top_k_idx, targets, reduction='mean'):
+        """
+        scores: (B, num_candidates, Total_Motifs)
+        top_k_idx: (B, top_k)
+        targets: (B,)   
+        """
+        B, num_cands, Total_Motifs = scores.shape
+        top_k = top_k_idx.shape[1]
         
-        # compute logits
-        anchor_dot_contrast = torch.div(
-            torch.matmul(features, features.T),
-            self.temperature)
+        # Get scores for selected subgraphs
+        batch_idx = torch.arange(B, device=scores.device).unsqueeze(1).expand(-1, top_k)
+        selected_scores = scores[batch_idx, top_k_idx] # (B, top_k, Total_Motifs)
         
-        # for numerical stability
-        logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
-        logits = anchor_dot_contrast - logits_max.detach()
-
-        # mask for positive samples
-        labels = labels.contiguous().view(-1, 1)
-        mask = torch.eq(labels, labels.T).float().to(device)
+        # Create mask for correct class motifs
+        mask = torch.zeros(B, Total_Motifs, device=scores.device)
+        for i in range(B):
+            c = targets[i]
+            mask[i, c*self.motifs_per_class : (c+1)*self.motifs_per_class] = 1.0
+        mask = mask.unsqueeze(1) # (B, 1, Total_Motifs)
         
-        # remove self-contrast
-        logits_mask = torch.scatter(
-            torch.ones_like(mask),
-            1,
-            torch.arange(batch_size * 1).view(-1, 1).to(device),
-            0
-        )
-        mask = mask * logits_mask
-
-        # class balancing weight (1 / count of positive samples)
-        pos_counts = mask.sum(1)
-        # Avoid division by zero
-        pos_counts = torch.max(pos_counts, torch.ones_like(pos_counts))
+        # 1. Similarity to SAME class motifs (Positive)
+        pos_scores = selected_scores.masked_fill(mask == 0, -1e9)
+        log_sum_exp_pos = torch.logsumexp(pos_scores / self.tau, dim=-1)
         
-        # compute log_prob
-        exp_logits = torch.exp(logits) * logits_mask
-        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True) + 1e-8)
-
-        # compute mean of log-likelihood over positive
-        mean_log_prob_pos = (mask * log_prob).sum(1) / pos_counts
-
-        # loss
-        loss = - (self.temperature / self.base_temperature) * mean_log_prob_pos
-        return loss.mean()
-
-class EMOGNPCombinedLoss(nn.Module):
-    def __init__(self, config, class_weights=None):
-        super().__init__()
-        training_cfg = config.get('training', {})
-        self.ce = nn.CrossEntropyLoss(weight=class_weights)
-        self.ce_weight = training_cfg.get('ce_weight', 1.0)
+        # 2. Similarity to ALL motifs
+        log_sum_exp_all = torch.logsumexp(selected_scores / self.tau, dim=-1)
         
-        # Circle Loss
-        self.use_circle = training_cfg.get('circle_weight', 0.0) > 0
-        if self.use_circle:
-            self.circle = CircleLoss(
-                m=training_cfg.get('circle_margin', 0.25),
-                gamma=training_cfg.get('circle_gamma', 256)
-            )
-            self.circle_weight = training_cfg.get('circle_weight', 0.3)
-            
-        # SupCon Loss
-        self.use_supcon = training_cfg.get('supcon_weight', 0.0) > 0
-        if self.use_supcon:
-            self.supcon = ClassBalancedSupConLoss()
-            self.supcon_weight = training_cfg.get('supcon_weight', 0.5)
-            
-        # Prototype Repulsion
-        self.repulsion_weight = training_cfg.get('repulsion_weight', 0.1)
-
-    def forward(self, logits, targets, model=None):
-        loss = self.ce_weight * self.ce(logits, targets)
+        # Intra-class loss per sample (InfoNCE style)
+        # Average over top-k subgraphs
+        loss_intra = -(log_sum_exp_pos - log_sum_exp_all).mean(dim=1) # (B,)
         
-        if model is not None:
-            # Class-balanced SupCon Loss
-            if self.use_supcon and hasattr(model, '_latest_features'):
-                features = model._latest_features
-                l_supcon = self.supcon(features, targets)
-                loss = loss + self.supcon_weight * l_supcon
-                
-        return loss
+        # 3. Inter-class Separation (Contrastive/Triplet style)
+        # We want Avg(pos_scores) > Avg(neg_scores) + margin
+        pos_avg = (selected_scores * mask).sum(dim=-1) / self.motifs_per_class
+        neg_avg = (selected_scores * (1 - mask)).sum(dim=-1) / (Total_Motifs - self.motifs_per_class)
+        
+        # Contrastive margin loss per sample
+        margin = 0.2
+        loss_inter = F.relu(margin + neg_avg - pos_avg).mean(dim=1) # (B,)
+        
+        total_loss = loss_intra + loss_inter
+        
+        if reduction == 'mean':
+            return total_loss.mean()
+        return total_loss
+
+
+
 
 def build_loss(config, class_weights=None):
+    """ Define loss for traning, cross_entropy: default
+        Args:
+            config: all config load from yaml
+            class_weight=None: apply class weight or not?
+    """
     loss_name = config['training'].get('loss', 'cross_entropy')
 
     if loss_name == 'cross_entropy':
         label_smoothing = config['training'].get('label_smoothing', 0.0)
-        loss = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
+        if class_weights is not None:
+            loss = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
+        else:
+            loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
 
-    elif loss_name == 'emo_gnp_combined':
-        loss = EMOGNPCombinedLoss(config, class_weights)
+    elif loss_name == 'focal':
+        # Simple focal loss implementation wrapper
+        gamma = config['training'].get('focal_gamma', 2.0)
+        alpha = config['training'].get('focal_alpha', None)
 
-    else:
-        # Fallback to simple cross entropy
-        loss = nn.CrossEntropyLoss(weight=class_weights)
+        class FocalLoss(nn.Module):
+            def __init__(self, gamma=2.0, alpha=None, reduction='mean'):
+                super().__init__()
+                self.gamma = gamma
+                self.alpha = alpha
+                self.reduction = reduction
+
+            def forward(self, inputs, targets):
+                ce = nn.functional.cross_entropy(inputs, targets, reduction='none')
+                p_t = torch.exp(-ce)
+                loss = ((1 - p_t) ** self.gamma) * ce
+                if self.alpha is not None:
+                    at = self.alpha[targets]
+                    loss = at * loss
+                if self.reduction == 'mean':
+                    return loss.mean()
+                elif self.reduction == 'sum':
+                    return loss.sum()
+                return loss
+
+        alpha_tensor = None
+        if alpha is not None:
+            alpha_tensor = torch.tensor(alpha, dtype=torch.float)
+        loss = FocalLoss(gamma=gamma, alpha=alpha_tensor)
+
+    elif loss_name == 'motif_combined':
+        # Combined CrossEntropy and MotifConsistencyLoss
+        alpha_weight = config['training'].get('motif_loss_weight', 0.5)
+        ce_loss = nn.CrossEntropyLoss()
+        motif_loss = MotifConsistencyLoss(
+            num_classes=config['model'].get('num_classes', 7),
+            motifs_per_class=config['model'].get('motifs_per_class', 8),
+            tau=config['training'].get('motif_tau', 0.1)
+        )
+        
+        class CombinedMotifLoss(nn.Module):
+            def __init__(self, ce, motif, weight, div_weight=0.1):
+                super().__init__()
+                self.ce = ce
+                self.motif = motif
+                self.weight = weight
+                self.div_weight = div_weight
+            
+            def forward(self, logits, targets, scores=None, top_k_idx=None, model=None):
+                l_ce = self.ce(logits, targets)
+                
+                if scores is not None and top_k_idx is not None:
+                    l_motif = self.motif(scores, top_k_idx, targets)
+                    loss = l_ce + self.weight * l_motif
+                else:
+                    loss = l_ce
+                
+                if model is not None and hasattr(model, 'compute_motif_diversity_loss'):
+                    l_div = model.compute_motif_diversity_loss()
+                    loss = loss + self.div_weight * l_div
+                return loss
+
+        loss = CombinedMotifLoss(
+            ce_loss, motif_loss, alpha_weight, 
+            div_weight=config['training'].get('motif_div_weight', 0.1)
+        )
+
+    else: 
+        raise ValueError(f"\n[!!!] Not support {loss_name} loss!\n")
 
     return loss
+
+
+if __name__ == "__main__":
+    config_default = {'training': {}}
+    loss_fn = build_loss(config_default)
+    print(f"Test 1 (Default): {type(loss_fn)}") 
+    # Expect: <class 'torch.nn.modules.loss.CrossEntropyLoss'>
+
+    config_explicit = {'training': {'loss': 'cross_entropy'}}
+    loss_fn = build_loss(config_explicit)
+    print(f"Test 2 (Explicit): {type(loss_fn)}")
+    # Expect: <class 'torch.nn.modules.loss.CrossEntropyLoss'>
+    # Ok
