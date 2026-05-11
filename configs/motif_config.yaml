@@ -21,6 +21,7 @@ training:
   weight_decay: 5e-4
   loss: "cross_entropy"
   label_smoothing: 0.1
+  class_weight_mode: "sqrt_inverse"
   motif_consistency_weight: 0.05
   motif_diversity_weight: 0.05
   attn_entropy_weight: 0.01
