@@ -65,8 +65,53 @@ class MotifBackbone(nn.Module):
         self.dim_reducer = nn.Sequential(
             nn.Conv2d(512, feat_dim, kernel_size=1, bias=False),
             nn.BatchNorm2d(feat_dim),
-            nn.ReLU()
+            nn.ReLU(inplace=True)
         )
+
+    def load_pretrained_cnn(self, checkpoint_path):
+        import os
+        if not os.path.exists(checkpoint_path):
+            print(f"WARNING: CNN checkpoint {checkpoint_path} not found. Skipping.")
+            return
+
+        print(f"Loading pretrained CNN from {checkpoint_path}...")
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        except Exception as e:
+            print(f"Error loading checkpoint: {e}")
+            return
+            
+        if 'state_dict' in checkpoint:
+            state_dict = checkpoint['state_dict']
+        elif 'model_state_dict' in checkpoint:
+            state_dict = checkpoint['model_state_dict']
+        elif 'model' in checkpoint:
+            state_dict = checkpoint['model']
+        elif 'net' in checkpoint:
+            state_dict = checkpoint['net']
+        else:
+            state_dict = checkpoint
+            
+        model_dict = self.state_dict()
+        pretrained_dict = {}
+        
+        for k, v in state_dict.items():
+            # Clean common prefixes from RMN or generic wrappers
+            name = k.replace('module.', '').replace('backbone.', '').replace('resnet.', '').replace('net.', '')
+            
+            if name in model_dict:
+                if v.shape == model_dict[name].shape:
+                    pretrained_dict[name] = v
+                else:
+                    # Skip layers with shape mismatch (e.g., conv1 7x7 vs 3x3)
+                    pass
+                    
+        if len(pretrained_dict) == 0:
+            print("WARNING: No matching keys found. Checkpoint format might be unsupported.")
+        else:
+            print(f"Successfully loaded {len(pretrained_dict)}/{len(model_dict)} matching layers from CNN checkpoint.")
+            model_dict.update(pretrained_dict)
+            self.load_state_dict(model_dict)
 
     def forward(self, x):
         x = self.conv1(x)
@@ -290,6 +335,11 @@ class MotifGraphModel(nn.Module):
         
         self.backbone = MotifBackbone(feat_dim=self.feat_dim)
         
+        # UPDATE: Load custom CNN checkpoint if provided
+        pretrained_cnn_path = config.get('pretrained_cnn_path', "")
+        if pretrained_cnn_path != "":
+            self.backbone.load_pretrained_cnn(pretrained_cnn_path)
+            
         # 4. Global Branch: Capture overall face context
         self.global_pool = nn.AdaptiveAvgPool2d(1)
         self.global_fc = nn.Sequential(
