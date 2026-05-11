@@ -12,6 +12,28 @@ except ImportError:
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
     from models.CBAM import CBAM
 
+class SpatialResidualMasking(nn.Module):
+    """
+    Lightweight Spatial Residual Masking Block.
+    Generates a spatial attention mask and applies it via a residual connection.
+    This suppresses background noise and highlights micro-expressions.
+    """
+    def __init__(self, in_channels):
+        super().__init__()
+        # Bottleneck to reduce parameters
+        reduced_channels = in_channels // 4
+        self.mask_generator = nn.Sequential(
+            nn.Conv2d(in_channels, reduced_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(reduced_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(reduced_channels, 1, kernel_size=1, bias=False),
+            nn.Sigmoid()
+        )
+        
+    def forward(self, x):
+        mask = self.mask_generator(x)
+        # Residual masking: x' = x + x * M
+        return x + x * mask
 class MotifBackbone(nn.Module):
     """
     Advanced Backbone with Pretrained ResNet18 for stronger feature extraction.
@@ -37,7 +59,7 @@ class MotifBackbone(nn.Module):
         self.layer3 = resnet.layer3 # 12x12
         self.layer4 = resnet.layer4 # 6x6, 512 channels
         
-        self.final_cbam = CBAM(512)
+        self.residual_masking = SpatialResidualMasking(512)
         
         # Reduce dimension to expected feat_dim (128)
         self.dim_reducer = nn.Sequential(
@@ -57,7 +79,7 @@ class MotifBackbone(nn.Module):
         x = self.layer3(x)
         x = self.layer4(x)
         
-        x = self.final_cbam(x)
+        x = self.residual_masking(x)
         x = self.dim_reducer(x)
         return x
 
