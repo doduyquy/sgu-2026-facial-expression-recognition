@@ -102,9 +102,15 @@ def plot_attention_heatmap_grid(images, true_labels, pred_labels, attns, title, 
             res = attn[:, 9:]
             attn = (vgg + res) / 2.0  # Average 2 backbone [6, 9]
             
-        if attn.shape == (6, 9):
-            attn = attn.mean(axis=0)  # Average 6 regions -> [9]
-            attn = attn.reshape(3, 3) 
+        if attn.ndim == 2 and attn.shape[0] == 6:
+            attn = attn.mean(axis=0)  # Average 6 regions -> [num_visual_tokens]
+
+        if attn.ndim == 1:
+            side = int(np.sqrt(attn.shape[0]))
+            if side * side == attn.shape[0]:
+                attn = attn.reshape(side, side)
+            else:
+                attn = attn.reshape(1, -1)
             
         # Normalize to 0-1
         attn = (attn - attn.min()) / (attn.max() - attn.min() + 1e-8)

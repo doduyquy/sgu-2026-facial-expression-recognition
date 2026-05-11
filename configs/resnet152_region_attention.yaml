@@ -1,0 +1,63 @@
+_base_: "base.yaml"
+
+model:
+  name: "resnet152_region_attention"
+
+  # Source checkpoint that already reaches about 73% as a plain ResNet152.
+  # This file is used as the frozen visual backbone for the new region-attention head.
+  pretrained_resnet_path: "checkpoints/resnet152_rot30_2019Nov14_12.47"
+
+  embed_dim: 512
+  num_heads: 4
+  num_regions: 6
+  num_encoder_layers: 2
+  transformer_dropout: 0.2
+
+  # Keep ResNet152 layer4 exactly as the visual backbone endpoint:
+  # [B, 2048, 7, 7] on 224x224 input -> flatten to 49 visual tokens.
+  # The avgpool/fc classifier tail is skipped by the attention branch.
+  feature_layer: "layer4"
+  pool_visual_tokens: false
+  use_visual_pos_embed: true
+  token_grid_size: 3
+  fusion_type: "transformer"
+
+  # CLIP gives K text/region query vectors, default K = num_regions = 6.
+  use_clip_dictionary: true
+  clip_model_name: "openai/clip-vit-base-patch32"
+
+  # "attention": train/evaluate only the new attention head.
+  # "source": evaluate the original fc from the ResNet152 checkpoint, if present.
+  # "sum": residual blend of attention logits and original checkpoint logits.
+  logit_fusion: "attention"
+  attention_logit_weight: 1.0
+  source_logit_weight: 1.0
+
+  # Phase 1 freezes the 73% ResNet152 backbone and trains only the new head.
+  freeze_backbone_epochs: 5
+  ortho_loss_weight: 0.01
+
+data:
+  image_size: 224
+  channels: 3
+  normalize: false
+  batch_size: 8
+  num_workers: 0
+
+training:
+  epochs: 25
+  patience: 8
+  monitor: "val_accuracy"
+  loss: "cross_entropy"
+  label_smoothing: 0.05
+  optimizer: "adamw"
+  lr: 0.0001
+  finetune_lr: 0.00002
+  weight_decay: 0.0001
+  scheduler: "reduce_lr_on_plateau"
+  lr_factor: 0.5
+  lr_patience: 2
+  use_class_weights: false
+
+logging:
+  use_wandb: false

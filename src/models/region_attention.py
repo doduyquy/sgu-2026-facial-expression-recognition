@@ -384,6 +384,7 @@ class RegionAlignedFER(nn.Module):
         self.num_regions = model_cfg.get('num_regions', 6)
         self.num_layers = model_cfg.get('num_encoder_layers', 2)
         self.dropout_rate = model_cfg.get('transformer_dropout', 0.1)
+        self.legacy_checkpoint_compat = model_cfg.get('legacy_checkpoint_compat', False)
         num_classes = config['data']['num_classes']
 
         # ===== 1. Dual Backbone (Feature Extractors) =====
@@ -399,7 +400,13 @@ class RegionAlignedFER(nn.Module):
 
         # ===== 2. Region Tokens =====
         self.cross_attention_direction = model_cfg.get('cross_attention_direction', 'region_query')
+        if self.legacy_checkpoint_compat:
+            self.cross_attention_direction = 'region_query'
+
         self.use_clip_dictionary = model_cfg.get('use_clip_dictionary', False)
+        if self.legacy_checkpoint_compat:
+            self.use_clip_dictionary = False
+
         if self.use_clip_dictionary:
             clip_model_name = model_cfg.get('clip_model_name', "openai/clip-vit-base-patch32")
             self.region_dict = CLIPFacialRegionDictionary(
@@ -429,16 +436,19 @@ class RegionAlignedFER(nn.Module):
             )
             print("--> Cross-attention direction: region tokens query visual patch tokens")
         
-        # Positional Encoding Cố Định 2D (Sin-Cos) cho lưới 3x3 tokens
-        # Sinh 1 ma trận tọa độ, xài chung hệ quy chiếu cho cả VGG và ResNet
-        sincos = get_2d_sincos_pos_embed(self.embed_dim, grid_size=3).unsqueeze(0)  # [1, 9, 512]
-        self.register_buffer('grid_pos_embed', sincos)
+        # Legacy checkpoints were trained before visual/type positional embeddings
+        # were added. Keep the module graph identical when re-evaluating them.
+        if not self.legacy_checkpoint_compat:
+            # Positional Encoding Cố Định 2D (Sin-Cos) cho lưới 3x3 tokens
+            # Sinh 1 ma trận tọa độ, xài chung hệ quy chiếu cho cả VGG và ResNet
+            sincos = get_2d_sincos_pos_embed(self.embed_dim, grid_size=3).unsqueeze(0)  # [1, 9, 512]
+            self.register_buffer('grid_pos_embed', sincos)
 
-        # Type Embeddings để phân biệt VGG và ResNet khi nối lại
-        self.vgg_type_embed = nn.Parameter(torch.randn(1, 1, self.embed_dim) * 0.02)
-        self.res_type_embed = nn.Parameter(torch.randn(1, 1, self.embed_dim) * 0.02)
-        visual_pos_embed = torch.cat([sincos, sincos], dim=1)  # [1, 18, 512]
-        self.register_buffer('visual_pos_embed', visual_pos_embed)
+            # Type Embeddings để phân biệt VGG và ResNet khi nối lại
+            self.vgg_type_embed = nn.Parameter(torch.randn(1, 1, self.embed_dim) * 0.02)
+            self.res_type_embed = nn.Parameter(torch.randn(1, 1, self.embed_dim) * 0.02)
+            visual_pos_embed = torch.cat([sincos, sincos], dim=1)  # [1, 18, 512]
+            self.register_buffer('visual_pos_embed', visual_pos_embed)
 
         # ===== 4. Hyper-visual Representation =====
         # Pool visual features → single vector, rồi broadcast cộng vào Φ_sem
@@ -450,6 +460,9 @@ class RegionAlignedFER(nn.Module):
 
         # ===== 5. Transformer / SubGraph Encoder =====
         self.fusion_type = model_cfg.get('fusion_type', 'transformer')
+        if self.legacy_checkpoint_compat:
+            self.fusion_type = 'transformer'
+
         if self.cross_attention_direction == 'visual_query' and self.fusion_type == 'subgraph':
             raise ValueError("fusion_type='subgraph' expects 6 region tokens, but visual_query produces 18 visual tokens.")
         
@@ -495,7 +508,8 @@ class RegionAlignedFER(nn.Module):
             self.pos_embed = nn.Parameter(
                 torch.randn(1, self.num_regions, self.embed_dim) * 0.02
             )
-        self.visual_residual_norm = nn.LayerNorm(self.embed_dim)
+        if not self.legacy_checkpoint_compat:
+            self.visual_residual_norm = nn.LayerNorm(self.embed_dim)
 
         # ===== 6. Classification Head =====
         self.classifier = nn.Sequential(
@@ -580,9 +594,10 @@ class RegionAlignedFER(nn.Module):
         res_feat = self.res_backbone(x)          # [B, 9, 1024]
         res_feat = self.proj_res(res_feat)       # [B, 9, 512]
 
-        # Áp dụng chung ma trận vị trí tĩnh (Sin-Cos) cộng thêm Type Embedding cho từng backbone
-        vgg_feat = vgg_feat + self.grid_pos_embed + self.vgg_type_embed
-        res_feat = res_feat + self.grid_pos_embed + self.res_type_embed
+        if not self.legacy_checkpoint_compat:
+            # Áp dụng chung ma trận vị trí tĩnh (Sin-Cos) cộng thêm Type Embedding cho từng backbone
+            vgg_feat = vgg_feat + self.grid_pos_embed + self.vgg_type_embed
+            res_feat = res_feat + self.grid_pos_embed + self.res_type_embed
 
         # Φ_visual: nối đặc trưng từ cả hai backbone
         visual_features = torch.cat([vgg_feat, res_feat], dim=1)  # [B, 18, 512]
@@ -614,7 +629,7 @@ class RegionAlignedFER(nn.Module):
         else:
             hyper_visual = hyper_visual + self.pos_embed        # [B, 6, 512]
         encoded = self.transformer_encoder(hyper_visual)        # [B, 6/18, 512]
-        if self.cross_attention_direction == 'visual_query':
+        if self.cross_attention_direction == 'visual_query' and not self.legacy_checkpoint_compat:
             encoded = self.visual_residual_norm(encoded + visual_features)
 
         # ── 6. Classification ──

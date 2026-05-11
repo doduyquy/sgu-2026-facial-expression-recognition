@@ -8,6 +8,7 @@ from .resnet import ResNet50, ResNet152
 from .dual_fusion import VGGResNetAttentionFusion
 from .region_attention import RegionAlignedFER
 from .resnet_region_attention import ResNetRegionAlignedFER
+from .resnet152_region_attention import ResNet152RegionAttentionFER
 from .swin_region_attention import SwinRegionAlignedFER
 from .GraphNN import MotifGNN
 from .PixelGNN import PixelGNN
@@ -40,6 +41,7 @@ MODEL_REGISTRY = {
     "vgg_resnet_attention": lambda **kw: VGGResNetAttentionFusion(config=kw['config'], channels=kw['config']['data']['channels']),
     "region_aligned_fer": lambda **kw: RegionAlignedFER(config=kw['config'], channels=kw['config']['data']['channels']),
     "resnet_region_aligned_fer": lambda **kw: ResNetRegionAlignedFER(config=kw['config'], channels=kw['config']['data']['channels']),
+    "resnet152_region_attention": lambda **kw: ResNet152RegionAttentionFER(config=kw['config'], channels=kw['config']['data']['channels']),
     "swin_region_aligned_fer": lambda **kw: SwinRegionAlignedFER(config=kw['config'], channels=kw['config']['data']['channels']),
     "motif_gnn": lambda **kw: MotifGNN(config=kw['config'], channels=kw['config']['data']['channels']),
     "pixel_gnn": lambda **kw: PixelGNN(config=kw['config'], channels=kw['config']['data']['channels']),
