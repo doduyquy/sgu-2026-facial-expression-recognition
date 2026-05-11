@@ -132,6 +132,11 @@ def main():
     if args.output_dir is not None:
         config["output_dir"] = args.output_dir
 
+    # Source-only eval is just a sanity check for the original checkpoint head.
+    # It should not require downloading/initializing CLIP text embeddings.
+    if args.eval_only and config["model"].get("logit_fusion") == "source":
+        config["model"]["use_clip_dictionary"] = False
+
     set_seed(config["seed"].get("random_seed", 42))
     device = resolve_device(args.device)
     print(f"--> Using device: {device}")
