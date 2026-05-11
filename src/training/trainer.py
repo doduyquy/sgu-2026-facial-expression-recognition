@@ -548,7 +548,7 @@ class Trainer:
             # Phase 1: very early (0-20%): SCN OFF, MixUp ON
             # Phase 2: (20-70%): SCN ON, stronger landmark signals
             # Phase 3: (70-100%): heavy refinement for landmark branch
-            if progress <= 0.05:
+            if progress <= 0.06:
                 # Phase 1 (0-20%): conservative — 
                 self._runtime_diversity_lambda = 0.0
                 self._runtime_entropy_lambda = 0.0

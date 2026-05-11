@@ -219,6 +219,8 @@ class GraphMotifModule(nn.Module):
         sim_align = torch.einsum('bkc,lmjc->blmkj', region_features, motifs)
         align_weights = F.softmax(sim_align, dim=-1)
         aligned_motifs = torch.einsum('blmkj,lmjc->blmkc', align_weights, motifs)
+        # UPDATE: Re-normalize aligned motifs to maintain true cosine similarity space
+        aligned_motifs = F.normalize(aligned_motifs, p=2, dim=-1)
         node_sim = torch.einsum('bkc,blmkc->blmk', region_features, aligned_motifs)
         
         # 3. Edge Structure Matching (Pairwise differences) - Memory Efficient Formulation
@@ -288,11 +290,11 @@ class MotifGraphModel(nn.Module):
         
         self.backbone = MotifBackbone(feat_dim=self.feat_dim)
         
-        # 4. Global Branch: Capture overall face context (Spatial Preservation)
-        spatial_dim = self.feat_dim * 6 * 6
+        # 4. Global Branch: Capture overall face context
+        self.global_pool = nn.AdaptiveAvgPool2d(1)
         self.global_fc = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(spatial_dim, 128),
+            nn.Linear(self.feat_dim, 128),
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(128, self.num_classes)
@@ -361,8 +363,8 @@ class MotifGraphModel(nn.Module):
     def _extract_deformable_subgraphs(self, feat_map, H, W, node_feats):
         B, C_feat, _, _ = feat_map.shape
         
-        # 1. Base sampling grid (8 strategic centers covering perimeter and core)
-        centers = [(1,1), (1,4), (2,2), (2,3), (3,2), (3,3), (4,1), (4,4)]
+        # Base sampling grid (4 expanded corners instead of clustered center)
+        centers = [(1,1), (1,4), (4,1), (4,4)]
         center_indices = [i * W + j for i, j in centers]
         center_indices = torch.tensor(center_indices, device=feat_map.device)
         num_cands = len(center_indices)
@@ -402,21 +404,18 @@ class MotifGraphModel(nn.Module):
         if targets is not None:
             self._latest_targets = targets
             
-        # Handle TenCrop input: (B, 10, C, H, W) sequentially to save memory
+        # Handle TenCrop input: (B, 10, C, H, W)
         if x.dim() == 5:
             B, T, C, H, W = x.shape
-            logits_list = []
-            for t in range(T):
-                x_t = x[:, t]  # (B, C, H, W)
-                # Recursive call for each crop
-                if targets is not None:
-                    logits_t = self.forward(x_t, targets=targets)
-                else:
-                    logits_t = self.forward(x_t)
-                logits_list.append(logits_t)
-                
+            x = x.view(B * T, C, H, W)
+            # Recursive call to handle all crops (expand targets to match B*T)
+            if targets is not None:
+                targets_expanded = targets.unsqueeze(1).expand(-1, T).reshape(-1)
+                logits = self.forward(x, targets=targets_expanded)
+            else:
+                logits = self.forward(x) 
             # Average predictions across all 10 crops
-            return torch.stack(logits_list, dim=1).mean(dim=1)
+            return logits.view(B, T, -1).mean(dim=1)
 
         B = x.shape[0]
         
@@ -424,7 +423,7 @@ class MotifGraphModel(nn.Module):
         _, _, H, W = feat_map.shape
         
         # 4. Global Branch prediction
-        logits_global = self.global_fc(feat_map)
+        logits_global = self.global_fc(self.global_pool(feat_map))
         
         # Motif Branch
         nodes_with_coords, adj = self._get_global_graph(feat_map)
@@ -553,8 +552,8 @@ class MotifGraphModel(nn.Module):
         # 4. Kích hoạt Motif Consistency Loss tại đây
         if hasattr(self, '_latest_targets') and self._latest_targets is not None:
             progress = getattr(self, 'training_progress', 1.0)
-            # Tạm tắt Motif Consistency trong Phase 1 (progress <= 0.08) vì Mixup trộn nhãn
-            if self.training and progress <= 0.08:
+            # Tạm tắt Motif Consistency trong Phase 1 (progress <= 0.05) vì Mixup trộn nhãn
+            if self.training and progress <= 0.06:
                 l_motif_consist = torch.tensor(0.0, device=self._latest_scores.device)
             else:
                 l_motif_consist = self.motif_consistency_loss(
@@ -594,7 +593,7 @@ class MotifGraphModel(nn.Module):
 
 if __name__ == "__main__":
     config = {
-        'feat_dim': 128,
+        'feat_dim': 64,
         'num_classes': 7,
         'motifs_per_class': 4,
         'top_k': 4
@@ -607,6 +606,6 @@ if __name__ == "__main__":
     print(f"4D Output shape: {out_4d.shape}") # (2, 7)
     
     # Test 5D (TenCrop)
-    dummy_img_5d = torch.randn(2, 10, 1, 48, 48)
+    dummy_img_5d = torch.randn(2, 10, 1, 40, 40)
     out_5d = model(dummy_img_5d)
     print(f"5D Output shape: {out_5d.shape}") # (2, 7)
