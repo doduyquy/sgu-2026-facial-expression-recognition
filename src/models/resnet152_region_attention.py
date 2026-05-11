@@ -391,6 +391,9 @@ class ResNet152RegionAttentionFER(nn.Module):
     def unfreeze_backbones(self):
         for param in self.parameters():
             param.requires_grad = True
+        if self.logit_fusion == "attention":
+            for param in self.res_backbone.source_fc.parameters():
+                param.requires_grad = False
         self.is_frozen = False
         print("[ResNet152RegionAttention] All parameters UNFROZEN.")
 
@@ -440,7 +443,9 @@ class ResNet152RegionAttentionFER(nn.Module):
         pooled = encoded.mean(dim=1)
         attention_logits = self.classifier(pooled)
 
-        source_logits = self.res_backbone.source_logits(global_feat)
+        source_logits = None
+        if self.logit_fusion in ("source", "sum"):
+            source_logits = self.res_backbone.source_logits(global_feat)
         logits = self._combine_logits(attention_logits, source_logits)
 
         attn_norm = F.normalize(attn_weights, p=2, dim=-1)

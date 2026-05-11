@@ -61,3 +61,11 @@ training:
 
 logging:
   use_wandb: false
+
+ddp:
+  # Use with: torchrun --standalone --nproc_per_node=2 scripts/run_resnet152_region_attention.py ...
+  # batch_size in data is treated as global batch size and split per GPU.
+  batch_size_is_global: true
+  find_unused_parameters: true
+  broadcast_buffers: true
+  sync_batchnorm: false

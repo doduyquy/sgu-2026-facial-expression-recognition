@@ -3,13 +3,20 @@ model:
   dropout_dense: 0.5  # dropout ratio for fully connected layer (dense)
 
 training: 
+  epochs: 130
+  patience: 25
+  monitor: "val_loss"
   loss: 'cross_entropy'
   optimizer: "adam"       # adam(*) | sgd 
+  lr: 0.001
+  weight_decay: 0.0005
+  label_smoothing: 0.05
+  use_class_weights: false
   # optimier: 'sgd'
   # gamma: 0.9
   scheduler: "reduce_lr_on_plateau"  # none | step | cosine | reduce_lr_on_plateau (*)
   lr_factor: 0.5
-  lr_patience: 3
+  lr_patience: 5
 
   # scheduler: "step"
   # lr_step_size: 10
