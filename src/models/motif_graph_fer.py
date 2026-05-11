@@ -402,18 +402,21 @@ class MotifGraphModel(nn.Module):
         if targets is not None:
             self._latest_targets = targets
             
-        # Handle TenCrop input: (B, 10, C, H, W)
+        # Handle TenCrop input: (B, 10, C, H, W) sequentially to save memory
         if x.dim() == 5:
             B, T, C, H, W = x.shape
-            x = x.view(B * T, C, H, W)
-            # Recursive call to handle all crops (expand targets to match B*T)
-            if targets is not None:
-                targets_expanded = targets.unsqueeze(1).expand(-1, T).reshape(-1)
-                logits = self.forward(x, targets=targets_expanded)
-            else:
-                logits = self.forward(x) 
+            logits_list = []
+            for t in range(T):
+                x_t = x[:, t]  # (B, C, H, W)
+                # Recursive call for each crop
+                if targets is not None:
+                    logits_t = self.forward(x_t, targets=targets)
+                else:
+                    logits_t = self.forward(x_t)
+                logits_list.append(logits_t)
+                
             # Average predictions across all 10 crops
-            return logits.view(B, T, -1).mean(dim=1)
+            return torch.stack(logits_list, dim=1).mean(dim=1)
 
         B = x.shape[0]
         
