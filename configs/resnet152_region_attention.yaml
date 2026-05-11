@@ -50,7 +50,7 @@ data:
 
 training:
   epochs: 60
-  patience: 12
+  patience: 25
   monitor: "val_accuracy"
   loss: "cross_entropy"
   label_smoothing: 0.05
@@ -60,7 +60,7 @@ training:
   weight_decay: 0.0001
   scheduler: "reduce_lr_on_plateau"
   lr_factor: 0.5
-  lr_patience: 2
+  lr_patience: 5
   use_class_weights: false
 
 logging:
