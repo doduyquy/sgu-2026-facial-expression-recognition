@@ -45,8 +45,8 @@ data:
   num_workers: 0
 
 training:
-  epochs: 
-  patience: 8
+  epochs: 60
+  patience: 12
   monitor: "val_accuracy"
   loss: "cross_entropy"
   label_smoothing: 0.05

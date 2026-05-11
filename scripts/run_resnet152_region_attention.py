@@ -180,6 +180,10 @@ def main():
             config["data"]["batch_size"] = args.batch_size
         if args.epochs is not None:
             config["training"]["epochs"] = args.epochs
+        if config["training"].get("epochs") is None:
+            config["training"]["epochs"] = 60
+            if is_main_process():
+                print("--> training.epochs was empty; fallback to 60 epochs.")
         if args.logit_fusion is not None:
             config["model"]["logit_fusion"] = args.logit_fusion
         if args.output_dir is not None:
