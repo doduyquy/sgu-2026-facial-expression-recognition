@@ -19,8 +19,8 @@ def build_transform(config, split="train") -> Compose: # train | val | test
     if split == "train":
         # Standard augmentation for training (NO TenCrop - too slow)
         trans = transforms.Compose([
-            transforms.RandomCrop(image_size, padding=4, padding_mode='reflect'),
-            transforms.RandomApply([transforms.RandomAffine(0, translate=(0.1, 0.1))], p=0.5),
+            transforms.RandomResizedCrop(image_size, scale=(0.8, 1.2)),
+            transforms.RandomApply([transforms.RandomAffine(0, translate=(0.2, 0.2))], p=0.5),
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomApply([transforms.RandomRotation(10)], p=0.5),
             transforms.ToTensor(),

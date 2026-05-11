@@ -288,11 +288,11 @@ class MotifGraphModel(nn.Module):
         
         self.backbone = MotifBackbone(feat_dim=self.feat_dim)
         
-        # 4. Global Branch: Capture overall face context
-        self.global_pool = nn.AdaptiveAvgPool2d(1)
+        # 4. Global Branch: Capture overall face context (Spatial Preservation)
+        spatial_dim = self.feat_dim * 6 * 6
         self.global_fc = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(self.feat_dim, 128),
+            nn.Linear(spatial_dim, 128),
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(128, self.num_classes)
@@ -361,10 +361,9 @@ class MotifGraphModel(nn.Module):
     def _extract_deformable_subgraphs(self, feat_map, H, W, node_feats):
         B, C_feat, _, _ = feat_map.shape
         
-        center_indices = []
-        for i in range(2, H - 2):  # UPDATE: margin for 4x4 sampling
-            for j in range(2, W - 2):
-                center_indices.append(i * W + j)
+        # 1. Base sampling grid (8 strategic centers covering perimeter and core)
+        centers = [(1,1), (1,4), (2,2), (2,3), (3,2), (3,3), (4,1), (4,4)]
+        center_indices = [i * W + j for i, j in centers]
         center_indices = torch.tensor(center_indices, device=feat_map.device)
         num_cands = len(center_indices)
         
@@ -422,7 +421,7 @@ class MotifGraphModel(nn.Module):
         _, _, H, W = feat_map.shape
         
         # 4. Global Branch prediction
-        logits_global = self.global_fc(self.global_pool(feat_map))
+        logits_global = self.global_fc(feat_map)
         
         # Motif Branch
         nodes_with_coords, adj = self._get_global_graph(feat_map)
@@ -592,7 +591,7 @@ class MotifGraphModel(nn.Module):
 
 if __name__ == "__main__":
     config = {
-        'feat_dim': 64,
+        'feat_dim': 128,
         'num_classes': 7,
         'motifs_per_class': 4,
         'top_k': 4
@@ -605,6 +604,6 @@ if __name__ == "__main__":
     print(f"4D Output shape: {out_4d.shape}") # (2, 7)
     
     # Test 5D (TenCrop)
-    dummy_img_5d = torch.randn(2, 10, 1, 40, 40)
+    dummy_img_5d = torch.randn(2, 10, 1, 48, 48)
     out_5d = model(dummy_img_5d)
     print(f"5D Output shape: {out_5d.shape}") # (2, 7)

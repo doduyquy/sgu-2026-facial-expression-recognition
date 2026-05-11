@@ -558,7 +558,7 @@ class Trainer:
                 self._runtime_aux_cls_lambda = 0.0
                 self._runtime_aux_consistency_lambda = 0.0
                 self._runtime_use_scn = False
-                self._runtime_use_mixup = False
+                self._runtime_use_mixup = True
                 self._runtime_phase = 1
             elif progress <= 0.7:
                 # Phase 2 (20-70%): enable SCN and stronger landmark auxiliaries
