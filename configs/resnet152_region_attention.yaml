@@ -29,8 +29,8 @@ model:
   # "attention": train/evaluate only the new attention head.
   # "source": evaluate the original fc from the ResNet152 checkpoint, if present.
   # "sum": residual blend of attention logits and original checkpoint logits.
-  logit_fusion: "attention"
-  attention_logit_weight: 1.0
+  logit_fusion: "sum"
+  attention_logit_weight: 0.3
   source_logit_weight: 1.0
 
   # Keep the 73% ResNet152 as a frozen CNN feature extractor.
