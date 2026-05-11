@@ -290,6 +290,7 @@ class ResNet152RegionAttentionFER(nn.Module):
         self.attention_logit_weight = model_cfg.get("attention_logit_weight", 1.0)
         self.source_logit_weight = model_cfg.get("source_logit_weight", 1.0)
         self.freeze_epochs = model_cfg.get("freeze_backbone_epochs", 0)
+        self.unfreeze_backbone = model_cfg.get("unfreeze_backbone", False)
         self.is_frozen = False
         self.return_attn = False
 
@@ -391,14 +392,26 @@ class ResNet152RegionAttentionFER(nn.Module):
     def unfreeze_backbones(self):
         for param in self.parameters():
             param.requires_grad = True
-        if self.logit_fusion == "attention":
+        if self.logit_fusion in ("attention", "sum"):
             for param in self.res_backbone.source_fc.parameters():
                 param.requires_grad = False
         self.is_frozen = False
         print("[ResNet152RegionAttention] All parameters UNFROZEN.")
 
+    def train(self, mode=True):
+        super().train(mode)
+        if mode and self.is_frozen:
+            self.res_backbone.backbone.eval()
+            self.res_backbone.source_fc.eval()
+        return self
+
     def check_unfreeze(self, epoch):
-        if self.is_frozen and self.freeze_epochs > 0 and epoch >= self.freeze_epochs:
+        if (
+            self.unfreeze_backbone
+            and self.is_frozen
+            and self.freeze_epochs > 0
+            and epoch >= self.freeze_epochs
+        ):
             self.unfreeze_backbones()
             return True
         return False

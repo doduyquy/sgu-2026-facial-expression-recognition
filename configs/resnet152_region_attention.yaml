@@ -33,8 +33,12 @@ model:
   attention_logit_weight: 1.0
   source_logit_weight: 1.0
 
-  # Phase 1 freezes the 73% ResNet152 backbone and trains only the new head.
+  # Keep the 73% ResNet152 as a frozen CNN feature extractor.
+  # freeze_backbone_epochs > 0 triggers the initial freeze; unfreeze_backbone=false
+  # keeps it frozen for the whole run.
+  # Train only: CLIP/text tokens -> MHA -> ViT-style encoder -> classifier.
   freeze_backbone_epochs: 5
+  unfreeze_backbone: false
   ortho_loss_weight: 0.01
 
 data:
@@ -66,6 +70,6 @@ ddp:
   # Use with: torchrun --standalone --nproc_per_node=2 scripts/run_resnet152_region_attention.py ...
   # batch_size in data is treated as global batch size and split per GPU.
   batch_size_is_global: true
-  find_unused_parameters: true
+  find_unused_parameters: false
   broadcast_buffers: true
   sync_batchnorm: false
