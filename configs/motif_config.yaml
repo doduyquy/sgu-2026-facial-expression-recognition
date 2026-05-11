@@ -20,11 +20,12 @@ training:
   lr: 0.0001
   weight_decay: 5e-4
   loss: "cross_entropy"
+  label_smoothing: 0.1
   motif_consistency_weight: 0.05
   motif_diversity_weight: 0.05
   attn_entropy_weight: 0.01
   offset_reg_weight: 0.01
-  motif_tau: 0.1
+  motif_tau: 0.2
   scheduler: "reduce_lr_on_plateau"
   patience: 25
   factor: 0.5

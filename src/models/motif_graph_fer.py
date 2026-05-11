@@ -136,6 +136,9 @@ class GraphAttentionLayer(nn.Module):
         scores = scores + edge_bias.unsqueeze(1)
         scores = scores * edge_gate.unsqueeze(1)
 
+        if adj is not None:
+            scores = scores.masked_fill(adj.unsqueeze(1) == 0, -1e9)
+
         attn = F.softmax(scores, dim=-1)
         attn = self.attn_drop(attn)
         out = torch.matmul(attn, v) # (B, H, N, d_k)
@@ -321,7 +324,7 @@ class MotifGraphModel(nn.Module):
             top_k=self.top_k
         )
         
-        self.logit_scale = nn.Parameter(torch.ones(1) * 10.0)
+        self.logit_scale = nn.Parameter(torch.ones(1) * 1.0)
         # Weight for combining Motif and Global logits
         self.alpha = nn.Parameter(torch.ones(1) * 0.5)
         
@@ -345,7 +348,7 @@ class MotifGraphModel(nn.Module):
         
         sim_intra = torch.matmul(m_flat, m_flat.transpose(1, 2))
         eye = torch.eye(M, device=m.device).unsqueeze(0)
-        l_intra = (sim_intra * (1 - eye)).mean()
+        l_intra = (torch.abs(sim_intra) * (1 - eye)).mean()
         
         class_centers = m_flat.mean(dim=1) 
         class_centers = F.normalize(class_centers, dim=-1)
@@ -454,7 +457,7 @@ class MotifGraphModel(nn.Module):
         
         # Point 5: Candidate-level attention using learnable query
         cand_scores = (logits_cand * self.cand_query).sum(dim=-1) # (B, num_cands)
-        cand_tau = 0.3
+        cand_tau = 1.0
         attn_weights = F.softmax(cand_scores / cand_tau, dim=1).unsqueeze(-1) 
         
         logits_motif = torch.sum(logits_cand * attn_weights, dim=1)

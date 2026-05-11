@@ -19,7 +19,7 @@ def build_optimizer(model, config):
             
     param_groups = [
         {'params': backbone_params, 'lr': lr},
-        {'params': head_params, 'lr': lr * 10.0}
+        {'params': head_params, 'lr': lr * 2.0}
     ]
 
     if opt_name == 'adam':
