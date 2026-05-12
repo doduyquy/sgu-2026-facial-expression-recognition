@@ -1,0 +1,82 @@
+_base_: "base.yaml"
+
+model:
+  name: "resnet152_landmark_attention"
+
+  # Source checkpoint that already reaches about 73% as a plain ResNet152.
+  pretrained_resnet_path: "checkpoints/resnet152_rot30_2019Nov14_12.47"
+
+  embed_dim: 512
+  num_heads: 4
+  num_regions: 6
+  num_encoder_layers: 2
+  transformer_dropout: 0.15
+
+  # Use layer3 for finer spatial resolution (14x14 = 196 tokens).
+  # This is critical for landmark masks to have meaningful localization.
+  # layer4 (7x7) is too coarse for accurate facial region attention.
+  feature_layer: "layer3"
+  pool_visual_tokens: false
+  use_visual_pos_embed: true
+  token_grid_size: 3
+  fusion_type: "transformer"
+
+  # CLIP text embeddings initialize 6 region queries with semantic meaning.
+  use_clip_dictionary: true
+  clip_model_name: "openai/clip-vit-base-patch32"
+
+  # Pure attention branch — ResNet is only used as a feature extractor.
+  logit_fusion: "attention"
+  finetune_logit_fusion: "attention"
+  attention_logit_weight: 1.0
+  source_logit_weight: 0.0
+
+  # Phase 1: freeze backbone 5 epochs, Phase 2: unfreeze layer3.
+  # Since feature_layer=layer3, layer4 is nn.Identity() and has no parameters.
+  # We must unfreeze layer3 — the actual layer producing visual tokens.
+  freeze_backbone_epochs: 5
+  unfreeze_backbone: true
+  unfreeze_backbone_scope: "layer3"
+  freeze_unfrozen_batchnorm: true
+
+  # Concat preserves per-region identity for the classifier.
+  region_pooling: "concat"
+  classifier_hidden_dim: 1024
+
+  # Stronger ortho penalty to force regions apart (landmark masks already help).
+  ortho_loss_type: "squared_offdiag"
+  ortho_loss_weight: 0.1
+
+data:
+  image_size: 224
+  channels: 3
+  normalize: false
+  batch_size: 8
+  num_workers: 0
+
+training:
+  epochs: 60
+  patience: 25
+  monitor: "val_accuracy"
+  loss: "focal"
+  focal_gamma: 1.5
+  label_smoothing: 0.02
+  optimizer: "adamw"
+  lr: 0.0001
+  visual_extractor_lr: 0.00001
+  finetune_lr: 0.00002
+  weight_decay: 0.0001
+  scheduler: "reduce_lr_on_plateau"
+  lr_factor: 0.5
+  lr_patience: 5
+  use_class_weights: false
+  use_amp: true
+
+logging:
+  use_wandb: true
+
+ddp:
+  batch_size_is_global: true
+  find_unused_parameters: false
+  broadcast_buffers: true
+  sync_batchnorm: false

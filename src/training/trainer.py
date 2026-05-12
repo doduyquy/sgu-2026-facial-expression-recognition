@@ -82,12 +82,21 @@ class Trainer:
         corrects = 0
         total = 0
 
-        for images, labels in self.train_loader:
+        for batch in self.train_loader:
+            if len(batch) == 3:
+                images, labels, region_masks = batch
+                region_masks = region_masks.to(self.device)
+            else:
+                images, labels = batch
+                region_masks = None
             images, labels = images.to(self.device), labels.to(self.device)
 
             self.optimizer.zero_grad()
             with autocast(enabled=self.use_amp):
-                outputs = self.model(images)
+                if region_masks is not None:
+                    outputs = self.model(images, region_masks=region_masks)
+                else:
+                    outputs = self.model(images)
                 
                 # -------------
                 # Check loại tuple trả về
@@ -117,7 +126,10 @@ class Trainer:
 
                 # ── SAM Step 2 ──
                 with autocast(enabled=self.use_amp):
-                    outputs_2 = self.model(images)
+                    if region_masks is not None:
+                        outputs_2 = self.model(images, region_masks=region_masks)
+                    else:
+                        outputs_2 = self.model(images)
                     if isinstance(outputs_2, tuple):
                         if len(outputs_2) == 2 and isinstance(outputs_2[1], torch.Tensor) and outputs_2[1].dim() == 0:
                             main_out_2, aux_loss_2 = outputs_2
@@ -158,11 +170,20 @@ class Trainer:
         total = 0
 
         with torch.no_grad():
-            for images, labels in self.val_loader:
+            for batch in self.val_loader:
+                if len(batch) == 3:
+                    images, labels, region_masks = batch
+                    region_masks = region_masks.to(self.device)
+                else:
+                    images, labels = batch
+                    region_masks = None
                 images, labels = images.to(self.device), labels.to(self.device)
 
                 with autocast(enabled=self.use_amp):
-                    outputs = self.model(images)
+                    if region_masks is not None:
+                        outputs = self.model(images, region_masks=region_masks)
+                    else:
+                        outputs = self.model(images)
                     loss = self.criterion(outputs, labels)
                 running_loss += loss.item() * images.size(0)
 
