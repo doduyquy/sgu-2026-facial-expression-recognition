@@ -26,13 +26,13 @@ model:
   use_clip_dictionary: true
   clip_model_name: "openai/clip-vit-base-patch32"
 
-  # "attention": train/evaluate only the new attention head.
-  # "source": evaluate the original fc from the ResNet152 checkpoint, if present.
-  # "sum": residual blend of attention logits and original checkpoint logits.
-  logit_fusion: "sum"
+  # Use ResNet152 only as a CNN feature extractor:
+  # CNN spatial tokens -> facial-region dictionary/cross-attention -> classifier.
+  # No residual/source logits are added during training.
+  logit_fusion: "attention"
   finetune_logit_fusion: "attention"
-  attention_logit_weight: 0.3
-  source_logit_weight: 1.0
+  attention_logit_weight: 1.0
+  source_logit_weight: 0.0
 
   # Warm up the new attention head first, then fine-tune only ResNet152 layer4.
   freeze_backbone_epochs: 5
