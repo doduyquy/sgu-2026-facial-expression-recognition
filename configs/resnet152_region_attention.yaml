@@ -30,8 +30,8 @@ model:
   # This adds the source logits and attention logits together with specified weights.
   logit_fusion: "sum"
   finetune_logit_fusion: "sum"
-  attention_logit_weight: 0.5
-  source_logit_weight: 0.5
+  attention_logit_weight: 0.3
+  source_logit_weight: 0.7
 
   # Warm up the new attention head first, then fine-tune only ResNet152 layer4.
   freeze_backbone_epochs: 5
