@@ -2,13 +2,44 @@ import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 from .sam import SAM
 
+
+def _build_param_groups(model, lr, visual_extractor_lr=None):
+    if visual_extractor_lr is None:
+        return [param for param in model.parameters() if param.requires_grad]
+
+    head_params = []
+    visual_params = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        clean_name = name[len("module."):] if name.startswith("module.") else name
+        if clean_name.startswith("res_backbone.backbone."):
+            visual_params.append(param)
+        else:
+            head_params.append(param)
+
+    param_groups = []
+    if head_params:
+        param_groups.append({"params": head_params, "lr": lr})
+    if visual_params:
+        param_groups.append({"params": visual_params, "lr": visual_extractor_lr})
+
+    print(
+        "--> [Optimizer] Param groups: "
+        f"head={len(head_params)} tensors @ lr={lr}, "
+        f"visual_extractor={len(visual_params)} tensors @ lr={visual_extractor_lr}"
+    )
+    return param_groups
+
+
 def build_optimizer(model, config):
     train_cfg = config.get('training', {})
     opt_name = train_cfg.get('optimizer', 'adam').lower()
     lr = train_cfg.get('lr', 0.001)
+    visual_extractor_lr = train_cfg.get('visual_extractor_lr', None)
     weight_decay = train_cfg.get('weight_decay', 0.0001)
 
-    params = model.parameters()
+    params = _build_param_groups(model, lr, visual_extractor_lr)
 
     if opt_name == 'adam':
         return optim.Adam(params, lr=lr, weight_decay=weight_decay)

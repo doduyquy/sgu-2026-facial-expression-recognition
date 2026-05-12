@@ -204,14 +204,21 @@ class Trainer:
                 should_rebuild = base_model.check_unfreeze(ep)
                 if should_rebuild:
                     phase_transitioned = True
-                    # Rebuild optimizer với LR nhỏ hơn cho fine-tuning
-                    finetune_lr = self.config['training'].get('finetune_lr', 1e-5)
-                    
-                    # Update config temporarily to use build_optimizer
-                    old_lr = self.config['training']['lr']
-                    self.config['training']['lr'] = finetune_lr
-                    self.optimizer = build_optimizer(self.model, self.config)
-                    self.config['training']['lr'] = old_lr # Restore
+                    visual_extractor_lr = self.config['training'].get('visual_extractor_lr')
+                    if visual_extractor_lr is None:
+                        # Legacy fallback: use one small LR for every trainable parameter.
+                        finetune_lr = self.config['training'].get('finetune_lr', 1e-5)
+                        old_lr = self.config['training']['lr']
+                        self.config['training']['lr'] = finetune_lr
+                        self.optimizer = build_optimizer(self.model, self.config)
+                        self.config['training']['lr'] = old_lr
+                        rebuild_msg = f"finetune_lr={finetune_lr}"
+                    else:
+                        self.optimizer = build_optimizer(self.model, self.config)
+                        rebuild_msg = (
+                            f"head_lr={self.config['training'].get('lr')}, "
+                            f"visual_extractor_lr={visual_extractor_lr}"
+                        )
                     
                     # REBUILD scheduler to link to NEW optimizer
                     self.scheduler = build_scheduler(self.optimizer, self.config)
@@ -219,7 +226,10 @@ class Trainer:
                     # RESET bộ đếm Early Stopping để Phase 2 được chạy đủ
                     patience_counter = 0
                     if self.is_main_process:
-                        print(f"[Trainer] Rebuilt optimizer & scheduler with finetune_lr={finetune_lr} and reset patience.")
+                        print(
+                            "[Trainer] Rebuilt optimizer & scheduler with "
+                            f"{rebuild_msg} and reset patience."
+                        )
 
             train_loss, train_acc, train_ortho_loss = self.train_one_epoch()
             val_loss, val_acc = self.validate()
@@ -250,6 +260,12 @@ class Trainer:
                     "Val/Loss": val_loss,
                     "Val/Accuracy": val_acc,
                     "Learning_Rate": self.optimizer.param_groups[0]['lr'],
+                    "Learning_Rate/Head": self.optimizer.param_groups[0]['lr'],
+                    "Learning_Rate/Visual_Extractor": (
+                        self.optimizer.param_groups[1]['lr']
+                        if len(self.optimizer.param_groups) > 1
+                        else 0.0
+                    ),
                     "Training/AMP_Enabled": int(self.use_amp),
                     "Training/Backbone_Finetune_Active": int(current_phase == "finetune_layer4"),
                     "Training/Phase_Transition": int(phase_transitioned),
