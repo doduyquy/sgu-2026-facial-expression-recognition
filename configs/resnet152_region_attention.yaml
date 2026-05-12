@@ -11,7 +11,7 @@ model:
   num_heads: 4
   num_regions: 6
   num_encoder_layers: 2
-  transformer_dropout: 0.2
+  transformer_dropout: 0.15
 
   # Keep ResNet152 layer4 exactly as the visual backbone endpoint:
   # [B, 2048, 7, 7] on 224x224 input -> flatten to 49 visual tokens.
@@ -46,7 +46,7 @@ model:
 
   # Penalize large overlap between region attention maps more strongly.
   ortho_loss_type: "squared_offdiag"
-  ortho_loss_weight: 0.02
+  ortho_loss_weight: 0.01
 
 data:
   image_size: 224
@@ -59,8 +59,9 @@ training:
   epochs: 60
   patience: 25
   monitor: "val_accuracy"
-  loss: "cross_entropy"
-  label_smoothing: 0.05
+  loss: "focal"
+  focal_gamma: 1.5
+  label_smoothing: 0.02
   optimizer: "adamw"
   lr: 0.0001
   visual_extractor_lr: 0.00001

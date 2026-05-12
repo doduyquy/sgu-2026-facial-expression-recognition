@@ -60,7 +60,8 @@ def build_loss(config, class_weights=None):
     if loss_name == 'cross_entropy':
         loss = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
     elif loss_name == 'focal':
-        loss = FocalLoss(gamma=2.0, weight=class_weights, label_smoothing=label_smoothing)
+        gamma = config['training'].get('focal_gamma', 2.0)
+        loss = FocalLoss(gamma=gamma, weight=class_weights, label_smoothing=label_smoothing)
     else: 
         raise ValueError(f"\n[!!!] Not support {loss_name} loss!\n")
 
