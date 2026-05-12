@@ -46,8 +46,10 @@ def _find_shape_predictor():
         os.path.join(os.getcwd(), filename),
         os.path.join(os.getcwd(), "checkpoints", filename),
         os.path.join(os.getcwd(), "models", filename),
+        # Kaggle working directory (wget downloads go here)
+        "/kaggle/working/" + filename,
     ]
-    # Kaggle input datasets
+    # Kaggle input datasets (recursive search)
     kaggle_input = "/kaggle/input"
     if os.path.isdir(kaggle_input):
         for root, dirs, files in os.walk(kaggle_input):
