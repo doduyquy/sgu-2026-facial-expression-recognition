@@ -1,7 +1,7 @@
 import torch
 import torch.distributed as dist
 from torch import device
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 import os
 import numpy as np 
 from datetime import datetime
@@ -36,7 +36,11 @@ class Trainer:
             and self.device.type == 'cuda'
             and not isinstance(self.optimizer, SAM)
         )
-        self.grad_scaler = GradScaler(enabled=self.use_amp)
+        self.grad_scaler = GradScaler(self.device.type, enabled=self.use_amp)
+        train_cfg = config.get('training', {})
+        self.grad_clip_norm = train_cfg.get('grad_clip_norm')
+        self.skip_nonfinite_batches = train_cfg.get('skip_nonfinite_batches', True)
+        self.skipped_nonfinite_batches = 0
         soft_target_cfg = config.get('training', {}).get('confidence_soft_targets', {})
         self.use_confidence_soft_targets = soft_target_cfg.get('enabled', False)
         self.soft_target_max_mix = soft_target_cfg.get('max_mix', 0.2)
@@ -59,6 +63,10 @@ class Trainer:
                     f"min_confidence={self.soft_target_min_confidence}, "
                     f"confidence_power={self.soft_target_confidence_power}."
                 )
+        if self.grad_clip_norm is not None and self.is_main_process:
+            print(f"[Trainer] Gradient clipping enabled: max_norm={self.grad_clip_norm}.")
+        if self.skip_nonfinite_batches and self.is_main_process:
+            print("[Trainer] Non-finite batches will be skipped before optimizer updates.")
         if (
             config.get('training', {}).get('use_amp', False)
             and self.device.type == 'cuda'
@@ -97,7 +105,7 @@ class Trainer:
         epoch_loss = stats[0].item() / total
         epoch_acc = stats[1] / total
         epoch_ortho = stats[3].item() / total if stats[3].item() > 0 else 0.0
-        return epoch_loss, torch.tensor(epoch_acc, device=self.device), epoch_ortho
+        return epoch_loss, epoch_acc.to(device=self.device), epoch_ortho
 
     def _sync_stop_flag(self, should_stop):
         if not self.is_distributed:
@@ -126,7 +134,7 @@ class Trainer:
             images, labels = images.to(self.device), labels.to(self.device)
 
             self.optimizer.zero_grad()
-            with autocast(enabled=self.use_amp):
+            with autocast(device_type=self.device.type, enabled=self.use_amp):
                 if region_masks is not None:
                     outputs = self.model(images, region_masks=region_masks)
                 else:
@@ -152,14 +160,37 @@ class Trainer:
                     loss = self._classification_loss(outputs, labels)
                 # -------------
 
+            if not torch.isfinite(loss).item():
+                if self.skip_nonfinite_batches:
+                    self.optimizer.zero_grad(set_to_none=True)
+                    self.skipped_nonfinite_batches += 1
+                    if self.is_main_process:
+                        print("[Trainer] Skipping batch with non-finite loss.")
+                    continue
+                raise FloatingPointError("Encountered non-finite training loss.")
+
 
             if isinstance(self.optimizer, SAM):
                 # ── SAM Step 1 ──
                 loss.backward()
+                if self.grad_clip_norm is not None:
+                    total_norm = torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(),
+                        self.grad_clip_norm,
+                        error_if_nonfinite=False,
+                    )
+                    if not torch.isfinite(total_norm).item():
+                        if self.skip_nonfinite_batches:
+                            self.optimizer.zero_grad(set_to_none=True)
+                            self.skipped_nonfinite_batches += 1
+                            if self.is_main_process:
+                                print("[Trainer] Skipping SAM batch with non-finite gradient norm.")
+                            continue
+                        raise FloatingPointError("Encountered non-finite SAM gradient norm.")
                 self.optimizer.first_step(zero_grad=True)
 
                 # ── SAM Step 2 ──
-                with autocast(enabled=self.use_amp):
+                with autocast(device_type=self.device.type, enabled=self.use_amp):
                     if region_masks is not None:
                         outputs_2 = self.model(images, region_masks=region_masks)
                     else:
@@ -176,16 +207,69 @@ class Trainer:
                     else:
                         loss_2 = self._classification_loss(outputs_2, labels)
                 
+                if not torch.isfinite(loss_2).item():
+                    if self.skip_nonfinite_batches:
+                        self.optimizer.zero_grad(set_to_none=True)
+                        self.skipped_nonfinite_batches += 1
+                        if self.is_main_process:
+                            print("[Trainer] Skipping SAM second step with non-finite loss.")
+                        continue
+                    raise FloatingPointError("Encountered non-finite SAM second-step loss.")
+
                 loss_2.backward()
+                if self.grad_clip_norm is not None:
+                    total_norm = torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(),
+                        self.grad_clip_norm,
+                        error_if_nonfinite=False,
+                    )
+                    if not torch.isfinite(total_norm).item():
+                        if self.skip_nonfinite_batches:
+                            self.optimizer.zero_grad(set_to_none=True)
+                            self.skipped_nonfinite_batches += 1
+                            if self.is_main_process:
+                                print("[Trainer] Skipping SAM second step with non-finite gradient norm.")
+                            continue
+                        raise FloatingPointError("Encountered non-finite SAM second-step gradient norm.")
                 self.optimizer.second_step(zero_grad=True)
             else:
                 # ── Standard Optimizer ──
                 if self.use_amp:
                     self.grad_scaler.scale(loss).backward()
+                    self.grad_scaler.unscale_(self.optimizer)
+                    if self.grad_clip_norm is not None:
+                        total_norm = torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(),
+                            self.grad_clip_norm,
+                            error_if_nonfinite=False,
+                        )
+                        if not torch.isfinite(total_norm).item():
+                            if self.skip_nonfinite_batches:
+                                self.optimizer.zero_grad(set_to_none=True)
+                                self.grad_scaler.update()
+                                self.skipped_nonfinite_batches += 1
+                                if self.is_main_process:
+                                    print("[Trainer] Skipping AMP batch with non-finite gradient norm.")
+                                continue
+                            raise FloatingPointError("Encountered non-finite AMP gradient norm.")
                     self.grad_scaler.step(self.optimizer)
                     self.grad_scaler.update()
                 else:
                     loss.backward()
+                    if self.grad_clip_norm is not None:
+                        total_norm = torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(),
+                            self.grad_clip_norm,
+                            error_if_nonfinite=False,
+                        )
+                        if not torch.isfinite(total_norm).item():
+                            if self.skip_nonfinite_batches:
+                                self.optimizer.zero_grad(set_to_none=True)
+                                self.skipped_nonfinite_batches += 1
+                                if self.is_main_process:
+                                    print("[Trainer] Skipping batch with non-finite gradient norm.")
+                                continue
+                            raise FloatingPointError("Encountered non-finite gradient norm.")
                     self.optimizer.step()
 
             running_loss += loss.item() * images.size(0)
@@ -213,7 +297,7 @@ class Trainer:
                     region_masks = None
                 images, labels = images.to(self.device), labels.to(self.device)
 
-                with autocast(enabled=self.use_amp):
+                with autocast(device_type=self.device.type, enabled=self.use_amp):
                     if region_masks is not None:
                         outputs = self.model(images, region_masks=region_masks)
                     else:

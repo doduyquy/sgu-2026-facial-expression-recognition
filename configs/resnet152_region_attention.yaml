@@ -11,7 +11,7 @@ model:
   num_heads: 4
   num_regions: 6
   num_encoder_layers: 2
-  transformer_dropout: 0.15
+  transformer_dropout: 0.2
 
   # Keep ResNet152 layer4 as the sole visual endpoint:
   # [B, 2048, 7, 7] on 224x224 input -> 49 spatial tokens.
@@ -32,7 +32,7 @@ model:
   source_logit_weight: 0.0
 
   # Warm up the new attention head first, then fine-tune layer4 gently.
-  freeze_backbone_epochs: 8
+  freeze_backbone_epochs: 5
   unfreeze_backbone: true
   unfreeze_backbone_scope: "layer4"
   freeze_unfrozen_batchnorm: true
@@ -43,7 +43,7 @@ model:
 
   # Penalize large overlap between region attention maps more strongly.
   ortho_loss_type: "squared_offdiag"
-  ortho_loss_weight: 0.01
+  ortho_loss_weight: 0.02
 
 data:
   image_size: 224
@@ -57,7 +57,7 @@ training:
   patience: 25
   monitor: "val_accuracy"
   loss: "cross_entropy"
-  label_smoothing: 0.02
+  label_smoothing: 0.05
   confidence_soft_targets:
     enabled: true
     max_mix: 0.2
@@ -65,9 +65,11 @@ training:
     confidence_power: 1.0
   optimizer: "adamw"
   lr: 0.0001
-  visual_extractor_lr: 0.000002
+  visual_extractor_lr: 0.00001
   finetune_lr: 0.00002
   weight_decay: 0.0001
+  grad_clip_norm: 1.0
+  skip_nonfinite_batches: true
   scheduler: "reduce_lr_on_plateau"
   lr_factor: 0.5
   lr_patience: 5
