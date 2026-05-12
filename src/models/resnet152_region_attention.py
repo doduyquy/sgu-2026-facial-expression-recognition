@@ -299,8 +299,10 @@ class ResNet152RegionAttentionFER(nn.Module):
         self.return_attn = False
 
         num_classes = data_cfg.get("num_classes", 7)
-        if self.unfreeze_backbone_scope not in ("all", "layer4"):
-            raise ValueError("model.unfreeze_backbone_scope must be one of: all, layer4")
+        if self.unfreeze_backbone_scope not in ("all", "layer3", "layer4"):
+            raise ValueError(
+                "model.unfreeze_backbone_scope must be one of: all, layer3, layer4"
+            )
         if self.logit_fusion not in ("attention", "source", "sum"):
             raise ValueError("model.logit_fusion must be one of: attention, source, sum")
         if self.finetune_logit_fusion not in ("attention", "source", "sum"):
@@ -419,6 +421,9 @@ class ResNet152RegionAttentionFER(nn.Module):
         if self.unfreeze_backbone_scope == "layer4":
             trainable_modules = (self.res_backbone.backbone.layer4,)
             message = "ResNet152 layer4 UNFROZEN."
+        elif self.unfreeze_backbone_scope == "layer3":
+            trainable_modules = (self.res_backbone.backbone.layer3,)
+            message = "ResNet152 layer3 UNFROZEN."
         else:
             trainable_modules = (self.res_backbone.backbone,)
             message = "ResNet152 backbone UNFROZEN."
@@ -461,6 +466,11 @@ class ResNet152RegionAttentionFER(nn.Module):
                 self.res_backbone.backbone.layer4.train()
                 if self.freeze_unfrozen_batchnorm:
                     self._freeze_batchnorm(self.res_backbone.backbone.layer4)
+            elif self.unfreeze_backbone_scope == "layer3":
+                self.res_backbone.backbone.eval()
+                self.res_backbone.backbone.layer3.train()
+                if self.freeze_unfrozen_batchnorm:
+                    self._freeze_batchnorm(self.res_backbone.backbone.layer3)
             elif self.unfreeze_backbone_scope == "all":
                 if self.freeze_unfrozen_batchnorm:
                     self._freeze_batchnorm(self.res_backbone.backbone)

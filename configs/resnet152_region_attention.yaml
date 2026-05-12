@@ -13,10 +13,10 @@ model:
   num_encoder_layers: 2
   transformer_dropout: 0.15
 
-  # Keep ResNet152 layer4 exactly as the visual backbone endpoint:
-  # [B, 2048, 7, 7] on 224x224 input -> flatten to 49 visual tokens.
+  # Try layer3 for finer spatial resolution:
+  # [B, 1024, 14, 14] on 224x224 input -> flatten to 196 visual tokens.
   # The avgpool/fc classifier tail is skipped by the attention branch.
-  feature_layer: "layer4"
+  feature_layer: "layer3"
   pool_visual_tokens: false
   use_visual_pos_embed: true
   token_grid_size: 3
@@ -26,17 +26,17 @@ model:
   use_clip_dictionary: true
   clip_model_name: "openai/clip-vit-base-patch32"
 
-  # Self-Ensemble: Combine global ResNet features with local Region Attention features.
-  # This adds the source logits and attention logits together with specified weights.
-  logit_fusion: "sum"
-  finetune_logit_fusion: "sum"
-  attention_logit_weight: 0.3
-  source_logit_weight: 0.7
+  # Pure attention branch: ResNet152 is used as the visual feature extractor only.
+  # With feature_layer=layer3, the checkpoint fc head is 2048-d and cannot be reused.
+  logit_fusion: "attention"
+  finetune_logit_fusion: "attention"
+  attention_logit_weight: 1.0
+  source_logit_weight: 0.0
 
-  # Warm up the new attention head first, then fine-tune only ResNet152 layer4.
+  # Warm up the new attention head first, then fine-tune the layer producing tokens.
   freeze_backbone_epochs: 5
   unfreeze_backbone: true
-  unfreeze_backbone_scope: "layer4"
+  unfreeze_backbone_scope: "layer3"
   freeze_unfrozen_batchnorm: true
 
   # Preserve all 6 region tokens for the classifier instead of averaging them away.
@@ -58,8 +58,7 @@ training:
   epochs: 60
   patience: 25
   monitor: "val_accuracy"
-  loss: "focal"
-  focal_gamma: 1.5
+  loss: "cross_entropy"
   label_smoothing: 0.02
   optimizer: "adamw"
   lr: 0.0001

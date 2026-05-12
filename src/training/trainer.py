@@ -267,8 +267,9 @@ class Trainer:
 
             # wandb log
             if self.use_wandb and self.is_main_process:
+                finetune_scope = getattr(base_model, "unfreeze_backbone_scope", "backbone")
                 current_phase = (
-                    "finetune_layer4"
+                    f"finetune_{finetune_scope}"
                     if getattr(base_model, "unfreeze_backbone", False)
                     and not getattr(base_model, "is_frozen", False)
                     else "frozen_backbone"
@@ -288,7 +289,7 @@ class Trainer:
                         else 0.0
                     ),
                     "Training/AMP_Enabled": int(self.use_amp),
-                    "Training/Backbone_Finetune_Active": int(current_phase == "finetune_layer4"),
+                    "Training/Backbone_Finetune_Active": int(current_phase != "frozen_backbone"),
                     "Training/Phase_Transition": int(phase_transitioned),
                 }, epoch=ep)
 
