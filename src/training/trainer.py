@@ -46,6 +46,8 @@ class Trainer:
         self.run_name = run_name
         self.config = config
         self.path_save_ckpt = save_dir
+        # Ensure save directory exists
+        os.makedirs(self.path_save_ckpt, exist_ok=True)
         
         # Resume training support
         self.base_epoch = int(config.get('training', {}).get('base_epoch', 0))
@@ -264,8 +266,9 @@ class Trainer:
 
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
-                torch.save(self.model.state_of_dict() if hasattr(self.model, "state_of_dict") else self.model.state_dict(), 
-                           os.path.join(self.path_save_ckpt, "best_model.pth"))
+                save_path = os.path.join(self.path_save_ckpt, f"{self.model_name}_best.pth")
+                torch.save(self.model.state_dict(), save_path)
+                print(f"--> Saved best model to: {save_path}")
         
         # Log Heatmaps sau khi train xong (User Request)
         print("\n--> Training finished. Generating heatmaps for WandB...")
