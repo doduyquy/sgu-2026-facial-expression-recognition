@@ -2,6 +2,65 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
+def confidence_soft_target_loss(
+    logits,
+    targets,
+    *,
+    max_mix=0.2,
+    min_confidence=0.55,
+    confidence_power=1.0,
+    label_smoothing=0.0,
+    class_weights=None,
+):
+    """
+    Cross-entropy against a confidence-adaptive soft target.
+
+    The target starts from the usual smoothed hard label, then blends in the
+    model's detached prediction only when the prediction is sufficiently
+    confident. This keeps early / uncertain updates anchored to ground truth.
+    """
+    if logits.dim() != 2:
+        raise ValueError("confidence_soft_target_loss expects logits shaped [B, C].")
+    if not 0.0 <= max_mix <= 1.0:
+        raise ValueError("max_mix must be in [0, 1].")
+    if not 0.0 <= min_confidence < 1.0:
+        raise ValueError("min_confidence must be in [0, 1).")
+    if confidence_power <= 0.0:
+        raise ValueError("confidence_power must be > 0.")
+    if not 0.0 <= label_smoothing < 1.0:
+        raise ValueError("label_smoothing must be in [0, 1).")
+
+    num_classes = logits.size(-1)
+    log_probs = F.log_softmax(logits, dim=-1)
+
+    with torch.no_grad():
+        teacher_probs = F.softmax(logits.detach(), dim=-1)
+        confidence = teacher_probs.max(dim=-1).values
+        confidence = (
+            (confidence - min_confidence)
+            / max(1.0 - min_confidence, 1e-8)
+        ).clamp_(0.0, 1.0)
+        mix = (max_mix * confidence.pow(confidence_power)).unsqueeze(1)
+
+        hard_targets = torch.full_like(log_probs, label_smoothing / num_classes)
+        hard_targets.scatter_(
+            1,
+            targets.unsqueeze(1),
+            1.0 - label_smoothing + label_smoothing / num_classes,
+        )
+        soft_targets = (1.0 - mix) * hard_targets + mix * teacher_probs
+
+    loss_matrix = -(soft_targets * log_probs)
+    if class_weights is not None:
+        weights = class_weights.to(device=logits.device, dtype=logits.dtype).unsqueeze(0)
+        weighted_loss = (loss_matrix * weights).sum(dim=1)
+        normalizer = (soft_targets * weights).sum().clamp_min(1e-8)
+        return weighted_loss.sum() / normalizer
+
+    return loss_matrix.sum(dim=1).mean()
+
+
 class FocalLoss(nn.Module):
     """
     Focal Loss for classification tasks.

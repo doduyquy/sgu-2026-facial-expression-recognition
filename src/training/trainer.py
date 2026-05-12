@@ -6,7 +6,7 @@ import os
 import numpy as np 
 from datetime import datetime
 from src.utils.logger_wandb import init_wandb, log_image_to_wandb, log_metrics
-from src.training.losses import inception_loss
+from src.training.losses import confidence_soft_target_loss, inception_loss
 from src.training.optimizer import build_scheduler, build_optimizer
 from .sam import SAM
 
@@ -37,8 +37,28 @@ class Trainer:
             and not isinstance(self.optimizer, SAM)
         )
         self.grad_scaler = GradScaler(enabled=self.use_amp)
+        soft_target_cfg = config.get('training', {}).get('confidence_soft_targets', {})
+        self.use_confidence_soft_targets = soft_target_cfg.get('enabled', False)
+        self.soft_target_max_mix = soft_target_cfg.get('max_mix', 0.2)
+        self.soft_target_min_confidence = soft_target_cfg.get('min_confidence', 0.55)
+        self.soft_target_confidence_power = soft_target_cfg.get('confidence_power', 1.0)
+        self.soft_target_label_smoothing = config.get('training', {}).get('label_smoothing', 0.0)
+        self.soft_target_class_weights = getattr(self.criterion, 'weight', None)
         if self.monitor not in ['val_loss', 'val_accuracy']:
             raise ValueError("training.monitor must be either 'val_loss' or 'val_accuracy'")
+        if self.use_confidence_soft_targets:
+            if config.get('training', {}).get('loss', 'cross_entropy') != 'cross_entropy':
+                raise ValueError(
+                    "training.confidence_soft_targets currently supports "
+                    "training.loss='cross_entropy' only."
+                )
+            if self.is_main_process:
+                print(
+                    "[Trainer] Confidence soft targets enabled: "
+                    f"max_mix={self.soft_target_max_mix}, "
+                    f"min_confidence={self.soft_target_min_confidence}, "
+                    f"confidence_power={self.soft_target_confidence_power}."
+                )
         if (
             config.get('training', {}).get('use_amp', False)
             and self.device.type == 'cuda'
@@ -49,6 +69,20 @@ class Trainer:
 
     def _unwrap_model(self):
         return self.model.module if hasattr(self.model, "module") else self.model
+
+    def _classification_loss(self, logits, labels):
+        if not self.use_confidence_soft_targets:
+            return self.criterion(logits, labels)
+
+        return confidence_soft_target_loss(
+            logits,
+            labels,
+            max_mix=self.soft_target_max_mix,
+            min_confidence=self.soft_target_min_confidence,
+            confidence_power=self.soft_target_confidence_power,
+            label_smoothing=self.soft_target_label_smoothing,
+            class_weights=self.soft_target_class_weights,
+        )
 
     def _reduce_epoch_stats(self, loss_sum, corrects, total, ortho_sum=0.0):
         stats = torch.tensor(
@@ -104,7 +138,7 @@ class Trainer:
                     if len(outputs) == 2 and isinstance(outputs[1], torch.Tensor) and outputs[1].dim() == 0:
                         # Trả về (logits, scalar_aux_loss) -> Orthogonal Loss cho RegionAttention
                         main_out, aux_loss = outputs
-                        main_loss = self.criterion(main_out, labels)
+                        main_loss = self._classification_loss(main_out, labels)
                         ortho_weight = self.config.get('model', {}).get('ortho_loss_weight', 0.1)
                         loss = main_loss + ortho_weight * aux_loss
                         outputs = main_out
@@ -115,7 +149,7 @@ class Trainer:
                         loss = inception_loss(main_out, aux_out, labels, criterion=self.criterion)
                         outputs = main_out # Đặt lại outputs -> tinhs accuracy ở dưới
                 else:
-                    loss = self.criterion(outputs, labels)
+                    loss = self._classification_loss(outputs, labels)
                 # -------------
 
 
@@ -133,14 +167,14 @@ class Trainer:
                     if isinstance(outputs_2, tuple):
                         if len(outputs_2) == 2 and isinstance(outputs_2[1], torch.Tensor) and outputs_2[1].dim() == 0:
                             main_out_2, aux_loss_2 = outputs_2
-                            main_loss_2 = self.criterion(main_out_2, labels)
+                            main_loss_2 = self._classification_loss(main_out_2, labels)
                             ortho_weight = self.config.get('model', {}).get('ortho_loss_weight', 0.1)
                             loss_2 = main_loss_2 + ortho_weight * aux_loss_2
                         else:
                             main_out_2, aux_out_2 = outputs_2
                             loss_2 = inception_loss(main_out_2, aux_out_2, labels, criterion=self.criterion)
                     else:
-                        loss_2 = self.criterion(outputs_2, labels)
+                        loss_2 = self._classification_loss(outputs_2, labels)
                 
                 loss_2.backward()
                 self.optimizer.second_step(zero_grad=True)
