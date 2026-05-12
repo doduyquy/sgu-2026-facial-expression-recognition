@@ -176,8 +176,6 @@ class ResNet152SpatialTokenizer(nn.Module):
 
             if name in backbone_ref and backbone_ref[name].shape == value.shape:
                 backbone_state[name] = value
-            elif key.startswith("backbone.") and name in backbone_ref and backbone_ref[name].shape == value.shape:
-                backbone_state[name] = value
             elif key.startswith("head.") or key.startswith("source_fc."):
                 skipped.append(key)
             else:
@@ -451,15 +449,25 @@ class ResNet152RegionAttentionFER(nn.Module):
 
     def train(self, mode=True):
         super().train(mode)
-        if mode and self.is_frozen:
+        if not mode:
+            return self
+
+        if self.is_frozen:
             self.res_backbone.backbone.eval()
             self.res_backbone.source_fc.eval()
-        elif mode and self.unfreeze_backbone and self.unfreeze_backbone_scope == "layer4":
-            self.res_backbone.backbone.eval()
-            self.res_backbone.backbone.layer4.train()
-            if self.freeze_unfrozen_batchnorm:
-                self._freeze_batchnorm(self.res_backbone.backbone.layer4)
-            self.res_backbone.source_fc.eval()
+        else:
+            if self.unfreeze_backbone_scope == "layer4":
+                self.res_backbone.backbone.eval()
+                self.res_backbone.backbone.layer4.train()
+                if self.freeze_unfrozen_batchnorm:
+                    self._freeze_batchnorm(self.res_backbone.backbone.layer4)
+            elif self.unfreeze_backbone_scope == "all":
+                if self.freeze_unfrozen_batchnorm:
+                    self._freeze_batchnorm(self.res_backbone.backbone)
+
+            if self.logit_fusion in ("attention", "sum"):
+                self.res_backbone.source_fc.eval()
+
         return self
 
     def check_unfreeze(self, epoch):
