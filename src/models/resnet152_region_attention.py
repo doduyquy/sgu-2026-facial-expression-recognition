@@ -51,10 +51,12 @@ def strip_known_prefixes(state_dict):
 
 class ResNet152SpatialTokenizer(nn.Module):
     """
-    ResNet152 feature map -> a small grid of visual tokens.
-    Default endpoint is layer4 and the default keeps its native 7x7x2048 map.
-    The final ResNet avgpool/fc tail is still skipped; attention consumes the
-    spatial layer4 tokens directly.
+    ResNet152 feature maps -> visual tokens for region attention.
+
+    Single-scale modes expose layer2/layer3/layer4 tokens directly. The
+    multi-scale ``layer3_layer4`` mode keeps both top stages, projects their
+    flattened tokens into a shared visual dimension, and concatenates the token
+    sequences before cross-attention.
     """
 
     def __init__(self, config, channels=3):
@@ -67,6 +69,7 @@ class ResNet152SpatialTokenizer(nn.Module):
         self.token_grid_size = model_cfg.get("token_grid_size", 3)
         self.pool_visual_tokens = model_cfg.get("pool_visual_tokens", False)
         self.feature_layer = model_cfg.get("feature_layer", "layer4")
+        self.multi_scale_tokens = self.feature_layer == "layer3_layer4"
         feature_dims = {
             "layer2": 512,
             "layer3": 1024,
@@ -77,11 +80,17 @@ class ResNet152SpatialTokenizer(nn.Module):
             "layer3": 16,
             "layer4": 32,
         }
-        if self.feature_layer not in feature_dims:
+        if self.feature_layer not in (*feature_dims.keys(), "layer3_layer4"):
             raise ValueError(
-                "model.feature_layer must be one of: layer2, layer3, layer4"
+                "model.feature_layer must be one of: "
+                "layer2, layer3, layer4, layer3_layer4"
             )
-        self.feature_dim = feature_dims[self.feature_layer]
+        self.feature_dim = (
+            model_cfg.get("multiscale_visual_dim", model_cfg.get("embed_dim", 512))
+            if self.multi_scale_tokens
+            else feature_dims[self.feature_layer]
+        )
+        self.source_feature_dim = 2048 if self.multi_scale_tokens else self.feature_dim
 
         self.backbone = models.resnet152(weights=None)
         if channels != 3:
@@ -100,22 +109,66 @@ class ResNet152SpatialTokenizer(nn.Module):
         elif self.feature_layer == "layer3":
             self.backbone.layer4 = nn.Identity()
 
-        self.native_grid_size = max(1, image_size // output_strides[self.feature_layer])
-        self.visual_grid_size = (
-            self.token_grid_size if self.pool_visual_tokens else self.native_grid_size
-        )
-        self.token_pool = (
-            nn.AdaptiveAvgPool2d((self.token_grid_size, self.token_grid_size))
-            if self.pool_visual_tokens
-            else nn.Identity()
-        )
-        self.source_fc = nn.Linear(self.feature_dim, self.num_classes)
+        if self.multi_scale_tokens:
+            self.layer3_native_grid_size = max(1, image_size // output_strides["layer3"])
+            self.layer4_native_grid_size = max(1, image_size // output_strides["layer4"])
+            self.layer3_visual_grid_size = (
+                self.token_grid_size if self.pool_visual_tokens else self.layer3_native_grid_size
+            )
+            self.layer4_visual_grid_size = (
+                self.token_grid_size if self.pool_visual_tokens else self.layer4_native_grid_size
+            )
+            self.layer3_token_pool = (
+                nn.AdaptiveAvgPool2d((self.token_grid_size, self.token_grid_size))
+                if self.pool_visual_tokens
+                else nn.Identity()
+            )
+            self.layer4_token_pool = (
+                nn.AdaptiveAvgPool2d((self.token_grid_size, self.token_grid_size))
+                if self.pool_visual_tokens
+                else nn.Identity()
+            )
+            self.layer3_token_proj = nn.Sequential(
+                nn.LayerNorm(feature_dims["layer3"]),
+                nn.Linear(feature_dims["layer3"], self.feature_dim),
+            )
+            self.layer4_token_proj = nn.Sequential(
+                nn.LayerNorm(feature_dims["layer4"]),
+                nn.Linear(feature_dims["layer4"], self.feature_dim),
+            )
+            self.layer3_num_visual_tokens = self.layer3_visual_grid_size ** 2
+            self.layer4_num_visual_tokens = self.layer4_visual_grid_size ** 2
+            self.num_visual_tokens = (
+                self.layer3_num_visual_tokens + self.layer4_num_visual_tokens
+            )
+        else:
+            self.native_grid_size = max(1, image_size // output_strides[self.feature_layer])
+            self.visual_grid_size = (
+                self.token_grid_size if self.pool_visual_tokens else self.native_grid_size
+            )
+            self.token_pool = (
+                nn.AdaptiveAvgPool2d((self.token_grid_size, self.token_grid_size))
+                if self.pool_visual_tokens
+                else nn.Identity()
+            )
+            self.num_visual_tokens = self.visual_grid_size ** 2
+
+        self.source_fc = nn.Linear(self.source_feature_dim, self.num_classes)
         self.has_source_classifier = False
-        print(
-            f"--> [ResNet152Tokenizer] feature_layer={self.feature_layer}, "
-            f"feature_dim={self.feature_dim}, tokens={self.visual_grid_size}x{self.visual_grid_size}, "
-            f"pool_visual_tokens={self.pool_visual_tokens}"
-        )
+        if self.multi_scale_tokens:
+            print(
+                f"--> [ResNet152Tokenizer] feature_layer={self.feature_layer}, "
+                f"feature_dim={self.feature_dim}, tokens="
+                f"{self.layer3_num_visual_tokens}+{self.layer4_num_visual_tokens}="
+                f"{self.num_visual_tokens}, pool_visual_tokens={self.pool_visual_tokens}"
+            )
+        else:
+            print(
+                f"--> [ResNet152Tokenizer] feature_layer={self.feature_layer}, "
+                f"feature_dim={self.feature_dim}, tokens="
+                f"{self.visual_grid_size}x{self.visual_grid_size}, "
+                f"pool_visual_tokens={self.pool_visual_tokens}"
+            )
 
     def forward_features(self, x):
         x = self.backbone.conv1(x)
@@ -128,18 +181,34 @@ class ResNet152SpatialTokenizer(nn.Module):
         if self.feature_layer == "layer2":
             return x
 
-        x = self.backbone.layer3(x)
+        feat3 = self.backbone.layer3(x)
         if self.feature_layer == "layer3":
-            return x
+            return feat3
 
-        x = self.backbone.layer4(x)
-        return x
+        feat4 = self.backbone.layer4(feat3)
+        if self.multi_scale_tokens:
+            return feat3, feat4
+        return feat4
 
     def forward(self, x):
-        feat_map = self.forward_features(x)
-        token_map = self.token_pool(feat_map)
-        tokens = token_map.flatten(2).transpose(1, 2)
-        global_feat = F.adaptive_avg_pool2d(feat_map, 1).flatten(1)
+        features = self.forward_features(x)
+        if self.multi_scale_tokens:
+            feat3, feat4 = features
+            layer3_tokens = self.layer3_token_pool(feat3).flatten(2).transpose(1, 2)
+            layer4_tokens = self.layer4_token_pool(feat4).flatten(2).transpose(1, 2)
+            tokens = torch.cat(
+                (
+                    self.layer3_token_proj(layer3_tokens),
+                    self.layer4_token_proj(layer4_tokens),
+                ),
+                dim=1,
+            )
+            global_feat = F.adaptive_avg_pool2d(feat4, 1).flatten(1)
+        else:
+            feat_map = features
+            token_map = self.token_pool(feat_map)
+            tokens = token_map.flatten(2).transpose(1, 2)
+            global_feat = F.adaptive_avg_pool2d(feat_map, 1).flatten(1)
         return tokens, global_feat
 
     def source_logits(self, global_feat):
@@ -189,7 +258,7 @@ class ResNet152SpatialTokenizer(nn.Module):
         print(f"--> [ResNet152Tokenizer] Backbone loaded: {len(backbone_state)} tensors")
         if self.has_source_classifier:
             print("--> [ResNet152Tokenizer] Source fc loaded for baseline/residual logits.")
-        elif self.feature_layer != "layer4":
+        elif self.source_feature_dim != 2048:
             print(
                 "--> [ResNet152Tokenizer] Source fc is unavailable because the backbone "
                 f"is truncated at {self.feature_layer}."
@@ -226,8 +295,9 @@ class ResNet152SpatialTokenizer(nn.Module):
 
 class CrossDimSemanticVisualAlignment(nn.Module):
     """
-    Cross-attention where CLIP/text region queries stay at 512-d while
-    ResNet152 layer4 visual keys/values stay at 2048-d.
+    Cross-attention where CLIP/text region queries stay at ``embed_dim`` while
+    the tokenizer may expose either single-scale or projected multi-scale
+    visual keys/values.
     """
 
     def __init__(self, embed_dim=512, visual_dim=2048, num_heads=4, dropout=0.1):
@@ -299,9 +369,10 @@ class ResNet152RegionAttentionFER(nn.Module):
         self.return_attn = False
 
         num_classes = data_cfg.get("num_classes", 7)
-        if self.unfreeze_backbone_scope not in ("all", "layer3", "layer4"):
+        if self.unfreeze_backbone_scope not in ("all", "layer3", "layer4", "layer3_layer4"):
             raise ValueError(
-                "model.unfreeze_backbone_scope must be one of: all, layer3, layer4"
+                "model.unfreeze_backbone_scope must be one of: "
+                "all, layer3, layer4, layer3_layer4"
             )
         if self.logit_fusion not in ("attention", "source", "sum"):
             raise ValueError("model.logit_fusion must be one of: attention, source, sum")
@@ -318,7 +389,7 @@ class ResNet152RegionAttentionFER(nn.Module):
 
         self.res_backbone = ResNet152SpatialTokenizer(config, channels=channels)
         self.visual_dim = self.res_backbone.feature_dim
-        num_visual_tokens = self.res_backbone.visual_grid_size * self.res_backbone.visual_grid_size
+        num_visual_tokens = self.res_backbone.num_visual_tokens
         if self.use_visual_pos_embed:
             self.visual_pos_embed = nn.Parameter(
                 torch.randn(1, num_visual_tokens, self.visual_dim) * 0.02
@@ -424,6 +495,12 @@ class ResNet152RegionAttentionFER(nn.Module):
         elif self.unfreeze_backbone_scope == "layer3":
             trainable_modules = (self.res_backbone.backbone.layer3,)
             message = "ResNet152 layer3 UNFROZEN."
+        elif self.unfreeze_backbone_scope == "layer3_layer4":
+            trainable_modules = (
+                self.res_backbone.backbone.layer3,
+                self.res_backbone.backbone.layer4,
+            )
+            message = "ResNet152 layer3 + layer4 UNFROZEN."
         else:
             trainable_modules = (self.res_backbone.backbone,)
             message = "ResNet152 backbone UNFROZEN."
@@ -471,6 +548,13 @@ class ResNet152RegionAttentionFER(nn.Module):
                 self.res_backbone.backbone.layer3.train()
                 if self.freeze_unfrozen_batchnorm:
                     self._freeze_batchnorm(self.res_backbone.backbone.layer3)
+            elif self.unfreeze_backbone_scope == "layer3_layer4":
+                self.res_backbone.backbone.eval()
+                self.res_backbone.backbone.layer3.train()
+                self.res_backbone.backbone.layer4.train()
+                if self.freeze_unfrozen_batchnorm:
+                    self._freeze_batchnorm(self.res_backbone.backbone.layer3)
+                    self._freeze_batchnorm(self.res_backbone.backbone.layer4)
             elif self.unfreeze_backbone_scope == "all":
                 if self.freeze_unfrozen_batchnorm:
                     self._freeze_batchnorm(self.res_backbone.backbone)
@@ -508,7 +592,7 @@ class ResNet152RegionAttentionFER(nn.Module):
     def forward(self, x):
         batch_size = x.shape[0]
 
-        visual_features, global_feat = self.res_backbone(x)  # [B, 49, 2048], [B, 2048]
+        visual_features, global_feat = self.res_backbone(x)  # [B, N, visual_dim], [B, C]
         if visual_features.size(1) != self.visual_pos_embed.size(1):
             raise ValueError(
                 f"visual_pos_embed expects {self.visual_pos_embed.size(1)} tokens, "

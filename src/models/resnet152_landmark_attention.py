@@ -151,7 +151,7 @@ class ResNet152LandmarkAttentionFER(nn.Module):
         # ── Backbone ──
         self.res_backbone = ResNet152SpatialTokenizer(config, channels=channels)
         self.visual_dim = self.res_backbone.feature_dim
-        num_visual_tokens = self.res_backbone.visual_grid_size ** 2
+        num_visual_tokens = self.res_backbone.num_visual_tokens
 
         if self.use_visual_pos_embed:
             self.visual_pos_embed = nn.Parameter(

@@ -4,7 +4,7 @@ model:
   name: "resnet152_region_attention"
 
   # Source checkpoint that already reaches about 73% as a plain ResNet152.
-  # Warm-up starts from this backbone, then layer4 is fine-tuned later in training.
+  # Warm-up starts from this backbone, then layer3 + layer4 are fine-tuned later.
   pretrained_resnet_path: "checkpoints/resnet152_rot30_2019Nov14_12.47"
 
   embed_dim: 512
@@ -13,10 +13,12 @@ model:
   num_encoder_layers: 2
   transformer_dropout: 0.15
 
-  # Try layer3 for finer spatial resolution:
-  # [B, 1024, 14, 14] on 224x224 input -> flatten to 196 visual tokens.
-  # The avgpool/fc classifier tail is skipped by the attention branch.
-  feature_layer: "layer3"
+  # Multi-scale visual tokens:
+  # layer3: [B, 1024, 14, 14] -> 196 tokens
+  # layer4: [B, 2048, 7, 7]   -> 49 tokens
+  # Both streams are projected to the same visual dim, then concatenated -> 245 tokens.
+  feature_layer: "layer3_layer4"
+  multiscale_visual_dim: 512
   pool_visual_tokens: false
   use_visual_pos_embed: true
   token_grid_size: 3
@@ -27,16 +29,15 @@ model:
   clip_model_name: "openai/clip-vit-base-patch32"
 
   # Pure attention branch: ResNet152 is used as the visual feature extractor only.
-  # With feature_layer=layer3, the checkpoint fc head is 2048-d and cannot be reused.
   logit_fusion: "attention"
   finetune_logit_fusion: "attention"
   attention_logit_weight: 1.0
   source_logit_weight: 0.0
 
-  # Warm up the new attention head first, then fine-tune the layer producing tokens.
+  # Warm up the new attention head first, then fine-tune both top stages.
   freeze_backbone_epochs: 5
   unfreeze_backbone: true
-  unfreeze_backbone_scope: "layer3"
+  unfreeze_backbone_scope: "layer3_layer4"
   freeze_unfrozen_batchnorm: true
 
   # Preserve all 6 region tokens for the classifier instead of averaging them away.
