@@ -5,7 +5,7 @@ import numpy as np
 import os
 import matplotlib.pyplot as plt
 from PIL import Image
-from tqdm import tqdm
+from tqdm.auto import tqdm
 from ..utils.logger_wandb import init_wandb, log_metrics, log_image_to_wandb
 import math
 
@@ -84,7 +84,10 @@ class Trainer:
     def train_one_epoch(self):
         self.model.train()
         running_loss, corrects, total = 0.0, 0, 0
-        for images, labels in tqdm(self.train_loader, desc=f"Epoch {self._current_epoch}"):
+        # Hiển thị Epoch thực tế (bắt đầu từ 1 hoặc base_epoch + 1)
+        display_epoch = self._current_epoch + 1
+        pbar = tqdm(self.train_loader, desc=f"Epoch {display_epoch}/{self.epochs + self.base_epoch}", leave=False)
+        for images, labels in pbar:
             images, labels = images.to(self.device), labels.to(self.device)
             self.optimizer.zero_grad()
 
@@ -111,10 +114,13 @@ class Trainer:
             loss.backward()
             self.optimizer.step()
 
-            running_loss += loss.item() * images.size(0)
-            preds = torch.max(logits, 1)[1]
-            corrects += torch.sum(preds == labels.data)
+            running_loss += loss.item()
+            _, preds = torch.max(logits, 1)
+            corrects += torch.sum(preds == labels)
             total += labels.size(0)
+            
+            # Hiển thị loss thời gian thực trên thanh tiến trình
+            pbar.set_postfix(loss=f"{loss.item():.4f}")
         return running_loss / total, corrects.double() / total
 
     def validate(self):
@@ -140,8 +146,13 @@ class Trainer:
             t_loss, t_acc = self.train_one_epoch()
             v_loss, v_acc = self.validate()
             if self.scheduler: self.scheduler.step(v_loss)
-            print(f"Epoch {self._current_epoch} | Val Acc: {v_acc:.4f}")
-            if self.use_wandb: log_metrics({"train_acc": t_acc, "val_acc": v_acc, "val_loss": v_loss}, epoch=self._current_epoch)
+            
+            # Print với Epoch bắt đầu từ 1
+            display_epoch = self._current_epoch + 1
+            print(f"Epoch {display_epoch}/{self.epochs + self.base_epoch} | Train Loss: {t_loss:.4f} | Train Acc: {t_acc:.4f} | Val Acc: {v_acc:.4f}")
+            
+            if self.use_wandb: 
+                log_metrics({"train_acc": t_acc, "train_loss": t_loss, "val_acc": v_acc, "val_loss": v_loss}, epoch=display_epoch)
             
             if v_acc > best_acc:
                 best_acc = v_acc
