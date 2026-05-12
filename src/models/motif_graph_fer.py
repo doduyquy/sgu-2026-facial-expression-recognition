@@ -142,16 +142,16 @@ class GraphAttentionLayer(nn.Module):
         self.k_lin = nn.Linear(in_dim, out_dim)
         self.v_lin = nn.Linear(in_dim, out_dim)
         self.out_lin = nn.Linear(out_dim, out_dim)
-        # UPDATE: edge-aware attention + learnable adjacency gating
+        # UPDATE: edge-aware attention + learnable adjacency gating (per-head)
         self.edge_gate = nn.Sequential(
             nn.Linear(2 * in_dim, out_dim),
             nn.ReLU(),
-            nn.Linear(out_dim, 1)
+            nn.Linear(out_dim, self.heads) # <--- Sửa số 1 thành self.heads
         )
         self.edge_bias = nn.Sequential(
             nn.Linear(2 * in_dim, out_dim),
             nn.ReLU(),
-            nn.Linear(out_dim, 1)
+            nn.Linear(out_dim, self.heads) # <--- Sửa số 1 thành self.heads
         )
         # UPDATE: residual + norm + attention dropout
         self.attn_drop = nn.Dropout(p=0.1)
@@ -168,18 +168,25 @@ class GraphAttentionLayer(nn.Module):
         # (B, H, N, N)
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k) #matmul có tác dụng tính toán điểm số attention giữa các node, chia cho sqrt(d_k) để ổn định gradient khi d_k lớn
 
-        # UPDATE: edge-aware bias + learnable gate per edge
+        # THAY THẾ BẰNG ĐOẠN NÀY ĐỂ KHỚP CHIỀU TỪNG HEAD (User Fix)
         x_i = x.unsqueeze(2).expand(B, N, N, -1)
         x_j = x.unsqueeze(1).expand(B, N, N, -1)
         edge_feat = torch.cat([x_i, x_j], dim=-1)
-        edge_gate = torch.sigmoid(self.edge_gate(edge_feat)).squeeze(-1) # (B, N, N)
-        edge_bias = self.edge_bias(edge_feat).squeeze(-1) # (B, N, N)
+
+        # edge_gate shape: (B, N, N, heads) -> (B, heads, N, N)
+        edge_gate = torch.sigmoid(self.edge_gate(edge_feat))
+        edge_gate = edge_gate.permute(0, 3, 1, 2) 
+        
+        edge_bias = self.edge_bias(edge_feat)
+        edge_bias = edge_bias.permute(0, 3, 1, 2)
 
         if adj is not None:
-            edge_gate = edge_gate * adj
+            # adj (B, N, N) -> unsqueeze to (B, 1, N, N) for broadcasting
+            edge_gate = edge_gate * adj.unsqueeze(1)
 
-        scores = scores + edge_bias.unsqueeze(1)
-        scores = scores * edge_gate.unsqueeze(1)
+        # scores has shape (B, heads, N, N)
+        scores = scores + edge_bias
+        scores = scores * edge_gate
 
         if adj is not None:
             scores = scores.masked_fill(adj.unsqueeze(1) == 0, -1e9)
@@ -334,9 +341,12 @@ class MotifGraphModel(nn.Module):
         self.temperature = config.get('motif_tau', 0.1) 
         
         self.backbone = MotifBackbone(feat_dim=self.feat_dim)
-        if config.get('pretrained_cnn_path'):
-            self.backbone.load_pretrained_cnn(config.get('pretrained_cnn_path'))
         
+        # UPDATE: Load custom CNN checkpoint if provided
+        pretrained_cnn_path = config.get('pretrained_cnn_path', "")
+        if pretrained_cnn_path != "":
+            self.backbone.load_pretrained_cnn(pretrained_cnn_path)
+            
         # 4. Global Branch: Capture overall face context
         self.global_pool = nn.AdaptiveAvgPool2d(1)
         self.global_fc = nn.Sequential(
@@ -353,7 +363,7 @@ class MotifGraphModel(nn.Module):
         ])
         
         self.offset_predictor = nn.Sequential(
-            nn.Linear(self.feat_dim, 64),
+            nn.Linear(self.feat_dim * 2, 64), # UPDATE: Global-Guided Input
             nn.ReLU(),
             nn.Linear(64, 2), 
             nn.Tanh() 
@@ -410,14 +420,24 @@ class MotifGraphModel(nn.Module):
     def _extract_deformable_subgraphs(self, feat_map, H, W, node_feats):
         B, C_feat, _, _ = feat_map.shape
         
-        # Base sampling grid (4 expanded corners instead of clustered center)
-        centers = [(1,1), (1,4), (4,1), (4,4)]
+        # Base sampling grid (Dynamic Anchors for robustness to TenCrop/resizing)
+        h_idx = max(1, H - 2)
+        w_idx = max(1, W - 2)
+        
+        # 4 dynamic anchors instead of hardcoded centers
+        centers = [(1, 1), (1, w_idx), (h_idx, 1), (h_idx, w_idx)]
         center_indices = [i * W + j for i, j in centers]
         center_indices = torch.tensor(center_indices, device=feat_map.device)
         num_cands = len(center_indices)
         
         center_feats = node_feats[:, center_indices, :] 
-        offsets = self.offset_predictor(center_feats) * self.offset_amplitude  # UPDATE: scale offsets
+        
+        # UPDATE: Global-Guided Offsets
+        global_feat = feat_map.mean(dim=(2, 3)) # Global Average Pooling (B, C)
+        global_feat = global_feat.unsqueeze(1).expand(-1, num_cands, -1) # (B, num_cands, C)
+        combined_feats = torch.cat([center_feats, global_feat], dim=-1) # (B, num_cands, 2C)
+        
+        offsets = self.offset_predictor(combined_feats) * self.offset_amplitude  # UPDATE: scale offsets
         # Point 3: Stabilize offset predictor with regularization
         self._latest_offsets = offsets
         
