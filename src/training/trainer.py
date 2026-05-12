@@ -177,9 +177,11 @@ class Trainer:
 
             # ── Transfer Learning: kiểm tra có cần mở băng backbone không ──
             base_model = self._unwrap_model()
+            phase_transitioned = False
             if hasattr(base_model, 'check_unfreeze'):
                 should_rebuild = base_model.check_unfreeze(ep)
                 if should_rebuild:
+                    phase_transitioned = True
                     # Rebuild optimizer với LR nhỏ hơn cho fine-tuning
                     finetune_lr = self.config['training'].get('finetune_lr', 1e-5)
                     
@@ -212,13 +214,22 @@ class Trainer:
 
             # wandb log
             if self.use_wandb and self.is_main_process:
+                current_phase = (
+                    "finetune_layer4"
+                    if getattr(base_model, "unfreeze_backbone", False)
+                    and not getattr(base_model, "is_frozen", False)
+                    else "frozen_backbone"
+                )
                 log_metrics({
                     "Epoch": ep + 1,
                     "Train/Loss": train_loss,
                     "Train/Accuracy": train_acc,
+                    "Train/Ortho_Loss": train_ortho_loss,
                     "Val/Loss": val_loss,
                     "Val/Accuracy": val_acc,
-                    "Learning_Rate": self.optimizer.param_groups[0]['lr']
+                    "Learning_Rate": self.optimizer.param_groups[0]['lr'],
+                    "Training/Backbone_Finetune_Active": int(current_phase == "finetune_layer4"),
+                    "Training/Phase_Transition": int(phase_transitioned),
                 }, epoch=ep)
 
             # lr scheduler

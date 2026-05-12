@@ -174,7 +174,6 @@ def main():
         config["data"]["image_size"] = 224
         config["data"]["channels"] = 3
         config["data"]["normalize"] = False
-        config["logging"]["use_wandb"] = False
 
         if args.batch_size is not None:
             config["data"]["batch_size"] = args.batch_size

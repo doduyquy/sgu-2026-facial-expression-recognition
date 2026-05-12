@@ -291,10 +291,22 @@ class ResNet152RegionAttentionFER(nn.Module):
         self.source_logit_weight = model_cfg.get("source_logit_weight", 1.0)
         self.freeze_epochs = model_cfg.get("freeze_backbone_epochs", 0)
         self.unfreeze_backbone = model_cfg.get("unfreeze_backbone", False)
+        self.unfreeze_backbone_scope = model_cfg.get("unfreeze_backbone_scope", "all").lower()
+        self.region_pooling = model_cfg.get("region_pooling", "mean").lower()
+        self.classifier_hidden_dim = model_cfg.get("classifier_hidden_dim", 512)
+        self.ortho_loss_type = model_cfg.get("ortho_loss_type", "mean_offdiag").lower()
         self.is_frozen = False
         self.return_attn = False
 
         num_classes = data_cfg.get("num_classes", 7)
+        if self.unfreeze_backbone_scope not in ("all", "layer4"):
+            raise ValueError("model.unfreeze_backbone_scope must be one of: all, layer4")
+        if self.region_pooling not in ("mean", "concat"):
+            raise ValueError("model.region_pooling must be one of: mean, concat")
+        if self.ortho_loss_type not in ("mean_offdiag", "squared_offdiag"):
+            raise ValueError(
+                "model.ortho_loss_type must be one of: mean_offdiag, squared_offdiag"
+            )
 
         self.res_backbone = ResNet152SpatialTokenizer(config, channels=channels)
         self.visual_dim = self.res_backbone.feature_dim
@@ -362,13 +374,18 @@ class ResNet152RegionAttentionFER(nn.Module):
 
         self.pos_embed = nn.Parameter(torch.randn(1, self.num_regions, self.embed_dim) * 0.02)
 
+        classifier_input_dim = (
+            self.embed_dim * self.num_regions
+            if self.region_pooling == "concat"
+            else self.embed_dim
+        )
         self.classifier = nn.Sequential(
-            nn.LayerNorm(self.embed_dim),
+            nn.LayerNorm(classifier_input_dim),
             nn.Dropout(model_cfg.get("classifier_dropout1", 0.3)),
-            nn.Linear(self.embed_dim, 512),
+            nn.Linear(classifier_input_dim, self.classifier_hidden_dim),
             nn.GELU(),
             nn.Dropout(model_cfg.get("classifier_dropout2", 0.2)),
-            nn.Linear(512, num_classes),
+            nn.Linear(self.classifier_hidden_dim, num_classes),
         )
 
         checkpoint_path = model_cfg.get("checkpoint_path")
@@ -390,18 +407,34 @@ class ResNet152RegionAttentionFER(nn.Module):
         print("[ResNet152RegionAttention] ResNet152 backbone FROZEN.")
 
     def unfreeze_backbones(self):
-        for param in self.parameters():
-            param.requires_grad = True
+        for param in self.res_backbone.backbone.parameters():
+            param.requires_grad = False
+
+        if self.unfreeze_backbone_scope == "layer4":
+            trainable_modules = (self.res_backbone.backbone.layer4,)
+            message = "ResNet152 layer4 UNFROZEN."
+        else:
+            trainable_modules = (self.res_backbone.backbone,)
+            message = "ResNet152 backbone UNFROZEN."
+
+        for module in trainable_modules:
+            for param in module.parameters():
+                param.requires_grad = True
+
         if self.logit_fusion in ("attention", "sum"):
             for param in self.res_backbone.source_fc.parameters():
                 param.requires_grad = False
         self.is_frozen = False
-        print("[ResNet152RegionAttention] All parameters UNFROZEN.")
+        print(f"[ResNet152RegionAttention] {message}")
 
     def train(self, mode=True):
         super().train(mode)
         if mode and self.is_frozen:
             self.res_backbone.backbone.eval()
+            self.res_backbone.source_fc.eval()
+        elif mode and self.unfreeze_backbone and self.unfreeze_backbone_scope == "layer4":
+            self.res_backbone.backbone.eval()
+            self.res_backbone.backbone.layer4.train()
             self.res_backbone.source_fc.eval()
         return self
 
@@ -453,7 +486,10 @@ class ResNet152RegionAttentionFER(nn.Module):
         hyper_visual = phi_sem + phi_visual + self.pos_embed
 
         encoded = self.transformer_encoder(hyper_visual)     # [B, 6, 512]
-        pooled = encoded.mean(dim=1)
+        if self.region_pooling == "concat":
+            pooled = encoded.reshape(encoded.size(0), -1)
+        else:
+            pooled = encoded.mean(dim=1)
         attention_logits = self.classifier(pooled)
 
         source_logits = None
@@ -464,7 +500,11 @@ class ResNet152RegionAttentionFER(nn.Module):
         attn_norm = F.normalize(attn_weights, p=2, dim=-1)
         sim = torch.bmm(attn_norm, attn_norm.transpose(1, 2))
         mask = torch.eye(sim.size(1), device=sim.device).bool()
-        ortho_loss = sim[:, ~mask].mean()
+        off_diag_sim = sim[:, ~mask]
+        if self.ortho_loss_type == "squared_offdiag":
+            ortho_loss = off_diag_sim.pow(2).mean()
+        else:
+            ortho_loss = off_diag_sim.mean()
 
         if self.training:
             return logits, ortho_loss

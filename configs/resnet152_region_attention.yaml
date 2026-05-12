@@ -4,7 +4,7 @@ model:
   name: "resnet152_region_attention"
 
   # Source checkpoint that already reaches about 73% as a plain ResNet152.
-  # This file is used as the frozen visual backbone for the new region-attention head.
+  # Warm-up starts from this backbone, then layer4 is fine-tuned later in training.
   pretrained_resnet_path: "checkpoints/resnet152_rot30_2019Nov14_12.47"
 
   embed_dim: 512
@@ -33,13 +33,18 @@ model:
   attention_logit_weight: 0.3
   source_logit_weight: 1.0
 
-  # Keep the 73% ResNet152 as a frozen CNN feature extractor.
-  # freeze_backbone_epochs > 0 triggers the initial freeze; unfreeze_backbone=false
-  # keeps it frozen for the whole run.
-  # Train only: CLIP/text tokens -> MHA -> ViT-style encoder -> classifier.
+  # Warm up the new attention head first, then fine-tune only ResNet152 layer4.
   freeze_backbone_epochs: 5
-  unfreeze_backbone: false
-  ortho_loss_weight: 0.01
+  unfreeze_backbone: true
+  unfreeze_backbone_scope: "layer4"
+
+  # Preserve all 6 region tokens for the classifier instead of averaging them away.
+  region_pooling: "concat"
+  classifier_hidden_dim: 1024
+
+  # Penalize large overlap between region attention maps more strongly.
+  ortho_loss_type: "squared_offdiag"
+  ortho_loss_weight: 0.02
 
 data:
   image_size: 224
@@ -64,7 +69,7 @@ training:
   use_class_weights: false
 
 logging:
-  use_wandb: false
+  use_wandb: true
 
 ddp:
   # Use with: torchrun --standalone --nproc_per_node=2 scripts/run_resnet152_region_attention.py ...
