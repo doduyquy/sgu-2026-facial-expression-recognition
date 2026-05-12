@@ -334,12 +334,9 @@ class MotifGraphModel(nn.Module):
         self.temperature = config.get('motif_tau', 0.1) 
         
         self.backbone = MotifBackbone(feat_dim=self.feat_dim)
+        if config.get('pretrained_cnn_path'):
+            self.backbone.load_pretrained_cnn(config.get('pretrained_cnn_path'))
         
-        # UPDATE: Load custom CNN checkpoint if provided
-        pretrained_cnn_path = config.get('pretrained_cnn_path', "")
-        if pretrained_cnn_path != "":
-            self.backbone.load_pretrained_cnn(pretrained_cnn_path)
-            
         # 4. Global Branch: Capture overall face context
         self.global_pool = nn.AdaptiveAvgPool2d(1)
         self.global_fc = nn.Sequential(
@@ -356,7 +353,7 @@ class MotifGraphModel(nn.Module):
         ])
         
         self.offset_predictor = nn.Sequential(
-            nn.Linear(self.feat_dim * 2, 64), # UPDATE: Global-Guided Input
+            nn.Linear(self.feat_dim, 64),
             nn.ReLU(),
             nn.Linear(64, 2), 
             nn.Tanh() 
@@ -420,13 +417,7 @@ class MotifGraphModel(nn.Module):
         num_cands = len(center_indices)
         
         center_feats = node_feats[:, center_indices, :] 
-        
-        # UPDATE: Global-Guided Offsets
-        global_feat = feat_map.mean(dim=(2, 3)) # Global Average Pooling (B, C)
-        global_feat = global_feat.unsqueeze(1).expand(-1, num_cands, -1) # (B, num_cands, C)
-        combined_feats = torch.cat([center_feats, global_feat], dim=-1) # (B, num_cands, 2C)
-        
-        offsets = self.offset_predictor(combined_feats) * self.offset_amplitude  # UPDATE: scale offsets
+        offsets = self.offset_predictor(center_feats) * self.offset_amplitude  # UPDATE: scale offsets
         # Point 3: Stabilize offset predictor with regularization
         self._latest_offsets = offsets
         
