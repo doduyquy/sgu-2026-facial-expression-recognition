@@ -287,11 +287,13 @@ class ResNet152RegionAttentionFER(nn.Module):
         self.use_visual_pos_embed = model_cfg.get("use_visual_pos_embed", True)
         self.fusion_type = model_cfg.get("fusion_type", "transformer")
         self.logit_fusion = model_cfg.get("logit_fusion", "attention")
+        self.finetune_logit_fusion = model_cfg.get("finetune_logit_fusion", self.logit_fusion)
         self.attention_logit_weight = model_cfg.get("attention_logit_weight", 1.0)
         self.source_logit_weight = model_cfg.get("source_logit_weight", 1.0)
         self.freeze_epochs = model_cfg.get("freeze_backbone_epochs", 0)
         self.unfreeze_backbone = model_cfg.get("unfreeze_backbone", False)
         self.unfreeze_backbone_scope = model_cfg.get("unfreeze_backbone_scope", "all").lower()
+        self.freeze_unfrozen_batchnorm = model_cfg.get("freeze_unfrozen_batchnorm", False)
         self.region_pooling = model_cfg.get("region_pooling", "mean").lower()
         self.classifier_hidden_dim = model_cfg.get("classifier_hidden_dim", 512)
         self.ortho_loss_type = model_cfg.get("ortho_loss_type", "mean_offdiag").lower()
@@ -301,6 +303,12 @@ class ResNet152RegionAttentionFER(nn.Module):
         num_classes = data_cfg.get("num_classes", 7)
         if self.unfreeze_backbone_scope not in ("all", "layer4"):
             raise ValueError("model.unfreeze_backbone_scope must be one of: all, layer4")
+        if self.logit_fusion not in ("attention", "source", "sum"):
+            raise ValueError("model.logit_fusion must be one of: attention, source, sum")
+        if self.finetune_logit_fusion not in ("attention", "source", "sum"):
+            raise ValueError(
+                "model.finetune_logit_fusion must be one of: attention, source, sum"
+            )
         if self.region_pooling not in ("mean", "concat"):
             raise ValueError("model.region_pooling must be one of: mean, concat")
         if self.ortho_loss_type not in ("mean_offdiag", "squared_offdiag"):
@@ -421,11 +429,25 @@ class ResNet152RegionAttentionFER(nn.Module):
             for param in module.parameters():
                 param.requires_grad = True
 
+        previous_logit_fusion = self.logit_fusion
+        self.logit_fusion = self.finetune_logit_fusion
+
         if self.logit_fusion in ("attention", "sum"):
             for param in self.res_backbone.source_fc.parameters():
                 param.requires_grad = False
         self.is_frozen = False
         print(f"[ResNet152RegionAttention] {message}")
+        if previous_logit_fusion != self.logit_fusion:
+            print(
+                "[ResNet152RegionAttention] "
+                f"logit_fusion switched: {previous_logit_fusion} -> {self.logit_fusion}"
+            )
+
+    @staticmethod
+    def _freeze_batchnorm(module):
+        for child in module.modules():
+            if isinstance(child, nn.modules.batchnorm._BatchNorm):
+                child.eval()
 
     def train(self, mode=True):
         super().train(mode)
@@ -435,6 +457,8 @@ class ResNet152RegionAttentionFER(nn.Module):
         elif mode and self.unfreeze_backbone and self.unfreeze_backbone_scope == "layer4":
             self.res_backbone.backbone.eval()
             self.res_backbone.backbone.layer4.train()
+            if self.freeze_unfrozen_batchnorm:
+                self._freeze_batchnorm(self.res_backbone.backbone.layer4)
             self.res_backbone.source_fc.eval()
         return self
 

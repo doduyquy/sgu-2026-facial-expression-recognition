@@ -30,6 +30,7 @@ model:
   # "source": evaluate the original fc from the ResNet152 checkpoint, if present.
   # "sum": residual blend of attention logits and original checkpoint logits.
   logit_fusion: "sum"
+  finetune_logit_fusion: "attention"
   attention_logit_weight: 0.3
   source_logit_weight: 1.0
 
@@ -37,6 +38,7 @@ model:
   freeze_backbone_epochs: 5
   unfreeze_backbone: true
   unfreeze_backbone_scope: "layer4"
+  freeze_unfrozen_batchnorm: true
 
   # Preserve all 6 region tokens for the classifier instead of averaging them away.
   region_pooling: "concat"
@@ -67,6 +69,7 @@ training:
   lr_factor: 0.5
   lr_patience: 5
   use_class_weights: false
+  use_amp: true
 
 logging:
   use_wandb: true

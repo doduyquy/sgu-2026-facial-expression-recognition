@@ -1,6 +1,7 @@
 import torch
 import torch.distributed as dist
 from torch import device
+from torch.cuda.amp import GradScaler, autocast
 import os
 import numpy as np 
 from datetime import datetime
@@ -30,8 +31,21 @@ class Trainer:
         self.is_distributed = dist.is_available() and dist.is_initialized()
         self.rank = dist.get_rank() if self.is_distributed else 0
         self.is_main_process = self.rank == 0
+        self.use_amp = (
+            config.get('training', {}).get('use_amp', False)
+            and self.device.type == 'cuda'
+            and not isinstance(self.optimizer, SAM)
+        )
+        self.grad_scaler = GradScaler(enabled=self.use_amp)
         if self.monitor not in ['val_loss', 'val_accuracy']:
             raise ValueError("training.monitor must be either 'val_loss' or 'val_accuracy'")
+        if (
+            config.get('training', {}).get('use_amp', False)
+            and self.device.type == 'cuda'
+            and isinstance(self.optimizer, SAM)
+            and self.is_main_process
+        ):
+            print("[Trainer] AMP requested, but disabled for SAM to keep its two-step gradient flow correct.")
 
     def _unwrap_model(self):
         return self.model.module if hasattr(self.model, "module") else self.model
@@ -72,27 +86,28 @@ class Trainer:
             images, labels = images.to(self.device), labels.to(self.device)
 
             self.optimizer.zero_grad()
-            outputs = self.model(images)
-            
-            # -------------
-            # Check loại tuple trả về
-            if isinstance(outputs, tuple):
-                if len(outputs) == 2 and isinstance(outputs[1], torch.Tensor) and outputs[1].dim() == 0:
-                    # Trả về (logits, scalar_aux_loss) -> Orthogonal Loss cho RegionAttention
-                    main_out, aux_loss = outputs
-                    main_loss = self.criterion(main_out, labels)
-                    ortho_weight = self.config.get('model', {}).get('ortho_loss_weight', 0.1)
-                    loss = main_loss + ortho_weight * aux_loss
-                    outputs = main_out
-                    running_ortho += aux_loss.item() * images.size(0)
+            with autocast(enabled=self.use_amp):
+                outputs = self.model(images)
+                
+                # -------------
+                # Check loại tuple trả về
+                if isinstance(outputs, tuple):
+                    if len(outputs) == 2 and isinstance(outputs[1], torch.Tensor) and outputs[1].dim() == 0:
+                        # Trả về (logits, scalar_aux_loss) -> Orthogonal Loss cho RegionAttention
+                        main_out, aux_loss = outputs
+                        main_loss = self.criterion(main_out, labels)
+                        ortho_weight = self.config.get('model', {}).get('ortho_loss_weight', 0.1)
+                        loss = main_loss + ortho_weight * aux_loss
+                        outputs = main_out
+                        running_ortho += aux_loss.item() * images.size(0)
+                    else:
+                        # [Inception] Trả về (main_out, aux_out_logits)
+                        main_out, aux_out = outputs
+                        loss = inception_loss(main_out, aux_out, labels, criterion=self.criterion)
+                        outputs = main_out # Đặt lại outputs -> tinhs accuracy ở dưới
                 else:
-                    # [Inception] Trả về (main_out, aux_out_logits)
-                    main_out, aux_out = outputs
-                    loss = inception_loss(main_out, aux_out, labels, criterion=self.criterion)
-                    outputs = main_out # Đặt lại outputs -> tinhs accuracy ở dưới
-            else:
-                loss = self.criterion(outputs, labels)
-            # -------------
+                    loss = self.criterion(outputs, labels)
+                # -------------
 
 
             if isinstance(self.optimizer, SAM):
@@ -101,25 +116,31 @@ class Trainer:
                 self.optimizer.first_step(zero_grad=True)
 
                 # ── SAM Step 2 ──
-                outputs_2 = self.model(images)
-                if isinstance(outputs_2, tuple):
-                    if len(outputs_2) == 2 and isinstance(outputs_2[1], torch.Tensor) and outputs_2[1].dim() == 0:
-                        main_out_2, aux_loss_2 = outputs_2
-                        main_loss_2 = self.criterion(main_out_2, labels)
-                        ortho_weight = self.config.get('model', {}).get('ortho_loss_weight', 0.1)
-                        loss_2 = main_loss_2 + ortho_weight * aux_loss_2
+                with autocast(enabled=self.use_amp):
+                    outputs_2 = self.model(images)
+                    if isinstance(outputs_2, tuple):
+                        if len(outputs_2) == 2 and isinstance(outputs_2[1], torch.Tensor) and outputs_2[1].dim() == 0:
+                            main_out_2, aux_loss_2 = outputs_2
+                            main_loss_2 = self.criterion(main_out_2, labels)
+                            ortho_weight = self.config.get('model', {}).get('ortho_loss_weight', 0.1)
+                            loss_2 = main_loss_2 + ortho_weight * aux_loss_2
+                        else:
+                            main_out_2, aux_out_2 = outputs_2
+                            loss_2 = inception_loss(main_out_2, aux_out_2, labels, criterion=self.criterion)
                     else:
-                        main_out_2, aux_out_2 = outputs_2
-                        loss_2 = inception_loss(main_out_2, aux_out_2, labels, criterion=self.criterion)
-                else:
-                    loss_2 = self.criterion(outputs_2, labels)
+                        loss_2 = self.criterion(outputs_2, labels)
                 
                 loss_2.backward()
                 self.optimizer.second_step(zero_grad=True)
             else:
                 # ── Standard Optimizer ──
-                loss.backward()
-                self.optimizer.step()
+                if self.use_amp:
+                    self.grad_scaler.scale(loss).backward()
+                    self.grad_scaler.step(self.optimizer)
+                    self.grad_scaler.update()
+                else:
+                    loss.backward()
+                    self.optimizer.step()
 
             running_loss += loss.item() * images.size(0)
             _, preds = torch.max(outputs, dim=1)
@@ -140,8 +161,9 @@ class Trainer:
             for images, labels in self.val_loader:
                 images, labels = images.to(self.device), labels.to(self.device)
 
-                outputs = self.model(images)
-                loss = self.criterion(outputs, labels)
+                with autocast(enabled=self.use_amp):
+                    outputs = self.model(images)
+                    loss = self.criterion(outputs, labels)
                 running_loss += loss.item() * images.size(0)
 
                 _, preds = torch.max(outputs, dim=1)
@@ -228,6 +250,7 @@ class Trainer:
                     "Val/Loss": val_loss,
                     "Val/Accuracy": val_acc,
                     "Learning_Rate": self.optimizer.param_groups[0]['lr'],
+                    "Training/AMP_Enabled": int(self.use_amp),
                     "Training/Backbone_Finetune_Active": int(current_phase == "finetune_layer4"),
                     "Training/Phase_Transition": int(phase_transitioned),
                 }, epoch=ep)
