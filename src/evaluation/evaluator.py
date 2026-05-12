@@ -23,13 +23,26 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> Non
         
     os.makedirs(save_dir, exist_ok=True)
     with torch.no_grad():
-        for images, labels in tqdm(test_loader, desc="Evaluate test set..."):
+        for batch in tqdm(test_loader, desc="Evaluate test set..."):
+            if len(batch) == 3:
+                images, labels, region_masks = batch
+                region_masks = region_masks.to(device)
+            else:
+                images, labels = batch
+                region_masks = None
             images, labels = images.to(device), labels.to(device)
             
             # --- Test Time Augmentation (TTA) - Horizontal Flip ---
-            out_orig = model(images)
+            if region_masks is not None:
+                out_orig = model(images, region_masks=region_masks)
+            else:
+                out_orig = model(images)
             images_flipped = torch.flip(images, dims=[3])
-            out_flipped = model(images_flipped)
+            if region_masks is not None:
+                region_masks_flipped = torch.flip(region_masks, dims=[3])
+                out_flipped = model(images_flipped, region_masks=region_masks_flipped)
+            else:
+                out_flipped = model(images_flipped)
             
             attn_weights_batch = None
             if isinstance(out_orig, tuple) and len(out_orig) == 2:

@@ -58,8 +58,7 @@ training:
   epochs: 60
   patience: 25
   monitor: "val_accuracy"
-  loss: "focal"
-  focal_gamma: 1.5
+  loss: "cross_entropy"
   label_smoothing: 0.02
   optimizer: "adamw"
   lr: 0.0001

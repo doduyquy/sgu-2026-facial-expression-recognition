@@ -16,7 +16,7 @@ from src.utils.config import load_config
 from src.utils.seed import set_seed
 from src.utils.logger_wandb import init_wandb
 
-from src.data.dataloader import build_dataloader
+from src.data.dataloader import build_dataloader, build_landmark_dataloader
 from src.models import get_model # in __init__ gfile
 from src.training.trainer import Trainer
 from src.training.losses import build_loss
@@ -116,7 +116,15 @@ def main():
         run_name = f"{config['model'].get('name', 'cnn')}_{timestamp}"
 
         # load data, loss, optim, model
-        train_loader, val_loader, test_loader = build_dataloader(
+        dataloader_builder = (
+            build_landmark_dataloader
+            if config['model'].get('name') == 'resnet152_landmark_attention'
+            else build_dataloader
+        )
+        if is_main_process() and dataloader_builder is build_landmark_dataloader:
+            print("--> Using landmark dataloader for landmark-guided attention.")
+
+        train_loader, val_loader, test_loader = dataloader_builder(
             config=config,
             data_path=data_path,
             distributed=distributed,
