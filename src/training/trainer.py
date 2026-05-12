@@ -225,19 +225,24 @@ class Trainer:
                 should_rebuild = base_model.check_unfreeze(ep)
                 if should_rebuild:
                     phase_transitioned = True
+                    finetune_lr = self.config['training'].get('finetune_lr')
                     visual_extractor_lr = self.config['training'].get('visual_extractor_lr')
                     if visual_extractor_lr is None:
                         # Legacy fallback: use one small LR for every trainable parameter.
-                        finetune_lr = self.config['training'].get('finetune_lr', 1e-5)
+                        finetune_lr = finetune_lr if finetune_lr is not None else 1e-5
                         old_lr = self.config['training']['lr']
                         self.config['training']['lr'] = finetune_lr
                         self.optimizer = build_optimizer(self.model, self.config)
                         self.config['training']['lr'] = old_lr
                         rebuild_msg = f"finetune_lr={finetune_lr}"
                     else:
+                        old_lr = self.config['training']['lr']
+                        head_lr = finetune_lr if finetune_lr is not None else old_lr
+                        self.config['training']['lr'] = head_lr
                         self.optimizer = build_optimizer(self.model, self.config)
+                        self.config['training']['lr'] = old_lr
                         rebuild_msg = (
-                            f"head_lr={self.config['training'].get('lr')}, "
+                            f"head_lr={head_lr}, "
                             f"visual_extractor_lr={visual_extractor_lr}"
                         )
                     

@@ -34,10 +34,10 @@ model:
   attention_logit_weight: 1.0
   source_logit_weight: 0.0
 
-  # Warm up the new attention head first, then fine-tune both top stages.
-  freeze_backbone_epochs: 5
+  # Warm up the new attention head first, then fine-tune layer4 gently.
+  freeze_backbone_epochs: 8
   unfreeze_backbone: true
-  unfreeze_backbone_scope: "layer3_layer4"
+  unfreeze_backbone_scope: "layer4"
   freeze_unfrozen_batchnorm: true
 
   # Preserve all 6 region tokens for the classifier instead of averaging them away.
@@ -63,7 +63,7 @@ training:
   label_smoothing: 0.02
   optimizer: "adamw"
   lr: 0.0001
-  visual_extractor_lr: 0.00001
+  visual_extractor_lr: 0.000002
   finetune_lr: 0.00002
   weight_decay: 0.0001
   scheduler: "reduce_lr_on_plateau"
