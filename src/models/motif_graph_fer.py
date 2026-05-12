@@ -146,12 +146,12 @@ class GraphAttentionLayer(nn.Module):
         self.edge_gate = nn.Sequential(
             nn.Linear(2 * in_dim, out_dim),
             nn.ReLU(),
-            nn.Linear(out_dim, self.heads) # <--- Sửa số 1 thành self.heads
+            nn.Linear(out_dim, self.heads) 
         )
         self.edge_bias = nn.Sequential(
             nn.Linear(2 * in_dim, out_dim),
             nn.ReLU(),
-            nn.Linear(out_dim, self.heads) # <--- Sửa số 1 thành self.heads
+            nn.Linear(out_dim, self.heads) 
         )
         # UPDATE: residual + norm + attention dropout
         self.attn_drop = nn.Dropout(p=0.1)
@@ -168,7 +168,7 @@ class GraphAttentionLayer(nn.Module):
         # (B, H, N, N)
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k) #matmul có tác dụng tính toán điểm số attention giữa các node, chia cho sqrt(d_k) để ổn định gradient khi d_k lớn
 
-        # THAY THẾ BẰNG ĐOẠN NÀY ĐỂ KHỚP CHIỀU TỪNG HEAD (User Fix)
+        # Multi-head edge features calculation
         x_i = x.unsqueeze(2).expand(B, N, N, -1)
         x_j = x.unsqueeze(1).expand(B, N, N, -1)
         edge_feat = torch.cat([x_i, x_j], dim=-1)
@@ -181,10 +181,10 @@ class GraphAttentionLayer(nn.Module):
         edge_bias = edge_bias.permute(0, 3, 1, 2)
 
         if adj is not None:
-            # adj (B, N, N) -> unsqueeze to (B, 1, N, N) for broadcasting
+            # Broadcast adj to (B, 1, N, N)
             edge_gate = edge_gate * adj.unsqueeze(1)
 
-        # scores has shape (B, heads, N, N)
+        # scores: (B, heads, N, N)
         scores = scores + edge_bias
         scores = scores * edge_gate
 
