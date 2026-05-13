@@ -1,0 +1,16 @@
+_base_: "resnet152_region_attention.yaml"
+
+model:
+  # Keep the global visual bias enabled for the main 73.x baseline family.
+  use_global_visual_bias: true
+  use_region_slot_embed: true
+
+training:
+  # SAM ablation on top of the strong global region-attention baseline.
+  # Trainer intentionally disables AMP for SAM to preserve the two-step update.
+  optimizer: "sam"
+  base_optimizer: "adamw"
+  sam_rho: 0.05
+  sam_adaptive: false
+  scheduler: "cosine"
+  use_amp: false

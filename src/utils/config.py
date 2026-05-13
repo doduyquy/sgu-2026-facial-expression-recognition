@@ -16,6 +16,24 @@ def _deep_update(base_dict, update_dict):
             base_dict[key] = value
     return base_dict
 
+
+def _load_yaml_with_base(config_path):
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f) or {}
+
+    base_name = config.get("_base_")
+    if not base_name:
+        return config
+
+    base_path = os.path.join(CONFIG_DIR, base_name)
+    if not os.path.exists(base_path):
+        raise FileNotFoundError(
+            f"Base config '{base_name}' referenced by '{config_path}' was not found."
+        )
+
+    base_config = _load_yaml_with_base(base_path)
+    return _deep_update(base_config, config)
+
 def load_config(model='simple_cnn', env='kaggle') -> dict:
     """Load file config và cả file base mà nó kế thừa
     Trong config, các path mà nó trả về sẽ là path tương đối,
@@ -30,17 +48,10 @@ def load_config(model='simple_cnn', env='kaggle') -> dict:
     """
     model_config_path = os.path.join(CONFIG_DIR, f"{model}.yaml")
     env_config_path = os.path.join(CONFIG_DIR, "env.yaml")
-    base_config_path = os.path.join(CONFIG_DIR, "base.yaml")
-
-    with open(model_config_path, "r") as f:
-        model_config = yaml.safe_load(f)
+    model_config = _load_yaml_with_base(model_config_path)
     with open(env_config_path, "r") as f:
         env_config = yaml.safe_load(f)
-    with open(base_config_path, "r") as f:
-        base_config = yaml.safe_load(f)
-
-    # Merge base config and model config
-    config = _deep_update(base_config, model_config)
+    config = model_config
 
     if env == "local":
         env_config = env_config["local"]
