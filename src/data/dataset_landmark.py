@@ -85,7 +85,12 @@ class FER2013WithLandmarks(FER2013):
         image = Image.fromarray(image_np)
         if self.transform is not None:
             if getattr(self.transform, "accepts_masks", False):
-                image, region_masks = self.transform(image, region_masks)
+                if getattr(self.transform, "accepts_label", False):
+                    image, region_masks = self.transform(image, region_masks, label=label)
+                else:
+                    image, region_masks = self.transform(image, region_masks)
+            elif getattr(self.transform, "accepts_label", False):
+                image = self.transform(image, label=label)
             else:
                 image = self.transform(image)
 

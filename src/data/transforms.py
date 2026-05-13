@@ -31,6 +31,166 @@ class RandomGamma(torch.nn.Module):
         return img
 
 
+def _pair_from_config(value, default):
+    if value is None:
+        return default
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return (float(value[0]), float(value[1]))
+    raise ValueError("Expected a two-value list/tuple.")
+
+
+class ClassAwareAugment(torch.nn.Module):
+    """
+    Extra light augmentation for selected labels.
+
+    The normal train augmentation still applies to every sample. This module
+    only adds a small extra perturbation to hard classes when enabled by config.
+    """
+
+    def __init__(self, config):
+        super().__init__()
+        cfg = config.get("data", {}).get("class_aware_augmentation", {})
+        self.enabled = bool(cfg.get("enabled", False))
+        self.target_labels = {int(label) for label in cfg.get("target_labels", [])}
+        self.extra_prob = float(cfg.get("extra_prob", 0.35))
+        self.rotation_degrees = float(cfg.get("rotation_degrees", 5.0))
+        self.brightness = float(cfg.get("brightness", 0.10))
+        self.contrast = float(cfg.get("contrast", 0.10))
+        self.gamma_range = _pair_from_config(cfg.get("gamma_range", None), (0.7, 1.5))
+        self.random_erasing_p = float(cfg.get("random_erasing_p", 0.15))
+        self.erase_scale = _pair_from_config(cfg.get("erase_scale", None), (0.02, 0.08))
+        self.erase_value = cfg.get("erase_value", "random")
+
+        self.color_jitter = (
+            v2.ColorJitter(brightness=self.brightness, contrast=self.contrast)
+            if self.brightness > 0.0 or self.contrast > 0.0
+            else None
+        )
+        self.random_gamma = (
+            RandomGamma(p=1.0, gamma_range=self.gamma_range)
+            if self.gamma_range is not None
+            else None
+        )
+        self.random_erasing = (
+            v2.RandomErasing(p=1.0, scale=self.erase_scale, value=self.erase_value)
+            if self.random_erasing_p > 0.0
+            else None
+        )
+
+    def sample(self, label):
+        if not self.enabled:
+            return None
+        if label is None:
+            return None
+        if self.target_labels and int(label) not in self.target_labels:
+            return None
+        if torch.rand(1).item() >= self.extra_prob:
+            return None
+
+        angle = 0.0
+        if self.rotation_degrees > 0.0:
+            angle = torch.empty(1).uniform_(
+                -self.rotation_degrees,
+                self.rotation_degrees,
+            ).item()
+
+        return {
+            "angle": angle,
+            "erase": (
+                self.random_erasing is not None
+                and torch.rand(1).item() < self.random_erasing_p
+            ),
+        }
+
+    def apply_to_image(self, img, params):
+        if params is None:
+            return img
+
+        angle = params.get("angle", 0.0)
+        if angle:
+            img = TF.rotate(
+                img,
+                angle=angle,
+                interpolation=InterpolationMode.NEAREST,
+            )
+        if self.color_jitter is not None:
+            img = self.color_jitter(img)
+        if self.random_gamma is not None:
+            img = self.random_gamma(img)
+        return img
+
+    def apply_to_masks(self, masks, params):
+        if params is None:
+            return masks
+
+        angle = params.get("angle", 0.0)
+        if angle:
+            masks = TF.rotate(
+                masks,
+                angle=angle,
+                interpolation=InterpolationMode.BILINEAR,
+            )
+            masks = masks.clamp_(0.0, 1.0)
+        return masks
+
+    def apply_to_tensor(self, img, params):
+        if params is None or not params.get("erase", False):
+            return img
+        return self.random_erasing(img)
+
+
+class LabelAwareTrainTransform(torch.nn.Module):
+    """Train transform that can inspect the class label."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.accepts_label = True
+        self.image_size = config["data"].get("image_size", 48)
+        self.channels = config["data"].get("channels", 1)
+        self.normalize = config["data"].get("normalize", True)
+
+        if self.channels == 3:
+            self.mean = [0.485, 0.456, 0.406]
+            self.std = [0.229, 0.224, 0.225]
+        else:
+            self.mean = [0.5]
+            self.std = [0.5]
+
+        self.to_channels = ToChannels(self.channels)
+        self.resize = v2.Resize((self.image_size, self.image_size))
+        self.color_jitter = v2.ColorJitter(brightness=0.15, contrast=0.15)
+        self.random_gamma = RandomGamma(p=0.5, gamma_range=(0.5, 2.0))
+        self.random_erasing = v2.RandomErasing(p=0.4, scale=(0.02, 0.15), value="random")
+        self.class_aware = ClassAwareAugment(config)
+
+    def forward(self, img, label=None):
+        img = self.to_channels(img)
+        img = self.resize(img)
+
+        if torch.rand(1).item() < 0.5:
+            img = TF.hflip(img)
+
+        img = TF.rotate(
+            img,
+            angle=torch.empty(1).uniform_(-15.0, 15.0).item(),
+            interpolation=InterpolationMode.NEAREST,
+        )
+        img = self.color_jitter(img)
+        img = self.random_gamma(img)
+
+        class_aware_params = self.class_aware.sample(label)
+        img = self.class_aware.apply_to_image(img, class_aware_params)
+
+        img = v2.ToImage()(img)
+        img = v2.ToDtype(torch.float32, scale=True)(img)
+        if self.normalize:
+            img = v2.Normalize(mean=self.mean, std=self.std)(img)
+
+        img = self.random_erasing(img)
+        img = self.class_aware.apply_to_tensor(img, class_aware_params)
+        return img
+
+
 class LandmarkPairedTransform(torch.nn.Module):
     """
     Apply the same geometric train-time augmentation to an image and its masks.
@@ -60,8 +220,10 @@ class LandmarkPairedTransform(torch.nn.Module):
         self.color_jitter = v2.ColorJitter(brightness=0.15, contrast=0.15)
         self.random_gamma = RandomGamma(p=0.5, gamma_range=(0.5, 2.0))
         self.random_erasing = v2.RandomErasing(p=0.4, scale=(0.02, 0.15), value="random")
+        self.accepts_label = True
+        self.class_aware = ClassAwareAugment(config)
 
-    def forward(self, img, masks):
+    def forward(self, img, masks, label=None):
         img = self.to_channels(img)
         img = self.resize(img)
 
@@ -86,6 +248,12 @@ class LandmarkPairedTransform(torch.nn.Module):
             img = self.color_jitter(img)
             img = self.random_gamma(img)
 
+            class_aware_params = self.class_aware.sample(label)
+            img = self.class_aware.apply_to_image(img, class_aware_params)
+            masks = self.class_aware.apply_to_masks(masks, class_aware_params)
+        else:
+            class_aware_params = None
+
         img = v2.ToImage()(img)
         img = v2.ToDtype(torch.float32, scale=True)(img)
         if self.normalize:
@@ -93,6 +261,7 @@ class LandmarkPairedTransform(torch.nn.Module):
 
         if self.split == "train":
             img = self.random_erasing(img)
+            img = self.class_aware.apply_to_tensor(img, class_aware_params)
 
         return img, masks
 
@@ -112,6 +281,10 @@ def build_transform(config, split="train") -> Compose:
     channels = config["data"].get("channels", 1)
 
     normalize = config["data"].get("normalize", True)
+    class_aware_cfg = config.get("data", {}).get("class_aware_augmentation", {})
+
+    if split == "train" and class_aware_cfg.get("enabled", False):
+        return LabelAwareTrainTransform(config)
 
     if channels == 3:
         mean = [0.485, 0.456, 0.406]

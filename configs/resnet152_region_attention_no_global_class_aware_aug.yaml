@@ -1,0 +1,24 @@
+_base_: "resnet152_region_attention_no_global.yaml"
+
+data:
+  # Extra light augmentation only for the classes that look weak/hard in error
+  # analysis. The normal train augmentation still applies to every class.
+  class_aware_augmentation:
+    enabled: true
+    target_labels: [0, 2, 4, 6]  # angry, fear, sad, neutral
+
+    # Per-target-sample chance to receive one extra light perturbation.
+    extra_prob: 0.35
+
+    # Keep this small because FER labels are sensitive to mouth/eye geometry.
+    rotation_degrees: 5.0
+
+    # Mild lighting jitter on top of the existing global train augmentation.
+    brightness: 0.10
+    contrast: 0.10
+    gamma_range: [0.7, 1.5]
+
+    # Extra cutout is intentionally weaker than the base RandomErasing.
+    random_erasing_p: 0.15
+    erase_scale: [0.02, 0.08]
+    erase_value: "random"

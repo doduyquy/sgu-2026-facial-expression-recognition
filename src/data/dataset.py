@@ -48,7 +48,10 @@ class FER2013(Dataset):
 
         # apply transform if it not None
         if self.transform is not None:
-            image = self.transform(image)
+            if getattr(self.transform, "accepts_label", False):
+                image = self.transform(image, label=label)
+            else:
+                image = self.transform(image)
 
         return (image, label)
     
