@@ -5,7 +5,7 @@ import numpy as np
 from torch.utils.data import Dataset
 from PIL import Image
 from src.data.emotions_dict import EMOTION_DICT
-from src.data.emotions_dict import EMOTION_DICT
+
 
 class FER2013(Dataset):
     """Load one sample for dataloader"""
@@ -19,8 +19,35 @@ class FER2013(Dataset):
         # Keep original index just in case future features need it
         self.split = split
         self.data['original_idx'] = self.data.index
-        # No rows are dropped - keeping all images because Kaggle test set also contains them!
-            
+
+        # ── Data cleaning: drop bad rows for train split only ──
+        # bad_row_indices.txt chứa các chỉ số dòng (0-based) trong train.csv
+        # tương ứng với ảnh lỗi (đen, trắng, không phải mặt người, v.v.)
+        if split == "train":
+            # Tìm file blacklist ở nhiều vị trí (local & Kaggle)
+            candidate_paths = [
+                os.path.join(data_path, "bad_row_indices.txt"),                     # local: cùng thư mục train.csv
+                "/kaggle/input/datasets/lphuccc/id-error/bad_row_indices.txt",      # kaggle dataset
+            ]
+            blacklist_path = None
+            for p in candidate_paths:
+                if os.path.exists(p):
+                    blacklist_path = p
+                    break
+
+            if blacklist_path is not None:
+                with open(blacklist_path, 'r') as f:
+                    bad_indices = set(
+                        int(line.strip()) for line in f if line.strip()
+                    )
+                before = len(self.data)
+                self.data = self.data[
+                    ~self.data['original_idx'].isin(bad_indices)
+                ].reset_index(drop=True)
+                after = len(self.data)
+                print(f"[FER2013] Filtered {before - after} bad rows "
+                      f"({before} -> {after}) using {blacklist_path}")
+
         self.transform = transforms
 
     def __len__(self):
