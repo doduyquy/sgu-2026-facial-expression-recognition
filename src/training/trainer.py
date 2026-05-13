@@ -200,11 +200,16 @@ class Trainer:
             occlusion_batch = self.occlusion_generator(images)
 
         masked_images, applied_mask = occlusion_batch
-        if not applied_mask.any().item():
-            return loss, logits, aux_loss, occlusion_batch
-
         masked_outputs = self._forward_model(masked_images, region_masks=region_masks)
         masked_logits = self._extract_logits(masked_outputs)
+
+        if not applied_mask.any().item():
+            # DDP needs every rank to run the same number of wrapped forwards.
+            # Keep this second forward in the graph, but add no extra loss when
+            # this local batch happened to receive no occlusion rectangles.
+            loss = loss + masked_logits.sum() * 0.0
+            return loss, logits, aux_loss, occlusion_batch
+
         masked_logits = masked_logits[applied_mask]
         clean_logits = logits[applied_mask]
         masked_labels = labels[applied_mask]

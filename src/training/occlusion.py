@@ -121,4 +121,15 @@ class RegionOcclusionGenerator:
             masked[index, :, top: top + box_h, left: left + box_w] = self.fill_value
             applied[index] = True
 
+        # Avoid DDP rank skew: with small per-GPU batches, pure Bernoulli
+        # sampling can occasionally mask zero local samples on one rank while
+        # another rank runs the masked-view branch. Keeping at least one local
+        # occlusion when the feature is enabled makes the training path steadier.
+        if not applied.any().item() and images.size(0) > 0:
+            index = int(torch.randint(0, images.size(0), (1,), device=images.device).item())
+            mode = self._choose_mode(images.device)
+            top, left, box_h, box_w = self._sample_box(height, width, mode, images.device)
+            masked[index, :, top: top + box_h, left: left + box_w] = self.fill_value
+            applied[index] = True
+
         return masked, applied
