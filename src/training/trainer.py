@@ -136,6 +136,26 @@ class Trainer:
     def _extract_logits(self, outputs):
         return outputs[0] if isinstance(outputs, tuple) else outputs
 
+    def _split_batch_outputs(self, outputs, batch_size):
+        if not isinstance(outputs, tuple):
+            return outputs[:batch_size], outputs[batch_size:]
+
+        clean_items = []
+        masked_items = []
+        for item in outputs:
+            if (
+                isinstance(item, torch.Tensor)
+                and item.dim() > 0
+                and item.size(0) == batch_size * 2
+            ):
+                clean_items.append(item[:batch_size])
+                masked_items.append(item[batch_size:])
+            else:
+                clean_items.append(item)
+                masked_items.append(item)
+
+        return tuple(clean_items), tuple(masked_items)
+
     def _supervised_loss_from_outputs(self, outputs, labels):
         if isinstance(outputs, tuple):
             if (
@@ -189,24 +209,36 @@ class Trainer:
         epoch_index,
         occlusion_batch=None,
     ):
-        outputs = self._forward_model(images, region_masks=region_masks)
-        loss, logits, aux_loss = self._supervised_loss_from_outputs(outputs, labels)
-
         occlusion_scale = self._occlusion_weight_scale(epoch_index)
         if occlusion_scale <= 0.0 or self.occlusion_generator is None:
+            outputs = self._forward_model(images, region_masks=region_masks)
+            loss, logits, aux_loss = self._supervised_loss_from_outputs(outputs, labels)
             return loss, logits, aux_loss, occlusion_batch
 
         if occlusion_batch is None:
             occlusion_batch = self.occlusion_generator(images)
 
         masked_images, applied_mask = occlusion_batch
-        masked_outputs = self._forward_model(masked_images, region_masks=region_masks)
+        combined_images = torch.cat((images, masked_images), dim=0)
+        combined_region_masks = (
+            torch.cat((region_masks, region_masks), dim=0)
+            if region_masks is not None
+            else None
+        )
+        combined_outputs = self._forward_model(
+            combined_images,
+            region_masks=combined_region_masks,
+        )
+        outputs, masked_outputs = self._split_batch_outputs(
+            combined_outputs,
+            batch_size=images.size(0),
+        )
+        loss, logits, aux_loss = self._supervised_loss_from_outputs(outputs, labels)
         masked_logits = self._extract_logits(masked_outputs)
 
         if not applied_mask.any().item():
-            # DDP needs every rank to run the same number of wrapped forwards.
-            # Keep this second forward in the graph, but add no extra loss when
-            # this local batch happened to receive no occlusion rectangles.
+            # Keep the masked half in the graph, but add no extra loss when this
+            # local batch happened to receive no occlusion rectangles.
             loss = loss + masked_logits.sum() * 0.0
             return loss, logits, aux_loss, occlusion_batch
 
