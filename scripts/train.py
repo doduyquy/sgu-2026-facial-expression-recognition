@@ -1,6 +1,7 @@
 import os
 import wandb
 import torch
+torch.backends.cudnn.benchmark = True
 import argparse
 from pathlib import Path
 import sys

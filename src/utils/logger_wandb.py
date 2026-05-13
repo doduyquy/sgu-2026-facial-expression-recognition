@@ -34,9 +34,25 @@ def log_image_to_wandb(tag, fig):
 def log_heatmap_samples(images, labels, preds, node_attn_all, sampling_grid_all, epoch, n_samples=10):
     """
     Log 10 correct and 10 incorrect heatmap visualizations to WandB.
+    Handles both normal (4D) and TenCrop (5D) inputs.
     """
-    if wandb.run is None:
+    if wandb.run is None or node_attn_all is None or sampling_grid_all is None:
         return
+
+    # Handle TenCrop: (B, 10, C, H, W) -> Visualize only the first crop
+    if images.dim() == 5:
+        B, T, C, H, W = images.shape
+        images = images[:, 0] # (B, C, H, W)
+        
+        # node_attn_all is (B*T*Cands, ...)
+        # sampling_grid_all is (B*T, ...)
+        num_cands_per_crop = node_attn_all.shape[0] // (B * T)
+        
+        # Reshape and take the first crop's data
+        node_attn_all = node_attn_all.view(B, T, num_cands_per_crop, *node_attn_all.shape[1:])[:, 0]
+        node_attn_all = node_attn_all.reshape(B * num_cands_per_crop, *node_attn_all.shape[1:])
+        
+        sampling_grid_all = sampling_grid_all.view(B, T, *sampling_grid_all.shape[1:])[:, 0]
 
     correct_imgs, incorrect_imgs = [], []
     emotions = ['Angry', 'Disgust', 'Fear', 'Happy', 'Sad', 'Surprise', 'Neutral']

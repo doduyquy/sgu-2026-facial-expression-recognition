@@ -44,10 +44,20 @@ class Trainer:
         self.scn_warmup_epochs = int(train_cfg.get('scn_warmup_epochs', 0))
         
         # Runtime states
+        self.start_epoch = 0
         self._current_epoch = 0
         self._runtime_use_scn = self.use_scn
         self._runtime_use_mixup = False
         self._latest_scn_logs = {}
+        
+        # Training progress trackers
+        self.best_val_acc = 0.0
+        self.best_val_loss = float('inf')
+        self.patience_counter = 0
+        self._current_phase = 0 # Track curriculum phase
+        
+        # --- AMP (Automatic Mixed Precision) ---
+        self.scaler = torch.cuda.amp.GradScaler()
 
     def _scn_loss(self, logits, labels):
         """
@@ -98,53 +108,61 @@ class Trainer:
 
         for images, labels in self.train_loader:
             images, labels = images.to(self.device), labels.to(self.device)
-            self.optimizer.zero_grad()
-
-            # 1. MixUp Staging (Preserve user's curriculum)
-            if self._runtime_use_mixup:
-                alpha = self.config['training'].get('mixup_alpha', 0.2)
-                lam = np.random.beta(alpha, alpha)
-                index = torch.randperm(images.size(0), device=self.device)
-                mixed_images = lam * images + (1 - lam) * images[index]
-                
-                # Phase 1: Truyền targets=None để bỏ qua tính Consistency Loss nội bộ trên ảnh MixUp
-                outputs = self.model(mixed_images, targets=None) 
-                logits = outputs if torch.is_tensor(outputs) else outputs[0]
-                
-                loss = lam * F.cross_entropy(logits, labels) + (1 - lam) * F.cross_entropy(logits, labels[index])
-            else:
-                # 2. Forward & SCN / Base Loss
-                outputs = self.model(images, targets=labels)
-                logits = outputs if torch.is_tensor(outputs) else outputs[0]
-                
-                if self._runtime_use_scn and self._current_epoch >= self.scn_warmup_epochs:
-                    loss, scn_logs = self._scn_loss(logits, labels)
-                    for k, v in scn_logs.items():
-                        scn_acc_logs[k].append(v)
-                else:
-                    loss = self.criterion(logits, labels)
-
-            # 3. Auxiliary Losses (Motif Diversity, Consistency, Entropy, Offset...)
-            aux_losses = getattr(self.model, "get_aux_losses", lambda: {})()
             
-            # Kích hoạt các hàm loss đồ thị khi KHÔNG dùng MixUp (Phase 2 & 3)
-            if not self._runtime_use_mixup and isinstance(aux_losses, dict):
-                aux_weights_config = {
-                    "motif_diversity": "motif_diversity_weight",
-                    "motif_consistency": "motif_consistency_weight",
-                    "offset_reg": "offset_reg_weight",
-                    "attn_entropy": "attn_entropy_weight" 
-                }
-                
-                for loss_name, config_key in aux_weights_config.items():
-                    if loss_name in aux_losses:
-                        weight = float(self.config.get('training', {}).get(config_key, 0.05))
-                        if weight > 0.0:
-                            loss += weight * aux_losses[loss_name]
+            # Tối ưu hóa: dùng set_to_none=True giúp dọn rác GPU nhanh hơn
+            self.optimizer.zero_grad(set_to_none=True)
 
-            loss.backward()
+            # --- 1. BỌC FORWARD VÀ LOSS TRONG AUTOCAST ---
+            with torch.cuda.amp.autocast():
+                # 1.1 MixUp Staging
+                if self._runtime_use_mixup:
+                    alpha = self.config['training'].get('mixup_alpha', 0.2)
+                    lam = np.random.beta(alpha, alpha)
+                    index = torch.randperm(images.size(0), device=self.device)
+                    mixed_images = lam * images + (1 - lam) * images[index]
+                    
+                    outputs = self.model(mixed_images, targets=None) 
+                    logits = outputs if torch.is_tensor(outputs) else outputs[0]
+                    
+                    loss = lam * F.cross_entropy(logits, labels) + (1 - lam) * F.cross_entropy(logits, labels[index])
+                else:
+                    # 1.2 Forward bình thường & SCN Loss
+                    outputs = self.model(images, targets=labels)
+                    logits = outputs if torch.is_tensor(outputs) else outputs[0]
+                    
+                    if self._runtime_use_scn and self._current_epoch >= self.scn_warmup_epochs:
+                        loss, scn_logs = self._scn_loss(logits, labels)
+                        for k, v in scn_logs.items():
+                            scn_acc_logs[k].append(v)
+                    else:
+                        loss = self.criterion(logits, labels)
+
+                # 1.3 Auxiliary Losses
+                aux_losses = getattr(self.model, "get_aux_losses", lambda: {})()
+                if not self._runtime_use_mixup and isinstance(aux_losses, dict):
+                    aux_weights_config = {
+                        "motif_diversity": "motif_diversity_weight",
+                        "motif_consistency": "motif_consistency_weight",
+                        "offset_reg": "offset_reg_weight",
+                        "attn_entropy": "attn_entropy_weight" 
+                    }
+                    
+                    for loss_name, config_key in aux_weights_config.items():
+                        if loss_name in aux_losses:
+                            weight = float(self.config.get('training', {}).get(config_key, 0.05))
+                            if weight > 0.0:
+                                loss += weight * aux_losses[loss_name]
+
+            # --- 2. BACKWARD VỚI SCALER ---
+            self.scaler.scale(loss).backward()
+            
+            # --- 3. CLIP GRADIENT CHUẨN AMP (Cần unscale trước) ---
+            self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
-            self.optimizer.step()
+            
+            # --- 4. CẬP NHẬT TRỌNG SỐ ---
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
 
             running_loss += loss.item() * images.size(0)
             _, preds = torch.max(logits, dim=1)
@@ -156,6 +174,45 @@ class Trainer:
             self._latest_scn_logs = {k: np.mean(v) for k, v in scn_acc_logs.items()}
             
         return running_loss / total, corrects.double() / total
+
+    def resume_from_checkpoint(self, checkpoint_path):
+        """
+        Khôi phục trạng thái huấn luyện từ checkpoint.
+        """
+        if not os.path.exists(checkpoint_path):
+            print(f"WARNING: Checkpoint {checkpoint_path} không tìm thấy. Bắt đầu từ đầu.")
+            return
+
+        print(f"--> Resuming from checkpoint: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        
+        if self.scheduler and checkpoint.get('scheduler_state_dict'):
+            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        self.start_epoch = checkpoint.get('epoch', -1) + 1
+        self.best_val_acc = checkpoint.get('best_val_acc', 0.0)
+        self.best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+        self.patience_counter = checkpoint.get('patience_counter', 0)
+        self._current_phase = checkpoint.get('current_phase', 0)
+        
+        print(f"    [Resume] Resuming at epoch {self.start_epoch} (Best Val Acc: {self.best_val_acc:.4f})")
+
+    def _set_backbone_frozen(self, freeze: bool):
+        """Helper to freeze/unfreeze backbone layers"""
+        if not hasattr(self.model, 'backbone'): return
+        for param in self.model.backbone.parameters():
+            param.requires_grad = not freeze
+        state = "FROZEN" if freeze else "UNFROZEN"
+        print(f"\t>>> [Backbone] Set to {state}")
+
+    def _set_lr(self, group_idx, lr):
+        """Helper to update learning rate for a specific parameter group"""
+        if group_idx < len(self.optimizer.param_groups):
+            self.optimizer.param_groups[group_idx]['lr'] = lr
+            print(f"\t>>> [LR Update] Group {group_idx} set to {lr:.2e}")
 
     @torch.no_grad()
     def validate(self):
@@ -182,30 +239,46 @@ class Trainer:
         if self.config.get('logging', {}).get('use_wandb', False):
             init_wandb(config=self.config, run_name=self.run_name)
 
-        best_val_acc = 0.0
-        best_val_loss = float('inf')
-        patience_counter = 0
+        # Những thông số này đã được khởi tạo trong __init__ hoặc load từ checkpoint
+        # Không reset ở đây để hỗ trợ Resume Training
+        base_lr = float(self.config['training'].get('lr', 1e-4))
 
-        for ep in range(self.epochs):
+        for ep in range(self.start_epoch, self.epochs):
             self._current_epoch = ep
             progress = ep / max(self.epochs - 1, 1)
             
-            # --- BẤT DI BẤT DỊCH: Curriculum Strategy ---
-            if progress <= 0.06:
-                # Phase 1: Warm-up with MixUp
-                self._runtime_use_scn = False
-                self._runtime_use_mixup = True
+            # --- BẤT DI BẤT DỊCH: Curriculum Strategy (Nghệ thuật cài số) ---
+            # Phase 1: Epoch 1 - 30 (MixUp Warmup)
+            if ep < 30:
+                if self._current_phase != 1:
+                    self._runtime_use_scn = False
+                    self._runtime_use_mixup = True
+                    self._set_backbone_frozen(False)
+                    self._set_lr(0, base_lr * 0.1) # Backbone LR: 1e-5
+                    self._set_lr(1, base_lr)       # Head LR: 1e-4
+                    self._current_phase = 1
                 phase_name = "Phase 1: MixUp Warmup"
-            elif progress <= 0.7:
-                # Phase 2: SCN + Motif Signals
-                self._runtime_use_scn = True
-                self._runtime_use_mixup = False
-                phase_name = "Phase 2: SCN & Motif Signals"
+
+            # Early Phase 2: Epoch 31 - 60 (Stabilize Graph with Frozen Backbone)
+            elif ep < 60:
+                if self._current_phase != 2:
+                    self._runtime_use_scn = True
+                    self._runtime_use_mixup = False
+                    self._set_backbone_frozen(True)
+                    self._set_lr(1, base_lr * 0.5) # Head LR reduced to 5e-5
+                    self._current_phase = 2
+                phase_name = "Phase 2: Graph Stabilization (Backbone Frozen)"
+
+            # Late Phase 2 & Phase 3: Epoch 21 - 1000 (Fine-tune Everything)
             else:
-                # Phase 3: Final Refinement (Higher lambdas if needed)
-                self._runtime_use_scn = True
-                self._runtime_use_mixup = False
-                phase_name = "Phase 3: Refinement"
+                if self._current_phase != 3:
+                    self._runtime_use_scn = True
+                    self._runtime_use_mixup = False
+                    self._set_backbone_frozen(False)
+                    self._set_lr(0, base_lr * 0.05) # Backbone LR very small: 5e-6
+                    self._set_lr(1, base_lr * 0.5)  # Head LR: 5e-5
+                    self._current_phase = 3
+                phase_name = "Phase 3: Deep Refinement"
             
             # Sync progress to model if supported
             if hasattr(self.model, "set_training_progress"):
@@ -233,27 +306,29 @@ class Trainer:
                     self.scheduler.step()
 
             # 1. Save Best Model based on val_acc
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
+            if val_acc > self.best_val_acc:
+                self.best_val_acc = val_acc
                 torch.save({
                     "epoch": ep,
                     "model_state_dict": self.model.state_dict(),
                     "optimizer_state_dict": self.optimizer.state_dict(),
                     "scheduler_state_dict": self.scheduler.state_dict() if self.scheduler else None,
-                    "val_acc": val_acc.item() if hasattr(val_acc, 'item') else val_acc,
-                    "val_loss": val_loss
+                    "patience_counter": self.patience_counter,
+                    "best_val_acc": self.best_val_acc,
+                    "best_val_loss": self.best_val_loss,
+                    "current_phase": self._current_phase
                 }, self.path_save_ckpt)
                 print(f"\t>>> Saved Best Model (Acc: {val_acc:.4f})")
             
-            # 2. Early Stopping based on val_loss
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                patience_counter = 0
+            # 2. Early Stopping dựa trên val_loss (Không đổi nhãn để tránh nhiễu)
+            if val_loss < self.best_val_loss:
+                self.best_val_loss = val_loss
+                self.patience_counter = 0
                 print(f"\t>>> Val Loss improved: {val_loss:.4f}")
             else:
-                patience_counter += 1
-                print(f"\t-!- No loss improvement: {patience_counter}/{self.patience}")
-                if patience_counter >= self.patience:
+                self.patience_counter += 1
+                print(f"\t-!- No loss improvement: {self.patience_counter}/{self.patience}")
+                if self.patience_counter >= self.patience:
                     print(f"Early stopping at epoch {ep+1}")
                     break
 
@@ -270,7 +345,8 @@ class Trainer:
             images_v, labels_v = images_v.to(self.device), labels_v.to(self.device)
             
             with torch.no_grad():
-                logits_v = self.model(images_v, targets=labels_v)
+                outputs_v = self.model(images_v, targets=labels_v)
+                logits_v = outputs_v if torch.is_tensor(outputs_v) else outputs_v[0]
                 preds_v = torch.argmax(logits_v, dim=1)
                 meta_v = getattr(self.model, "_latest_metadata", {})
                 log_heatmap_samples(
@@ -280,4 +356,4 @@ class Trainer:
                     epoch=self.epochs
                 )
 
-        return best_val_acc
+        return self.best_val_acc
