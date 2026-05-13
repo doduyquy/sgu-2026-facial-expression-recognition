@@ -18,6 +18,8 @@ model:
   feature_layer: "layer4"
   pool_visual_tokens: false
   use_visual_pos_embed: true
+  use_global_visual_bias: true
+  use_region_slot_embed: true
   token_grid_size: 3
   fusion_type: "transformer"
 

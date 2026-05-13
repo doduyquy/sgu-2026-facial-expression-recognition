@@ -365,6 +365,8 @@ class ResNet152RegionAttentionFER(nn.Module):
         self.region_pooling = model_cfg.get("region_pooling", "mean").lower()
         self.classifier_hidden_dim = model_cfg.get("classifier_hidden_dim", 512)
         self.ortho_loss_type = model_cfg.get("ortho_loss_type", "mean_offdiag").lower()
+        self.use_global_visual_bias = model_cfg.get("use_global_visual_bias", True)
+        self.use_region_slot_embed = model_cfg.get("use_region_slot_embed", True)
         self.is_frozen = False
         self.return_attn = False
 
@@ -420,11 +422,14 @@ class ResNet152RegionAttentionFER(nn.Module):
             dropout=self.dropout_rate,
         )
 
-        self.visual_proj = nn.Sequential(
-            nn.LayerNorm(self.visual_dim),
-            nn.Linear(self.visual_dim, self.embed_dim),
-            nn.Dropout(self.dropout_rate),
-        )
+        if self.use_global_visual_bias:
+            self.visual_proj = nn.Sequential(
+                nn.LayerNorm(self.visual_dim),
+                nn.Linear(self.visual_dim, self.embed_dim),
+                nn.Dropout(self.dropout_rate),
+            )
+        else:
+            self.visual_proj = None
 
         if self.fusion_type == "subgraph":
             self.transformer_encoder = nn.Sequential(*[
@@ -451,7 +456,15 @@ class ResNet152RegionAttentionFER(nn.Module):
             )
             print("--> [ResNet152RegionAttention] Using standard Transformer encoder.")
 
-        self.pos_embed = nn.Parameter(torch.randn(1, self.num_regions, self.embed_dim) * 0.02)
+        if self.use_region_slot_embed:
+            self.pos_embed = nn.Parameter(
+                torch.randn(1, self.num_regions, self.embed_dim) * 0.02
+            )
+        else:
+            self.register_buffer(
+                "pos_embed",
+                torch.zeros(1, self.num_regions, self.embed_dim),
+            )
 
         classifier_input_dim = (
             self.embed_dim * self.num_regions
@@ -607,9 +620,11 @@ class ResNet152RegionAttentionFER(nn.Module):
             visual_features,
         )                                                    # [B, 6, 512], [B, 6, 49]
 
-        phi_visual = visual_features.mean(dim=1, keepdim=True)
-        phi_visual = self.visual_proj(phi_visual)            # [B, 1, 512]
-        hyper_visual = phi_sem + phi_visual + self.pos_embed
+        hyper_visual = phi_sem + self.pos_embed
+        if self.use_global_visual_bias:
+            phi_visual = visual_features.mean(dim=1, keepdim=True)
+            phi_visual = self.visual_proj(phi_visual)        # [B, 1, 512]
+            hyper_visual = hyper_visual + phi_visual
 
         encoded = self.transformer_encoder(hyper_visual)     # [B, 6, 512]
         if self.region_pooling == "concat":

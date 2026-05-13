@@ -1,0 +1,8 @@
+_base_: "resnet152_region_attention.yaml"
+
+model:
+  # Ablation A:
+  # Remove the shared global visual bias from all 6 region tokens while keeping
+  # every other winning hyperparameter unchanged.
+  use_global_visual_bias: false
+  use_region_slot_embed: true
