@@ -186,7 +186,7 @@ class GraphAttentionLayer(nn.Module):
         scores = scores * edge_gate.unsqueeze(1)
 
         if adj is not None:
-            scores = scores.masked_fill(adj.unsqueeze(1) == 0, -1e9)
+            scores = scores.masked_fill(adj.unsqueeze(1) == 0, -1e4)
 
         attn = F.softmax(scores, dim=-1)
         attn = self.attn_drop(attn)
