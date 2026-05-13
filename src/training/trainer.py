@@ -1,5 +1,6 @@
 import torch
 import torch.distributed as dist
+import torch.nn.functional as F
 from torch import device
 from torch.amp import GradScaler, autocast
 import os
@@ -7,6 +8,7 @@ import numpy as np
 from datetime import datetime
 from src.utils.logger_wandb import init_wandb, log_image_to_wandb, log_metrics
 from src.training.losses import confidence_soft_target_loss, inception_loss
+from src.training.occlusion import RegionOcclusionGenerator
 from src.training.optimizer import build_scheduler, build_optimizer
 from .sam import SAM
 
@@ -48,8 +50,33 @@ class Trainer:
         self.soft_target_confidence_power = soft_target_cfg.get('confidence_power', 1.0)
         self.soft_target_label_smoothing = config.get('training', {}).get('label_smoothing', 0.0)
         self.soft_target_class_weights = getattr(self.criterion, 'weight', None)
+        occlusion_cfg = train_cfg.get('occlusion_consistency', {})
+        self.use_occlusion_consistency = occlusion_cfg.get('enabled', False)
+        self.occlusion_start_epoch = max(int(occlusion_cfg.get('start_epoch', 1)), 1)
+        self.occlusion_full_weight_epoch = max(
+            int(occlusion_cfg.get('full_weight_epoch', self.occlusion_start_epoch)),
+            self.occlusion_start_epoch,
+        )
+        self.occlusion_masked_ce_weight = float(occlusion_cfg.get('masked_ce_weight', 0.5))
+        self.occlusion_consistency_weight = float(occlusion_cfg.get('consistency_weight', 0.3))
+        self.occlusion_temperature = float(occlusion_cfg.get('temperature', 2.0))
+        self.occlusion_generator = (
+            RegionOcclusionGenerator(occlusion_cfg)
+            if self.use_occlusion_consistency
+            else None
+        )
         if self.monitor not in ['val_loss', 'val_accuracy']:
             raise ValueError("training.monitor must be either 'val_loss' or 'val_accuracy'")
+        if self.occlusion_masked_ce_weight < 0.0:
+            raise ValueError(
+                "training.occlusion_consistency.masked_ce_weight must be >= 0."
+            )
+        if self.occlusion_consistency_weight < 0.0:
+            raise ValueError(
+                "training.occlusion_consistency.consistency_weight must be >= 0."
+            )
+        if self.occlusion_temperature <= 0.0:
+            raise ValueError("training.occlusion_consistency.temperature must be > 0.")
         if self.use_confidence_soft_targets:
             if config.get('training', {}).get('loss', 'cross_entropy') != 'cross_entropy':
                 raise ValueError(
@@ -67,6 +94,15 @@ class Trainer:
             print(f"[Trainer] Gradient clipping enabled: max_norm={self.grad_clip_norm}.")
         if self.skip_nonfinite_batches and self.is_main_process:
             print("[Trainer] Non-finite batches will be skipped before optimizer updates.")
+        if self.use_occlusion_consistency and self.is_main_process:
+            print(
+                "[Trainer] Region occlusion consistency enabled: "
+                f"start_epoch={self.occlusion_start_epoch}, "
+                f"full_weight_epoch={self.occlusion_full_weight_epoch}, "
+                f"masked_ce_weight={self.occlusion_masked_ce_weight}, "
+                f"consistency_weight={self.occlusion_consistency_weight}, "
+                f"temperature={self.occlusion_temperature}."
+            )
         if (
             config.get('training', {}).get('use_amp', False)
             and self.device.type == 'cuda'
@@ -92,6 +128,95 @@ class Trainer:
             class_weights=self.soft_target_class_weights,
         )
 
+    def _forward_model(self, images, region_masks=None):
+        if region_masks is not None:
+            return self.model(images, region_masks=region_masks)
+        return self.model(images)
+
+    def _extract_logits(self, outputs):
+        return outputs[0] if isinstance(outputs, tuple) else outputs
+
+    def _supervised_loss_from_outputs(self, outputs, labels):
+        if isinstance(outputs, tuple):
+            if (
+                len(outputs) == 2
+                and isinstance(outputs[1], torch.Tensor)
+                and outputs[1].dim() == 0
+            ):
+                logits, aux_loss = outputs
+                main_loss = self._classification_loss(logits, labels)
+                ortho_weight = self.config.get('model', {}).get('ortho_loss_weight', 0.1)
+                return main_loss + ortho_weight * aux_loss, logits, aux_loss
+
+            main_out, aux_out = outputs
+            loss = inception_loss(main_out, aux_out, labels, criterion=self.criterion)
+            return loss, main_out, None
+
+        loss = self._classification_loss(outputs, labels)
+        return loss, outputs, None
+
+    def _occlusion_weight_scale(self, epoch_index):
+        if not self.use_occlusion_consistency:
+            return 0.0
+
+        epoch_number = epoch_index + 1
+        if epoch_number < self.occlusion_start_epoch:
+            return 0.0
+        if epoch_number >= self.occlusion_full_weight_epoch:
+            return 1.0
+
+        ramp_length = max(
+            self.occlusion_full_weight_epoch - self.occlusion_start_epoch + 1,
+            1,
+        )
+        return (epoch_number - self.occlusion_start_epoch + 1) / ramp_length
+
+    def _consistency_kl(self, clean_logits, masked_logits):
+        temperature = self.occlusion_temperature
+        clean_probs = F.softmax(clean_logits.detach() / temperature, dim=-1)
+        masked_log_probs = F.log_softmax(masked_logits / temperature, dim=-1)
+        return F.kl_div(
+            masked_log_probs,
+            clean_probs,
+            reduction='batchmean',
+        ) * (temperature ** 2)
+
+    def _compute_batch_loss(
+        self,
+        images,
+        labels,
+        region_masks,
+        epoch_index,
+        occlusion_batch=None,
+    ):
+        outputs = self._forward_model(images, region_masks=region_masks)
+        loss, logits, aux_loss = self._supervised_loss_from_outputs(outputs, labels)
+
+        occlusion_scale = self._occlusion_weight_scale(epoch_index)
+        if occlusion_scale <= 0.0 or self.occlusion_generator is None:
+            return loss, logits, aux_loss, occlusion_batch
+
+        if occlusion_batch is None:
+            occlusion_batch = self.occlusion_generator(images)
+
+        masked_images, applied_mask = occlusion_batch
+        if not applied_mask.any().item():
+            return loss, logits, aux_loss, occlusion_batch
+
+        masked_outputs = self._forward_model(masked_images, region_masks=region_masks)
+        masked_logits = self._extract_logits(masked_outputs)
+        masked_logits = masked_logits[applied_mask]
+        clean_logits = logits[applied_mask]
+        masked_labels = labels[applied_mask]
+
+        masked_ce = self._classification_loss(masked_logits, masked_labels)
+        consistency_kl = self._consistency_kl(clean_logits, masked_logits)
+        loss = loss + occlusion_scale * (
+            self.occlusion_masked_ce_weight * masked_ce
+            + self.occlusion_consistency_weight * consistency_kl
+        )
+        return loss, logits, aux_loss, occlusion_batch
+
     def _reduce_epoch_stats(self, loss_sum, corrects, total, ortho_sum=0.0):
         stats = torch.tensor(
             [loss_sum, float(corrects), float(total), ortho_sum],
@@ -116,7 +241,7 @@ class Trainer:
         return bool(stop_tensor.item())
 
 
-    def train_one_epoch(self):
+    def train_one_epoch(self, epoch_index=0):
         self.model.train()
 
         running_loss = 0.0
@@ -135,30 +260,15 @@ class Trainer:
 
             self.optimizer.zero_grad()
             with autocast(device_type=self.device.type, enabled=self.use_amp):
-                if region_masks is not None:
-                    outputs = self.model(images, region_masks=region_masks)
-                else:
-                    outputs = self.model(images)
-                
-                # -------------
-                # Check loại tuple trả về
-                if isinstance(outputs, tuple):
-                    if len(outputs) == 2 and isinstance(outputs[1], torch.Tensor) and outputs[1].dim() == 0:
-                        # Trả về (logits, scalar_aux_loss) -> Orthogonal Loss cho RegionAttention
-                        main_out, aux_loss = outputs
-                        main_loss = self._classification_loss(main_out, labels)
-                        ortho_weight = self.config.get('model', {}).get('ortho_loss_weight', 0.1)
-                        loss = main_loss + ortho_weight * aux_loss
-                        outputs = main_out
-                        running_ortho += aux_loss.item() * images.size(0)
-                    else:
-                        # [Inception] Trả về (main_out, aux_out_logits)
-                        main_out, aux_out = outputs
-                        loss = inception_loss(main_out, aux_out, labels, criterion=self.criterion)
-                        outputs = main_out # Đặt lại outputs -> tinhs accuracy ở dưới
-                else:
-                    loss = self._classification_loss(outputs, labels)
-                # -------------
+                loss, logits, aux_loss, occlusion_batch = self._compute_batch_loss(
+                    images=images,
+                    labels=labels,
+                    region_masks=region_masks,
+                    epoch_index=epoch_index,
+                )
+
+            if aux_loss is not None:
+                running_ortho += aux_loss.item() * images.size(0)
 
             if not torch.isfinite(loss).item():
                 if self.skip_nonfinite_batches:
@@ -191,21 +301,13 @@ class Trainer:
 
                 # ── SAM Step 2 ──
                 with autocast(device_type=self.device.type, enabled=self.use_amp):
-                    if region_masks is not None:
-                        outputs_2 = self.model(images, region_masks=region_masks)
-                    else:
-                        outputs_2 = self.model(images)
-                    if isinstance(outputs_2, tuple):
-                        if len(outputs_2) == 2 and isinstance(outputs_2[1], torch.Tensor) and outputs_2[1].dim() == 0:
-                            main_out_2, aux_loss_2 = outputs_2
-                            main_loss_2 = self._classification_loss(main_out_2, labels)
-                            ortho_weight = self.config.get('model', {}).get('ortho_loss_weight', 0.1)
-                            loss_2 = main_loss_2 + ortho_weight * aux_loss_2
-                        else:
-                            main_out_2, aux_out_2 = outputs_2
-                            loss_2 = inception_loss(main_out_2, aux_out_2, labels, criterion=self.criterion)
-                    else:
-                        loss_2 = self._classification_loss(outputs_2, labels)
+                    loss_2, _, _, _ = self._compute_batch_loss(
+                        images=images,
+                        labels=labels,
+                        region_masks=region_masks,
+                        epoch_index=epoch_index,
+                        occlusion_batch=occlusion_batch,
+                    )
                 
                 if not torch.isfinite(loss_2).item():
                     if self.skip_nonfinite_batches:
@@ -273,7 +375,7 @@ class Trainer:
                     self.optimizer.step()
 
             running_loss += loss.item() * images.size(0)
-            _, preds = torch.max(outputs, dim=1)
+            _, preds = torch.max(logits, dim=1)
             corrects += torch.sum(preds == labels.data)
             total += labels.size(0)
 
@@ -375,7 +477,7 @@ class Trainer:
                             f"{rebuild_msg} and reset patience."
                         )
 
-            train_loss, train_acc, train_ortho_loss = self.train_one_epoch()
+            train_loss, train_acc, train_ortho_loss = self.train_one_epoch(epoch_index=ep)
             val_loss, val_acc = self.validate()
 
             all_train_loss.append(train_loss)

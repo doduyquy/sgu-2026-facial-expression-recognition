@@ -1,0 +1,28 @@
+_base_: "resnet152_region_attention.yaml"
+
+training:
+  # Train on the original view plus an occluded view of the same face.
+  # The extra loss is ramped in after the attention head has warmed up a bit.
+  occlusion_consistency:
+    enabled: true
+    start_epoch: 3
+    full_weight_epoch: 6
+
+    # Per-sample chance to receive a synthetic occlusion rectangle.
+    apply_prob: 0.5
+    min_area: 0.08
+    max_area: 0.22
+    min_aspect: 0.75
+    max_aspect: 1.35
+    fill_value: 0.5
+
+    # Mix random crops with face-biased anchors: upper face, center, mouth.
+    policy: "mixed_face_regions"
+    anchor_jitter: 0.08
+
+    # L_extra =
+    #   masked_ce_weight * CE(masked_view)
+    #   + consistency_weight * KL(clean_prediction || masked_prediction)
+    masked_ce_weight: 0.5
+    consistency_weight: 0.3
+    temperature: 2.0
