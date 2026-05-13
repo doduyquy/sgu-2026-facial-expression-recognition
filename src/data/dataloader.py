@@ -2,7 +2,7 @@ import os
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from .dataset import FER2013
-from .transforms import build_transform
+from .transforms import build_landmark_transform, build_transform
 
 def build_dataloader(config, data_path, distributed=False, world_size=1):
     """ Dataloader: Group dataset into batch (mini-batch) 
@@ -65,9 +65,9 @@ def build_landmark_dataloader(config, data_path, distributed=False, world_size=1
     """
     from .dataset_landmark import FER2013WithLandmarks
 
-    trans_train = build_transform(config, "train")
-    trans_val = build_transform(config, "val")
-    trans_test = build_transform(config, "test")
+    trans_train = build_landmark_transform(config, "train")
+    trans_val = build_landmark_transform(config, "val")
+    trans_test = build_landmark_transform(config, "test")
 
     model_cfg = config.get("model", {})
     feature_layer = model_cfg.get("feature_layer", "layer3")
@@ -77,12 +77,14 @@ def build_landmark_dataloader(config, data_path, distributed=False, world_size=1
     sigma = model_cfg.get("landmark_sigma", 1.5)
     num_regions = model_cfg.get("num_regions", 6)
     predictor_path = model_cfg.get("landmark_predictor_path", None)
+    cache_masks = config.get("data", {}).get("cache_landmark_masks", True)
 
     ds_kwargs = dict(
         grid_size=grid_size,
         sigma=sigma,
         num_regions=num_regions,
         predictor_path=predictor_path,
+        cache_masks=cache_masks,
     )
 
     data_train = FER2013WithLandmarks(data_path, split="train", transforms=trans_train, **ds_kwargs)

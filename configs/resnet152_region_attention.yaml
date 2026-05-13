@@ -59,7 +59,7 @@ training:
   loss: "cross_entropy"
   label_smoothing: 0.05
   confidence_soft_targets:
-    enabled: true
+    enabled: false
     max_mix: 0.2
     min_confidence: 0.55
     confidence_power: 1.0

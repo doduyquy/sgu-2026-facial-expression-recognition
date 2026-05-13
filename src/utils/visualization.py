@@ -5,6 +5,14 @@ import cv2
 from src.data.emotions_dict import EMOTION_DICT
 
 
+def _build_axes_grid(num_items, columns=10, cell_width=2.2, cell_height=3.0):
+    columns = max(1, min(columns, num_items))
+    rows = int(np.ceil(num_items / columns))
+    fig, axes = plt.subplots(rows, columns, figsize=(columns * cell_width, rows * cell_height))
+    axes = np.atleast_1d(axes).reshape(rows, columns)
+    return fig, axes, rows, columns
+
+
 def plot_loss_curves(train_losses, val_losses, save_path=None):
     
     epoch_axis = range(1, len(train_losses) + 1)
@@ -34,11 +42,12 @@ def plot_prediction_grid(images, true_labels, pred_labels, title, save_path=None
     Return: (show)
         figure (object)
     """
-    fig, axes = plt.subplots(1, 10, figsize=(20, 3))
+    fig, axes, _, _ = _build_axes_grid(len(images))
     fig.suptitle(title, fontsize=16)
 
     # Dùng zip để lặp qua từng ô (ax) và dữ liệu tương ứng
-    for ax, img, true, pred in zip(axes, images, true_labels, pred_labels):
+    flat_axes = axes.ravel()
+    for ax, img, true, pred in zip(flat_axes, images, true_labels, pred_labels):
         
         # 1. Chuyển ảnh về Numpy và xử lý shape
         # Nếu img là Tensor (C, H, W), ta cần chuyển về (H, W) để vẽ ảnh xám
@@ -62,6 +71,9 @@ def plot_prediction_grid(images, true_labels, pred_labels, title, save_path=None
                      fontsize=12, color=color)
         
         ax.axis('off')
+
+    for ax in flat_axes[len(images):]:
+        ax.axis('off')
     
     if save_path:
         plt.savefig(save_path, bbox_inches='tight')
@@ -71,7 +83,15 @@ def plot_prediction_grid(images, true_labels, pred_labels, title, save_path=None
     return fig
 
 
-def plot_attention_heatmap_grid(images, true_labels, pred_labels, attns, title, save_path=None):
+def plot_attention_heatmap_grid(
+    images,
+    true_labels,
+    pred_labels,
+    attns,
+    title,
+    save_path=None,
+    region_reduce="max",
+):
     """
     Plot images with attention heatmap overlay
     Args: 
@@ -79,13 +99,11 @@ def plot_attention_heatmap_grid(images, true_labels, pred_labels, attns, title, 
         true_labels, pred_labels: list of labels
         attns: list of attention weights [6, 18] or [6, 9] (numpy)
     """
-    fig, axes = plt.subplots(1, len(images), figsize=(20, 3))
-    if len(images) == 1:
-        axes = [axes]
-        
+    fig, axes, _, _ = _build_axes_grid(len(images))
     fig.suptitle(title, fontsize=16)
 
-    for ax, img, true, pred, attn in zip(axes, images, true_labels, pred_labels, attns):
+    flat_axes = axes.ravel()
+    for ax, img, true, pred, attn in zip(flat_axes, images, true_labels, pred_labels, attns):
         
         # 1. Image
         if torch.is_tensor(img):
@@ -103,7 +121,12 @@ def plot_attention_heatmap_grid(images, true_labels, pred_labels, attns, title, 
             attn = (vgg + res) / 2.0  # Average 2 backbone [6, 9]
             
         if attn.ndim == 2 and attn.shape[0] == 6:
-            attn = attn.mean(axis=0)  # Average 6 regions -> [num_visual_tokens]
+            if region_reduce == "mean":
+                attn = attn.mean(axis=0)
+            elif region_reduce == "max":
+                attn = attn.max(axis=0)
+            else:
+                raise ValueError("region_reduce must be either 'mean' or 'max'.")
 
         if attn.ndim == 1:
             side = int(np.sqrt(attn.shape[0]))
@@ -139,6 +162,9 @@ def plot_attention_heatmap_grid(images, true_labels, pred_labels, attns, title, 
         color = 'green' if true == pred else 'red'
         ax.set_title(f"T: {EMOTION_DICT[int(true)]}\nP: {EMOTION_DICT[int(pred)]}", 
                      fontsize=12, color=color)
+        ax.axis('off')
+
+    for ax in flat_axes[len(images):]:
         ax.axis('off')
     
     if save_path:

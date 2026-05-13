@@ -1,6 +1,6 @@
 from torchvision.transforms import Compose
 import torch
-from torchvision.transforms import v2
+from torchvision.transforms import InterpolationMode, v2
 from torchvision.transforms import functional as TF
 
 
@@ -29,6 +29,72 @@ class RandomGamma(torch.nn.Module):
             gamma = torch.empty(1).uniform_(self.gamma_range[0], self.gamma_range[1]).item()
             img = TF.adjust_gamma(img, gamma=gamma)
         return img
+
+
+class LandmarkPairedTransform(torch.nn.Module):
+    """
+    Apply the same geometric train-time augmentation to an image and its masks.
+
+    Color / intensity operations remain image-only, while horizontal flips and
+    rotations are mirrored onto the soft landmark masks so the guidance stays
+    aligned with the transformed face.
+    """
+
+    def __init__(self, config, split="train"):
+        super().__init__()
+        self.accepts_masks = True
+        self.split = split
+        self.image_size = config["data"].get("image_size", 48)
+        self.channels = config["data"].get("channels", 1)
+        self.normalize = config["data"].get("normalize", True)
+
+        if self.channels == 3:
+            self.mean = [0.485, 0.456, 0.406]
+            self.std = [0.229, 0.224, 0.225]
+        else:
+            self.mean = [0.5]
+            self.std = [0.5]
+
+        self.to_channels = ToChannels(self.channels)
+        self.resize = v2.Resize((self.image_size, self.image_size))
+        self.color_jitter = v2.ColorJitter(brightness=0.15, contrast=0.15)
+        self.random_gamma = RandomGamma(p=0.5, gamma_range=(0.5, 2.0))
+        self.random_erasing = v2.RandomErasing(p=0.4, scale=(0.02, 0.15), value="random")
+
+    def forward(self, img, masks):
+        img = self.to_channels(img)
+        img = self.resize(img)
+
+        if self.split == "train":
+            if torch.rand(1).item() < 0.5:
+                img = TF.hflip(img)
+                masks = torch.flip(masks, dims=[-1])
+
+            angle = torch.empty(1).uniform_(-15.0, 15.0).item()
+            img = TF.rotate(
+                img,
+                angle=angle,
+                interpolation=InterpolationMode.NEAREST,
+            )
+            masks = TF.rotate(
+                masks,
+                angle=angle,
+                interpolation=InterpolationMode.BILINEAR,
+            )
+            masks = masks.clamp_(0.0, 1.0)
+
+            img = self.color_jitter(img)
+            img = self.random_gamma(img)
+
+        img = v2.ToImage()(img)
+        img = v2.ToDtype(torch.float32, scale=True)(img)
+        if self.normalize:
+            img = v2.Normalize(mean=self.mean, std=self.std)(img)
+
+        if self.split == "train":
+            img = self.random_erasing(img)
+
+        return img, masks
 
 
 def build_transform(config, split="train") -> Compose:
@@ -92,6 +158,10 @@ def build_transform(config, split="train") -> Compose:
             transform_ops.append(v2.Normalize(mean=mean, std=std))
 
     return v2.Compose(transform_ops)
+
+
+def build_landmark_transform(config, split="train") -> LandmarkPairedTransform:
+    return LandmarkPairedTransform(config, split=split)
 
 
 if __name__ == "__main__":

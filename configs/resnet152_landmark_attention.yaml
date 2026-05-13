@@ -10,16 +10,16 @@ model:
   num_heads: 4
   num_regions: 6
   num_encoder_layers: 2
-  transformer_dropout: 0.15
+  transformer_dropout: 0.2
 
-  # Use layer3 for finer spatial resolution (14x14 = 196 tokens).
-  # This is critical for landmark masks to have meaningful localization.
-  # layer4 (7x7) is too coarse for accurate facial region attention.
-  feature_layer: "layer3"
+  # Match the strongest region-attention baseline for a fair comparison:
+  # layer4 gives [B, 2048, 7, 7] -> 49 visual tokens.
+  feature_layer: "layer4"
   pool_visual_tokens: false
   use_visual_pos_embed: true
   token_grid_size: 3
   fusion_type: "transformer"
+  landmark_sigma: 1.0
 
   # CLIP text embeddings initialize 6 region queries with semantic meaning.
   use_clip_dictionary: true
@@ -31,21 +31,20 @@ model:
   attention_logit_weight: 1.0
   source_logit_weight: 0.0
 
-  # Phase 1: freeze backbone 5 epochs, Phase 2: unfreeze layer3.
-  # Since feature_layer=layer3, layer4 is nn.Identity() and has no parameters.
-  # We must unfreeze layer3 — the actual layer producing visual tokens.
+  # Mirror the strongest region-attention recipe, then compare one variable:
+  # whether landmark-guided cross-attention helps.
   freeze_backbone_epochs: 5
   unfreeze_backbone: true
-  unfreeze_backbone_scope: "layer3"
+  unfreeze_backbone_scope: "layer4"
   freeze_unfrozen_batchnorm: true
 
   # Concat preserves per-region identity for the classifier.
   region_pooling: "concat"
   classifier_hidden_dim: 1024
 
-  # Stronger ortho penalty to force regions apart (landmark masks already help).
+  # Keep the same diversity penalty as the best plain region-attention run.
   ortho_loss_type: "squared_offdiag"
-  ortho_loss_weight: 0.1
+  ortho_loss_weight: 0.02
 
 data:
   image_size: 224
@@ -53,18 +52,21 @@ data:
   normalize: false
   batch_size: 8
   num_workers: 0
+  cache_landmark_masks: true
 
 training:
   epochs: 60
   patience: 25
   monitor: "val_accuracy"
   loss: "cross_entropy"
-  label_smoothing: 0.02
+  label_smoothing: 0.05
   optimizer: "adamw"
   lr: 0.0001
   visual_extractor_lr: 0.00001
   finetune_lr: 0.00002
   weight_decay: 0.0001
+  grad_clip_norm: 1.0
+  skip_nonfinite_batches: true
   scheduler: "reduce_lr_on_plateau"
   lr_factor: 0.5
   lr_patience: 5

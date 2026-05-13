@@ -25,10 +25,21 @@ class FER2013WithLandmarks(FER2013):
     where region_masks is a [K, Hf, Wf] float tensor (0..1).
     """
 
-    def __init__(self, data_path, split="train", transforms=None,
-                 grid_size=14, sigma=1.5, num_regions=6, predictor_path=None):
+    def __init__(
+        self,
+        data_path,
+        split="train",
+        transforms=None,
+        grid_size=14,
+        sigma=1.5,
+        num_regions=6,
+        predictor_path=None,
+        cache_masks=True,
+    ):
         super().__init__(data_path, split=split, transforms=transforms)
 
+        self.cache_masks = cache_masks
+        self._mask_cache = [None] * len(self.data) if cache_masks else None
         self.mask_generator = DlibLandmarkMaskGenerator(
             grid_size=grid_size,
             sigma=sigma,
@@ -37,7 +48,8 @@ class FER2013WithLandmarks(FER2013):
         )
         print(
             f"--> [FER2013WithLandmarks] split={split}, "
-            f"grid={grid_size}x{grid_size}, sigma={sigma}, K={num_regions}"
+            f"grid={grid_size}x{grid_size}, sigma={sigma}, K={num_regions}, "
+            f"cache_masks={cache_masks}"
         )
 
     def __getitem__(self, index):
@@ -58,11 +70,23 @@ class FER2013WithLandmarks(FER2013):
 
         # Generate landmark masks BEFORE any augmentation transforms.
         # Masks are based on the original face geometry, not the augmented version.
-        region_masks = self.mask_generator(image_np)
+        region_masks = None
+        if self.cache_masks:
+            region_masks = self._mask_cache[index]
 
-        # Convert to PIL and apply image transforms (resize, augment, normalize)
+        if region_masks is None:
+            region_masks = self.mask_generator(image_np)
+            if self.cache_masks:
+                self._mask_cache[index] = region_masks.clone()
+        else:
+            region_masks = region_masks.clone()
+
+        # Convert to PIL and apply paired image/mask transforms when available.
         image = Image.fromarray(image_np)
         if self.transform is not None:
-            image = self.transform(image)
+            if getattr(self.transform, "accepts_masks", False):
+                image, region_masks = self.transform(image, region_masks)
+            else:
+                image = self.transform(image)
 
         return image, label, region_masks

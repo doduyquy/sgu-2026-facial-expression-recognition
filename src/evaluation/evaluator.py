@@ -8,9 +8,10 @@ from src.evaluation.metrics import compute_metrics, plot_confusion_matrix
 from src.utils.data_stats import get_class_distribution
 
 def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> None:
-    """Test set, 10 ảnh đoán đúng, 10 ảnh đoán sai và Visualize and log to wandb"""
+    """Evaluate, log metrics, and visualize 30 correct / 30 wrong samples."""
     model.eval()
     
+    sample_limit = 30
     correct_images, correct_trues, correct_preds, correct_attns = [], [], [], []
     wrong_images, wrong_trues, wrong_preds, wrong_attns = [], [], [], []
     
@@ -47,9 +48,31 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> Non
             attn_weights_batch = None
             if isinstance(out_orig, tuple) and len(out_orig) == 2:
                 logits_orig, attn_weights_batch = out_orig
-                logits_flipped, _ = out_flipped
+                logits_flipped, attn_weights_flipped = out_flipped
                 # Average predictions for TTA Boost
                 logits = (logits_orig + logits_flipped) / 2.0
+                if (
+                    attn_weights_batch is not None
+                    and attn_weights_flipped is not None
+                ):
+                    num_tokens = attn_weights_flipped.size(-1)
+                    side = int(num_tokens ** 0.5)
+                    if side * side == num_tokens:
+                        attn_weights_flipped = attn_weights_flipped.reshape(
+                            attn_weights_flipped.size(0),
+                            attn_weights_flipped.size(1),
+                            side,
+                            side,
+                        )
+                        attn_weights_flipped = torch.flip(attn_weights_flipped, dims=[-1])
+                        attn_weights_flipped = attn_weights_flipped.reshape(
+                            attn_weights_flipped.size(0),
+                            attn_weights_flipped.size(1),
+                            num_tokens,
+                        )
+                    attn_weights_batch = (
+                        attn_weights_batch + attn_weights_flipped
+                    ) / 2.0
             else:
                 logits_orig = out_orig
                 logits_flipped = out_flipped
@@ -70,13 +93,13 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> Non
                 attn_w = attn_weights_batch[i].cpu().numpy() if attn_weights_batch is not None else None
                 
                 if true_label == pred_label:
-                    if len(correct_images) < 10:
+                    if len(correct_images) < sample_limit:
                         correct_images.append(img)
                         correct_trues.append(true_label)
                         correct_preds.append(pred_label)
                         if attn_w is not None: correct_attns.append(attn_w)
                 else:
-                    if len(wrong_images) < 10:
+                    if len(wrong_images) < sample_limit:
                         wrong_images.append(img)
                         wrong_trues.append(true_label)
                         wrong_preds.append(pred_label)
