@@ -461,7 +461,7 @@ class MotifGraphModel(nn.Module):
         for idx in center_indices:
             centers_coords.append((idx // W, idx % W))
             
-        return sampled_feats, adj, centers_coords
+        return sampled_feats, adj, centers_coords, sampling_grid
 
     def forward(self, x, return_selection=False, targets=None):
         if targets is not None:
@@ -499,7 +499,7 @@ class MotifGraphModel(nn.Module):
         for gnn in self.gnn_layers:
             node_feats = gnn(node_feats, adj)
             
-        candidates, cand_adjs, centers = self._extract_deformable_subgraphs(feat_map, H, W, node_feats)
+        candidates, cand_adjs, centers, sampling_grid = self._extract_deformable_subgraphs(feat_map, H, W, node_feats)
         num_cands = candidates.shape[1]
         
         # Advanced Motif Module Forward
@@ -540,6 +540,7 @@ class MotifGraphModel(nn.Module):
         else:
             top_k_idx = torch.empty(B, 0, dtype=torch.long, device=cand_relevance.device)
         self._latest_top_k = top_k_idx
+        metadata["sampling_grid"] = sampling_grid
         self._latest_metadata = metadata
         
         if return_selection:

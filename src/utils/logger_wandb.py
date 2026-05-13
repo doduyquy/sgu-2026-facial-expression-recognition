@@ -75,10 +75,11 @@ def log_heatmap_samples(images, labels, preds, node_attn_all, sampling_grid_all,
         img = img_tensor.cpu().numpy().transpose(1, 2, 0)
         img = (img * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])).clip(0, 1)
         
-        # Attention processing
-        # node_attn_all slice for sample i: (num_cands, num_classes, motifs_per_class, 16)
+        # Attention processing: Mean over motifs to get importance per node
+        # sample_attn: (num_cands, num_classes, motifs_per_class, 16)
         sample_attn = node_attn_all[i*num_cands : (i+1)*num_cands]
-        attn = sample_attn[:, pred_label].mean(dim=0).flatten().cpu().numpy()
+        # (num_cands, motifs_per_class, 16) -> (num_cands, 16)
+        attn = sample_attn[:, pred_label].mean(dim=1).flatten().cpu().numpy()
         attn = (attn - attn.min()) / (attn.max() - attn.min() + 1e-8)
         
         # Grid coords
