@@ -7,19 +7,23 @@ def build_optimizer(model, config):
     lr = float(train_cfg.get('lr', train_cfg.get('learning_rate', 0.001)))
     weight_decay = float(train_cfg.get('weight_decay', 0.0001))
 
-    # Differential learning rate for transfer learning
+    # Differential learning rate based on config
+    backbone_lr_mult = float(train_cfg.get('backbone_lr_mult', 0.1))
+    
     backbone_params = []
     head_params = []
     for name, param in model.named_parameters():
-        # Backbone ResNet layers get standard LR. New heads/reducers get 10x LR.
-        if 'backbone' in name and 'dim_reducer' not in name and 'final_cbam' not in name:
+        if not param.requires_grad:
+            continue
+        # Backbone (pre-trained ResNet) vs Task-specific layers (GNN, Motif, etc.)
+        if 'backbone' in name:
             backbone_params.append(param)
         else:
             head_params.append(param)
             
     param_groups = [
-        {'params': backbone_params, 'lr': lr},
-        {'params': head_params, 'lr': lr * 2.0}
+        {'params': backbone_params, 'lr': lr * backbone_lr_mult},
+        {'params': head_params, 'lr': lr}
     ]
 
     if opt_name == 'adam':

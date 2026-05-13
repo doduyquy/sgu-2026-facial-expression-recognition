@@ -36,32 +36,39 @@ class SpatialResidualMasking(nn.Module):
         return x + x * mask
 class MotifBackbone(nn.Module):
     """
-    Advanced Backbone with Pretrained ResNet18 for stronger feature extraction.
+    Advanced Backbone with Pretrained ResNet34 to match RMN baseline.
     """
-    def __init__(self, in_channels=1, feat_dim=128):
+    def __init__(self, in_channels=3, feat_dim=128):
         super().__init__()
         import torchvision.models as models
+        
+        # 1. Chuyển sang ResNet34 để khớp với pretrain của RMN
         try:
-            resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+            resnet = models.resnet34(weights=models.ResNet34_Weights.DEFAULT)
         except Exception:
-            resnet = models.resnet18(pretrained=True)
+            resnet = models.resnet34(pretrained=True)
             
-        # Adapt for 1-channel 48x48 input
-        self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        # 2. Phục hồi Conv1 chuẩn (7x7, stride 2) để bảo toàn Receptive Field
+        if in_channels != 3:
+            self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        else:
+            self.conv1 = resnet.conv1
+            
         self.bn1 = resnet.bn1
         self.relu = resnet.relu
         
-        # Skip maxpool to keep spatial size 6x6 at the end (48->48->24->12->6)
-        self.maxpool = nn.Identity()
+        # 3. Phục hồi MaxPool để hạ spatial size đúng chuẩn ResNet (224 -> 112 -> 56)
+        self.maxpool = resnet.maxpool 
         
-        self.layer1 = resnet.layer1 # 48x48
-        self.layer2 = resnet.layer2 # 24x24
-        self.layer3 = resnet.layer3 # 12x12
-        self.layer4 = resnet.layer4 # 6x6, 512 channels
+        # Scale resolution flow:
+        self.layer1 = resnet.layer1 # 56x56
+        self.layer2 = resnet.layer2 # 28x28
+        self.layer3 = resnet.layer3 # 14x14
+        self.layer4 = resnet.layer4 # 7x7, 512 channels
         
         self.residual_masking = SpatialResidualMasking(512)
         
-        # Reduce dimension to expected feat_dim (128)
+        # Reduce dimension to expected feat_dim (e.g., 64 or 128)
         self.dim_reducer = nn.Sequential(
             nn.Conv2d(512, feat_dim, kernel_size=1, bias=False),
             nn.BatchNorm2d(feat_dim),
@@ -96,36 +103,33 @@ class MotifBackbone(nn.Module):
         pretrained_dict = {}
         
         for k, v in state_dict.items():
-            # Clean common prefixes from RMN or generic wrappers
             name = k.replace('module.', '').replace('backbone.', '').replace('resnet.', '').replace('net.', '')
             
             if name in model_dict:
                 if v.shape == model_dict[name].shape:
                     pretrained_dict[name] = v
-                else:
-                    # Skip layers with shape mismatch (e.g., conv1 7x7 vs 3x3)
-                    pass
                     
         if len(pretrained_dict) == 0:
             print("WARNING: No matching keys found. Checkpoint format might be unsupported.")
         else:
-            print(f"Successfully loaded {len(pretrained_dict)}/{len(model_dict)} matching layers from CNN checkpoint.")
+            print(f"Successfully loaded {len(pretrained_dict)}/{len(model_dict)} matching layers.")
             model_dict.update(pretrained_dict)
             self.load_state_dict(model_dict)
 
     def forward(self, x):
-        x = self.conv1(x)
+        # x: (B, 3, 224, 224)
+        x = self.conv1(x)     # -> (B, 64, 112, 112)
         x = self.bn1(x)
         x = self.relu(x)
-        x = self.maxpool(x)
+        x = self.maxpool(x)   # -> (B, 64, 56, 56)
 
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
+        x = self.layer1(x)    # -> (B, 64, 56, 56)
+        x = self.layer2(x)    # -> (B, 128, 28, 28)
+        x = self.layer3(x)    # -> (B, 256, 14, 14)
+        x = self.layer4(x)    # -> (B, 512, 7, 7)
         
-        x = self.residual_masking(x)
-        x = self.dim_reducer(x)
+        # x = self.residual_masking(x)
+        x = self.dim_reducer(x) # -> (B, feat_dim, 7, 7)
         return x
 
 class GraphAttentionLayer(nn.Module):
@@ -142,16 +146,16 @@ class GraphAttentionLayer(nn.Module):
         self.k_lin = nn.Linear(in_dim, out_dim)
         self.v_lin = nn.Linear(in_dim, out_dim)
         self.out_lin = nn.Linear(out_dim, out_dim)
-        # UPDATE: edge-aware attention + learnable adjacency gating (per-head)
+        # UPDATE: edge-aware attention + learnable adjacency gating
         self.edge_gate = nn.Sequential(
             nn.Linear(2 * in_dim, out_dim),
             nn.ReLU(),
-            nn.Linear(out_dim, self.heads) 
+            nn.Linear(out_dim, 1)
         )
         self.edge_bias = nn.Sequential(
             nn.Linear(2 * in_dim, out_dim),
             nn.ReLU(),
-            nn.Linear(out_dim, self.heads) 
+            nn.Linear(out_dim, 1)
         )
         # UPDATE: residual + norm + attention dropout
         self.attn_drop = nn.Dropout(p=0.1)
@@ -168,25 +172,18 @@ class GraphAttentionLayer(nn.Module):
         # (B, H, N, N)
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k) #matmul có tác dụng tính toán điểm số attention giữa các node, chia cho sqrt(d_k) để ổn định gradient khi d_k lớn
 
-        # Multi-head edge features calculation
+        # UPDATE: edge-aware bias + learnable gate per edge
         x_i = x.unsqueeze(2).expand(B, N, N, -1)
         x_j = x.unsqueeze(1).expand(B, N, N, -1)
         edge_feat = torch.cat([x_i, x_j], dim=-1)
-
-        # edge_gate shape: (B, N, N, heads) -> (B, heads, N, N)
-        edge_gate = torch.sigmoid(self.edge_gate(edge_feat))
-        edge_gate = edge_gate.permute(0, 3, 1, 2) 
-        
-        edge_bias = self.edge_bias(edge_feat)
-        edge_bias = edge_bias.permute(0, 3, 1, 2)
+        edge_gate = torch.sigmoid(self.edge_gate(edge_feat)).squeeze(-1) # (B, N, N)
+        edge_bias = self.edge_bias(edge_feat).squeeze(-1) # (B, N, N)
 
         if adj is not None:
-            # Broadcast adj to (B, 1, N, N)
-            edge_gate = edge_gate * adj.unsqueeze(1)
+            edge_gate = edge_gate * adj
 
-        # scores: (B, heads, N, N)
-        scores = scores + edge_bias
-        scores = scores * edge_gate
+        scores = scores + edge_bias.unsqueeze(1)
+        scores = scores * edge_gate.unsqueeze(1)
 
         if adj is not None:
             scores = scores.masked_fill(adj.unsqueeze(1) == 0, -1e9)
@@ -340,7 +337,8 @@ class MotifGraphModel(nn.Module):
         self.top_k = config.get('top_k', 6)  # UPDATE: more candidate diversity for 4x4
         self.temperature = config.get('motif_tau', 0.1) 
         
-        self.backbone = MotifBackbone(feat_dim=self.feat_dim)
+        in_channels = config.get('in_channels', config.get('data', {}).get('in_channels', 1))
+        self.backbone = MotifBackbone(in_channels=in_channels, feat_dim=self.feat_dim)
         
         # UPDATE: Load custom CNN checkpoint if provided
         pretrained_cnn_path = config.get('pretrained_cnn_path', "")
@@ -420,14 +418,12 @@ class MotifGraphModel(nn.Module):
     def _extract_deformable_subgraphs(self, feat_map, H, W, node_feats):
         B, C_feat, _, _ = feat_map.shape
         
-        # Base sampling grid (Dynamic Anchors for robustness to TenCrop/resizing)
-        h_idx = max(1, H - 2)
-        w_idx = max(1, W - 2)
-        
-        # 4 dynamic anchors instead of hardcoded centers
-        centers = [(1, 1), (1, w_idx), (h_idx, 1), (h_idx, w_idx)]
-        center_indices = [i * W + j for i, j in centers]
-        center_indices = torch.tensor(center_indices, device=feat_map.device)
+        # Base sampling grid (4 expanded corners instead of clustered center)
+        # Relative sampling centers spread across the feature map
+        c_low, c_high = int(H * 0.25), int(H * 0.75)
+        centers = [(c_low, c_low), (c_low, c_high), (c_high, c_low), (c_high, c_high)]
+        center_indices = [torch.tensor(i * W + j, device=feat_map.device) for i, j in centers]
+        center_indices = torch.stack(center_indices)
         num_cands = len(center_indices)
         
         center_feats = node_feats[:, center_indices, :] 
@@ -660,6 +656,7 @@ class MotifGraphModel(nn.Module):
 
 if __name__ == "__main__":
     config = {
+        'in_channels': 3,
         'feat_dim': 64,
         'num_classes': 7,
         'motifs_per_class': 4,
@@ -668,11 +665,11 @@ if __name__ == "__main__":
     model = MotifGraphModel(config)
     
     # Test 4D
-    dummy_img_4d = torch.randn(2, 1, 48, 48)
+    dummy_img_4d = torch.randn(2, 3, 224, 224)
     out_4d = model(dummy_img_4d)
     print(f"4D Output shape: {out_4d.shape}") # (2, 7)
     
     # Test 5D (TenCrop)
-    dummy_img_5d = torch.randn(2, 10, 1, 40, 40)
+    dummy_img_5d = torch.randn(2, 10, 3, 224, 224)
     out_5d = model(dummy_img_5d)
     print(f"5D Output shape: {out_5d.shape}") # (2, 7)

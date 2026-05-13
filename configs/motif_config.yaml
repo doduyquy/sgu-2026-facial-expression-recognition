@@ -11,15 +11,17 @@ model:
 data:
   batch_size: 64
   num_workers: 4
-  input_size: 48
-  in_channels: 1
+  input_size: 224
+  in_channels: 3
 
 training:
   epochs: 1000
   lr: 0.0001
+  backbone_lr_mult: 0.1
+  mixup_alpha: 0.2
   weight_decay: 5e-4
   loss: "cross_entropy"
-  label_smoothing: 0.0 
+  label_smoothing: 0.1
   class_weight_mode: "sqrt_inverse"
   motif_consistency_weight: 0.05
   motif_diversity_weight: 0.05
@@ -33,4 +35,4 @@ training:
   scn_warmup_epochs: 10
   scn_alpha: 1.0
   scn_rank_lambda: 0.5
-  scn_margin: 0.15
+  scn_margin: 0.5
