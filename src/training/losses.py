@@ -55,6 +55,28 @@ class MotifConsistencyLoss(nn.Module):
             return total_loss.mean()
         return total_loss
 
+class SCELoss(nn.Module):
+    def __init__(self, alpha=1.0, beta=1.0, num_classes=7, label_smoothing=0.0):
+        super(SCELoss, self).__init__()
+        self.alpha = alpha
+        self.beta = beta
+        self.num_classes = num_classes
+        self.cross_entropy = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+
+    def forward(self, pred, labels):
+        # 1. Cross Entropy truyền thống (CE)
+        ce = self.cross_entropy(pred, labels)
+
+        # 2. Reverse Cross Entropy (RCE) chống nhiễu nhãn
+        pred = F.softmax(pred, dim=1)
+        pred = torch.clamp(pred, min=1e-7, max=1.0)
+        label_one_hot = F.one_hot(labels, self.num_classes).float().to(pred.device)
+        label_one_hot = torch.clamp(label_one_hot, min=1e-4, max=1.0)
+        rce = (-1 * (pred * torch.log(label_one_hot)).sum(dim=1)).mean()
+
+        # Kết hợp CE và RCE
+        return self.alpha * ce + self.beta * rce
+
 
 
 
@@ -138,6 +160,16 @@ def build_loss(config, class_weights=None):
         loss = CombinedMotifLoss(
             ce_loss, motif_loss, alpha_weight, 
             div_weight=config['training'].get('motif_div_weight', 0.1)
+        )
+
+    elif loss_name == 'sce':
+        print("--> [Loss] Sử dụng Symmetric Cross Entropy (SCE) chống nhiễu nhãn")
+        ls = config['training'].get('label_smoothing', 0.0)
+        loss = SCELoss(
+            alpha=1.0, 
+            beta=1.0, 
+            num_classes=config['model'].get('num_classes', 7),
+            label_smoothing=ls
         )
 
     else: 

@@ -9,7 +9,7 @@ from src.utils.logger_wandb import init_wandb, log_metrics, log_heatmap_samples
 class Trainer:
     """
     Refactored Trainer for Motif-Graph FER.
-    Optimized for PyTorch, Label Noise Robustness (SCN), and Differential LR.
+    Optimized for PyTorch, Label Noise Robustness (SCE), and Differential LR.
     """
     def __init__(self, model, train_loader, val_loader, criterion, optimizer, scheduler, config, device, run_name, save_dir):
         self.model = model.to(device)
@@ -36,87 +36,47 @@ class Trainer:
         self.run_name = run_name
         self.path_save_ckpt = save_dir
         
-        # SCN Hyperparameters
-        self.use_scn = train_cfg.get('use_scn', True)
-        self.scn_alpha = float(train_cfg.get('scn_alpha', 1.0))
-        self.scn_rank_lambda = float(train_cfg.get('scn_rank_lambda', 0.5))
-        self.scn_margin = float(train_cfg.get('scn_margin', 0.4))
-        self.scn_warmup_epochs = int(train_cfg.get('scn_warmup_epochs', 0))
-        
         # Runtime states
         self.start_epoch = 0
         self._current_epoch = 0
-        self._runtime_use_scn = self.use_scn
-        self._runtime_use_mixup = False
-        self._latest_scn_logs = {}
         
         # Training progress trackers
         self.best_val_acc = 0.0
         self.best_val_loss = float('inf')
         self.patience_counter = 0
         self._current_phase = 0 # Track curriculum phase
+        self._latest_scn_logs = {} # For backward compatibility in metrics
         
         # --- AMP (Automatic Mixed Precision) ---
         self.scaler = torch.cuda.amp.GradScaler()
 
-    def _scn_loss(self, logits, labels):
-        """
-        Correct SCN (Self-Cure Network) implementation for Label Noise:
-        1. Suppress low-confidence samples (likely noisy labels).
-        2. Ranking loss to maintain margin between easy and hard correctable samples.
-        """
-        ce = F.cross_entropy(logits, labels, reduction='none')
-        
-        with torch.no_grad():
-            probs = F.softmax(logits, dim=1)
-            conf = probs.gather(1, labels.unsqueeze(1)).squeeze(1)
-            
-            # SCN Suppressing Function: sigm(beta * (conf - threshold))
-            # Rewards high-confidence samples, suppresses low-confidence (noisy) ones.
-            # beta=10, threshold=0.45 creates a sharp transition around 0.45 prob.
-            weights = torch.sigmoid(10 * (conf - 0.45))
-            weights = weights.clamp(min=0.01) # Keep tiny gradient for stability
-            
-        loss_weighted = (weights * ce).mean()
-        
-        # Ranking Loss: enforces hard samples to have higher loss than easy samples by at least a margin
-        sorted_ce, _ = torch.sort(ce)
-        B = ce.size(0)
-        k = max(1, int(0.7 * B)) # Đảm bảo luôn có ít nhất 1 easy sample
-        easy_loss = sorted_ce[:k].mean()
-        hard_tensor = sorted_ce[k:]
-        # Tránh lỗi NaN khi batch cuối cùng quá nhỏ (empty tensor)
-        hard_loss = hard_tensor.mean() if hard_tensor.numel() > 0 else easy_loss.detach()
-        
-        # L_rank = max(0, margin - (hard_loss - easy_loss))
-        # Note: logic ensures hard_loss is at least 'margin' greater than easy_loss
-        ranking_loss = F.relu(self.scn_margin - (hard_loss - easy_loss))
-        
-        total_loss = (self.scn_alpha * loss_weighted) + (self.scn_rank_lambda * ranking_loss)
-        
-        logs = {
-            "scn/weight_mean": weights.mean().item(),
-            "scn/conf_mean": conf.mean().item(),
-            "scn/rank_loss": ranking_loss.item()
-        }
-        return total_loss, logs
 
     def train_one_epoch(self):
         self.model.train()
         running_loss, corrects, total = 0.0, 0, 0
-        scn_acc_logs = {"scn/weight_mean": [], "scn/conf_mean": [], "scn/rank_loss": []}
 
         for images, labels in self.train_loader:
             images, labels = images.to(self.device), labels.to(self.device)
-            
-            # Tối ưu hóa: dùng set_to_none=True giúp dọn rác GPU nhanh hơn
             self.optimizer.zero_grad(set_to_none=True)
 
-            # --- 1. BỌC FORWARD VÀ LOSS TRONG AUTOCAST ---
-            with torch.cuda.amp.autocast():
-                # 1.1 MixUp Staging
-                if self._runtime_use_mixup:
-                    alpha = self.config['training'].get('mixup_alpha', 0.2)
+            # Sử dụng torch.amp.autocast cho GPU (chuẩn mới)
+            with torch.amp.autocast('cuda'):
+                # --- CHIẾN THUẬT MIXUP FADE-OUT ---
+                # Phase 1 (Ep < 30): 100% dùng MixUp
+                # Phase 2 (Ep 30-60): 50% cơ hội dùng MixUp
+                # Phase 3 (Ep > 60): 10% cơ hội dùng MixUp
+                use_mixup = False
+                if self._current_epoch < 30:
+                    use_mixup = True
+                elif self._current_epoch < 90 and np.random.rand() < 0.7:
+                    use_mixup = True
+                elif self._current_epoch >= 90 and np.random.rand() < 0.5:
+                    use_mixup = True
+                elif self._current_epoch >= 120 and np.random.rand() < 0.2:
+                    use_mixup = True
+
+                if use_mixup:
+                    alpha = self.config.get('training', {}).get('mixup_alpha', 0.2)
                     lam = np.random.beta(alpha, alpha)
                     index = torch.randperm(images.size(0), device=self.device)
                     mixed_images = lam * images + (1 - lam) * images[index]
@@ -124,43 +84,33 @@ class Trainer:
                     outputs = self.model(mixed_images, targets=None) 
                     logits = outputs if torch.is_tensor(outputs) else outputs[0]
                     
-                    loss = lam * F.cross_entropy(logits, labels) + (1 - lam) * F.cross_entropy(logits, labels[index])
+                    # Tính SCE Loss cho ảnh MixUp
+                    loss = lam * self.criterion(logits, labels) + (1 - lam) * self.criterion(logits, labels[index])
                 else:
-                    # 1.2 Forward bình thường & SCN Loss
                     outputs = self.model(images, targets=labels)
                     logits = outputs if torch.is_tensor(outputs) else outputs[0]
-                    
-                    if self._runtime_use_scn and self._current_epoch >= self.scn_warmup_epochs:
-                        loss, scn_logs = self._scn_loss(logits, labels)
-                        for k, v in scn_logs.items():
-                            scn_acc_logs[k].append(v)
-                    else:
-                        loss = self.criterion(logits, labels)
+                    # Tính SCE Loss cho ảnh gốc
+                    loss = self.criterion(logits, labels)
 
-                # 1.3 Auxiliary Losses
+                # --- AUXILIARY LOSSES ĐỒ THỊ ---
                 aux_losses = getattr(self.model, "get_aux_losses", lambda: {})()
-                if not self._runtime_use_mixup and isinstance(aux_losses, dict):
+                if not use_mixup and isinstance(aux_losses, dict):
                     aux_weights_config = {
                         "motif_diversity": "motif_diversity_weight",
                         "motif_consistency": "motif_consistency_weight",
                         "offset_reg": "offset_reg_weight",
                         "attn_entropy": "attn_entropy_weight" 
                     }
-                    
                     for loss_name, config_key in aux_weights_config.items():
                         if loss_name in aux_losses:
                             weight = float(self.config.get('training', {}).get(config_key, 0.05))
                             if weight > 0.0:
                                 loss += weight * aux_losses[loss_name]
 
-            # --- 2. BACKWARD VỚI SCALER ---
+            # Backward & Step với AMP
             self.scaler.scale(loss).backward()
-            
-            # --- 3. CLIP GRADIENT CHUẨN AMP (Cần unscale trước) ---
             self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
-            
-            # --- 4. CẬP NHẬT TRỌNG SỐ ---
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
@@ -168,10 +118,6 @@ class Trainer:
             _, preds = torch.max(logits, dim=1)
             corrects += torch.sum(preds == labels.data)
             total += labels.size(0)
-
-        # Log SCN averages
-        if scn_acc_logs["scn/weight_mean"]:
-            self._latest_scn_logs = {k: np.mean(v) for k, v in scn_acc_logs.items()}
             
         return running_loss / total, corrects.double() / total
 
@@ -208,12 +154,6 @@ class Trainer:
         state = "FROZEN" if freeze else "UNFROZEN"
         print(f"\t>>> [Backbone] Set to {state}")
 
-    def _set_lr(self, group_idx, lr):
-        """Helper to update learning rate for a specific parameter group"""
-        if group_idx < len(self.optimizer.param_groups):
-            self.optimizer.param_groups[group_idx]['lr'] = lr
-            print(f"\t>>> [LR Update] Group {group_idx} set to {lr:.2e}")
-
     @torch.no_grad()
     def validate(self):
         self.model.eval()
@@ -241,42 +181,39 @@ class Trainer:
 
         # Những thông số này đã được khởi tạo trong __init__ hoặc load từ checkpoint
         # Không reset ở đây để hỗ trợ Resume Training
-        base_lr = float(self.config['training'].get('lr', 1e-4))
+        train_losses, val_losses = [], []
 
         for ep in range(self.start_epoch, self.epochs):
             self._current_epoch = ep
             progress = ep / max(self.epochs - 1, 1)
             
             # --- BẤT DI BẤT DỊCH: Curriculum Strategy (Nghệ thuật cài số) ---
-            # Phase 1: Epoch 1 - 30 (MixUp Warmup)
+            # Phase 1: Epoch 1 - 30 (MixUp Warmup 100%)
             if ep < 30:
                 if self._current_phase != 1:
-                    self._runtime_use_scn = False
-                    self._runtime_use_mixup = True
                     self._set_backbone_frozen(False)
-                    self._set_lr(0, base_lr * 0.1) # Backbone LR: 1e-5
-                    self._set_lr(1, base_lr)       # Head LR: 1e-4
                     self._current_phase = 1
                 phase_name = "Phase 1: MixUp Warmup"
 
-            # Early Phase 2: Epoch 31 - 60 (Stabilize Graph with Frozen Backbone)
-            elif ep < 60:
+            # Phase 2: Epoch 31 - 90 (Co-Adaptation 70% MixUp)
+            elif ep < 90:
                 if self._current_phase != 2:
-                    self._runtime_use_scn = True
-                    self._runtime_use_mixup = False
-                    self._set_backbone_frozen(True)
-                    self._set_lr(1, base_lr * 0.5) # Head LR reduced to 5e-5
+                    self._set_backbone_frozen(False)
+                    # HẠ CÁNH MỀM: Kế thừa LR hiện tại và giảm 50%
+                    for param_group in self.optimizer.param_groups:
+                        param_group['lr'] *= 0.5
+                    print("\t>>> [Phase 2 Init] Co-Adaptation: Kế thừa và giảm 50% LR hiện tại.")
                     self._current_phase = 2
-                phase_name = "Phase 2: Graph Stabilization (Backbone Frozen)"
+                phase_name = "Phase 2: Co-Adaptation"
 
-            # Late Phase 2 & Phase 3: Epoch 21 - 1000 (Fine-tune Everything)
+            # Phase 3: Epoch 91 - 1000 (Deep Refinement 50% MixUp)
             else:
                 if self._current_phase != 3:
-                    self._runtime_use_scn = True
-                    self._runtime_use_mixup = False
                     self._set_backbone_frozen(False)
-                    self._set_lr(0, base_lr * 0.05) # Backbone LR very small: 5e-6
-                    self._set_lr(1, base_lr * 0.5)  # Head LR: 5e-5
+                    # TINH CHỈNH SÂU: Tiếp tục giảm nhẹ LR
+                    for param_group in self.optimizer.param_groups:
+                        param_group['lr'] *= 0.5
+                    print("\t>>> [Phase 3 Init] Deep Refinement: Giảm tiếp 50% LR.")
                     self._current_phase = 3
                 phase_name = "Phase 3: Deep Refinement"
             
@@ -286,6 +223,8 @@ class Trainer:
 
             train_loss, train_acc = self.train_one_epoch()
             val_loss, val_acc = self.validate()
+            train_losses.append(train_loss)
+            val_losses.append(val_loss)
 
             print(f"Epoch {ep+1}/{self.epochs} [{phase_name}] - loss: {train_loss:.4f} - acc: {train_acc:.4f} - val_loss: {val_loss:.4f} - val_acc: {val_acc:.4f}")
 
@@ -356,4 +295,4 @@ class Trainer:
                     epoch=self.epochs
                 )
 
-        return self.best_val_acc
+        return train_losses, val_losses
