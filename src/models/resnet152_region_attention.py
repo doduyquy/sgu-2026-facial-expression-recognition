@@ -391,6 +391,11 @@ class ResNet152RegionAttentionFER(nn.Module):
 
         self.res_backbone = ResNet152SpatialTokenizer(config, channels=channels)
         self.visual_dim = self.res_backbone.feature_dim
+        if self.logit_fusion == "attention":
+            # Pure attention mode never consumes the checkpoint classifier head.
+            # Keep it frozen so DDP does not wait for gradients that cannot exist.
+            for param in self.res_backbone.source_fc.parameters():
+                param.requires_grad = False
         num_visual_tokens = self.res_backbone.num_visual_tokens
         if self.use_visual_pos_embed:
             self.visual_pos_embed = nn.Parameter(
