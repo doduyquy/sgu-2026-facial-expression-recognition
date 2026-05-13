@@ -6,3 +6,7 @@ model:
   # every other winning hyperparameter unchanged.
   use_global_visual_bias: false
   use_region_slot_embed: true
+
+training:
+  epochs: 123
+  patience: 30
