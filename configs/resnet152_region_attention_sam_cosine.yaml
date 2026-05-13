@@ -14,3 +14,5 @@ training:
   sam_adaptive: false
   scheduler: "cosine"
   use_amp: false
+  epochs: 123
+  patience: 30
