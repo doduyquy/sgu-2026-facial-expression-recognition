@@ -1,0 +1,13 @@
+_base_: "resnet152_region_attention.yaml"
+
+training:
+  # SAM is a heavier ablation: it runs two forward/backward passes per batch.
+  # Keep the baseline AdamW recipe intact and compare this config separately.
+  epochs: 123
+  patience: 30
+  optimizer: "sam"
+  base_optimizer: "adamw"
+  sam_rho: 0.05
+  sam_adaptive: false
+  scheduler: "cosine"
+  use_amp: false

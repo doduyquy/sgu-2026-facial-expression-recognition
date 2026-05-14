@@ -7,6 +7,7 @@ ROOT_DIRECTORY = Path(__file__).parent.parent.parent
 CONFIG_DIR = os.path.join(ROOT_DIRECTORY, "configs")
 # print(CONFIG_DIR)
 
+
 def _deep_update(base_dict, update_dict):
     """Merge các nhánh trùng nhau, ghi đè F1 nếu có"""
     for key, value in update_dict.items():
@@ -15,6 +16,42 @@ def _deep_update(base_dict, update_dict):
         else:
             base_dict[key] = value
     return base_dict
+
+
+def _config_path(config_name):
+    path = Path(config_name)
+    if path.suffix != ".yaml":
+        path = path.with_suffix(".yaml")
+    if not path.is_absolute():
+        path = Path(CONFIG_DIR) / path
+    return path
+
+
+def _load_yaml(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def _load_config_with_base(config_name, seen=None):
+    """Load YAML recursively, honoring `_base_` inheritance."""
+    seen = seen or set()
+    config_path = _config_path(config_name)
+    resolved_path = config_path.resolve()
+
+    if resolved_path in seen:
+        raise ValueError(f"Circular config inheritance detected at {config_path}")
+
+    config = _load_yaml(config_path)
+    base_name = config.get("_base_")
+    if base_name is None and config_path.name != "base.yaml":
+        base_name = "base.yaml"
+
+    if base_name:
+        base_config = _load_config_with_base(base_name, seen | {resolved_path})
+        return _deep_update(base_config, config)
+
+    return config
+
 
 def load_config(model='simple_cnn', env='kaggle') -> dict:
     """Load file config và cả file base mà nó kế thừa
@@ -28,19 +65,10 @@ def load_config(model='simple_cnn', env='kaggle') -> dict:
     Returns:
         dict: config (gồm base) đã ghi đè (nếu có) và các config env tương ứng
     """
-    model_config_path = os.path.join(CONFIG_DIR, f"{model}.yaml")
     env_config_path = os.path.join(CONFIG_DIR, "env.yaml")
-    base_config_path = os.path.join(CONFIG_DIR, "base.yaml")
 
-    with open(model_config_path, "r") as f:
-        model_config = yaml.safe_load(f)
-    with open(env_config_path, "r") as f:
-        env_config = yaml.safe_load(f)
-    with open(base_config_path, "r") as f:
-        base_config = yaml.safe_load(f)
-
-    # Merge base config and model config
-    config = _deep_update(base_config, model_config)
+    config = _load_config_with_base(model)
+    env_config = _load_yaml(env_config_path)
 
     if env == "local":
         env_config = env_config["local"]
