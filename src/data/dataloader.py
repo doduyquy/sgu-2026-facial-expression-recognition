@@ -17,8 +17,16 @@ def build_dataloader(config, data_path, distributed=False, world_size=1):
     trans_val = build_transform(config, "val")
     trans_test = build_transform(config, "test")
 
+    data_cfg = config.get("data", {})
+    use_clean_filter = data_cfg.get("use_clean_filter", True)
+
     # build dataset
-    data_train = FER2013(data_path=data_path, split="train", transforms=trans_train)
+    data_train = FER2013(
+        data_path=data_path,
+        split="train",
+        transforms=trans_train,
+        use_clean_filter=use_clean_filter,
+    )
     data_val = FER2013(data_path=data_path, split="val", transforms=trans_val)
     data_test = FER2013(data_path=data_path, split="test", transforms=trans_test)
 

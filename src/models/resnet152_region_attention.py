@@ -341,6 +341,9 @@ class ResNet152RegionAttentionFER(nn.Module):
     layers and must be trained/fine-tuned before their accuracy is meaningful.
     """
 
+    EMOTION_NAMES = ("angry", "disgust", "fear", "happy", "sad", "surprise", "neutral")
+    REGION_NAMES = ("forehead", "left_eye", "right_eye", "nose", "mouth", "chin")
+
     def __init__(self, config, channels=3):
         super().__init__()
         model_cfg = config.get("model", {})
@@ -371,6 +374,7 @@ class ResNet152RegionAttentionFER(nn.Module):
         self.return_attn = False
 
         num_classes = data_cfg.get("num_classes", 7)
+        self.num_classes = num_classes
         if self.unfreeze_backbone_scope not in ("all", "layer3", "layer4", "layer3_layer4"):
             raise ValueError(
                 "model.unfreeze_backbone_scope must be one of: "
@@ -484,10 +488,69 @@ class ResNet152RegionAttentionFER(nn.Module):
             nn.Dropout(model_cfg.get("classifier_dropout2", 0.2)),
             nn.Linear(self.classifier_hidden_dim, num_classes),
         )
+        self._init_emotion_region_prior(model_cfg, num_classes)
 
         checkpoint_path = model_cfg.get("checkpoint_path")
         if checkpoint_path:
             self.load_pretrained_backbones(checkpoint_path, device="cpu")
+
+    def _init_emotion_region_prior(self, model_cfg, num_classes):
+        prior_cfg = model_cfg.get("emotion_region_prior", {})
+        self.use_emotion_region_prior = prior_cfg.get("enabled", False)
+        self.emotion_prior_strength = float(prior_cfg.get("strength", 0.25))
+        self.emotion_prior_temperature = float(prior_cfg.get("temperature", 1.5))
+        self.detach_emotion_prior_prob = prior_cfg.get("detach_emotion_prob", True)
+        self.emotion_prior_normalize = prior_cfg.get("normalize", "mean").lower()
+        self.emotion_prior_min_gate = float(prior_cfg.get("min_gate", 0.5))
+        self.emotion_prior_max_gate = float(prior_cfg.get("max_gate", 1.5))
+
+        if self.emotion_prior_temperature <= 0:
+            raise ValueError("model.emotion_region_prior.temperature must be > 0")
+        if self.emotion_prior_normalize not in ("mean", "none"):
+            raise ValueError("model.emotion_region_prior.normalize must be 'mean' or 'none'")
+        if self.emotion_prior_min_gate <= 0 or self.emotion_prior_max_gate <= 0:
+            raise ValueError("model.emotion_region_prior min_gate/max_gate must be > 0")
+        if self.emotion_prior_min_gate > self.emotion_prior_max_gate:
+            raise ValueError("model.emotion_region_prior.min_gate cannot exceed max_gate")
+
+        matrix = prior_cfg.get("matrix")
+        if matrix is None:
+            matrix_tensor = self._default_emotion_region_prior()
+        else:
+            matrix_tensor = torch.tensor(matrix, dtype=torch.float32)
+
+        expected_shape = (num_classes, self.num_regions)
+        if tuple(matrix_tensor.shape) != expected_shape:
+            raise ValueError(
+                "model.emotion_region_prior.matrix must have shape "
+                f"{expected_shape}, got {tuple(matrix_tensor.shape)}"
+            )
+        self.register_buffer("emotion_region_prior", matrix_tensor, persistent=False)
+
+        if self.use_emotion_region_prior:
+            print(
+                "--> [ResNet152RegionAttention] Emotion-region prior gate enabled: "
+                f"strength={self.emotion_prior_strength}, "
+                f"temperature={self.emotion_prior_temperature}, "
+                f"detach={self.detach_emotion_prior_prob}"
+            )
+
+    @staticmethod
+    def _default_emotion_region_prior():
+        # Rows: angry, disgust, fear, happy, sad, surprise, neutral.
+        # Cols: forehead, left_eye, right_eye, nose, mouth, chin.
+        return torch.tensor(
+            [
+                [1.0, 0.9, 0.9, 0.3, 0.5, 0.6],
+                [0.4, 0.3, 0.3, 1.0, 0.8, 0.3],
+                [0.7, 1.0, 1.0, 0.3, 0.8, 0.4],
+                [0.1, 0.6, 0.6, 0.2, 1.0, 0.8],
+                [0.5, 0.8, 0.8, 0.2, 0.7, 0.4],
+                [0.6, 1.0, 1.0, 0.2, 1.0, 0.5],
+                [0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+            ],
+            dtype=torch.float32,
+        )
 
     def load_pretrained_backbones(self, resnet_ckpt_path=None, device="cpu", **kwargs):
         if resnet_ckpt_path is None:
@@ -607,6 +670,28 @@ class ResNet152RegionAttentionFER(nn.Module):
 
         return attention_logits
 
+    def _pool_region_features(self, encoded):
+        if self.region_pooling == "concat":
+            return encoded.reshape(encoded.size(0), -1)
+        return encoded.mean(dim=1)
+
+    def _apply_emotion_region_prior(self, encoded, coarse_logits):
+        emotion_prob = F.softmax(coarse_logits / self.emotion_prior_temperature, dim=-1)
+        if self.detach_emotion_prior_prob:
+            emotion_prob = emotion_prob.detach()
+
+        prior = self.emotion_region_prior.to(dtype=emotion_prob.dtype)
+        region_weight = torch.matmul(emotion_prob, prior)
+        if self.emotion_prior_normalize == "mean":
+            region_weight = region_weight / region_weight.mean(dim=1, keepdim=True).clamp_min(1e-6)
+
+        gate = 1.0 + self.emotion_prior_strength * (region_weight - 1.0)
+        gate = gate.clamp(
+            min=self.emotion_prior_min_gate,
+            max=self.emotion_prior_max_gate,
+        )
+        return encoded * gate.unsqueeze(-1)
+
     def forward(self, x):
         batch_size = x.shape[0]
 
@@ -632,11 +717,13 @@ class ResNet152RegionAttentionFER(nn.Module):
             hyper_visual = hyper_visual + phi_visual
 
         encoded = self.transformer_encoder(hyper_visual)     # [B, 6, 512]
-        if self.region_pooling == "concat":
-            pooled = encoded.reshape(encoded.size(0), -1)
-        else:
-            pooled = encoded.mean(dim=1)
-        attention_logits = self.classifier(pooled)
+        pooled = self._pool_region_features(encoded)
+        coarse_logits = self.classifier(pooled)
+        attention_logits = coarse_logits
+        if self.use_emotion_region_prior:
+            encoded = self._apply_emotion_region_prior(encoded, coarse_logits)
+            pooled = self._pool_region_features(encoded)
+            attention_logits = self.classifier(pooled)
 
         source_logits = None
         if self.logit_fusion in ("source", "sum"):
@@ -653,6 +740,8 @@ class ResNet152RegionAttentionFER(nn.Module):
             ortho_loss = off_diag_sim.mean()
 
         if self.training:
+            if self.use_emotion_region_prior:
+                return logits, ortho_loss, coarse_logits
             return logits, ortho_loss
 
         if self.return_attn:

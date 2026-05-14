@@ -1,0 +1,20 @@
+_base_: "resnet152_region_attention.yaml"
+
+model:
+  # VLM/LLM-inspired emotion-region prior ablation.
+  # Pipeline:
+  # encoded region features -> coarse logits -> softmax -> p_emotion @ P
+  # -> soft gate over 6 region tokens -> final logits.
+  emotion_region_prior:
+    enabled: true
+    strength: 0.25
+    temperature: 1.5
+    detach_emotion_prob: true
+    coarse_aux_loss_weight: 0.2
+    normalize: "mean"
+    min_gate: 0.5
+    max_gate: 1.5
+
+training:
+  epochs: 123
+  patience: 30

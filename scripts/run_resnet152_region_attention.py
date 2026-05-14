@@ -280,7 +280,8 @@ def main():
             ckpt_dir.mkdir(parents=True, exist_ok=True)
         if distributed:
             dist.barrier()
-        best_path = ckpt_dir / f"resnet152_region_attention_{timestamp}_best.pth"
+        run_name = f"{args.config}_{timestamp}"
+        best_path = ckpt_dir / f"{run_name}_best.pth"
 
         trainer = Trainer(
             model=model,
@@ -291,7 +292,7 @@ def main():
             scheduler=scheduler,
             config=config,
             device=device,
-            run_name=f"resnet152_region_attention_{timestamp}",
+            run_name=run_name,
             save_dir=str(best_path),
         )
         trainer.fit()

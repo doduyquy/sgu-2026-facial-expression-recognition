@@ -10,7 +10,7 @@ from src.data.emotions_dict import EMOTION_DICT
 class FER2013(Dataset):
     """Load one sample for dataloader"""
 
-    def __init__(self, data_path, split="train", transforms=None):
+    def __init__(self, data_path, split="train", transforms=None, use_clean_filter=True):
         # set relative path to train|val|test in dataset
         self.data_split_path = os.path.join(data_path, f"{split}.csv")
         # because Q splitted dataset, so we only need 2 column: emotion(for category) and pixels for images
@@ -23,7 +23,7 @@ class FER2013(Dataset):
         # ── Data cleaning: drop bad rows for train split only ──
         # bad_row_indices.txt chứa các chỉ số dòng (0-based) trong train.csv
         # tương ứng với ảnh lỗi (đen, trắng, không phải mặt người, v.v.)
-        if split == "train":
+        if split == "train" and use_clean_filter:
             # Tìm file blacklist ở nhiều vị trí (local & Kaggle)
             candidate_paths = [
                 os.path.join(data_path, "bad_row_indices.txt"),                     # local: cùng thư mục train.csv
@@ -47,6 +47,8 @@ class FER2013(Dataset):
                 after = len(self.data)
                 print(f"[FER2013] Filtered {before - after} bad rows "
                       f"({before} -> {after}) using {blacklist_path}")
+        elif split == "train":
+            print("[FER2013] Clean bad-row filter disabled; using original train.csv rows.")
 
         self.transform = transforms
 

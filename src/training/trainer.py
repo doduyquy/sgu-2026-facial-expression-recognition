@@ -114,6 +114,23 @@ class Trainer:
     def _unwrap_model(self):
         return self.model.module if hasattr(self.model, "module") else self.model
 
+    def _current_lrs(self):
+        return [float(group.get('lr', 0.0)) for group in self.optimizer.param_groups]
+
+    @staticmethod
+    def _lr_metric_dict(prefix, lrs):
+        metrics = {}
+        for idx, lr in enumerate(lrs):
+            metrics[f"{prefix}/Group_{idx}"] = lr
+        if lrs:
+            metrics[f"{prefix}/Head"] = lrs[0]
+            metrics[f"{prefix}/Min"] = min(lrs)
+            metrics[f"{prefix}/Max"] = max(lrs)
+            metrics[f"{prefix}/Mean"] = sum(lrs) / len(lrs)
+        if len(lrs) > 1:
+            metrics[f"{prefix}/Visual_Extractor"] = lrs[1]
+        return metrics
+
     def _classification_loss(self, logits, labels):
         if not self.use_confidence_soft_targets:
             return self.criterion(logits, labels)
@@ -159,6 +176,23 @@ class Trainer:
     def _supervised_loss_from_outputs(self, outputs, labels):
         if isinstance(outputs, tuple):
             if (
+                len(outputs) == 3
+                and isinstance(outputs[1], torch.Tensor)
+                and outputs[1].dim() == 0
+                and isinstance(outputs[2], torch.Tensor)
+            ):
+                logits, ortho_loss, coarse_logits = outputs
+                main_loss = self._classification_loss(logits, labels)
+                ortho_weight = self.config.get('model', {}).get('ortho_loss_weight', 0.1)
+                prior_cfg = self.config.get('model', {}).get('emotion_region_prior', {})
+                coarse_weight = float(prior_cfg.get('coarse_aux_loss_weight', 0.0))
+                coarse_aux_loss = self._classification_loss(coarse_logits, labels)
+                loss = main_loss + ortho_weight * ortho_loss
+                if coarse_weight > 0.0:
+                    loss = loss + coarse_weight * coarse_aux_loss
+                return loss, logits, ortho_loss, coarse_aux_loss
+
+            if (
                 len(outputs) == 2
                 and isinstance(outputs[1], torch.Tensor)
                 and outputs[1].dim() == 0
@@ -166,14 +200,14 @@ class Trainer:
                 logits, aux_loss = outputs
                 main_loss = self._classification_loss(logits, labels)
                 ortho_weight = self.config.get('model', {}).get('ortho_loss_weight', 0.1)
-                return main_loss + ortho_weight * aux_loss, logits, aux_loss
+                return main_loss + ortho_weight * aux_loss, logits, aux_loss, None
 
             main_out, aux_out = outputs
             loss = inception_loss(main_out, aux_out, labels, criterion=self.criterion)
-            return loss, main_out, None
+            return loss, main_out, None, None
 
         loss = self._classification_loss(outputs, labels)
-        return loss, outputs, None
+        return loss, outputs, None, None
 
     def _occlusion_weight_scale(self, epoch_index):
         if not self.use_occlusion_consistency:
@@ -212,8 +246,8 @@ class Trainer:
         occlusion_scale = self._occlusion_weight_scale(epoch_index)
         if occlusion_scale <= 0.0 or self.occlusion_generator is None:
             outputs = self._forward_model(images, region_masks=region_masks)
-            loss, logits, aux_loss = self._supervised_loss_from_outputs(outputs, labels)
-            return loss, logits, aux_loss, occlusion_batch
+            loss, logits, aux_loss, coarse_aux_loss = self._supervised_loss_from_outputs(outputs, labels)
+            return loss, logits, aux_loss, coarse_aux_loss, occlusion_batch
 
         if occlusion_batch is None:
             occlusion_batch = self.occlusion_generator(images)
@@ -233,14 +267,14 @@ class Trainer:
             combined_outputs,
             batch_size=images.size(0),
         )
-        loss, logits, aux_loss = self._supervised_loss_from_outputs(outputs, labels)
+        loss, logits, aux_loss, coarse_aux_loss = self._supervised_loss_from_outputs(outputs, labels)
         masked_logits = self._extract_logits(masked_outputs)
 
         if not applied_mask.any().item():
             # Keep the masked half in the graph, but add no extra loss when this
             # local batch happened to receive no occlusion rectangles.
             loss = loss + masked_logits.sum() * 0.0
-            return loss, logits, aux_loss, occlusion_batch
+            return loss, logits, aux_loss, coarse_aux_loss, occlusion_batch
 
         masked_logits = masked_logits[applied_mask]
         clean_logits = logits[applied_mask]
@@ -252,11 +286,11 @@ class Trainer:
             self.occlusion_masked_ce_weight * masked_ce
             + self.occlusion_consistency_weight * consistency_kl
         )
-        return loss, logits, aux_loss, occlusion_batch
+        return loss, logits, aux_loss, coarse_aux_loss, occlusion_batch
 
-    def _reduce_epoch_stats(self, loss_sum, corrects, total, ortho_sum=0.0):
+    def _reduce_epoch_stats(self, loss_sum, corrects, total, ortho_sum=0.0, coarse_aux_sum=0.0):
         stats = torch.tensor(
-            [loss_sum, float(corrects), float(total), ortho_sum],
+            [loss_sum, float(corrects), float(total), ortho_sum, coarse_aux_sum],
             device=self.device,
             dtype=torch.float64,
         )
@@ -267,7 +301,8 @@ class Trainer:
         epoch_loss = stats[0].item() / total
         epoch_acc = stats[1] / total
         epoch_ortho = stats[3].item() / total if stats[3].item() > 0 else 0.0
-        return epoch_loss, epoch_acc.to(device=self.device), epoch_ortho
+        epoch_coarse_aux = stats[4].item() / total if stats[4].item() > 0 else 0.0
+        return epoch_loss, epoch_acc.to(device=self.device), epoch_ortho, epoch_coarse_aux
 
     def _sync_stop_flag(self, should_stop):
         if not self.is_distributed:
@@ -283,6 +318,7 @@ class Trainer:
 
         running_loss = 0.0
         running_ortho = 0.0
+        running_coarse_aux = 0.0
         corrects = 0
         total = 0
 
@@ -297,7 +333,7 @@ class Trainer:
 
             self.optimizer.zero_grad()
             with autocast(device_type=self.device.type, enabled=self.use_amp):
-                loss, logits, aux_loss, occlusion_batch = self._compute_batch_loss(
+                loss, logits, aux_loss, coarse_aux_loss, occlusion_batch = self._compute_batch_loss(
                     images=images,
                     labels=labels,
                     region_masks=region_masks,
@@ -306,6 +342,8 @@ class Trainer:
 
             if aux_loss is not None:
                 running_ortho += aux_loss.item() * images.size(0)
+            if coarse_aux_loss is not None:
+                running_coarse_aux += coarse_aux_loss.item() * images.size(0)
 
             if not torch.isfinite(loss).item():
                 if self.skip_nonfinite_batches:
@@ -338,7 +376,7 @@ class Trainer:
 
                 # ── SAM Step 2 ──
                 with autocast(device_type=self.device.type, enabled=self.use_amp):
-                    loss_2, _, _, _ = self._compute_batch_loss(
+                    loss_2, _, _, _, _ = self._compute_batch_loss(
                         images=images,
                         labels=labels,
                         region_masks=region_masks,
@@ -416,7 +454,13 @@ class Trainer:
             corrects += torch.sum(preds == labels.data)
             total += labels.size(0)
 
-        return self._reduce_epoch_stats(running_loss, corrects, total, running_ortho)
+        return self._reduce_epoch_stats(
+            running_loss,
+            corrects,
+            total,
+            running_ortho,
+            running_coarse_aux,
+        )
 
 
     def validate(self):
@@ -448,7 +492,7 @@ class Trainer:
                 corrects += torch.sum(preds == labels.data)
                 total += labels.size(0)
 
-        epoch_loss, epoch_acc, _ = self._reduce_epoch_stats(running_loss, corrects, total)
+        epoch_loss, epoch_acc, _, _ = self._reduce_epoch_stats(running_loss, corrects, total)
         return epoch_loss, epoch_acc
 
 
@@ -464,6 +508,8 @@ class Trainer:
             init_wandb(config=self.config, run_name=self.run_name)
 
         best_score = float("inf") if self.monitor == 'val_loss' else -float("inf")
+        best_val_loss = float("inf")
+        best_val_acc = -float("inf")
         patience_counter = 0
         all_train_loss = []
         all_val_loss = []
@@ -514,8 +560,10 @@ class Trainer:
                             f"{rebuild_msg} and reset patience."
                         )
 
-            train_loss, train_acc, train_ortho_loss = self.train_one_epoch(epoch_index=ep)
+            train_loss, train_acc, train_ortho_loss, train_coarse_aux_loss = self.train_one_epoch(epoch_index=ep)
             val_loss, val_acc = self.validate()
+            val_acc_value = float(val_acc.item())
+            train_acc_value = float(train_acc.item())
 
             all_train_loss.append(train_loss)
             all_val_loss.append(val_loss)
@@ -523,48 +571,32 @@ class Trainer:
             if self.is_main_process:
                 print(
                     f"Epoch {ep+1}/{self.epochs} - "
-                    f"loss: {train_loss:.4f} (ortho: {train_ortho_loss:.4f}) - accuracy: {train_acc.item():.4f} - "
-                    f"val_loss: {val_loss:.4f} - val_accuracy: {val_acc.item():.4f}"
+                    f"loss: {train_loss:.4f} "
+                    f"(ortho: {train_ortho_loss:.4f}, coarse_aux: {train_coarse_aux_loss:.4f}) - "
+                    f"accuracy: {train_acc_value:.4f} - "
+                    f"val_loss: {val_loss:.4f} - val_accuracy: {val_acc_value:.4f}"
                 )
-
-            # wandb log
-            if self.use_wandb and self.is_main_process:
-                finetune_scope = getattr(base_model, "unfreeze_backbone_scope", "backbone")
-                current_phase = (
-                    f"finetune_{finetune_scope}"
-                    if getattr(base_model, "unfreeze_backbone", False)
-                    and not getattr(base_model, "is_frozen", False)
-                    else "frozen_backbone"
-                )
-                log_metrics({
-                    "Epoch": ep + 1,
-                    "Train/Loss": train_loss,
-                    "Train/Accuracy": train_acc,
-                    "Train/Ortho_Loss": train_ortho_loss,
-                    "Val/Loss": val_loss,
-                    "Val/Accuracy": val_acc,
-                    "Learning_Rate": self.optimizer.param_groups[0]['lr'],
-                    "Learning_Rate/Head": self.optimizer.param_groups[0]['lr'],
-                    "Learning_Rate/Visual_Extractor": (
-                        self.optimizer.param_groups[1]['lr']
-                        if len(self.optimizer.param_groups) > 1
-                        else 0.0
-                    ),
-                    "Training/AMP_Enabled": int(self.use_amp),
-                    "Training/Backbone_Finetune_Active": int(current_phase != "frozen_backbone"),
-                    "Training/Phase_Transition": int(phase_transitioned),
-                }, epoch=ep)
 
             # lr scheduler
+            lr_before_scheduler = self._current_lrs()
+            scheduler_stepped = False
             if self.scheduler is not None:
+                scheduler_stepped = True
                 if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                     self.scheduler.step(val_loss)
                 else:
                     self.scheduler.step()
+            lr_after_scheduler = self._current_lrs()
+            scheduler_reduced = any(
+                after < before
+                for before, after in zip(lr_before_scheduler, lr_after_scheduler)
+            )
 
             # save checkpoint
             current_score = val_loss if self.monitor == 'val_loss' else val_acc.item()
             improved = current_score < best_score if self.monitor == 'val_loss' else current_score > best_score
+            best_val_loss = min(best_val_loss, float(val_loss))
+            best_val_acc = max(best_val_acc, val_acc_value)
 
             should_stop = False
             if improved:
@@ -577,13 +609,13 @@ class Trainer:
                         "optimizer_state_dict": self.optimizer.state_dict(),
                         "epoch": ep,
                         "val_loss": val_loss,
-                        "val_accuracy": val_acc.item(),
+                        "val_accuracy": val_acc_value,
                         "monitor": self.monitor,
                         "best_score": best_score,
                     }, self.path_save_ckpt)
                     print(
                         f"\t--- Save best at ep {ep+1}, "
-                        f"val_loss: {val_loss:.4f}, val_accuracy: {val_acc.item():.4f}, "
+                        f"val_loss: {val_loss:.4f}, val_accuracy: {val_acc_value:.4f}, "
                         f"monitor: {self.monitor}, path: {self.path_save_ckpt} ---"
                     )
 
@@ -595,6 +627,51 @@ class Trainer:
                     if self.is_main_process:
                         print(f"\t-_- Early stopping at ep={ep+1}")
                     should_stop = True
+
+            # wandb log
+            if self.use_wandb and self.is_main_process:
+                finetune_scope = getattr(base_model, "unfreeze_backbone_scope", "backbone")
+                current_phase = (
+                    f"finetune_{finetune_scope}"
+                    if getattr(base_model, "unfreeze_backbone", False)
+                    and not getattr(base_model, "is_frozen", False)
+                    else "frozen_backbone"
+                )
+                train_cfg = self.config.get('training', {})
+                metrics = {
+                    "Epoch": ep + 1,
+                    "Train/Loss": float(train_loss),
+                    "Train/Accuracy": train_acc_value,
+                    "Train/Ortho_Loss": float(train_ortho_loss),
+                    "Train/Coarse_Aux_Loss": float(train_coarse_aux_loss),
+                    "Val/Loss": float(val_loss),
+                    "Val/Accuracy": val_acc_value,
+                    "Best/Val_Loss": best_val_loss,
+                    "Best/Val_Accuracy": best_val_acc,
+                    "Best/Monitor_Score": float(best_score),
+                    "Checkpoint/Improved": int(improved),
+                    "EarlyStopping/Patience_Counter": patience_counter,
+                    "EarlyStopping/Patience": self.patience,
+                    "Learning_Rate": lr_after_scheduler[0] if lr_after_scheduler else 0.0,
+                    "Learning_Rate/Head": lr_after_scheduler[0] if lr_after_scheduler else 0.0,
+                    "Learning_Rate/Visual_Extractor": (
+                        lr_after_scheduler[1]
+                        if len(lr_after_scheduler) > 1
+                        else 0.0
+                    ),
+                    "Scheduler/Stepped": int(scheduler_stepped),
+                    "Scheduler/LR_Reduced": int(scheduler_reduced),
+                    "Scheduler/Factor": float(train_cfg.get('lr_factor', 0.0)),
+                    "Scheduler/Patience": int(train_cfg.get('lr_patience', 0)),
+                    "Training/AMP_Enabled": int(self.use_amp),
+                    "Training/Backbone_Finetune_Active": int(current_phase != "frozen_backbone"),
+                    "Training/Phase_Transition": int(phase_transitioned),
+                    "Training/Grad_Clip_Norm": float(self.grad_clip_norm or 0.0),
+                    "Training/Skipped_Nonfinite_Batches": int(self.skipped_nonfinite_batches),
+                }
+                metrics.update(self._lr_metric_dict("Learning_Rate/Before_Scheduler", lr_before_scheduler))
+                metrics.update(self._lr_metric_dict("Learning_Rate/After_Scheduler", lr_after_scheduler))
+                log_metrics(metrics, epoch=ep)
 
             if self._sync_stop_flag(should_stop):
                 break

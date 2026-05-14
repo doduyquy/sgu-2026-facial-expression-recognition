@@ -9,13 +9,28 @@ def init_wandb(config, run_name=None):
     if wandb_api_key: 
         wandb.login(key=wandb_api_key)
 
+    logging_cfg = config.get('logging', {})
+    project_name = logging_cfg.get(
+        'project_name',
+        logging_cfg.get('wandb_project', "FER2013"),
+    )
+
     wandb.init(
-        project=config['logging'].get('project_name', "FER2013"), 
-        entity=config['logging'].get('wandb_entity', 'phucga15062005'),
+        project=project_name,
+        entity=logging_cfg.get('wandb_entity', 'phucga15062005'),
         name=run_name,
         config=config,
         resume="allow" 
     )
+    wandb.define_metric("Epoch")
+    wandb.define_metric("Train/*", step_metric="Epoch")
+    wandb.define_metric("Val/*", step_metric="Epoch")
+    wandb.define_metric("Best/*", step_metric="Epoch")
+    wandb.define_metric("Learning_Rate*", step_metric="Epoch")
+    wandb.define_metric("Scheduler/*", step_metric="Epoch")
+    wandb.define_metric("EarlyStopping/*", step_metric="Epoch")
+    wandb.define_metric("Checkpoint/*", step_metric="Epoch")
+    wandb.define_metric("Training/*", step_metric="Epoch")
 
 def log_metrics(metrics_dict, epoch=None):
     if wandb.run is not None:

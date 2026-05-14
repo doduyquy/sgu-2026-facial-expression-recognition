@@ -1,0 +1,30 @@
+_base_: "resnet152_region_attention_emotion_prior.yaml"
+
+model:
+  # Fast Kaggle T4 probe: train the new prior/attention head first, then only
+  # unfreeze layer4 if the run survives the warm-up.
+  freeze_backbone_epochs: 12
+  unfreeze_backbone: true
+  unfreeze_backbone_scope: "layer4"
+  freeze_unfrozen_batchnorm: true
+
+data:
+  batch_size: 16
+  num_workers: 2
+  use_clean_filter: false
+
+training:
+  optimizer: "adamw"
+  scheduler: "reduce_lr_on_plateau"
+  epochs: 45
+  patience: 12
+  lr: 0.0001
+  visual_extractor_lr: 0.00001
+  finetune_lr: 0.00002
+  lr_factor: 0.5
+  lr_patience: 3
+  use_amp: true
+
+logging:
+  use_wandb: true
+  project_name: "FER2013"
