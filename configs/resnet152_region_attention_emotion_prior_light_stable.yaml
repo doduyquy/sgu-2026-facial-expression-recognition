@@ -1,0 +1,42 @@
+_base_: "resnet152_region_attention_emotion_prior.yaml"
+
+model:
+  # Safer second probe after the strong-prior run underperformed.
+  # Keep the VLM prior as a light residual bias instead of forcing region gates.
+  emotion_region_prior:
+    enabled: true
+    strength: 0.10
+    temperature: 2.0
+    detach_emotion_prob: true
+    coarse_aux_loss_weight: 0.05
+    normalize: "mean"
+    min_gate: 0.8
+    max_gate: 1.2
+
+  # Let the new head/prior stabilize longer before touching the pretrained
+  # ResNet layer4 checkpoint.
+  freeze_backbone_epochs: 20
+  unfreeze_backbone: true
+  unfreeze_backbone_scope: "layer4"
+  freeze_unfrozen_batchnorm: true
+
+data:
+  batch_size: 16
+  num_workers: 2
+  use_clean_filter: false
+
+training:
+  optimizer: "adamw"
+  scheduler: "reduce_lr_on_plateau"
+  epochs: 55
+  patience: 14
+  lr: 0.00008
+  visual_extractor_lr: 0.000005
+  finetune_lr: 0.00001
+  lr_factor: 0.5
+  lr_patience: 3
+  use_amp: false
+
+logging:
+  use_wandb: true
+  project_name: "FER2013"

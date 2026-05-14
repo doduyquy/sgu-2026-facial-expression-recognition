@@ -51,28 +51,9 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> Non
                 logits_flipped, attn_weights_flipped = out_flipped
                 # Average predictions for TTA Boost
                 logits = (logits_orig + logits_flipped) / 2.0
-                if (
-                    attn_weights_batch is not None
-                    and attn_weights_flipped is not None
-                ):
-                    num_tokens = attn_weights_flipped.size(-1)
-                    side = int(num_tokens ** 0.5)
-                    if side * side == num_tokens:
-                        attn_weights_flipped = attn_weights_flipped.reshape(
-                            attn_weights_flipped.size(0),
-                            attn_weights_flipped.size(1),
-                            side,
-                            side,
-                        )
-                        attn_weights_flipped = torch.flip(attn_weights_flipped, dims=[-1])
-                        attn_weights_flipped = attn_weights_flipped.reshape(
-                            attn_weights_flipped.size(0),
-                            attn_weights_flipped.size(1),
-                            num_tokens,
-                        )
-                    attn_weights_batch = (
-                        attn_weights_batch + attn_weights_flipped
-                    ) / 2.0
+                # Keep heatmaps tied to the original image. TTA still improves
+                # logits, but averaging original+flipped attention tends to blur
+                # the spatial explanation.
             else:
                 logits_orig = out_orig
                 logits_flipped = out_flipped

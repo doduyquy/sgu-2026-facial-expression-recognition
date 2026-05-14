@@ -675,7 +675,7 @@ class ResNet152RegionAttentionFER(nn.Module):
             return encoded.reshape(encoded.size(0), -1)
         return encoded.mean(dim=1)
 
-    def _apply_emotion_region_prior(self, encoded, coarse_logits):
+    def _emotion_region_weight(self, coarse_logits):
         emotion_prob = F.softmax(coarse_logits / self.emotion_prior_temperature, dim=-1)
         if self.detach_emotion_prior_prob:
             emotion_prob = emotion_prob.detach()
@@ -684,13 +684,27 @@ class ResNet152RegionAttentionFER(nn.Module):
         region_weight = torch.matmul(emotion_prob, prior)
         if self.emotion_prior_normalize == "mean":
             region_weight = region_weight / region_weight.mean(dim=1, keepdim=True).clamp_min(1e-6)
+        return region_weight
 
+    def _region_prior_gate(self, region_weight):
         gate = 1.0 + self.emotion_prior_strength * (region_weight - 1.0)
-        gate = gate.clamp(
+        return gate.clamp(
             min=self.emotion_prior_min_gate,
             max=self.emotion_prior_max_gate,
         )
+
+    def _apply_emotion_region_prior(self, encoded, coarse_logits=None, region_weight=None):
+        if region_weight is None:
+            if coarse_logits is None:
+                raise ValueError("coarse_logits is required when region_weight is not provided.")
+            region_weight = self._emotion_region_weight(coarse_logits)
+        gate = self._region_prior_gate(region_weight)
         return encoded * gate.unsqueeze(-1)
+
+    def _apply_region_weight_to_attention(self, attn_weights, region_weight):
+        if attn_weights.size(1) != region_weight.size(1):
+            return attn_weights
+        return attn_weights * region_weight.unsqueeze(-1).to(dtype=attn_weights.dtype)
 
     def forward(self, x):
         batch_size = x.shape[0]
@@ -720,8 +734,10 @@ class ResNet152RegionAttentionFER(nn.Module):
         pooled = self._pool_region_features(encoded)
         coarse_logits = self.classifier(pooled)
         attention_logits = coarse_logits
+        region_weight = None
         if self.use_emotion_region_prior:
-            encoded = self._apply_emotion_region_prior(encoded, coarse_logits)
+            region_weight = self._emotion_region_weight(coarse_logits)
+            encoded = self._apply_emotion_region_prior(encoded, region_weight=region_weight)
             pooled = self._pool_region_features(encoded)
             attention_logits = self.classifier(pooled)
 
@@ -745,6 +761,8 @@ class ResNet152RegionAttentionFER(nn.Module):
             return logits, ortho_loss
 
         if self.return_attn:
+            if self.use_emotion_region_prior and region_weight is not None:
+                attn_weights = self._apply_region_weight_to_attention(attn_weights, region_weight)
             return logits, attn_weights
 
         return logits

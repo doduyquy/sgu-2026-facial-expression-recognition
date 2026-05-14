@@ -90,7 +90,7 @@ def plot_attention_heatmap_grid(
     attns,
     title,
     save_path=None,
-    region_reduce="max",
+    region_reduce="mean",
 ):
     """
     Plot images with attention heatmap overlay
