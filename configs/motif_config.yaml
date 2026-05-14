@@ -31,5 +31,5 @@ training:
   motif_tau: 0.2
   scheduler: "reduce_lr_on_plateau"
   patience: 25
-  lr_patience: 7
+  lr_patience: 4
   lr_factor: 0.5

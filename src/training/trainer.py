@@ -197,14 +197,14 @@ class Trainer:
             
             # --- BẤT DI BẤT DỊCH: Curriculum Strategy (Nghệ thuật cài số) ---
             # Phase 1: Epoch 1 - 30 (MixUp Warmup 100%)
-            if ep < 30:
+            if ep < 200:
                 if self._current_phase != 1:
                     self._set_backbone_frozen(False)
                     self._current_phase = 1
                 phase_name = "Phase 1: MixUp Warmup"
 
             # Phase 2: Epoch 31 - 90 (Co-Adaptation 70% MixUp)
-            elif ep < 90:
+            elif ep < 300:
                 if self._current_phase != 2:
                     self._set_backbone_frozen(False)
                     # HẠ CÁNH MỀM: Kế thừa LR hiện tại và giảm 50%
