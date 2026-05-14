@@ -10,16 +10,18 @@ def build_optimizer(model, config):
     # Differential learning rate for transfer learning
     backbone_params = []
     head_params = []
+    
     for name, param in model.named_parameters():
-        # Backbone ResNet layers get standard LR. New heads/reducers get 10x LR.
-        if 'backbone' in name and 'dim_reducer' not in name and 'final_cbam' not in name:
+        # Bảo vệ toàn bộ ResNet và các khối Masking của checkpoint
+        if 'backbone.layer' in name or 'backbone.conv1' in name or 'backbone.bn1' in name or 'backbone.mask' in name:
             backbone_params.append(param)
+        # Các khối mới: STN, residual_masking, dim_reducer, gnn_layers, motif_module...
         else:
             head_params.append(param)
             
     param_groups = [
-        {'params': backbone_params, 'lr': lr},
-        {'params': head_params, 'lr': lr * 2.0}
+        {'params': backbone_params, 'lr': lr * 0.1}, # LR cực nhỏ = 1/10 LR chuẩn (Bảo vệ checkpoint)
+        {'params': head_params, 'lr': lr}            # LR chuẩn để train Graph/Motif
     ]
 
     if opt_name == 'adam':

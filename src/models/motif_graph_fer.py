@@ -12,61 +12,122 @@ except ImportError:
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
     from models.CBAM import CBAM
 
-class SpatialResidualMasking(nn.Module):
-    """
-    Lightweight Spatial Residual Masking Block.
-    Generates a spatial attention mask and applies it via a residual connection.
-    This suppresses background noise and highlights micro-expressions.
-    """
+def conv3x3(in_planes, out_planes, stride=1):
+    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
+                     padding=1, bias=False)
+
+class BasicBlock(nn.Module):
+    expansion = 1
+    def __init__(self, inplanes, planes, stride=1, downsample=None):
+        super(BasicBlock, self).__init__()
+        self.conv1 = conv3x3(inplanes, planes, stride)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = conv3x3(planes, planes)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.downsample = downsample
+        self.stride = stride
+
+    def forward(self, x):
+        residual = x
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        if self.downsample is not None:
+            residual = self.downsample(x)
+        out += residual
+        out = self.relu(out)
+        return out
+
+class MaskBlock(nn.Sequential): # Kế thừa nn.Sequential thay vì nn.Module để làm phẳng tên biến
     def __init__(self, in_channels):
-        super().__init__()
-        # Bottleneck to reduce parameters
-        reduced_channels = in_channels // 4
-        self.mask_generator = nn.Sequential(
-            nn.Conv2d(in_channels, reduced_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(reduced_channels),
+        super().__init__(
+            nn.Conv2d(in_channels, in_channels // 4, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(in_channels // 4),
             nn.ReLU(inplace=True),
-            nn.Conv2d(reduced_channels, 1, kernel_size=1, bias=False),
+            nn.Conv2d(in_channels // 4, 1, kernel_size=1, bias=False),
             nn.Sigmoid()
         )
-        
+
+class STN(nn.Module):
+    """Mạng biến đổi không gian (STN) căn chỉnh khuôn mặt"""
+    def __init__(self, in_channels=1):
+        super().__init__()
+        self.localization = nn.Sequential(
+            nn.Conv2d(in_channels, 8, kernel_size=7, padding=3),
+            nn.MaxPool2d(2, stride=2),
+            nn.ReLU(True),
+            nn.Conv2d(8, 10, kernel_size=5, padding=2),
+            nn.MaxPool2d(2, stride=2),
+            nn.ReLU(True),
+            nn.AdaptiveAvgPool2d((12, 12)) # Ensure fixed size for Linear layer
+        )
+        self.fc_loc = nn.Sequential(
+            nn.Linear(10 * 12 * 12, 32),
+            nn.ReLU(True),
+            nn.Linear(32, 3 * 2)
+        )
+        # Identity initialization - CỰC KỲ QUAN TRỌNG
+        self.fc_loc[2].weight.data.zero_()
+        self.fc_loc[2].bias.data.copy_(torch.tensor([1, 0, 0, 0, 1, 0], dtype=torch.float))
+
     def forward(self, x):
-        mask = self.mask_generator(x)
-        # Residual masking: x' = x + x * M
-        return x + x * mask
+        xs = self.localization(x)
+        xs = xs.view(-1, 10 * 12 * 12)
+        theta = self.fc_loc(xs).view(-1, 2, 3)
+        grid = F.affine_grid(theta, x.size(), align_corners=False)
+        x = F.grid_sample(x, grid, align_corners=False)
+        return x
 class MotifBackbone(nn.Module):
     """
-    Advanced Backbone with Pretrained ResNet18 for stronger feature extraction.
+    Advanced Backbone following Pham Qui Luan's ResMaskingNet structure.
+    Includes STN and Multi-level Masking blocks.
     """
     def __init__(self, in_channels=1, feat_dim=128):
         super().__init__()
-        import torchvision.models as models
-        try:
-            resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-        except Exception:
-            resnet = models.resnet18(pretrained=True)
-            
-        # Adapt for 1-channel 48x48 input
+        self.stn = STN(in_channels)
+        
+        self.inplanes = 64
         self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn1 = resnet.bn1
-        self.relu = resnet.relu
+        self.bn1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU(inplace=True)
+        # We skip maxpool as per your previous design to keep 6x6 spatial resolution
+        self.maxpool = nn.Identity() 
         
-        # Skip maxpool to keep spatial size 6x6 at the end (48->48->24->12->6)
-        self.maxpool = nn.Identity()
+        # ResNet Layers
+        self.layer1 = self._make_layer(BasicBlock, 64, 2)
+        self.layer2 = self._make_layer(BasicBlock, 128, 2, stride=2)
+        self.layer3 = self._make_layer(BasicBlock, 256, 2, stride=2)
+        self.layer4 = self._make_layer(BasicBlock, 512, 2, stride=2)
         
-        self.layer1 = resnet.layer1 # 48x48
-        self.layer2 = resnet.layer2 # 24x24
-        self.layer3 = resnet.layer3 # 12x12
-        self.layer4 = resnet.layer4 # 6x6, 512 channels
+        # PHAM QUI LUAN'S MASKING BLOCKS
+        self.mask1 = MaskBlock(64)
+        self.mask2 = MaskBlock(128)
+        self.mask3 = MaskBlock(256)
+        self.mask4 = MaskBlock(512)
         
-        self.residual_masking = SpatialResidualMasking(512)
-        
-        # Reduce dimension to expected feat_dim (128)
         self.dim_reducer = nn.Sequential(
             nn.Conv2d(512, feat_dim, kernel_size=1, bias=False),
             nn.BatchNorm2d(feat_dim),
             nn.ReLU(inplace=True)
         )
+
+    def _make_layer(self, block, planes, blocks, stride=1):
+        downsample = None
+        if stride != 1 or self.inplanes != planes * block.expansion:
+            downsample = nn.Sequential(
+                nn.Conv2d(self.inplanes, planes * block.expansion,
+                          kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(planes * block.expansion),
+            )
+        layers = []
+        layers.append(block(self.inplanes, planes, stride, downsample))
+        self.inplanes = planes * block.expansion
+        for i in range(1, blocks):
+            layers.append(block(self.inplanes, planes))
+        return nn.Sequential(*layers)
 
     def load_pretrained_cnn(self, checkpoint_path):
         import os
@@ -81,50 +142,57 @@ class MotifBackbone(nn.Module):
             print(f"Error loading checkpoint: {e}")
             return
             
-        if 'state_dict' in checkpoint:
-            state_dict = checkpoint['state_dict']
-        elif 'model_state_dict' in checkpoint:
-            state_dict = checkpoint['model_state_dict']
-        elif 'model' in checkpoint:
-            state_dict = checkpoint['model']
-        elif 'net' in checkpoint:
-            state_dict = checkpoint['net']
-        else:
-            state_dict = checkpoint
+        state_dict = checkpoint.get('state_dict', checkpoint.get('model_state_dict', checkpoint.get('net', checkpoint)))
             
         model_dict = self.state_dict()
         pretrained_dict = {}
         
         for k, v in state_dict.items():
-            # Clean common prefixes from RMN or generic wrappers
             name = k.replace('module.', '').replace('backbone.', '').replace('resnet.', '').replace('net.', '')
             
             if name in model_dict:
                 if v.shape == model_dict[name].shape:
                     pretrained_dict[name] = v
+                elif 'conv1.weight' in name and v.shape[1] == 3 and model_dict[name].shape[1] == 1:
+                    print(f"[*] Adapting {name} from 3 channels to 1 channel (Grayscale)...")
+                    pretrained_dict[name] = v.mean(dim=1, keepdim=True)
                 else:
-                    # Skip layers with shape mismatch (e.g., conv1 7x7 vs 3x3)
                     pass
                     
         if len(pretrained_dict) == 0:
-            print("WARNING: No matching keys found. Checkpoint format might be unsupported.")
+            print("WARNING: No matching keys found.")
         else:
-            print(f"Successfully loaded {len(pretrained_dict)}/{len(model_dict)} matching layers from CNN checkpoint.")
+            print(f"Successfully loaded {len(pretrained_dict)}/{len(model_dict)} matching layers.")
             model_dict.update(pretrained_dict)
             self.load_state_dict(model_dict)
 
     def forward(self, x):
+        x = self.stn(x)
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)
 
+        # Layer 1 + Mask 1
         x = self.layer1(x)
+        m1 = self.mask1(x)
+        x = x * (1 + m1)
+
+        # Layer 2 + Mask 2
         x = self.layer2(x)
+        m2 = self.mask2(x)
+        x = x * (1 + m2)
+
+        # Layer 3 + Mask 3
         x = self.layer3(x)
+        m3 = self.mask3(x)
+        x = x * (1 + m3)
+
+        # Layer 4 + Mask 4
         x = self.layer4(x)
+        m4 = self.mask4(x)
+        x = x * (1 + m4)
         
-        x = self.residual_masking(x)
         x = self.dim_reducer(x)
         return x
 
@@ -377,8 +445,13 @@ class MotifGraphModel(nn.Module):
         )
         
         self.logit_scale = nn.Parameter(torch.ones(1) * 1.0)
-        # Weight for combining Motif and Global logits
-        self.alpha = nn.Parameter(torch.ones(1) * 0.5)
+        
+        # CƠ CHẾ GATED FUSION TỪ BÀI BÁO
+        self.gate = nn.Sequential(
+            nn.Linear(self.num_classes * 2, self.num_classes),
+            nn.Sigmoid()
+        )
+        self.gate_drop = nn.Dropout(0.2) # Ép học đều 2 nhánh, tránh "lười"
         
         # Learnable query for candidate-level attention
         self.cand_query = nn.Parameter(torch.randn(1, 1, self.num_classes))
@@ -520,8 +593,13 @@ class MotifGraphModel(nn.Module):
         logits_motif = torch.sum(logits_cand * attn_weights, dim=1)
         logits_motif = logits_motif * self.logit_scale 
         
-        # Final combined logits
-        logits = logits_motif + torch.sigmoid(self.alpha) * logits_global
+        # GATED FUSION: Học cách kết hợp linh hoạt giữa đặc trưng cục bộ (Motif) và toàn cục (Global)
+        gate_input = torch.cat([logits_motif, logits_global], dim=-1)
+        gate_input = self.gate_drop(gate_input) # Dropout để ép mô hình chú ý cả 2 nhánh
+        g = self.gate(gate_input) # Cổng ra quyết decision (B, num_classes)
+        
+        # Kết hợp có trọng số động
+        logits = g * logits_motif + (1 - g) * logits_global
         
         # Point 2: Reshape for MotifConsistencyLoss (B, num_cands, num_classes * motifs_per_class)
         self._latest_scores = motif_scores_cand.view(B, num_cands, -1)
