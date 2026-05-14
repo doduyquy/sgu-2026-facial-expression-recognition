@@ -121,7 +121,7 @@ class Trainer:
             corrects += (preds == labels).sum().item()
             total += labels.size(0)
             
-        return running_loss / total, corrects.double() / total
+        return running_loss / total, corrects / total
 
     def resume_from_checkpoint(self, checkpoint_path):
         """
@@ -176,11 +176,11 @@ class Trainer:
             loss = self.criterion(logits, labels)
             
             running_loss += loss.item() * images.size(0)
-            _, preds = torch.max(logits, dim=1)
-            corrects += torch.sum(preds == labels.data)
+            preds = torch.argmax(logits, dim=1)
+            corrects += (preds == labels).sum().item()
             total += labels.size(0)
 
-        return running_loss / total, corrects.double() / total
+        return running_loss / total, corrects / total
 
     def fit(self):
         print(f'\n--> Train on {len(self.train_loader.dataset)} samples, validate on {len(self.val_loader.dataset)} samples')
