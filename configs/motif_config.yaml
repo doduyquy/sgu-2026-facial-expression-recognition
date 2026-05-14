@@ -1,6 +1,5 @@
 model:
   name: "motif_graph_fer"
-  in_channels: 3
   pretrained_cnn_path: "/kaggle/input/datasets/lhngphc/resnet152-0-73/resnet152_rot30_2019Nov14_12.47" # ""
   feat_dim: 128
   num_classes: 7
@@ -12,17 +11,15 @@ model:
 data:
   batch_size: 64
   num_workers: 4
-  input_size: 224
-  in_channels: 3
+  input_size: 48
+  in_channels: 1
 
 training:
   epochs: 1000
   lr: 0.0001
-  backbone_lr_mult: 0.1
-  mixup_alpha: 0.2
   weight_decay: 5e-4
-  loss: "sce"
-  label_smoothing: 0.2
+  loss: "cross_entropy"
+  label_smoothing: 0.1
   class_weight_mode: "sqrt_inverse"
   motif_consistency_weight: 0.05
   motif_diversity_weight: 0.05
@@ -31,5 +28,9 @@ training:
   motif_tau: 0.2
   scheduler: "reduce_lr_on_plateau"
   patience: 25
-  lr_patience: 4
-  lr_factor: 0.5
+  factor: 0.5
+  use_scn: true
+  scn_warmup_epochs: 10
+  scn_alpha: 1.0
+  scn_rank_lambda: 0.5
+  scn_margin: 0.5

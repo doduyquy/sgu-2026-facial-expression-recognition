@@ -23,22 +23,10 @@ class MotifConsistencyLoss(nn.Module):
         selected_scores = scores[batch_idx, top_k_idx] # (B, top_k, Total_Motifs)
         
         # Create mask for correct class motifs
-        # targets: (B,)
-        # mask: (B, Total_Motifs)
-        if targets.shape[0] != B:
-            # Handle mismatch (e.g. from TenCrop or Mixup state leak)
-            if targets.shape[0] * 10 == B: # Common TenCrop case
-                targets = targets.unsqueeze(1).expand(-1, 10).reshape(-1)
-            elif B * 10 == targets.shape[0]:
-                targets = targets.view(-1, 10)[:, 0]
-            else:
-                # Fallback or raise error
-                raise ValueError(f"Batch size mismatch in MotifConsistencyLoss: scores.B={B}, targets.B={targets.shape[0]}")
-
-        indices = torch.arange(Total_Motifs, device=scores.device).unsqueeze(0).expand(B, -1)
-        start_indices = (targets * self.motifs_per_class).unsqueeze(1)
-        end_indices = ((targets + 1) * self.motifs_per_class).unsqueeze(1)
-        mask = ((indices >= start_indices) & (indices < end_indices)).float()
+        mask = torch.zeros(B, Total_Motifs, device=scores.device)
+        for i in range(B):
+            c = int(targets[i].item())
+            mask[i, c*self.motifs_per_class : (c+1)*self.motifs_per_class] = 1.0
         mask = mask.unsqueeze(1) # (B, 1, Total_Motifs)
         
         # 1. Similarity to SAME class motifs (Positive)
@@ -66,28 +54,6 @@ class MotifConsistencyLoss(nn.Module):
         if reduction == 'mean':
             return total_loss.mean()
         return total_loss
-
-class SCELoss(nn.Module):
-    def __init__(self, alpha=1.0, beta=1.0, num_classes=7, label_smoothing=0.0):
-        super(SCELoss, self).__init__()
-        self.alpha = alpha
-        self.beta = beta
-        self.num_classes = num_classes
-        self.cross_entropy = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
-
-    def forward(self, pred, labels):
-        # 1. Cross Entropy truyền thống (CE)
-        ce = self.cross_entropy(pred, labels)
-
-        # 2. Reverse Cross Entropy (RCE) chống nhiễu nhãn
-        pred = F.softmax(pred, dim=1)
-        pred = torch.clamp(pred, min=1e-7, max=1.0)
-        label_one_hot = F.one_hot(labels, self.num_classes).float().to(pred.device)
-        label_one_hot = torch.clamp(label_one_hot, min=1e-4, max=1.0)
-        rce = (-1 * (pred * torch.log(label_one_hot)).sum(dim=1)).mean()
-
-        # Kết hợp CE và RCE
-        return self.alpha * ce + self.beta * rce
 
 
 
@@ -172,16 +138,6 @@ def build_loss(config, class_weights=None):
         loss = CombinedMotifLoss(
             ce_loss, motif_loss, alpha_weight, 
             div_weight=config['training'].get('motif_div_weight', 0.1)
-        )
-
-    elif loss_name == 'sce':
-        print("--> [Loss] Sử dụng Symmetric Cross Entropy (SCE) chống nhiễu nhãn")
-        ls = config['training'].get('label_smoothing', 0.0)
-        loss = SCELoss(
-            alpha=1.0, 
-            beta=1.0, 
-            num_classes=config['model'].get('num_classes', 7),
-            label_smoothing=ls
         )
 
     else: 
