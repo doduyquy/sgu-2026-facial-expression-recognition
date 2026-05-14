@@ -153,18 +153,24 @@ class MotifBackbone(nn.Module):
             if name in model_dict:
                 if v.shape == model_dict[name].shape:
                     pretrained_dict[name] = v
+                # Adapt conv1 from 3 channels to 1 channel (Grayscale) ONLY if spatial size matches
                 elif 'conv1.weight' in name and v.shape[1] == 3 and model_dict[name].shape[1] == 1:
-                    print(f"[*] Adapting {name} from 3 channels to 1 channel (Grayscale)...")
-                    pretrained_dict[name] = v.mean(dim=1, keepdim=True)
+                    if v.shape[2:] == model_dict[name].shape[2:]:
+                        print(f"[*] Adapting {name} from 3 channels to 1 channel (Grayscale)...")
+                        pretrained_dict[name] = v.mean(dim=1, keepdim=True)
+                    else:
+                        print(f"[*] Skipping {name} due to spatial mismatch: {v.shape} vs {model_dict[name].shape}")
                 else:
-                    pass
+                    # Log mismatch for important layers
+                    if 'conv1' in name or 'layer' in name:
+                        pass # Silently skip for now, but we could log if needed
                     
         if len(pretrained_dict) == 0:
-            print("WARNING: No matching keys found.")
+            print("WARNING: No matching keys found. Check your checkpoint architecture.")
         else:
             print(f"Successfully loaded {len(pretrained_dict)}/{len(model_dict)} matching layers.")
-            model_dict.update(pretrained_dict)
-            self.load_state_dict(model_dict)
+            # Use strict=False and load only the filtered weights to avoid shape mismatch errors
+            self.load_state_dict(pretrained_dict, strict=False)
 
     def forward(self, x):
         x = self.stn(x)
