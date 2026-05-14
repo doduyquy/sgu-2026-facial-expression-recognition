@@ -395,6 +395,9 @@ class MotifGraphModel(nn.Module):
             motifs_per_class=self.motifs_per_class,
             tau=self.temperature
         )
+        
+        # Projection for node features if dimension mismatch occurs
+        self.proj_node = nn.Linear(self.feat_dim, self.feat_dim)
 
     def compute_motif_diversity_loss(self):
         # Point 1: Replace motif_bank with motif_module
@@ -464,8 +467,7 @@ class MotifGraphModel(nn.Module):
         return sampled_feats, adj, centers_coords, sampling_grid
 
     def forward(self, x, return_selection=False, targets=None):
-        if targets is not None:
-            self._latest_targets = targets
+        self._latest_targets = targets
             
         # Handle TenCrop input: (B, 10, C, H, W)
         if x.dim() == 5:
@@ -474,6 +476,7 @@ class MotifGraphModel(nn.Module):
             # Recursive call to handle all crops (expand targets to match B*T)
             if targets is not None:
                 targets_expanded = targets.unsqueeze(1).expand(-1, T).reshape(-1)
+                self._latest_targets = targets_expanded # Explicitly set for TenCrop
                 logits = self.forward(x, targets=targets_expanded)
             else:
                 logits = self.forward(x) 
@@ -491,11 +494,6 @@ class MotifGraphModel(nn.Module):
         # Motif Branch
         nodes_with_coords, adj = self._get_global_graph(feat_map)
         node_feats = nodes_with_coords[:, :, :-2]
-        if node_feats.shape[-1] != self.feat_dim:
-            if not hasattr(self, 'proj_node'):
-                self.proj_node = nn.Linear(node_feats.shape[-1], self.feat_dim).to(x.device)
-            node_feats = self.proj_node(node_feats)
-            
         for gnn in self.gnn_layers:
             node_feats = gnn(node_feats, adj)
             
@@ -505,8 +503,8 @@ class MotifGraphModel(nn.Module):
         # Advanced Motif Module Forward
         # 1. Prepare candidate subgraphs: (B*num_cands, 16, Dim)
         flat_cands = candidates.reshape(B * num_cands, 16, -1)
-        if flat_cands.shape[-1] != self.feat_dim:
-            flat_cands = self.proj_node(flat_cands)
+        # Apply projection if needed (registered in __init__)
+        flat_cands = self.proj_node(flat_cands)
         flat_cands = flat_cands + self.pos_embed
         
         # 2. Prepare candidate adjacencies: (B*num_cands, 16, 16)
@@ -620,11 +618,28 @@ class MotifGraphModel(nn.Module):
             if self.training and progress < 0.03:
                 l_motif_consist = torch.tensor(0.0, device=self._latest_scores.device)
             else:
-                l_motif_consist = self.motif_consistency_loss(
-                    self._latest_scores, 
-                    self._latest_top_k, 
-                    self._latest_targets
-                )
+                # Safety check: Match batch size between scores and targets
+                B_scores = self._latest_scores.size(0)
+                B_targets = self._latest_targets.size(0)
+                
+                if B_scores != B_targets:
+                    # Attempt to fix TenCrop mismatch if it occurred
+                    if B_targets * 10 == B_scores:
+                        current_targets = self._latest_targets.unsqueeze(1).expand(-1, 10).reshape(-1)
+                    else:
+                        # Skip consistency loss if sizes are irreconcilable to avoid crash
+                        current_targets = None
+                else:
+                    current_targets = self._latest_targets
+
+                if current_targets is not None:
+                    l_motif_consist = self.motif_consistency_loss(
+                        self._latest_scores, 
+                        self._latest_top_k, 
+                        current_targets
+                    )
+                else:
+                    l_motif_consist = torch.tensor(0.0, device=self._latest_scores.device)
             aux_dict["motif_consistency"] = l_motif_consist
             
         return aux_dict

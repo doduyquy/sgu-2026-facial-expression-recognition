@@ -23,10 +23,22 @@ class MotifConsistencyLoss(nn.Module):
         selected_scores = scores[batch_idx, top_k_idx] # (B, top_k, Total_Motifs)
         
         # Create mask for correct class motifs
-        mask = torch.zeros(B, Total_Motifs, device=scores.device)
-        for i in range(B):
-            c = int(targets[i].item())
-            mask[i, c*self.motifs_per_class : (c+1)*self.motifs_per_class] = 1.0
+        # targets: (B,)
+        # mask: (B, Total_Motifs)
+        if targets.shape[0] != B:
+            # Handle mismatch (e.g. from TenCrop or Mixup state leak)
+            if targets.shape[0] * 10 == B: # Common TenCrop case
+                targets = targets.unsqueeze(1).expand(-1, 10).reshape(-1)
+            elif B * 10 == targets.shape[0]:
+                targets = targets.view(-1, 10)[:, 0]
+            else:
+                # Fallback or raise error
+                raise ValueError(f"Batch size mismatch in MotifConsistencyLoss: scores.B={B}, targets.B={targets.shape[0]}")
+
+        indices = torch.arange(Total_Motifs, device=scores.device).unsqueeze(0).expand(B, -1)
+        start_indices = (targets * self.motifs_per_class).unsqueeze(1)
+        end_indices = ((targets + 1) * self.motifs_per_class).unsqueeze(1)
+        mask = ((indices >= start_indices) & (indices < end_indices)).float()
         mask = mask.unsqueeze(1) # (B, 1, Total_Motifs)
         
         # 1. Similarity to SAME class motifs (Positive)

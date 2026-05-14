@@ -59,8 +59,9 @@ class Trainer:
             images, labels = images.to(self.device), labels.to(self.device)
             self.optimizer.zero_grad(set_to_none=True)
 
-            # Sử dụng torch.amp.autocast cho GPU (chuẩn mới)
-            with torch.amp.autocast('cuda'):
+            # Tự động chọn device type cho autocast (cuda hoặc cpu)
+            device_type = self.device.type
+            with torch.amp.autocast(device_type):
                 # --- CHIẾN THUẬT MIXUP FADE-OUT ---
                 # Phase 1 (Ep < 30): 100% dùng MixUp
                 # Phase 2 (Ep 30-60): 50% cơ hội dùng MixUp
@@ -93,19 +94,20 @@ class Trainer:
                     loss = self.criterion(logits, labels)
 
                 # --- AUXILIARY LOSSES ĐỒ THỊ ---
-                aux_losses = getattr(self.model, "get_aux_losses", lambda: {})()
-                if not use_mixup and isinstance(aux_losses, dict):
-                    aux_weights_config = {
-                        "motif_diversity": "motif_diversity_weight",
-                        "motif_consistency": "motif_consistency_weight",
-                        "offset_reg": "offset_reg_weight",
-                        "attn_entropy": "attn_entropy_weight" 
-                    }
-                    for loss_name, config_key in aux_weights_config.items():
-                        if loss_name in aux_losses:
-                            weight = float(self.config.get('training', {}).get(config_key, 0.05))
-                            if weight > 0.0:
-                                loss += weight * aux_losses[loss_name]
+                if not use_mixup:
+                    aux_losses = getattr(self.model, "get_aux_losses", lambda: {})()
+                    if isinstance(aux_losses, dict):
+                        aux_weights_config = {
+                            "motif_diversity": "motif_diversity_weight",
+                            "motif_consistency": "motif_consistency_weight",
+                            "offset_reg": "offset_reg_weight",
+                            "attn_entropy": "attn_entropy_weight" 
+                        }
+                        for loss_name, config_key in aux_weights_config.items():
+                            if loss_name in aux_losses:
+                                weight = float(self.config.get('training', {}).get(config_key, 0.05))
+                                if weight > 0.0:
+                                    loss += weight * aux_losses[loss_name]
 
             # Backward & Step với AMP
             self.scaler.scale(loss).backward()
@@ -115,8 +117,8 @@ class Trainer:
             self.scaler.update()
 
             running_loss += loss.item() * images.size(0)
-            _, preds = torch.max(logits, dim=1)
-            corrects += torch.sum(preds == labels.data)
+            preds = torch.argmax(logits, dim=1)
+            corrects += (preds == labels).sum().item()
             total += labels.size(0)
             
         return running_loss / total, corrects.double() / total
@@ -148,9 +150,15 @@ class Trainer:
 
     def _set_backbone_frozen(self, freeze: bool):
         """Helper to freeze/unfreeze backbone layers"""
-        if not hasattr(self.model, 'backbone'): return
-        for param in self.model.backbone.parameters():
+        # Hỗ trợ cả 1 GPU và Đa GPU (DataParallel)
+        actual_model = self.model.module if hasattr(self.model, 'module') else self.model
+
+        if not hasattr(actual_model, 'backbone'): 
+            return
+
+        for param in actual_model.backbone.parameters():
             param.requires_grad = not freeze
+
         state = "FROZEN" if freeze else "UNFROZEN"
         print(f"\t>>> [Backbone] Set to {state}")
 
