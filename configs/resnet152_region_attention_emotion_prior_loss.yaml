@@ -1,0 +1,42 @@
+_base_: "resnet152_region_attention.yaml"
+
+model:
+  # VLM-guided emotion-region prior as attention regularization only.
+  # No feature gate: the prior nudges the 6 region-token importances toward
+  # the true emotion prior without directly multiplying encoded features.
+  emotion_region_prior:
+    enabled: true
+    mode: "loss"
+    alignment_loss: "kl"
+    prior_alignment_loss_weight: 0.05
+    coarse_aux_loss_weight: 0.0
+    strength: 0.0
+    temperature: 2.0
+    detach_emotion_prob: true
+    normalize: "mean"
+
+  freeze_backbone_epochs: 20
+  unfreeze_backbone: true
+  unfreeze_backbone_scope: "layer4"
+  freeze_unfrozen_batchnorm: true
+
+data:
+  batch_size: 16
+  num_workers: 2
+  use_clean_filter: false
+
+training:
+  optimizer: "adamw"
+  scheduler: "reduce_lr_on_plateau"
+  epochs: 55
+  patience: 14
+  lr: 0.00008
+  visual_extractor_lr: 0.000005
+  finetune_lr: 0.00001
+  lr_factor: 0.5
+  lr_patience: 3
+  use_amp: false
+
+logging:
+  use_wandb: true
+  project_name: "FER2013"

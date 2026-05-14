@@ -497,6 +497,7 @@ class ResNet152RegionAttentionFER(nn.Module):
     def _init_emotion_region_prior(self, model_cfg, num_classes):
         prior_cfg = model_cfg.get("emotion_region_prior", {})
         self.use_emotion_region_prior = prior_cfg.get("enabled", False)
+        self.emotion_prior_mode = prior_cfg.get("mode", "gate").lower()
         self.emotion_prior_strength = float(prior_cfg.get("strength", 0.25))
         self.emotion_prior_temperature = float(prior_cfg.get("temperature", 1.5))
         self.detach_emotion_prior_prob = prior_cfg.get("detach_emotion_prob", True)
@@ -504,6 +505,8 @@ class ResNet152RegionAttentionFER(nn.Module):
         self.emotion_prior_min_gate = float(prior_cfg.get("min_gate", 0.5))
         self.emotion_prior_max_gate = float(prior_cfg.get("max_gate", 1.5))
 
+        if self.emotion_prior_mode not in ("gate", "loss"):
+            raise ValueError("model.emotion_region_prior.mode must be 'gate' or 'loss'")
         if self.emotion_prior_temperature <= 0:
             raise ValueError("model.emotion_region_prior.temperature must be > 0")
         if self.emotion_prior_normalize not in ("mean", "none"):
@@ -528,12 +531,15 @@ class ResNet152RegionAttentionFER(nn.Module):
         self.register_buffer("emotion_region_prior", matrix_tensor, persistent=False)
 
         if self.use_emotion_region_prior:
-            print(
-                "--> [ResNet152RegionAttention] Emotion-region prior gate enabled: "
-                f"strength={self.emotion_prior_strength}, "
+            message = (
+                "--> [ResNet152RegionAttention] Emotion-region prior enabled: "
+                f"mode={self.emotion_prior_mode}, "
                 f"temperature={self.emotion_prior_temperature}, "
                 f"detach={self.detach_emotion_prior_prob}"
             )
+            if self.emotion_prior_mode == "gate":
+                message += f", strength={self.emotion_prior_strength}"
+            print(message)
 
     @staticmethod
     def _default_emotion_region_prior():
@@ -706,6 +712,11 @@ class ResNet152RegionAttentionFER(nn.Module):
             return attn_weights
         return attn_weights * region_weight.unsqueeze(-1).to(dtype=attn_weights.dtype)
 
+    @staticmethod
+    def _region_importance(encoded):
+        scores = encoded.float().norm(p=2, dim=-1)
+        return scores / scores.sum(dim=1, keepdim=True).clamp_min(1e-6)
+
     def forward(self, x):
         batch_size = x.shape[0]
 
@@ -735,11 +746,15 @@ class ResNet152RegionAttentionFER(nn.Module):
         coarse_logits = self.classifier(pooled)
         attention_logits = coarse_logits
         region_weight = None
+        region_importance = None
         if self.use_emotion_region_prior:
-            region_weight = self._emotion_region_weight(coarse_logits)
-            encoded = self._apply_emotion_region_prior(encoded, region_weight=region_weight)
-            pooled = self._pool_region_features(encoded)
-            attention_logits = self.classifier(pooled)
+            if self.emotion_prior_mode == "gate":
+                region_weight = self._emotion_region_weight(coarse_logits)
+                encoded = self._apply_emotion_region_prior(encoded, region_weight=region_weight)
+                pooled = self._pool_region_features(encoded)
+                attention_logits = self.classifier(pooled)
+            else:
+                region_importance = self._region_importance(encoded)
 
         source_logits = None
         if self.logit_fusion in ("source", "sum"):
@@ -757,6 +772,8 @@ class ResNet152RegionAttentionFER(nn.Module):
 
         if self.training:
             if self.use_emotion_region_prior:
+                if self.emotion_prior_mode == "loss":
+                    return logits, ortho_loss, coarse_logits, region_importance
                 return logits, ortho_loss, coarse_logits
             return logits, ortho_loss
 

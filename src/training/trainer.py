@@ -145,6 +145,34 @@ class Trainer:
             class_weights=self.soft_target_class_weights,
         )
 
+    def _prior_alignment_loss(self, region_importance, labels):
+        prior_cfg = self.config.get('model', {}).get('emotion_region_prior', {})
+        loss_type = prior_cfg.get('alignment_loss', 'kl').lower()
+        base_model = self._unwrap_model()
+        prior_matrix = getattr(base_model, 'emotion_region_prior', None)
+        if prior_matrix is None:
+            return region_importance.sum() * 0.0
+
+        target = prior_matrix.to(
+            device=region_importance.device,
+            dtype=region_importance.dtype,
+        )[labels]
+        target = target / target.sum(dim=1, keepdim=True).clamp_min(1e-6)
+        region_importance = region_importance / region_importance.sum(
+            dim=1,
+            keepdim=True,
+        ).clamp_min(1e-6)
+
+        if loss_type == 'mse':
+            return F.mse_loss(region_importance, target)
+        if loss_type == 'kl':
+            return F.kl_div(
+                region_importance.clamp_min(1e-6).log(),
+                target,
+                reduction='batchmean',
+            )
+        raise ValueError("model.emotion_region_prior.alignment_loss must be 'kl' or 'mse'")
+
     def _forward_model(self, images, region_masks=None):
         if region_masks is not None:
             return self.model(images, region_masks=region_masks)
@@ -176,6 +204,28 @@ class Trainer:
     def _supervised_loss_from_outputs(self, outputs, labels):
         if isinstance(outputs, tuple):
             if (
+                len(outputs) == 4
+                and isinstance(outputs[1], torch.Tensor)
+                and outputs[1].dim() == 0
+                and isinstance(outputs[2], torch.Tensor)
+                and isinstance(outputs[3], torch.Tensor)
+            ):
+                logits, ortho_loss, coarse_logits, region_importance = outputs
+                main_loss = self._classification_loss(logits, labels)
+                ortho_weight = self.config.get('model', {}).get('ortho_loss_weight', 0.1)
+                prior_cfg = self.config.get('model', {}).get('emotion_region_prior', {})
+                coarse_weight = float(prior_cfg.get('coarse_aux_loss_weight', 0.0))
+                prior_weight = float(prior_cfg.get('prior_alignment_loss_weight', 0.0))
+                coarse_aux_loss = self._classification_loss(coarse_logits, labels)
+                prior_alignment_loss = self._prior_alignment_loss(region_importance, labels)
+                loss = main_loss + ortho_weight * ortho_loss
+                if coarse_weight > 0.0:
+                    loss = loss + coarse_weight * coarse_aux_loss
+                if prior_weight > 0.0:
+                    loss = loss + prior_weight * prior_alignment_loss
+                return loss, logits, ortho_loss, coarse_aux_loss, prior_alignment_loss
+
+            if (
                 len(outputs) == 3
                 and isinstance(outputs[1], torch.Tensor)
                 and outputs[1].dim() == 0
@@ -190,7 +240,7 @@ class Trainer:
                 loss = main_loss + ortho_weight * ortho_loss
                 if coarse_weight > 0.0:
                     loss = loss + coarse_weight * coarse_aux_loss
-                return loss, logits, ortho_loss, coarse_aux_loss
+                return loss, logits, ortho_loss, coarse_aux_loss, None
 
             if (
                 len(outputs) == 2
@@ -200,14 +250,14 @@ class Trainer:
                 logits, aux_loss = outputs
                 main_loss = self._classification_loss(logits, labels)
                 ortho_weight = self.config.get('model', {}).get('ortho_loss_weight', 0.1)
-                return main_loss + ortho_weight * aux_loss, logits, aux_loss, None
+                return main_loss + ortho_weight * aux_loss, logits, aux_loss, None, None
 
             main_out, aux_out = outputs
             loss = inception_loss(main_out, aux_out, labels, criterion=self.criterion)
-            return loss, main_out, None, None
+            return loss, main_out, None, None, None
 
         loss = self._classification_loss(outputs, labels)
-        return loss, outputs, None, None
+        return loss, outputs, None, None, None
 
     def _occlusion_weight_scale(self, epoch_index):
         if not self.use_occlusion_consistency:
@@ -246,8 +296,10 @@ class Trainer:
         occlusion_scale = self._occlusion_weight_scale(epoch_index)
         if occlusion_scale <= 0.0 or self.occlusion_generator is None:
             outputs = self._forward_model(images, region_masks=region_masks)
-            loss, logits, aux_loss, coarse_aux_loss = self._supervised_loss_from_outputs(outputs, labels)
-            return loss, logits, aux_loss, coarse_aux_loss, occlusion_batch
+            loss, logits, aux_loss, coarse_aux_loss, prior_alignment_loss = (
+                self._supervised_loss_from_outputs(outputs, labels)
+            )
+            return loss, logits, aux_loss, coarse_aux_loss, prior_alignment_loss, occlusion_batch
 
         if occlusion_batch is None:
             occlusion_batch = self.occlusion_generator(images)
@@ -267,14 +319,16 @@ class Trainer:
             combined_outputs,
             batch_size=images.size(0),
         )
-        loss, logits, aux_loss, coarse_aux_loss = self._supervised_loss_from_outputs(outputs, labels)
+        loss, logits, aux_loss, coarse_aux_loss, prior_alignment_loss = (
+            self._supervised_loss_from_outputs(outputs, labels)
+        )
         masked_logits = self._extract_logits(masked_outputs)
 
         if not applied_mask.any().item():
             # Keep the masked half in the graph, but add no extra loss when this
             # local batch happened to receive no occlusion rectangles.
             loss = loss + masked_logits.sum() * 0.0
-            return loss, logits, aux_loss, coarse_aux_loss, occlusion_batch
+            return loss, logits, aux_loss, coarse_aux_loss, prior_alignment_loss, occlusion_batch
 
         masked_logits = masked_logits[applied_mask]
         clean_logits = logits[applied_mask]
@@ -286,11 +340,26 @@ class Trainer:
             self.occlusion_masked_ce_weight * masked_ce
             + self.occlusion_consistency_weight * consistency_kl
         )
-        return loss, logits, aux_loss, coarse_aux_loss, occlusion_batch
+        return loss, logits, aux_loss, coarse_aux_loss, prior_alignment_loss, occlusion_batch
 
-    def _reduce_epoch_stats(self, loss_sum, corrects, total, ortho_sum=0.0, coarse_aux_sum=0.0):
+    def _reduce_epoch_stats(
+        self,
+        loss_sum,
+        corrects,
+        total,
+        ortho_sum=0.0,
+        coarse_aux_sum=0.0,
+        prior_alignment_sum=0.0,
+    ):
         stats = torch.tensor(
-            [loss_sum, float(corrects), float(total), ortho_sum, coarse_aux_sum],
+            [
+                loss_sum,
+                float(corrects),
+                float(total),
+                ortho_sum,
+                coarse_aux_sum,
+                prior_alignment_sum,
+            ],
             device=self.device,
             dtype=torch.float64,
         )
@@ -302,7 +371,14 @@ class Trainer:
         epoch_acc = stats[1] / total
         epoch_ortho = stats[3].item() / total if stats[3].item() > 0 else 0.0
         epoch_coarse_aux = stats[4].item() / total if stats[4].item() > 0 else 0.0
-        return epoch_loss, epoch_acc.to(device=self.device), epoch_ortho, epoch_coarse_aux
+        epoch_prior_alignment = stats[5].item() / total if stats[5].item() > 0 else 0.0
+        return (
+            epoch_loss,
+            epoch_acc.to(device=self.device),
+            epoch_ortho,
+            epoch_coarse_aux,
+            epoch_prior_alignment,
+        )
 
     def _sync_stop_flag(self, should_stop):
         if not self.is_distributed:
@@ -319,6 +395,7 @@ class Trainer:
         running_loss = 0.0
         running_ortho = 0.0
         running_coarse_aux = 0.0
+        running_prior_alignment = 0.0
         corrects = 0
         total = 0
 
@@ -333,7 +410,14 @@ class Trainer:
 
             self.optimizer.zero_grad()
             with autocast(device_type=self.device.type, enabled=self.use_amp):
-                loss, logits, aux_loss, coarse_aux_loss, occlusion_batch = self._compute_batch_loss(
+                (
+                    loss,
+                    logits,
+                    aux_loss,
+                    coarse_aux_loss,
+                    prior_alignment_loss,
+                    occlusion_batch,
+                ) = self._compute_batch_loss(
                     images=images,
                     labels=labels,
                     region_masks=region_masks,
@@ -344,6 +428,8 @@ class Trainer:
                 running_ortho += aux_loss.item() * images.size(0)
             if coarse_aux_loss is not None:
                 running_coarse_aux += coarse_aux_loss.item() * images.size(0)
+            if prior_alignment_loss is not None:
+                running_prior_alignment += prior_alignment_loss.item() * images.size(0)
 
             if not torch.isfinite(loss).item():
                 if self.skip_nonfinite_batches:
@@ -376,7 +462,7 @@ class Trainer:
 
                 # ── SAM Step 2 ──
                 with autocast(device_type=self.device.type, enabled=self.use_amp):
-                    loss_2, _, _, _, _ = self._compute_batch_loss(
+                    loss_2, _, _, _, _, _ = self._compute_batch_loss(
                         images=images,
                         labels=labels,
                         region_masks=region_masks,
@@ -460,6 +546,7 @@ class Trainer:
             total,
             running_ortho,
             running_coarse_aux,
+            running_prior_alignment,
         )
 
 
@@ -492,7 +579,7 @@ class Trainer:
                 corrects += torch.sum(preds == labels.data)
                 total += labels.size(0)
 
-        epoch_loss, epoch_acc, _, _ = self._reduce_epoch_stats(running_loss, corrects, total)
+        epoch_loss, epoch_acc, _, _, _ = self._reduce_epoch_stats(running_loss, corrects, total)
         return epoch_loss, epoch_acc
 
 
@@ -560,7 +647,13 @@ class Trainer:
                             f"{rebuild_msg} and reset patience."
                         )
 
-            train_loss, train_acc, train_ortho_loss, train_coarse_aux_loss = self.train_one_epoch(epoch_index=ep)
+            (
+                train_loss,
+                train_acc,
+                train_ortho_loss,
+                train_coarse_aux_loss,
+                train_prior_alignment_loss,
+            ) = self.train_one_epoch(epoch_index=ep)
             val_loss, val_acc = self.validate()
             val_acc_value = float(val_acc.item())
             train_acc_value = float(train_acc.item())
@@ -572,7 +665,9 @@ class Trainer:
                 print(
                     f"Epoch {ep+1}/{self.epochs} - "
                     f"loss: {train_loss:.4f} "
-                    f"(ortho: {train_ortho_loss:.4f}, coarse_aux: {train_coarse_aux_loss:.4f}) - "
+                    f"(ortho: {train_ortho_loss:.4f}, "
+                    f"coarse_aux: {train_coarse_aux_loss:.4f}, "
+                    f"prior_align: {train_prior_alignment_loss:.4f}) - "
                     f"accuracy: {train_acc_value:.4f} - "
                     f"val_loss: {val_loss:.4f} - val_accuracy: {val_acc_value:.4f}"
                 )
@@ -644,6 +739,7 @@ class Trainer:
                     "Train/Accuracy": train_acc_value,
                     "Train/Ortho_Loss": float(train_ortho_loss),
                     "Train/Coarse_Aux_Loss": float(train_coarse_aux_loss),
+                    "Train/Prior_Alignment_Loss": float(train_prior_alignment_loss),
                     "Val/Loss": float(val_loss),
                     "Val/Accuracy": val_acc_value,
                     "Best/Val_Loss": best_val_loss,

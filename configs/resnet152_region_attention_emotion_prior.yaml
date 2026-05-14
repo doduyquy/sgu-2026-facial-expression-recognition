@@ -7,6 +7,7 @@ model:
   # -> soft gate over 6 region tokens -> final logits.
   emotion_region_prior:
     enabled: true
+    mode: "gate"
     strength: 0.25
     temperature: 1.5
     detach_emotion_prob: true
