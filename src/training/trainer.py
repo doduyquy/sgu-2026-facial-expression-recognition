@@ -634,7 +634,8 @@ class Trainer:
             # lr scheduler
             if self.scheduler is not None:
                 if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                    self.scheduler.step(val_loss)
+                    # SỬA LỖI: Track theo val_acc để không bị lừa bởi val_loss ảo
+                    self.scheduler.step(val_acc)
                 else:
                     self.scheduler.step()
 

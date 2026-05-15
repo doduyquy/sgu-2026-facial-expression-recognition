@@ -41,14 +41,14 @@ def build_scheduler(optimizer, config):
         return None
 
     elif scheduler_name == 'reduce_lr_on_plateau':
-        # reduce when val loss stopping reduce
+        # SỬA LỖI: Chuyển sang theo dõi Accuracy (mode='max') thay vì Loss
         factor = float(config['training'].get('lr_factor', 0.5)) 
         patience = int(config['training'].get('lr_patience', 3)) 
-        print(f"--> [Scheduler] ReduceLROnPlateau (factor={factor}, patience={patience})")
+        print(f"--> [Scheduler] ReduceLROnPlateau (mode='max', factor={factor}, patience={patience})")
         
         return lr_scheduler.ReduceLROnPlateau(
             optimizer,
-            mode='min',
+            mode='max',
             factor=factor,
             patience=patience,
         )
