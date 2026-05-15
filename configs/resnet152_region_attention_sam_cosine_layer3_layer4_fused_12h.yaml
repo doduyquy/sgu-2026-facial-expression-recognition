@@ -12,5 +12,5 @@ training:
   # the 12h cutoff with room for final test evaluation.
   # Re-test the stronger SAM radius used by the 73.47 layer4 recipe.
   sam_rho: 0.05
-  epochs: 35
+  epochs: 50
   patience: 8
