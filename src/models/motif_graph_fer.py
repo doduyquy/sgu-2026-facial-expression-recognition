@@ -82,12 +82,8 @@ class MotifBackbone(nn.Module):
         self.mask3 = MaskBlock(1024)  # Layer 3 xuất ra 1024
         self.mask4 = MaskBlock(2048)  # Layer 4 xuất ra 2048
         
-        # Dim Reducer ép từ 2048 về 128 cho Motif Graph
-        self.dim_reducer = nn.Sequential(
-            nn.Conv2d(2048, feat_dim, kernel_size=1, bias=False),
-            nn.BatchNorm2d(feat_dim),
-            nn.ReLU(inplace=True)
-        )
+        # Reducers for Multi-Scale Fusion (Sẽ được quản lý ở MotifGraphModel)
+        # self.dim_reducer đã bị loại bỏ ở đây để chuyển sang MotifGraphModel
 
     def load_pretrained_cnn(self, checkpoint_path):
         import os
@@ -151,18 +147,17 @@ class MotifBackbone(nn.Module):
         m2 = self.mask2(x)
         x = x * (1 + m2)
 
-        # Layer 3 + Mask 3
+        # Layer 3 + Mask 3 (Dùng cho Multi-scale)
         x = self.layer3(x)
         m3 = self.mask3(x)
-        x = x * (1 + m3)
+        x3 = x * (1 + m3)
 
         # Layer 4 + Mask 4
         x = self.layer4(x)
         m4 = self.mask4(x)
-        x = x * (1 + m4)
+        x4 = x * (1 + m4)
         
-        x = self.dim_reducer(x)
-        return x
+        return x3, x4
 
 class GraphAttentionLayer(nn.Module):
     """
@@ -372,6 +367,20 @@ class MotifGraphModel(nn.Module):
         
         self.backbone = MotifBackbone(feat_dim=self.feat_dim)
         
+        # A. MULTI-SCALE FEATURE FUSION COMPONENTS
+        # Ép Layer 3 (1024 channels) và Layer 4 (2048 channels) về feat_dim
+        self.reducer_l3 = nn.Sequential(
+            nn.Conv2d(1024, self.feat_dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(self.feat_dim),
+            nn.ReLU(inplace=True)
+        )
+        self.reducer_l4 = nn.Sequential(
+            nn.Conv2d(2048, self.feat_dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(self.feat_dim),
+            nn.ReLU(inplace=True)
+        )
+        self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        
         # UPDATE: Load custom CNN checkpoint if provided
         pretrained_cnn_path = config.get('pretrained_cnn_path', "")
         if pretrained_cnn_path != "":
@@ -456,11 +465,11 @@ class MotifGraphModel(nn.Module):
     def _extract_deformable_subgraphs(self, feat_map, H, W, node_feats):
         B, C_feat, _, _ = feat_map.shape
         
-        # FIX: Tập trung vào trung tâm khuôn mặt (Mắt trái, Mắt phải, Mép trái, Mép phải)
-        # Lưới 6x6 có tâm là (2.5, 2.5). Ta lấy các điểm bao quanh trung tâm.
-        centers = [(2,2), (2,3), (3,2), (3,3)] 
-        center_indices = [i * W + j for i, j in centers]
-        center_indices = torch.tensor(center_indices, device=feat_map.device)
+        # SỬA LỖI: Tự động tính toán tâm dựa trên kích thước Feature Map (H, W)
+        # Điều này giúp kiến trúc 12x12 (Multi-scale) vẫn tập trung đúng vào trung tâm khuôn mặt
+        cy, cx = H // 2, W // 2
+        centers = [(cy-1, cx-1), (cy-1, cx), (cy, cx-1), (cy, cx)] 
+        center_indices = torch.tensor([i * W + j for i, j in centers], device=feat_map.device)
         num_cands = len(center_indices)
         
         center_feats = node_feats[:, center_indices, :] 
@@ -534,15 +543,23 @@ class MotifGraphModel(nn.Module):
             else:
                 return mean_logits
 
+        # Handle TenCrop ... (logic TenCrop giữ nguyên)
+        
         B = x.shape[0]
         
-        feat_map = self.backbone(x) # (B, C, H, W)
-        _, _, H, W = feat_map.shape
+        # 1. TRÍCH XUẤT ĐA QUY MÔ (Multi-scale Extraction)
+        x3, x4 = self.backbone(x) # x3: (B, 1024, 12, 12), x4: (B, 2048, 6, 6)
         
-        # 4. Global Branch prediction
-        logits_global = self.global_fc(self.global_pool(feat_map))
+        # 2. FUSION LAYER 3 & 4 (ROI cao: Lấy thêm chi tiết từ L3)
+        feat_map_l3 = self.reducer_l3(x3)                   # (B, feat_dim, 12, 12)
+        feat_map_l4 = self.upsample(self.reducer_l4(x4))   # (B, feat_dim, 12, 12)
+        feat_map = feat_map_l3 + feat_map_l4                # Fusion: (B, feat_dim, 12, 12)
         
-        # Motif Branch
+        # 3. Global Branch prediction (Vẫn dùng Layer 4 nguyên bản cho Global context)
+        logits_global = self.global_fc(self.global_pool(x4))
+        self._latest_logits_global = logits_global # Lưu cho DGS Loss
+        
+        # 4. Motif Branch (Hoạt động trên không gian 12x12 giàu chi tiết)
         nodes_with_coords, adj = self._get_global_graph(feat_map)
         node_feats = nodes_with_coords[:, :, :-2]
         if node_feats.shape[-1] != self.feat_dim:
@@ -580,6 +597,7 @@ class MotifGraphModel(nn.Module):
         
         logits_motif = torch.sum(logits_cand * attn_weights, dim=1)
         logits_motif = logits_motif * self.logit_scale 
+        self._latest_logits_motif = logits_motif # FIX: Lưu lại cho DGS Loss
         
         # GATED FUSION: Học cách kết hợp linh hoạt giữa đặc trưng cục bộ (Motif) và toàn cục (Global)
         gate_input = torch.cat([logits_motif, logits_global], dim=-1)
@@ -668,7 +686,9 @@ class MotifGraphModel(nn.Module):
         aux_dict = {
             "motif_diversity": l_div,
             "attn_entropy": l_ent,
-            "offset_reg": l_off
+            "offset_reg": l_off,
+            "logits_global": self._latest_logits_global, # Gửi cho Trainer tính DGS
+            "logits_motif": self._latest_logits_motif    # Gửi cho Trainer tính DGS
         }
         
         # 4. Kích hoạt Motif Consistency Loss tại đây

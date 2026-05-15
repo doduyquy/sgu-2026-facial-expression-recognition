@@ -302,12 +302,21 @@ class Trainer:
             # Compose simplified loss: classification + diversity + overlap (light)
             loss = cls_loss + (div_lambda_t * div_loss)
             
-            # Aggregate ALL other auxiliary losses automatically
+            # Aggregate scalar auxiliary losses automatically
             for k, v in aux_losses.items():
-                if k not in ["landmark_diversity", "landmark_entropy", "landmark_sparsity", "landmark_overlap"]:
+                # Exclude non-scalar keys and already handled ones
+                if k not in ["landmark_diversity", "landmark_entropy", "landmark_sparsity", "landmark_overlap", "logits_global", "logits_motif"]:
                     # Default weight 0.1 for new/unknown aux losses or use config
                     w = self.config.get('training', {}).get(f'{k}_weight', 0.1)
                     loss = loss + float(w) * v
+            
+            # DYNAMIC GATE SUPERVISION (DGS): Ép cả 2 nhánh cùng giỏi
+            l_glob = aux_losses.get("logits_global", None)
+            l_mot = aux_losses.get("logits_motif", None)
+            if l_glob is not None and l_mot is not None:
+                # 0.3 là trọng số tối ưu để hỗ trợ nhánh chính mà không làm lệch gradient
+                loss = loss + 0.3 * self.criterion(l_glob, labels)
+                loss = loss + 0.3 * self.criterion(l_mot, labels)
             
             try:
                 if overlap_lambda_t.item() > 0.0:
