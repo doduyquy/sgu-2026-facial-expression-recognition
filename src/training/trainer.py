@@ -310,13 +310,17 @@ class Trainer:
                     w = self.config.get('training', {}).get(f'{k}_weight', 0.1)
                     loss = loss + float(w) * v
             
-            # DYNAMIC GATE SUPERVISION (DGS): Ép cả 2 nhánh cùng giỏi
+            # BẢN VÁ: DGS phải tuân thủ luật của MixUp
             l_glob = aux_losses.get("logits_global", None)
             l_mot = aux_losses.get("logits_motif", None)
             if l_glob is not None and l_mot is not None:
-                # 0.3 là trọng số tối ưu để hỗ trợ nhánh chính mà không làm lệch gradient
-                loss = loss + 0.3 * self.criterion(l_glob, labels)
-                loss = loss + 0.3 * self.criterion(l_mot, labels)
+                if mixup_active: # Nếu đang trộn ảnh, DGS cũng phải trộn nhãn
+                    loss_glob = lam * self._base_criterion(l_glob, labels_a) + (1.0 - lam) * self._base_criterion(l_glob, labels_b)
+                    loss_mot = lam * self._base_criterion(l_mot, labels_a) + (1.0 - lam) * self._base_criterion(l_mot, labels_b)
+                    loss = loss + 0.3 * loss_glob + 0.3 * loss_mot
+                else: # Nếu không trộn, học nhãn sạch bình thường
+                    loss = loss + 0.3 * self.criterion(l_glob, labels)
+                    loss = loss + 0.3 * self.criterion(l_mot, labels)
             
             try:
                 if overlap_lambda_t.item() > 0.0:
