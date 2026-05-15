@@ -638,9 +638,10 @@ class Trainer:
                 else:
                     self.scheduler.step()
 
-            # save checkpoint (tracking val_acc)
+            # save checkpoint and early stopping (tracking val_acc)
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
+                patience_counter = 0
                 torch.save({
                     "model_state_dict": self.model.state_dict(),
                     "optimizer_state_dict": self.optimizer.state_dict(),
@@ -648,16 +649,10 @@ class Trainer:
                     "val_acc": val_acc.item() if hasattr(val_acc, 'item') else val_acc,
                     "val_loss": val_loss
                 }, self.path_save_ckpt)
-                print(f"\t--- Save best Accuracy at ep {ep+1}, val_acc: {val_acc:.4f}, path: {self.path_save_ckpt} ---")
-
-            # early stopping (tracking val_loss)
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                patience_counter = 0
-                print(f"\t--- Best Loss updated: {val_loss:.4f} ---")
+                print(f"\t--- Save best Accuracy & Update EarlyStopping at ep {ep+1}, val_acc: {val_acc:.4f} ---")
             else:
                 patience_counter += 1
-                print(f"\t-!- No loss improvement: {patience_counter}/{self.patience}")
+                print(f"\t-!- No accuracy improvement: {patience_counter}/{self.patience}")
                 if patience_counter >= self.patience:
                     print(f"\t-_- Early stopping triggered at ep={ep+1}")
                     break
