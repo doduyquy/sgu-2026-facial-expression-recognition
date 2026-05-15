@@ -234,7 +234,13 @@ def main():
         eval_model = model.module if hasattr(model, "module") else model
 
         # Get path of file best  
-        load_checkpoints(eval_model, optimizer, path_save_ckpt, device)
+        load_checkpoints(
+            eval_model,
+            optimizer=None,
+            checkpoint_path=path_save_ckpt,
+            device=device,
+            load_optimizer=False,
+        )
         
         eval_dir_path = os.path.join(output_dir, "figures")
         os.makedirs(eval_dir_path, exist_ok=True)
