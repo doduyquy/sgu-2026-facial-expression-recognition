@@ -390,7 +390,7 @@ class MotifGraphModel(nn.Module):
         self.global_pool = nn.AdaptiveAvgPool2d(1)
         self.global_fc = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(self.feat_dim, 128),
+            nn.Linear(2048, 128), # FIX: Phải là 2048 để khớp với Layer 4 của ResNet152
             nn.ReLU(),
             nn.Dropout(0.3),
             nn.Linear(128, self.num_classes)
