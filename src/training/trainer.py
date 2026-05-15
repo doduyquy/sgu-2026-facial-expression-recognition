@@ -4,6 +4,7 @@ import numpy as np
 import torchvision.transforms.functional as TF
 import torch.nn.functional as F
 from datetime import datetime
+from torch.cuda.amp import autocast, GradScaler
 from src.utils.logger_wandb import init_wandb, log_image_to_wandb, log_metrics
 
 
@@ -77,6 +78,7 @@ class Trainer:
         # mixup defaults
         self.mixup_alpha = float(config['training'].get('mixup_alpha', 0.2))
         self._runtime_use_mixup = False
+        self.scaler = GradScaler()
 
     @staticmethod
     def _extract_logits(outputs):
@@ -208,14 +210,15 @@ class Trainer:
                 labels_b = labels[perm]
 
             # BUG FIX: Tuyệt đối không truyền targets cho MotifLoss khi đang MixUp ảnh
-            if hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
-                if mixup_active:
-                    outputs = self.model(images) # Bỏ targets đi khi đang MixUp
+            with autocast():
+                if hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
+                    if mixup_active:
+                        outputs = self.model(images) # Bỏ targets đi khi đang MixUp
+                    else:
+                        outputs = self.model(images, targets=labels) # Chỉ truyền targets khi ảnh sạch
                 else:
-                    outputs = self.model(images, targets=labels) # Chỉ truyền targets khi ảnh sạch
-            else:
-                outputs = self.model(images)
-            logits = self._extract_logits(outputs)
+                    outputs = self.model(images)
+                logits = self._extract_logits(outputs)
 
             # batch confidence used to scale landmark diversity: low-confidence batches
             # should emphasize landmark regularizers more (helps hard samples)
@@ -407,13 +410,19 @@ class Trainer:
                 except Exception:
                     # if any issue with augment or TF, skip augment consistency for this batch
                     pass
-            loss.backward()
+            
+            # Use scaler for backward and step (AMP)
+            self.scaler.scale(loss).backward()
             try:
+                # Unscale before clipping
+                self.scaler.unscale_(self.optimizer)
                 # gradient clipping to stabilize training when combining SCN and landmark auxes
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
             except Exception:
                 pass
-            self.optimizer.step()
+            
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
 
             running_loss += loss.item() * images.size(0)
             _, preds = torch.max(logits, dim=1)
@@ -461,10 +470,11 @@ class Trainer:
                 except Exception:
                     pass
                 # Pass labels to forward for internal loss calculation
-                if hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
-                    outputs = self.model(images, targets=labels)
-                else:
-                    outputs = self.model(images)
+                with autocast():
+                    if hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
+                        outputs = self.model(images, targets=labels)
+                    else:
+                        outputs = self.model(images)
                 
                 logits = self._extract_logits(outputs)
                 cls_loss = self.criterion(logits, labels)

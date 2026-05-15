@@ -8,35 +8,34 @@ from src.data.emotions_dict import EMOTION_DICT
 
 
 class FER2013(Dataset):
-    """Load one sample for dataloader"""
+    """Load and Cache Dataset into RAM for Ultra-Fast Dataloading"""
 
     def __init__(self, data_path, split="train", transforms=None):
-        # set relative path to train|val|test in dataset
         self.data_split_path = os.path.join(data_path, f"{split}.csv")
-        # because Q splitted dataset, so we only need 2 column: emotion(for category) and pixels for images
         self.data = pd.read_csv(self.data_split_path, usecols=[0, 1])
         self.transform = transforms
 
+        # VŨ KHÍ TỐI ƯU CPU: Cắt chuỗi và nạp toàn bộ ảnh lên RAM 1 lần duy nhất
+        print(f"--> Pre-processing & Caching {split} dataset into RAM...")
+        
+        self.labels = self.data.iloc[:, 0].astype(int).tolist()
+        pixels_list = self.data.iloc[:, 1].tolist()
+        
+        # Parse list of strings into a single optimized list of numpy arrays
+        self.images = [np.fromstring(p, sep=' ', dtype=np.uint8).reshape(48, 48) for p in pixels_list]
+        
+        print(f"--> Done caching {len(self.images)} images for {split}.")
+
     def __len__(self):
-        # return len(rows) of dataframe which we have read 
-        return len(self.data)
+        return len(self.labels)
     
     def __getitem__(self, index):
-        """
-        Arg: 
-            index: index of row in dataframe in dataset 
-        Return 
-            (image, label) & apply transform for image (if have)"""
-        # get row and convert to numpy array
-        emotion, pixels = self.data.iloc[index].values
-        label = int(emotion)
-
-        # convert image vector to image 48x48
-        image_vec = np.fromstring(pixels, sep=' ', dtype=np.uint8)
-        image_np = image_vec.reshape((48, 48))
+        """ Lấy ảnh trực tiếp từ RAM (O(1) Time Complexity) """
+        label = self.labels[index]
+        image_np = self.images[index]
+        
         image = Image.fromarray(image_np)
 
-        # apply transform if it not None
         if self.transform is not None:
             image = self.transform(image)
 
