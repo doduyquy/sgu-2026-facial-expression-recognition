@@ -517,11 +517,19 @@ class Trainer:
                     + (edge_consistency_lambda_t * edge_consistency_loss)
                 )
                 
-                # Aggregate ALL other auxiliary losses automatically
+                # Aggregate scalar auxiliary losses automatically
                 for k, v in aux_losses.items():
-                    if k not in ["landmark_diversity", "landmark_entropy", "landmark_sparsity", "landmark_overlap"]:
+                    # Exclude non-scalar keys and already handled ones
+                    if k not in ["landmark_diversity", "landmark_entropy", "landmark_sparsity", "landmark_overlap", "logits_global", "logits_motif"]:
                         w = self.config.get('training', {}).get(f'{k}_weight', 0.1)
                         loss = loss + float(w) * v
+
+                # DYNAMIC GATE SUPERVISION (DGS) for Validation consistency
+                l_glob = aux_losses.get("logits_global", None)
+                l_mot = aux_losses.get("logits_motif", None)
+                if l_glob is not None and l_mot is not None:
+                    loss = loss + 0.3 * self.criterion(l_glob, labels)
+                    loss = loss + 0.3 * self.criterion(l_mot, labels)
                 try:
                     if overlap_lambda_t.item() > 0.0:
                         loss = loss + (overlap_lambda_t * overlap_loss)
