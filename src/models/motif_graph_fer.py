@@ -710,8 +710,8 @@ class MotifGraphModel(nn.Module):
         # 4. Kích hoạt Motif Consistency Loss tại đây
         if hasattr(self, '_latest_targets') and self._latest_targets is not None:
             progress = getattr(self, 'training_progress', 1.0)
-            # Tạm tắt Motif Consistency trong Phase 1 (progress <= 0.05) vì Mixup trộn nhãn
-            if self.training and progress <= 0.05:
+            # Tạm tắt Motif Consistency trong Phase 1 (progress <= 0.065) vì Mixup trộn nhãn
+            if self.training and progress <= 0.065:
                 l_motif_consist = torch.tensor(0.0, device=self._latest_scores.device)
             else:
                 l_motif_consist = self.motif_consistency_loss(
