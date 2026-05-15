@@ -1,0 +1,37 @@
+_base_: "convnext_tiny_fer2013.yaml"
+
+model:
+  # SAM from the initial ConvNeXt-Tiny ImageNet weights.
+  # This config intentionally does not set checkpoint_path, so it does not
+  # continue from the 72.97 FER checkpoint.
+  name: "convnext_tiny_fer2013"
+  arch: "convnext_tiny"
+  pretrained: true
+  weights: "DEFAULT"
+  checkpoint_path: null
+  checkpoint_strict: false
+
+data:
+  # SAM runs two forward/backward passes per batch and AMP is disabled below.
+  batch_size: 16
+  num_workers: 2
+
+training:
+  optimizer: "sam"
+  base_optimizer: "adamw"
+  sam_rho: 0.03
+  sam_adaptive: false
+
+  # Start a little gentler than the AdamW baseline because SAM perturbs weights.
+  lr: 0.0002
+  finetune_lr: 0.00008
+  visual_extractor_lr: 0.000008
+
+  scheduler: "cosine"
+  epochs: 60
+  patience: 15
+  use_amp: false
+
+logging:
+  use_wandb: true
+  project_name: "FER2013"
