@@ -1,0 +1,14 @@
+_base_: "resnet152_region_attention_sam_cosine_layer3_layer4_fused.yaml"
+
+model:
+  # Keep the fused layer3+layer4 features, but only fine-tune layer4 in phase 2.
+  # Layer3 still contributes local detail as a frozen feature map, which is much
+  # safer for Kaggle's 12h limit than training both layer3 and layer4 with SAM.
+  unfreeze_backbone_scope: "layer4"
+
+training:
+  # Kaggle-safe cap for this slow SAM + fused multi-scale ablation.
+  # At roughly 15-17 minutes/epoch after unfreezing, 35 epochs should fit under
+  # the 12h cutoff with room for final test evaluation.
+  epochs: 35
+  patience: 8
