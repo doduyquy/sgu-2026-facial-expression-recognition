@@ -610,6 +610,8 @@ class Trainer:
 
             # ── Transfer Learning: kiểm tra có cần mở băng backbone không ──
             base_model = self._unwrap_model()
+            if hasattr(base_model, 'set_epoch'):
+                base_model.set_epoch(ep)
             phase_transitioned = False
             if hasattr(base_model, 'check_unfreeze'):
                 should_rebuild = base_model.check_unfreeze(ep)

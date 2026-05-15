@@ -12,6 +12,7 @@ from .resnet152_region_attention import ResNet152RegionAttentionFER
 from .resnet152_landmark_attention import ResNet152LandmarkAttentionFER
 from .resnet152_unet_mask_attention import ResNet152UNetMaskAttentionFER
 from .swin_region_attention import SwinRegionAlignedFER
+from .torchvision_cnn import TorchvisionCNNFER
 from .GraphNN import MotifGNN
 from .PixelGNN import PixelGNN
 # from .vit_ea_6x6 import VisionTransformerEA_6x6
@@ -47,6 +48,10 @@ MODEL_REGISTRY = {
     "resnet152_landmark_attention": lambda **kw: ResNet152LandmarkAttentionFER(config=kw['config'], channels=kw['config']['data']['channels']),
     "resnet152_unet_mask_attention": lambda **kw: ResNet152UNetMaskAttentionFER(config=kw['config'], channels=kw['config']['data']['channels']),
     "swin_region_aligned_fer": lambda **kw: SwinRegionAlignedFER(config=kw['config'], channels=kw['config']['data']['channels']),
+    "torchvision_cnn": lambda **kw: TorchvisionCNNFER(config=kw['config'], channels=kw['config']['data']['channels']),
+    "convnext_tiny_fer2013": lambda **kw: TorchvisionCNNFER(config=kw['config'], channels=kw['config']['data']['channels'], arch="convnext_tiny"),
+    "efficientnetv2_s_fer2013": lambda **kw: TorchvisionCNNFER(config=kw['config'], channels=kw['config']['data']['channels'], arch="efficientnet_v2_s"),
+    "regnet_y_8gf_fer2013": lambda **kw: TorchvisionCNNFER(config=kw['config'], channels=kw['config']['data']['channels'], arch="regnet_y_8gf"),
     "motif_gnn": lambda **kw: MotifGNN(config=kw['config'], channels=kw['config']['data']['channels']),
     "pixel_gnn": lambda **kw: PixelGNN(config=kw['config'], channels=kw['config']['data']['channels']),
     # "resmaskingnet": ResMaskingNet,

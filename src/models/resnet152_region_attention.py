@@ -409,6 +409,7 @@ class ResNet152RegionAttentionFER(nn.Module):
         self.ortho_loss_type = model_cfg.get("ortho_loss_type", "mean_offdiag").lower()
         self.use_global_visual_bias = model_cfg.get("use_global_visual_bias", True)
         self.use_region_slot_embed = model_cfg.get("use_region_slot_embed", True)
+        self.current_epoch_index = 0
         self.is_frozen = False
         self.return_attn = False
 
@@ -446,6 +447,7 @@ class ResNet152RegionAttentionFER(nn.Module):
             )
         else:
             self.register_buffer("visual_pos_embed", torch.zeros(1, num_visual_tokens, self.visual_dim))
+        self._init_attention_region_prior(model_cfg, num_visual_tokens)
 
         self.use_clip_dictionary = model_cfg.get("use_clip_dictionary", True)
         if self.use_clip_dictionary:
@@ -580,6 +582,88 @@ class ResNet152RegionAttentionFER(nn.Module):
                 message += f", strength={self.emotion_prior_strength}"
             print(message)
 
+    def _init_attention_region_prior(self, model_cfg, num_visual_tokens):
+        prior_cfg = model_cfg.get("attention_region_prior", {})
+        self.use_attention_region_prior = prior_cfg.get("enabled", False)
+        self.attention_region_prior_weight = float(prior_cfg.get("weight", 0.0))
+        self.attention_region_prior_start_epoch = int(prior_cfg.get("start_epoch", 1))
+        self.attention_region_prior_eps = float(prior_cfg.get("eps", 1e-6))
+        self.attention_region_prior_aux_scale = 0.0
+
+        if not self.use_attention_region_prior or self.attention_region_prior_weight <= 0.0:
+            self.register_buffer("attention_region_prior", torch.empty(0), persistent=False)
+            return
+
+        grid_size = int(round(num_visual_tokens ** 0.5))
+        if grid_size * grid_size != num_visual_tokens:
+            raise ValueError(
+                "model.attention_region_prior requires a square visual-token grid, "
+                f"but got {num_visual_tokens} tokens."
+            )
+
+        if self.num_regions > len(self.REGION_NAMES):
+            raise ValueError(
+                "model.attention_region_prior has built-in centers for at most "
+                f"{len(self.REGION_NAMES)} regions."
+            )
+
+        sigma_y = float(prior_cfg.get("sigma_y", 0.16))
+        sigma_x = float(prior_cfg.get("sigma_x", 0.20))
+        floor = float(prior_cfg.get("floor", 0.02))
+        if sigma_y <= 0 or sigma_x <= 0:
+            raise ValueError("model.attention_region_prior sigma_y/sigma_x must be > 0")
+        if floor < 0:
+            raise ValueError("model.attention_region_prior floor must be >= 0")
+
+        prior = self._build_attention_region_prior(
+            grid_size=grid_size,
+            sigma_y=sigma_y,
+            sigma_x=sigma_x,
+            floor=floor,
+        )
+        self.register_buffer("attention_region_prior", prior, persistent=False)
+
+        ortho_weight = float(model_cfg.get("ortho_loss_weight", 0.1))
+        if ortho_weight <= 0:
+            raise ValueError(
+                "model.attention_region_prior needs model.ortho_loss_weight > 0 "
+                "because the trainer applies the shared auxiliary-loss weight."
+            )
+        self.attention_region_prior_aux_scale = (
+            self.attention_region_prior_weight / ortho_weight
+        )
+        print(
+            "--> [ResNet152RegionAttention] Attention-region prior enabled: "
+            f"weight={self.attention_region_prior_weight}, "
+            f"start_epoch={self.attention_region_prior_start_epoch}, "
+            f"grid={grid_size}x{grid_size}"
+        )
+
+    def _build_attention_region_prior(self, grid_size, sigma_y, sigma_x, floor):
+        coords = torch.linspace(0.0, 1.0, grid_size)
+        grid_y = coords.view(grid_size, 1).expand(grid_size, grid_size)
+        grid_x = coords.view(1, grid_size).expand(grid_size, grid_size)
+
+        centers = [
+            (0.18, 0.50),  # forehead
+            (0.34, 0.35),  # left_eye
+            (0.34, 0.65),  # right_eye
+            (0.50, 0.50),  # nose
+            (0.68, 0.50),  # mouth
+            (0.84, 0.50),  # chin
+        ][:self.num_regions]
+
+        masks = []
+        for center_y, center_x in centers:
+            dist = (
+                ((grid_y - center_y) / sigma_y).pow(2)
+                + ((grid_x - center_x) / sigma_x).pow(2)
+            )
+            mask = torch.exp(-0.5 * dist) + floor
+            mask = mask / mask.sum().clamp_min(self.attention_region_prior_eps)
+            masks.append(mask.flatten())
+        return torch.stack(masks, dim=0)
+
     @staticmethod
     def _default_emotion_region_prior():
         # Rows: angry, disgust, fear, happy, sad, surprise, neutral.
@@ -701,6 +785,9 @@ class ResNet152RegionAttentionFER(nn.Module):
             return True
         return False
 
+    def set_epoch(self, epoch_index):
+        self.current_epoch_index = int(epoch_index)
+
     def _combine_logits(self, attention_logits, source_logits):
         if self.logit_fusion == "source":
             if source_logits is None:
@@ -756,6 +843,46 @@ class ResNet152RegionAttentionFER(nn.Module):
         scores = encoded.float().norm(p=2, dim=-1)
         return scores / scores.sum(dim=1, keepdim=True).clamp_min(1e-6)
 
+    def _attention_region_prior_loss(self, attn_weights):
+        if (
+            not self.use_attention_region_prior
+            or self.attention_region_prior_weight <= 0.0
+            or self.attention_region_prior.numel() == 0
+        ):
+            return None
+
+        epoch_number = self.current_epoch_index + 1
+        if epoch_number < self.attention_region_prior_start_epoch:
+            return attn_weights.sum() * 0.0
+
+        if attn_weights.dim() == 4:
+            attn_weights = attn_weights.mean(dim=1)
+        if (
+            attn_weights.size(1) != self.attention_region_prior.size(0)
+            or attn_weights.size(2) != self.attention_region_prior.size(1)
+        ):
+            raise ValueError(
+                "attention_region_prior shape does not match attention weights: "
+                f"prior={tuple(self.attention_region_prior.shape)}, "
+                f"attn={tuple(attn_weights.shape)}"
+            )
+
+        eps = self.attention_region_prior_eps
+        attn = attn_weights.clamp_min(eps)
+        attn = attn / attn.sum(dim=-1, keepdim=True).clamp_min(eps)
+        prior = self.attention_region_prior.to(
+            device=attn.device,
+            dtype=attn.dtype,
+        ).clamp_min(eps)
+        prior = prior / prior.sum(dim=-1, keepdim=True).clamp_min(eps)
+        return (attn * (attn.log() - prior.unsqueeze(0).log())).sum(dim=-1).mean()
+
+    def _combine_aux_loss(self, ortho_loss, attn_weights):
+        attention_prior_loss = self._attention_region_prior_loss(attn_weights)
+        if attention_prior_loss is None:
+            return ortho_loss
+        return ortho_loss + self.attention_region_prior_aux_scale * attention_prior_loss
+
     def forward(self, x):
         batch_size = x.shape[0]
 
@@ -808,13 +935,14 @@ class ResNet152RegionAttentionFER(nn.Module):
             ortho_loss = off_diag_sim.pow(2).mean()
         else:
             ortho_loss = off_diag_sim.mean()
+        aux_loss = self._combine_aux_loss(ortho_loss, attn_weights)
 
         if self.training:
             if self.use_emotion_region_prior:
                 if self.emotion_prior_mode == "loss":
-                    return logits, ortho_loss, coarse_logits, region_importance
-                return logits, ortho_loss, coarse_logits
-            return logits, ortho_loss
+                    return logits, aux_loss, coarse_logits, region_importance
+                return logits, aux_loss, coarse_logits
+            return logits, aux_loss
 
         if self.return_attn:
             if self.use_emotion_region_prior and region_weight is not None:

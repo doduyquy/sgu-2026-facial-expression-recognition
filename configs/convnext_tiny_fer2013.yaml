@@ -1,0 +1,50 @@
+_base_: "base.yaml"
+
+model:
+  name: "convnext_tiny_fer2013"
+  arch: "convnext_tiny"
+  pretrained: true
+  weights: "DEFAULT"
+  head_type: "mlp"
+  head_hidden_dim: 512
+  head_dropout: 0.35
+
+  # Train the new FER head first, then fine-tune the ImageNet backbone gently.
+  freeze_backbone: true
+  unfreeze_epoch: 4
+  unfreeze_backbone_scope: "all"
+
+data:
+  image_size: 224
+  channels: 3
+  normalize: true
+  batch_size: 32
+  num_workers: 2
+  use_clean_filter: true
+
+training:
+  epochs: 45
+  patience: 10
+  monitor: "val_accuracy"
+  loss: "cross_entropy"
+  label_smoothing: 0.05
+  optimizer: "adamw"
+  lr: 0.0003
+  finetune_lr: 0.0001
+  visual_extractor_lr: 0.00001
+  weight_decay: 0.01
+  grad_clip_norm: 1.0
+  skip_nonfinite_batches: true
+  scheduler: "cosine"
+  use_class_weights: false
+  use_amp: true
+
+logging:
+  use_wandb: true
+  project_name: "FER2013"
+
+ddp:
+  batch_size_is_global: true
+  find_unused_parameters: false
+  broadcast_buffers: true
+  sync_batchnorm: false

@@ -7,13 +7,21 @@ def _build_param_groups(model, lr, visual_extractor_lr=None):
     if visual_extractor_lr is None:
         return [param for param in model.parameters() if param.requires_grad]
 
+    base_model = model.module if hasattr(model, "module") else model
     head_params = []
     visual_params = []
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
         clean_name = name[len("module."):] if name.startswith("module.") else name
-        if clean_name.startswith("res_backbone.backbone."):
+        if hasattr(base_model, "parameter_role"):
+            is_visual_param = base_model.parameter_role(clean_name) == "visual"
+        else:
+            is_visual_param = (
+                clean_name.startswith("res_backbone.backbone.")
+                or clean_name.startswith("backbone.")
+            )
+        if is_visual_param:
             visual_params.append(param)
         else:
             head_params.append(param)
