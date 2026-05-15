@@ -1,0 +1,20 @@
+_base_: "resnet152_region_attention.yaml"
+
+data:
+  # Target the weak classes from the emotion-prior run without changing the
+  # strong global region-attention baseline architecture.
+  class_aware_augmentation:
+    enabled: true
+    target_labels: [0, 2, 4, 6]  # angry, fear, sad, neutral
+
+    # Keep perturbations light because FER labels are sensitive to small
+    # eye/mouth geometry changes.
+    extra_prob: 0.35
+    rotation_degrees: 5.0
+    brightness: 0.10
+    contrast: 0.10
+    gamma_range: [0.7, 1.5]
+
+    random_erasing_p: 0.15
+    erase_scale: [0.02, 0.08]
+    erase_value: "random"
