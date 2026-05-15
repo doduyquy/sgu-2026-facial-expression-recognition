@@ -554,6 +554,7 @@ class MotifGraphModel(nn.Module):
         feat_map_l3 = self.reducer_l3(x3)                   # (B, feat_dim, 12, 12)
         feat_map_l4 = self.upsample(self.reducer_l4(x4))   # (B, feat_dim, 12, 12)
         feat_map = feat_map_l3 + feat_map_l4                # Fusion: (B, feat_dim, 12, 12)
+        _, _, H, W = feat_map.shape
         
         # 3. Global Branch prediction (Vẫn dùng Layer 4 nguyên bản cho Global context)
         logits_global = self.global_fc(self.global_pool(x4))
