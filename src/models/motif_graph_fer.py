@@ -455,9 +455,10 @@ class MotifGraphModel(nn.Module):
         # CƠ CHẾ GATED FUSION TỪ BÀI BÁO
         self.gate = nn.Sequential(
             nn.Linear(self.num_classes * 2, self.num_classes),
+            # Đã xóa LayerNorm để tránh nhiễu trên vector 7 chiều (num_classes=7)
             nn.Sigmoid()
         )
-        self.gate_drop = nn.Dropout(0.2) # Ép học đều 2 nhánh, tránh "lười"
+        self.gate_drop = nn.Dropout(0.3) # Tăng Dropout để ép học đều 2 nhánh
         
         # Learnable query for candidate-level attention
         self.cand_query = nn.Parameter(torch.randn(1, 1, self.num_classes))
@@ -492,8 +493,9 @@ class MotifGraphModel(nn.Module):
     def _extract_deformable_subgraphs(self, feat_map, H, W, node_feats):
         B, C_feat, _, _ = feat_map.shape
         
-        # Base sampling grid (4 expanded corners instead of clustered center)
-        centers = [(1,1), (1,4), (4,1), (4,4)]
+        # FIX: Tập trung vào trung tâm khuôn mặt (Mắt trái, Mắt phải, Mép trái, Mép phải)
+        # Lưới 6x6 có tâm là (2.5, 2.5). Ta lấy các điểm bao quanh trung tâm.
+        centers = [(2,2), (2,3), (3,2), (3,3)] 
         center_indices = [i * W + j for i, j in centers]
         center_indices = torch.tensor(center_indices, device=feat_map.device)
         num_cands = len(center_indices)
@@ -538,6 +540,8 @@ class MotifGraphModel(nn.Module):
     def forward(self, x, return_selection=False, targets=None):
         if targets is not None:
             self._latest_targets = targets
+        else:
+            self._latest_targets = None # BẮT BUỘC PHẢI THÊM DÒNG NÀY ĐỂ XÓA NHÃN CŨ
             
         # Handle TenCrop input: (B, 10, C, H, W)
         if x.dim() == 5:
@@ -693,7 +697,7 @@ class MotifGraphModel(nn.Module):
         if hasattr(self, '_latest_targets') and self._latest_targets is not None:
             progress = getattr(self, 'training_progress', 1.0)
             # Tạm tắt Motif Consistency trong Phase 1 (progress <= 0.05) vì Mixup trộn nhãn
-            if self.training and progress <= 0.06:
+            if self.training and progress <= 0.065:
                 l_motif_consist = torch.tensor(0.0, device=self._latest_scores.device)
             else:
                 l_motif_consist = self.motif_consistency_loss(

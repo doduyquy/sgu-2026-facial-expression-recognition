@@ -12,10 +12,10 @@ def build_optimizer(model, config):
     head_params = []
     
     for name, param in model.named_parameters():
-        # Bảo vệ các Layer sâu và khối Masking đã pretrain thành công
-        if 'backbone.layer' in name or 'backbone.mask' in name:
+        # Bảo vệ toàn bộ ResNet, các khối Masking và khóa chặt STN để tránh bóp méo ảnh
+        if 'backbone.layer' in name or 'backbone.conv1' in name or 'backbone.bn1' in name or 'backbone.mask' in name or 'stn' in name:
             backbone_params.append(param)
-        # STN, conv1, bn1 (mới/lệch size), Graph, Motif... dùng LR cao để hội tụ nhanh
+        # Các khối mới: Graph, Motif module, Gated Fusion... dùng LR chuẩn
         else:
             head_params.append(param)
             

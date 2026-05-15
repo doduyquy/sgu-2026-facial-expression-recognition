@@ -207,9 +207,12 @@ class Trainer:
                 labels_a = labels
                 labels_b = labels[perm]
 
-            # Pass labels to forward for internal loss calculation
+            # BUG FIX: Tuyệt đối không truyền targets cho MotifLoss khi đang MixUp ảnh
             if hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
-                outputs = self.model(images, targets=labels)
+                if mixup_active:
+                    outputs = self.model(images) # Bỏ targets đi khi đang MixUp
+                else:
+                    outputs = self.model(images, targets=labels) # Chỉ truyền targets khi ảnh sạch
             else:
                 outputs = self.model(images)
             logits = self._extract_logits(outputs)
