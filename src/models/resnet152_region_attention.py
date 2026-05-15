@@ -53,10 +53,10 @@ class ResNet152SpatialTokenizer(nn.Module):
     """
     ResNet152 feature maps -> visual tokens for region attention.
 
-    Single-scale modes expose layer2/layer3/layer4 tokens directly. The
-    multi-scale ``layer3_layer4`` mode keeps both top stages, projects their
-    flattened tokens into a shared visual dimension, and concatenates the token
-    sequences before cross-attention.
+    Single-scale modes expose layer2/layer3/layer4 tokens directly.
+    ``layer3_layer4`` keeps both top stages as separate token sequences, while
+    ``layer3_layer4_fused`` first fuses layer3 local detail with layer4
+    semantics on the same spatial grid.
     """
 
     def __init__(self, config, channels=3):
@@ -70,6 +70,7 @@ class ResNet152SpatialTokenizer(nn.Module):
         self.pool_visual_tokens = model_cfg.get("pool_visual_tokens", False)
         self.feature_layer = model_cfg.get("feature_layer", "layer4")
         self.multi_scale_tokens = self.feature_layer == "layer3_layer4"
+        self.fused_multiscale_tokens = self.feature_layer == "layer3_layer4_fused"
         feature_dims = {
             "layer2": 512,
             "layer3": 1024,
@@ -80,17 +81,25 @@ class ResNet152SpatialTokenizer(nn.Module):
             "layer3": 16,
             "layer4": 32,
         }
-        if self.feature_layer not in (*feature_dims.keys(), "layer3_layer4"):
+        if self.feature_layer not in (
+            *feature_dims.keys(),
+            "layer3_layer4",
+            "layer3_layer4_fused",
+        ):
             raise ValueError(
                 "model.feature_layer must be one of: "
-                "layer2, layer3, layer4, layer3_layer4"
+                "layer2, layer3, layer4, layer3_layer4, layer3_layer4_fused"
             )
         self.feature_dim = (
             model_cfg.get("multiscale_visual_dim", model_cfg.get("embed_dim", 512))
-            if self.multi_scale_tokens
+            if self.multi_scale_tokens or self.fused_multiscale_tokens
             else feature_dims[self.feature_layer]
         )
-        self.source_feature_dim = 2048 if self.multi_scale_tokens else self.feature_dim
+        self.source_feature_dim = (
+            2048
+            if self.multi_scale_tokens or self.fused_multiscale_tokens
+            else self.feature_dim
+        )
 
         self.backbone = models.resnet152(weights=None)
         if channels != 3:
@@ -141,6 +150,22 @@ class ResNet152SpatialTokenizer(nn.Module):
             self.num_visual_tokens = (
                 self.layer3_num_visual_tokens + self.layer4_num_visual_tokens
             )
+        elif self.fused_multiscale_tokens:
+            self.fused_grid_size = max(1, image_size // output_strides["layer4"])
+            norm_groups = int(model_cfg.get("multiscale_norm_groups", 32))
+            while self.feature_dim % norm_groups != 0 and norm_groups > 1:
+                norm_groups //= 2
+            self.fused_projection = nn.Sequential(
+                nn.Conv2d(
+                    feature_dims["layer3"] + feature_dims["layer4"],
+                    self.feature_dim,
+                    kernel_size=1,
+                    bias=False,
+                ),
+                nn.GroupNorm(norm_groups, self.feature_dim),
+                nn.GELU(),
+            )
+            self.num_visual_tokens = self.fused_grid_size ** 2
         else:
             self.native_grid_size = max(1, image_size // output_strides[self.feature_layer])
             self.visual_grid_size = (
@@ -161,6 +186,13 @@ class ResNet152SpatialTokenizer(nn.Module):
                 f"feature_dim={self.feature_dim}, tokens="
                 f"{self.layer3_num_visual_tokens}+{self.layer4_num_visual_tokens}="
                 f"{self.num_visual_tokens}, pool_visual_tokens={self.pool_visual_tokens}"
+            )
+        elif self.fused_multiscale_tokens:
+            print(
+                f"--> [ResNet152Tokenizer] feature_layer={self.feature_layer}, "
+                f"feature_dim={self.feature_dim}, tokens="
+                f"{self.fused_grid_size}x{self.fused_grid_size}, "
+                "fusion=layer3_pool_to_layer4+1x1"
             )
         else:
             print(
@@ -186,7 +218,7 @@ class ResNet152SpatialTokenizer(nn.Module):
             return feat3
 
         feat4 = self.backbone.layer4(feat3)
-        if self.multi_scale_tokens:
+        if self.multi_scale_tokens or self.fused_multiscale_tokens:
             return feat3, feat4
         return feat4
 
@@ -203,6 +235,13 @@ class ResNet152SpatialTokenizer(nn.Module):
                 ),
                 dim=1,
             )
+            global_feat = F.adaptive_avg_pool2d(feat4, 1).flatten(1)
+        elif self.fused_multiscale_tokens:
+            feat3, feat4 = features
+            layer3_map = F.adaptive_avg_pool2d(feat3, feat4.shape[-2:])
+            fused_map = torch.cat((layer3_map, feat4), dim=1)
+            token_map = self.fused_projection(fused_map)
+            tokens = token_map.flatten(2).transpose(1, 2)
             global_feat = F.adaptive_avg_pool2d(feat4, 1).flatten(1)
         else:
             feat_map = features

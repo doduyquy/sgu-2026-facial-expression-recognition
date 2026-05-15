@@ -1,0 +1,19 @@
+_base_: "resnet152_region_attention_sam_cosine.yaml"
+
+model:
+  # Multi-scale fused ablation on top of the 73.47 SAM recipe.
+  # layer3: [B, 1024, 14, 14] -> adaptive pool to 7x7
+  # layer4: [B, 2048, 7, 7]
+  # concat channels -> 1x1 projection -> [B, 49, 512] visual tokens.
+  feature_layer: "layer3_layer4_fused"
+  multiscale_visual_dim: 512
+  multiscale_norm_groups: 32
+
+  # The fused visual tokens use both top ResNet stages, so phase 2 should
+  # fine-tune layer3 and layer4 together after the warm-up period.
+  unfreeze_backbone_scope: "layer3_layer4"
+
+training:
+  # Multi-scale adds a new projection and more local detail; keep SAM gentler
+  # than the original 0.05 recipe for the first ablation.
+  sam_rho: 0.03
