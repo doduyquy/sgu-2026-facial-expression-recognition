@@ -12,34 +12,6 @@ except ImportError:
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
     from models.CBAM import CBAM
 
-def conv3x3(in_planes, out_planes, stride=1):
-    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
-                     padding=1, bias=False)
-
-class BasicBlock(nn.Module):
-    expansion = 1
-    def __init__(self, inplanes, planes, stride=1, downsample=None):
-        super(BasicBlock, self).__init__()
-        self.conv1 = conv3x3(inplanes, planes, stride)
-        self.bn1 = nn.BatchNorm2d(planes)
-        self.relu = nn.ReLU(inplace=True)
-        self.conv2 = conv3x3(planes, planes)
-        self.bn2 = nn.BatchNorm2d(planes)
-        self.downsample = downsample
-        self.stride = stride
-
-    def forward(self, x):
-        residual = x
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
-        out = self.conv2(out)
-        out = self.bn2(out)
-        if self.downsample is not None:
-            residual = self.downsample(x)
-        out += residual
-        out = self.relu(out)
-        return out
 
 class MaskBlock(nn.Sequential): # Kế thừa nn.Sequential thay vì nn.Module để làm phẳng tên biến
     def __init__(self, in_channels):
@@ -83,51 +55,39 @@ class STN(nn.Module):
 class MotifBackbone(nn.Module):
     """
     Advanced Backbone following Pham Qui Luan's ResMaskingNet structure.
-    Includes STN and Multi-level Masking blocks.
+    NÂNG CẤP LÊN RESNET152 ĐỂ KHỚP VỚI CHECKPOINT.
     """
     def __init__(self, in_channels=1, feat_dim=128):
         super().__init__()
         self.stn = STN(in_channels)
         
-        self.inplanes = 64
+        # Load cấu trúc ResNet152 chuẩn từ PyTorch để hứng trọng số
+        import torchvision.models as models
+        resnet = models.resnet152(weights=None)
+        
         self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(64)
-        self.relu = nn.ReLU(inplace=True)
-        # We skip maxpool as per your previous design to keep 6x6 spatial resolution
-        self.maxpool = nn.Identity() 
+        self.bn1 = resnet.bn1
+        self.relu = resnet.relu
+        self.maxpool = nn.Identity() # Giữ nguyên để output là 6x6
         
-        # ResNet Layers
-        self.layer1 = self._make_layer(BasicBlock, 64, 2)
-        self.layer2 = self._make_layer(BasicBlock, 128, 2, stride=2)
-        self.layer3 = self._make_layer(BasicBlock, 256, 2, stride=2)
-        self.layer4 = self._make_layer(BasicBlock, 512, 2, stride=2)
+        # ResNet152 Layers
+        self.layer1 = resnet.layer1
+        self.layer2 = resnet.layer2
+        self.layer3 = resnet.layer3
+        self.layer4 = resnet.layer4
         
-        # PHAM QUI LUAN'S MASKING BLOCKS
-        self.mask1 = MaskBlock(64)
-        self.mask2 = MaskBlock(128)
-        self.mask3 = MaskBlock(256)
-        self.mask4 = MaskBlock(512)
+        # PHAM QUI LUAN'S MASKING BLOCKS (Cập nhật số kênh cho ResNet152)
+        self.mask1 = MaskBlock(256)   # Layer 1 của ResNet152 xuất ra 256
+        self.mask2 = MaskBlock(512)   # Layer 2 xuất ra 512
+        self.mask3 = MaskBlock(1024)  # Layer 3 xuất ra 1024
+        self.mask4 = MaskBlock(2048)  # Layer 4 xuất ra 2048
         
+        # Dim Reducer ép từ 2048 về 128 cho Motif Graph
         self.dim_reducer = nn.Sequential(
-            nn.Conv2d(512, feat_dim, kernel_size=1, bias=False),
+            nn.Conv2d(2048, feat_dim, kernel_size=1, bias=False),
             nn.BatchNorm2d(feat_dim),
             nn.ReLU(inplace=True)
         )
-
-    def _make_layer(self, block, planes, blocks, stride=1):
-        downsample = None
-        if stride != 1 or self.inplanes != planes * block.expansion:
-            downsample = nn.Sequential(
-                nn.Conv2d(self.inplanes, planes * block.expansion,
-                          kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(planes * block.expansion),
-            )
-        layers = []
-        layers.append(block(self.inplanes, planes, stride, downsample))
-        self.inplanes = planes * block.expansion
-        for i in range(1, blocks):
-            layers.append(block(self.inplanes, planes))
-        return nn.Sequential(*layers)
 
     def load_pretrained_cnn(self, checkpoint_path):
         import os
@@ -153,23 +113,25 @@ class MotifBackbone(nn.Module):
             if name in model_dict:
                 if v.shape == model_dict[name].shape:
                     pretrained_dict[name] = v
-                # Adapt conv1 from 3 channels to 1 channel (Grayscale) ONLY if spatial size matches
+                    
+                # BẢN VÁ LỖI CỨU LỚP CONV1 (Cắt 7x7 xuống 3x3 và ép về Grayscale)
                 elif 'conv1.weight' in name and v.shape[1] == 3 and model_dict[name].shape[1] == 1:
-                    if v.shape[2:] == model_dict[name].shape[2:]:
+                    if v.shape[2:] == (7, 7) and model_dict[name].shape[2:] == (3, 3):
+                        print(f"[*] Extracting center 3x3 from 7x7 kernel and adapting to 1 channel for {name}...")
+                        # Cắt lõi 3x3 từ tâm bộ lọc 7x7
+                        center_v = v[:, :, 2:5, 2:5]
+                        # Ép 3 kênh RGB về 1 kênh
+                        pretrained_dict[name] = center_v.mean(dim=1, keepdim=True)
+                    elif v.shape[2:] == model_dict[name].shape[2:]:
                         print(f"[*] Adapting {name} from 3 channels to 1 channel (Grayscale)...")
                         pretrained_dict[name] = v.mean(dim=1, keepdim=True)
-                    else:
-                        print(f"[*] Skipping {name} due to spatial mismatch: {v.shape} vs {model_dict[name].shape}")
                 else:
-                    # Log mismatch for important layers
-                    if 'conv1' in name or 'layer' in name:
-                        pass # Silently skip for now, but we could log if needed
+                    pass
                     
         if len(pretrained_dict) == 0:
             print("WARNING: No matching keys found. Check your checkpoint architecture.")
         else:
             print(f"Successfully loaded {len(pretrained_dict)}/{len(model_dict)} matching layers.")
-            # Use strict=False and load only the filtered weights to avoid shape mismatch errors
             self.load_state_dict(pretrained_dict, strict=False)
 
     def forward(self, x):
@@ -547,14 +509,19 @@ class MotifGraphModel(nn.Module):
         if x.dim() == 5:
             B, T, C, H, W = x.shape
             x = x.view(B * T, C, H, W)
-            # Recursive call to handle all crops (expand targets to match B*T)
             if targets is not None:
                 targets_expanded = targets.unsqueeze(1).expand(-1, T).reshape(-1)
-                logits = self.forward(x, targets=targets_expanded)
+                out = self.forward(x, return_selection=return_selection, targets=targets_expanded)
             else:
-                logits = self.forward(x) 
-            # Average predictions across all 10 crops
-            return logits.view(B, T, -1).mean(dim=1)
+                out = self.forward(x, return_selection=return_selection) 
+            
+            if return_selection:
+                # Nếu trả về selection, out là một tuple: (logits, top_k, centers, scores)
+                # Chỉ lấy trung bình của logits (phần tử số 0)
+                mean_logits = out[0].view(B, T, -1).mean(dim=1)
+                return mean_logits, out[1], out[2], out[3]
+            else:
+                return out.view(B, T, -1).mean(dim=1)
 
         B = x.shape[0]
         
