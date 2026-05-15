@@ -465,28 +465,39 @@ class MotifGraphModel(nn.Module):
     def _extract_deformable_subgraphs(self, feat_map, H, W, node_feats):
         B, C_feat, _, _ = feat_map.shape
         
-        # BẢN VÁ: Rải 4 điểm neo ra 4 góc để soi Mắt và Miệng trên lưới 12x12
-        # (3,3): Mắt trái, (3,8): Mắt phải, (8,3): Mép trái, (8,8): Mép phải
-        centers = [(3, 3), (3, 8), (8, 3), (8, 8)]
+        # FIX 1 & 2: Rải đều 6 điểm neo (Tương ứng top_k=6) trên lưới 12x12
+        # Mô phỏng đúng cấu trúc sinh học của khuôn mặt người:
+        # 1. Trán (Surprise/Sad), 2. Mắt trái, 3. Mắt phải
+        # 4. Chóp mũi (Disgust), 5. Mép trái, 6. Mép phải
+        centers = [
+            (2, 5),   # Trán (Giữa trên)
+            (4, 3),   # Mắt trái
+            (4, 8),   # Mắt phải
+            (6, 5),   # Chóp mũi (Trung tâm)
+            (9, 3),   # Khóe mép trái
+            (9, 8)    # Khóe mép phải
+        ]
+        
         center_indices = torch.tensor([i * W + j for i, j in centers], device=feat_map.device)
-        num_cands = len(center_indices)
+        num_cands = len(center_indices) # Lúc này num_cands = 6 chuẩn xác!
         
         center_feats = node_feats[:, center_indices, :] 
         
-        # UPDATE: Global-Guided Offsets
-        global_feat = feat_map.mean(dim=(2, 3)) # Global Average Pooling (B, C)
-        global_feat = global_feat.unsqueeze(1).expand(-1, num_cands, -1) # (B, num_cands, C)
-        combined_feats = torch.cat([center_feats, global_feat], dim=-1) # (B, num_cands, 2C)
+        # Global-Guided Offsets
+        global_feat = feat_map.mean(dim=(2, 3)) 
+        global_feat = global_feat.unsqueeze(1).expand(-1, num_cands, -1) 
+        combined_feats = torch.cat([center_feats, global_feat], dim=-1) 
         
-        offsets = self.offset_predictor(combined_feats) * self.offset_amplitude  # UPDATE: scale offsets
-        # Point 3: Stabilize offset predictor with regularization
+        offsets = self.offset_predictor(combined_feats) * getattr(self, 'offset_amplitude', 0.2)
         self._latest_offsets = offsets
         
+        # FIX 3: Thu gọn lưới rel_grid để không bị tràn viền (Out of bounds)
+        # Giảm khoảng cách trải dài từ [-1.5 -> 1.5] xuống [-1.0 -> 1.0]
         rel_y, rel_x = torch.meshgrid(
-            torch.linspace(-1.5, 1.5, 4),
-            torch.linspace(-1.5, 1.5, 4),
+            torch.linspace(-1.0, 1.0, 4),
+            torch.linspace(-1.0, 1.0, 4),
             indexing='ij'
-        )  # UPDATE: 4x4 grid offsets
+        ) 
         rel_grid = torch.stack([rel_x, rel_y], dim=-1).to(feat_map.device) 
         rel_grid = rel_grid.view(1, 1, 16, 2) 
         
@@ -494,7 +505,12 @@ class MotifGraphModel(nn.Module):
         c_x = (center_indices % W).float() / (W - 1) * 2 - 1
         centers_grid = torch.stack([c_x, c_y], dim=-1).view(1, num_cands, 1, 2) 
         
+        # Tính toán Sampling Grid
         sampling_grid = centers_grid + offsets.unsqueeze(2) + rel_grid * (1.0 / (W-1))
+        
+        # Kẹp tọa độ lại (Clamp) để chắc chắn 100% không bị quét ra ngoài viền ảnh
+        sampling_grid = torch.clamp(sampling_grid, -1.0, 1.0)
+        
         sampling_grid = sampling_grid.view(B, num_cands * 16, 1, 2)
         
         sampled_feats = F.grid_sample(feat_map, sampling_grid, align_corners=True)
@@ -504,7 +520,7 @@ class MotifGraphModel(nn.Module):
         
         centers_coords = []
         for idx in center_indices:
-            centers_coords.append((idx // W, idx % W))
+            centers_coords.append((int(idx.item() // W), int(idx.item() % W)))
             
         return sampled_feats, adj, centers_coords
 
