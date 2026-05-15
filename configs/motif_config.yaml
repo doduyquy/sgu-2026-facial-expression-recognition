@@ -1,7 +1,7 @@
 model:
   name: "motif_graph_fer"
   pretrained_cnn_path: "/kaggle/input/datasets/lhngphc/resnet152-0-73/resnet152_rot30_2019Nov14_12.47" # ""
-  feat_dim: 256
+  feat_dim: 128
   num_classes: 7
   motifs_per_class: 16
   top_k: 6
@@ -9,7 +9,7 @@ model:
   dropout: 0.3
 
 data:
-  batch_size: 60
+  batch_size: 64
   num_workers: 4
   input_size: 48
   in_channels: 1
