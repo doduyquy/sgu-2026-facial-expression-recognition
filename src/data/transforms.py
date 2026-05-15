@@ -17,13 +17,12 @@ def build_transform(config, split="train") -> Compose: # train | val | test
     st = 0.5
     
     if split == "train":
-        # Standard augmentation for training (NO TenCrop - too slow)
+        # BẢN VÁ: Dùng Augment chuẩn mực cho ảnh nhỏ, bảo toàn cấu trúc khuôn mặt
         trans = transforms.Compose([
-            transforms.RandomResizedCrop(image_size, scale=(0.8, 1.2)),
-            transforms.RandomApply([transforms.RandomAffine(0, translate=(0.2, 0.2))], p=0.5),
+            transforms.RandomCrop(image_size, padding=4, padding_mode='reflect'),
             transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomApply([transforms.RandomRotation(10)], p=0.5),
-            transforms.RandAugment(num_ops=2, magnitude=9),
+            transforms.RandomApply([transforms.RandomRotation(15)], p=0.5),
+            # TUYỆT ĐỐI KHÔNG DÙNG RandAugment cho bài toán nhận diện vi biểu cảm
             transforms.ToTensor(),
             transforms.Normalize(mean=(mu,), std=(st,))
         ])

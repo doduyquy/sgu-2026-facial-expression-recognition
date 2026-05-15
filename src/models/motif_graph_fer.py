@@ -465,10 +465,9 @@ class MotifGraphModel(nn.Module):
     def _extract_deformable_subgraphs(self, feat_map, H, W, node_feats):
         B, C_feat, _, _ = feat_map.shape
         
-        # SỬA LỖI: Tự động tính toán tâm dựa trên kích thước Feature Map (H, W)
-        # Điều này giúp kiến trúc 12x12 (Multi-scale) vẫn tập trung đúng vào trung tâm khuôn mặt
-        cy, cx = H // 2, W // 2
-        centers = [(cy-1, cx-1), (cy-1, cx), (cy, cx-1), (cy, cx)] 
+        # BẢN VÁ: Rải 4 điểm neo ra 4 góc để soi Mắt và Miệng trên lưới 12x12
+        # (3,3): Mắt trái, (3,8): Mắt phải, (8,3): Mép trái, (8,8): Mép phải
+        centers = [(3, 3), (3, 8), (8, 3), (8, 8)]
         center_indices = torch.tensor([i * W + j for i, j in centers], device=feat_map.device)
         num_cands = len(center_indices)
         

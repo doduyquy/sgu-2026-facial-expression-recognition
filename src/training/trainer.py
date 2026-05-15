@@ -71,8 +71,8 @@ class Trainer:
         # ranking influence tuned for FER (raise to emphasize hard/easy separation)
         self.scn_rank_lambda = float(config['training'].get('scn_rank_lambda', 0.5))  # UPDATE: stronger SCN ranking
         self.scn_min_weight = float(config['training'].get('scn_min_weight', 0.2))
-        # margin for ranking loss
-        self.scn_margin = float(config['training'].get('scn_margin', 0.6))  # UPDATE: larger margin for easy vs hard
+        # UPDATE: Giảm margin xuống 0.2 để tránh bùng nổ Gradient
+        self.scn_margin = float(config['training'].get('scn_margin', 0.2))
         # runtime flags (set by fit staging)
         self._runtime_use_scn = None
         # mixup defaults
