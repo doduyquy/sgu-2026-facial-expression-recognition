@@ -6,7 +6,7 @@ This script is designed for Kaggle:
 2. Optionally run the `face_parsing` CLI to produce parsing label maps.
 3. Convert 19-class parsing maps into 6 region masks:
    forehead, left_eye, right_eye, nose, mouth, chin.
-4. Save masks as .npy files plus manifest/summary artifacts.
+4. Save compact masks as .npy files plus manifest/summary artifacts.
 
 If no face-parsing checkpoint/package is available, use --geometry-only to
 produce a weak no-checkpoint bootstrap mask set. That fallback is not U-Net,
@@ -17,13 +17,12 @@ import argparse
 import json
 import shutil
 import subprocess
-import sys
 import urllib.request
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from PIL import Image, ImageDraw
+from PIL import Image
 
 
 DEFAULT_CKPT_URL = (
@@ -43,6 +42,25 @@ def parse_args():
     parser.add_argument("--download-checkpoint", action="store_true")
     parser.add_argument("--checkpoint-url", type=str, default=DEFAULT_CKPT_URL)
     parser.add_argument("--image-size", type=int, default=224)
+    parser.add_argument(
+        "--mask-size",
+        type=int,
+        default=7,
+        help="Saved mask grid size. Use 7 for ResNet layer4 to avoid filling Kaggle disk.",
+    )
+    parser.add_argument(
+        "--save-dtype",
+        type=str,
+        default="float16",
+        choices=["float16", "float32"],
+        help="Dtype for saved .npy masks. float16 is enough for soft attention masks.",
+    )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=1024,
+        help="Number of FER rows processed per temp face-parsing run.",
+    )
     parser.add_argument("--num-regions", type=int, default=6)
     parser.add_argument("--face-parsing-cmd", type=str, default="face_parsing")
     parser.add_argument("--geometry-only", action="store_true")
@@ -83,20 +101,34 @@ def pixels_to_image(pixels, image_size):
     return image.convert("RGB").resize((image_size, image_size), Image.BILINEAR)
 
 
-def export_split_images(data_path, split, image_dir, image_size):
+def load_split_rows(data_path, split):
     df = pd.read_csv(data_path / f"{split}.csv", usecols=[0, 1])
+    df = df.rename(columns={df.columns[0]: "label", df.columns[1]: "pixels"})
+    df["row_index"] = df.index.astype(int)
+    return df
+
+
+def iter_chunks(df, chunk_size):
+    if chunk_size <= 0:
+        yield 0, df
+        return
+    for chunk_id, start in enumerate(range(0, len(df), chunk_size)):
+        yield chunk_id, df.iloc[start:start + chunk_size]
+
+
+def export_rows_images(rows_df, image_dir, image_size):
     image_dir.mkdir(parents=True, exist_ok=True)
 
     rows = []
-    for row_idx, row in df.iterrows():
-        image = pixels_to_image(row.iloc[1], image_size=image_size)
+    for row in rows_df.itertuples(index=False):
+        row_idx = int(row.row_index)
+        image = pixels_to_image(row.pixels, image_size=image_size)
         image_path = image_dir / f"{row_idx:06d}.png"
         image.save(image_path)
         rows.append(
             {
-                "split": split,
                 "row_index": int(row_idx),
-                "label": int(row.iloc[0]),
+                "label": int(row.label),
                 "image_path": str(image_path),
             }
         )
@@ -176,7 +208,7 @@ def load_parsing_label_map(path, image_size):
     return arr
 
 
-def parsing_to_region_masks(parsing, image_size):
+def parsing_to_region_masks(parsing, mask_size):
     height, width = parsing.shape
     templates = geometry_templates(height, width)
     yy = np.linspace(0.0, 1.0, height, dtype=np.float32)[:, None]
@@ -200,15 +232,15 @@ def parsing_to_region_masks(parsing, image_size):
         masks.append(mask)
 
     masks = np.stack(masks, axis=0).astype(np.float32)
-    masks = soften_masks(masks, image_size=image_size)
+    masks = soften_masks(masks, mask_size=mask_size)
     return masks, fallback_regions
 
 
-def soften_masks(masks, image_size):
+def soften_masks(masks, mask_size):
     soft = []
     for mask in masks:
         img = Image.fromarray((mask * 255).astype(np.uint8), mode="L")
-        img = img.resize((image_size, image_size), Image.BILINEAR)
+        img = img.resize((mask_size, mask_size), Image.BILINEAR)
         arr = np.array(img, dtype=np.float32) / 255.0
         if arr.max() > 0:
             arr = arr / arr.max()
@@ -239,7 +271,6 @@ def save_preview(manifest_df, output_path, max_items=24):
         image = Image.open(row.image_path).convert("RGB").resize((tile_w, tile_h))
         masks = np.load(row.mask_path)
         overlay = Image.new("RGBA", (tile_w, tile_h), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay, "RGBA")
         for region_idx, color in enumerate(colors):
             mask = Image.fromarray((masks[region_idx] * 180).astype(np.uint8), mode="L")
             mask = mask.resize((tile_w, tile_h), Image.BILINEAR)
@@ -261,6 +292,8 @@ def build_masks_for_split(
     output_dir,
     result_dir,
     image_size,
+    mask_size,
+    save_dtype,
     geometry_only=False,
 ):
     split_out = output_dir / split
@@ -275,25 +308,27 @@ def build_masks_for_split(
         fallback_regions = []
 
         if geometry_only:
-            masks = geometry_templates(image_size, image_size)
+            masks = geometry_templates(mask_size, mask_size)
             quality = "geometry_only"
             fallback_regions = list(REGION_NAMES)
         else:
             parsing_path = find_parsing_map(result_dir, int(row.row_index))
             if parsing_path is None:
-                masks = geometry_templates(image_size, image_size)
+                masks = geometry_templates(mask_size, mask_size)
                 quality = "missing_parsing_fallback"
                 fallback_regions = list(REGION_NAMES)
                 missing_count += 1
             else:
                 try:
                     parsing = load_parsing_label_map(parsing_path, image_size=image_size)
-                    masks, fallback_regions = parsing_to_region_masks(parsing, image_size=image_size)
+                    masks, fallback_regions = parsing_to_region_masks(
+                        parsing,
+                        mask_size=mask_size,
+                    )
                     if fallback_regions:
                         quality = "partial_fallback"
-                except Exception as exc:
-                    print(f"[WARN] {split} row={row.row_index}: {exc}; using geometry fallback.")
-                    masks = geometry_templates(image_size, image_size)
+                except Exception:
+                    masks = geometry_templates(mask_size, mask_size)
                     quality = "parse_error_fallback"
                     fallback_regions = list(REGION_NAMES)
                     missing_count += 1
@@ -301,7 +336,7 @@ def build_masks_for_split(
         if fallback_regions:
             fallback_count += 1
 
-        np.save(mask_path, masks.astype(np.float32))
+        np.save(mask_path, masks.astype(save_dtype))
         manifest_rows.append(
             {
                 "split": split,
@@ -315,7 +350,6 @@ def build_masks_for_split(
         )
 
     manifest = pd.DataFrame(manifest_rows)
-    manifest.to_csv(output_dir / f"manifest_{split}.csv", index=False)
     return manifest, {"fallback_samples": fallback_count, "missing_or_error": missing_count}
 
 
@@ -347,6 +381,9 @@ def main():
         "checkpoint": str(checkpoint) if checkpoint else None,
         "geometry_only": bool(args.geometry_only),
         "image_size": int(args.image_size),
+        "mask_size": int(args.mask_size),
+        "save_dtype": args.save_dtype,
+        "chunk_size": int(args.chunk_size),
         "regions": list(REGION_NAMES),
         "splits": {},
     }
@@ -354,31 +391,51 @@ def main():
     all_manifests = []
     for split in SPLITS:
         print(f"\n=== {split} ===")
-        split_image_dir = image_root / split
-        rows_df = export_split_images(data_path, split, split_image_dir, args.image_size)
+        split_df = load_split_rows(data_path, split)
+        split_manifests = []
+        split_summary = {"fallback_samples": 0, "missing_or_error": 0}
 
-        split_result_dir = result_root / split
-        if not args.geometry_only:
-            run_face_parsing(
-                args.face_parsing_cmd,
-                checkpoint=checkpoint,
-                image_dir=split_image_dir,
-                result_dir=split_result_dir,
+        for chunk_id, chunk_df in iter_chunks(split_df, args.chunk_size):
+            print(f"--> {split} chunk={chunk_id} rows={len(chunk_df)}")
+            chunk_image_dir = image_root / split / f"chunk_{chunk_id:04d}"
+            chunk_result_dir = result_root / split / f"chunk_{chunk_id:04d}"
+            rows_df = export_rows_images(chunk_df, chunk_image_dir, args.image_size)
+
+            if not args.geometry_only:
+                run_face_parsing(
+                    args.face_parsing_cmd,
+                    checkpoint=checkpoint,
+                    image_dir=chunk_image_dir,
+                    result_dir=chunk_result_dir,
+                )
+
+            manifest_chunk, chunk_summary = build_masks_for_split(
+                split=split,
+                rows_df=rows_df,
+                output_dir=output_dir,
+                result_dir=chunk_result_dir,
+                image_size=args.image_size,
+                mask_size=args.mask_size,
+                save_dtype=args.save_dtype,
+                geometry_only=args.geometry_only,
             )
+            split_manifests.append(manifest_chunk)
+            split_summary["fallback_samples"] += chunk_summary["fallback_samples"]
+            split_summary["missing_or_error"] += chunk_summary["missing_or_error"]
 
-        manifest, split_summary = build_masks_for_split(
-            split=split,
-            rows_df=rows_df,
-            output_dir=output_dir,
-            result_dir=split_result_dir,
-            image_size=args.image_size,
-            geometry_only=args.geometry_only,
-        )
-        save_preview(
-            manifest,
-            preview_root / f"{split}_mask_preview.png",
-            max_items=args.preview_count,
-        )
+            if chunk_id == 0:
+                save_preview(
+                    manifest_chunk,
+                    preview_root / f"{split}_mask_preview.png",
+                    max_items=args.preview_count,
+                )
+
+            if not args.keep_temp:
+                shutil.rmtree(chunk_image_dir, ignore_errors=True)
+                shutil.rmtree(chunk_result_dir, ignore_errors=True)
+
+        manifest = pd.concat(split_manifests, ignore_index=True)
+        manifest.to_csv(output_dir / f"manifest_{split}.csv", index=False)
         all_manifests.append(manifest)
         summary["splits"][split] = {
             "samples": int(len(manifest)),
@@ -404,4 +461,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
