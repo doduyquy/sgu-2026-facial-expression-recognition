@@ -1,3 +1,6 @@
+import os
+
+import torch
 import torch.nn as nn
 import torchvision.models as models
 
@@ -29,6 +32,8 @@ class TorchvisionCNNFER(nn.Module):
         self.trainable_backbone_layers = model_cfg.get("trainable_backbone_layers", [])
         if isinstance(self.trainable_backbone_layers, str):
             self.trainable_backbone_layers = [self.trainable_backbone_layers]
+        self.checkpoint_path = model_cfg.get("checkpoint_path")
+        self.checkpoint_strict = bool(model_cfg.get("checkpoint_strict", True))
 
         weights = self._resolve_weights(model_cfg)
         builder = getattr(models, self.arch, None)
@@ -42,6 +47,13 @@ class TorchvisionCNNFER(nn.Module):
         self.feature_dim = self._replace_classifier(model_cfg)
         self.is_frozen = False
 
+        if self.checkpoint_path:
+            self.load_from_checkpoint(
+                self.checkpoint_path,
+                device="cpu",
+                strict=self.checkpoint_strict,
+            )
+
         if self.freeze_backbone_on_start:
             self.freeze_backbone()
 
@@ -50,6 +62,79 @@ class TorchvisionCNNFER(nn.Module):
             f"--> [TorchvisionCNNFER] arch={self.arch}, weights={weight_name}, "
             f"feature_dim={self.feature_dim}"
         )
+
+    @staticmethod
+    def _safe_torch_load(path, map_location="cpu"):
+        try:
+            return torch.load(path, map_location=map_location, weights_only=False)
+        except TypeError:
+            return torch.load(path, map_location=map_location)
+
+    @staticmethod
+    def _extract_state_dict(checkpoint):
+        if isinstance(checkpoint, dict):
+            for key in ("model_state_dict", "state_dict", "model", "net"):
+                value = checkpoint.get(key)
+                if isinstance(value, dict):
+                    return value
+
+        if isinstance(checkpoint, dict) and all(torch.is_tensor(v) for v in checkpoint.values()):
+            return checkpoint
+
+        raise ValueError("Checkpoint does not contain a valid state dict.")
+
+    @staticmethod
+    def _strip_known_prefixes(state_dict):
+        prefixes = ("module.", "_orig_mod.")
+        cleaned = {}
+        for key, value in state_dict.items():
+            name = key
+            changed = True
+            while changed:
+                changed = False
+                for prefix in prefixes:
+                    if name.startswith(prefix):
+                        name = name[len(prefix):]
+                        changed = True
+            cleaned[name] = value
+        return cleaned
+
+    @staticmethod
+    def _resolve_checkpoint_path(checkpoint_path):
+        if checkpoint_path is None:
+            raise ValueError("checkpoint_path is required.")
+
+        if os.path.exists(checkpoint_path):
+            return checkpoint_path
+
+        basename = os.path.basename(checkpoint_path)
+        search_roots = [os.getcwd()]
+        if os.path.exists("/kaggle/input"):
+            search_roots.insert(0, "/kaggle/input")
+
+        for root in search_roots:
+            for current_dir, _, files in os.walk(root):
+                if basename in files:
+                    found = os.path.join(current_dir, basename)
+                    print(f"--> [TorchvisionCNNFER] Using discovered checkpoint: {found}")
+                    return found
+
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+    def load_from_checkpoint(self, checkpoint_path, device="cpu", strict=True):
+        checkpoint_path = self._resolve_checkpoint_path(checkpoint_path)
+        checkpoint = self._safe_torch_load(checkpoint_path, map_location=device)
+        state_dict = self._strip_known_prefixes(self._extract_state_dict(checkpoint))
+        load_result = self.load_state_dict(state_dict, strict=strict)
+        print(
+            f"--> [TorchvisionCNNFER] Loaded checkpoint: {checkpoint_path} "
+            f"(strict={strict})"
+        )
+        if getattr(load_result, "missing_keys", None):
+            print(f"--> [TorchvisionCNNFER] Missing keys: {len(load_result.missing_keys)}")
+        if getattr(load_result, "unexpected_keys", None):
+            print(f"--> [TorchvisionCNNFER] Unexpected keys: {len(load_result.unexpected_keys)}")
+        return load_result
 
     def _resolve_weights(self, model_cfg):
         if not bool(model_cfg.get("pretrained", True)):

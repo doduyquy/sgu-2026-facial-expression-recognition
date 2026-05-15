@@ -1,0 +1,14 @@
+_base_: "resnet152_region_attention_sam_cosine_layer3_layer4_fused_12h.yaml"
+
+model:
+  # Weak Spatial Region Supervision:
+  # add a soft 7x7 KL prior so each CLIP region token is nudged toward its
+  # expected facial area. This is intentionally light and starts after the
+  # frozen-backbone warm-up.
+  attention_region_prior:
+    enabled: true
+    weight: 0.005
+    start_epoch: 6
+    sigma_y: 0.16
+    sigma_x: 0.20
+    floor: 0.02

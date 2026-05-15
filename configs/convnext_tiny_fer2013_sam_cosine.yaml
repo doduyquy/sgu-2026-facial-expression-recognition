@@ -1,0 +1,38 @@
+_base_: "convnext_tiny_fer2013.yaml"
+
+model:
+  # Same ConvNeXt-Tiny architecture as the 72.97 baseline, then continue
+  # fine-tuning from that checkpoint with SAM.
+  name: "convnext_tiny_fer2013"
+  arch: "convnext_tiny"
+  pretrained: false
+  weights: null
+  checkpoint_path: "checkpoints/ensemble/convnext_tiny_fer2013_15052026_accuracy72.97.pth"
+  checkpoint_strict: true
+
+data:
+  # SAM disables AMP in Trainer and uses two forward/backward passes per batch.
+  # Keep the effective batch smaller than the AdamW baseline to avoid OOM.
+  batch_size: 16
+  num_workers: 2
+
+training:
+  # SAM ablation for the promising ConvNeXt baseline.
+  optimizer: "sam"
+  base_optimizer: "adamw"
+  sam_rho: 0.03
+  sam_adaptive: false
+
+  # Slightly gentler than the AdamW baseline because SAM perturbs weights.
+  lr: 0.0002
+  finetune_lr: 0.00008
+  visual_extractor_lr: 0.000008
+
+  scheduler: "cosine"
+  epochs: 60
+  patience: 15
+  use_amp: false
+
+logging:
+  use_wandb: true
+  project_name: "FER2013"
