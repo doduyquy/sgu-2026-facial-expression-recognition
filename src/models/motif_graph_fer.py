@@ -508,20 +508,30 @@ class MotifGraphModel(nn.Module):
         # Handle TenCrop input: (B, 10, C, H, W)
         if x.dim() == 5:
             B, T, C, H, W = x.shape
-            x = x.view(B * T, C, H, W)
-            if targets is not None:
-                targets_expanded = targets.unsqueeze(1).expand(-1, T).reshape(-1)
-                out = self.forward(x, return_selection=return_selection, targets=targets_expanded)
-            else:
-                out = self.forward(x, return_selection=return_selection) 
+            logits_list = []
+            
+            # XỬ LÝ CUỐN CHIẾU: Cho từng crop chạy qua model để chống Tràn RAM
+            for t in range(T):
+                crop_x = x[:, t, :, :, :] # Lấy crop thứ t, shape: (B, C, H, W)
+                
+                if targets is not None:
+                    out = self.forward(crop_x, return_selection=return_selection, targets=targets)
+                else:
+                    out = self.forward(crop_x, return_selection=return_selection) 
+                
+                # Lưu lại kết quả
+                if return_selection:
+                    logits_list.append(out[0]) # out[0] là logits
+                else:
+                    logits_list.append(out)
+                    
+            # Tính trung bình dự đoán của 10 crop
+            mean_logits = torch.stack(logits_list, dim=1).mean(dim=1)
             
             if return_selection:
-                # Nếu trả về selection, out là một tuple: (logits, top_k, centers, scores)
-                # Chỉ lấy trung bình của logits (phần tử số 0)
-                mean_logits = out[0].view(B, T, -1).mean(dim=1)
                 return mean_logits, out[1], out[2], out[3]
             else:
-                return out.view(B, T, -1).mean(dim=1)
+                return mean_logits
 
         B = x.shape[0]
         

@@ -26,18 +26,25 @@ def build_transform(config, split="train") -> Compose: # train | val | test
             transforms.ToTensor(),
             transforms.Normalize(mean=(mu,), std=(st,))
         ])
+    elif split == "val":
+        # FAST VALIDATION: No TenCrop during training phase to save RAM/Time
+        trans = transforms.Compose([
+            transforms.Resize((image_size, image_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=(mu,), std=(st,))
+        ])
     else:
-        # Test-time augmentation with TenCrop for val/test
+        # TEST-TIME AUGMENTATION: Use TenCrop only for final evaluation
         # Resize to 56, then crop 10 patches of exactly 48x48 to match training dimensions
         trans = transforms.Compose([
             transforms.Resize((56, 56)),
-            transforms.TenCrop(48),
+            transforms.TenCrop(image_size),
             transforms.Lambda(lambda crops: torch.stack([
                 transforms.ToTensor()(crop) for crop in crops
-            ])),  # Convert to tensor: (10, 1, 40, 40)
+            ])),  
             transforms.Lambda(lambda tensors: torch.stack([
                 transforms.Normalize(mean=(mu,), std=(st,))(t) for t in tensors
-            ])),  # Normalize each crop: (10, 1, 40, 40)
+            ])),  
         ])
 
     return trans
