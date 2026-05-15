@@ -416,6 +416,10 @@ class Trainer:
                                         pass
                             except Exception:
                                 pass
+                                
+                            # VRAM Optimization: Giải phóng bộ nhớ sau khi tính Consistency
+                            del images_aug, heatmaps_aug, transformed
+                            torch.cuda.empty_cache()
                 except Exception:
                     # if any issue with augment or TF, skip augment consistency for this batch
                     pass
