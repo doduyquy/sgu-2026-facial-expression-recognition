@@ -23,6 +23,7 @@ def build_transform(config, split="train") -> Compose: # train | val | test
             transforms.RandomApply([transforms.RandomAffine(0, translate=(0.2, 0.2))], p=0.5),
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomApply([transforms.RandomRotation(10)], p=0.5),
+            transforms.RandAugment(num_ops=2, magnitude=9),
             transforms.ToTensor(),
             transforms.Normalize(mean=(mu,), std=(st,))
         ])
