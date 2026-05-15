@@ -5,7 +5,7 @@ model:
   num_classes: 7
   motifs_per_class: 16
   top_k: 6
-  offset_amplitude: 0.35
+  offset_amplitude: 0.2  # Giảm biên độ nhảy để soi kỹ vùng cục bộ trên lưới 12x12
   dropout: 0.3
 
 data:
@@ -25,7 +25,7 @@ training:
   motif_diversity_weight: 0.05
   attn_entropy_weight: 0.01
   offset_reg_weight: 0.01
-  motif_tau: 0.2
+  motif_tau: 0.07           # Tăng độ sắc nét cho hàm Loss đối lập
   scheduler: "reduce_lr_on_plateau"
   lr_patience: 5   
   patience: 30
