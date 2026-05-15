@@ -30,7 +30,8 @@ class MotifConsistencyLoss(nn.Module):
         mask = mask.unsqueeze(1) # (B, 1, Total_Motifs)
         
         # 1. Similarity to SAME class motifs (Positive)
-        pos_scores = selected_scores.masked_fill(mask == 0, -1e9)
+        # FIX: Dùng -1e4 thay vì -1e9 để tránh lỗi overflow khi dùng AMP (Float16)
+        pos_scores = selected_scores.masked_fill(mask == 0, -1e4)
         log_sum_exp_pos = torch.logsumexp(pos_scores / self.tau, dim=-1)
         
         # 2. Similarity to ALL motifs
