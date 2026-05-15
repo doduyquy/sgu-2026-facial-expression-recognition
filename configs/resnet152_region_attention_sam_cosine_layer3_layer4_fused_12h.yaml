@@ -10,5 +10,7 @@ training:
   # Kaggle-safe cap for this slow SAM + fused multi-scale ablation.
   # At roughly 15-17 minutes/epoch after unfreezing, 35 epochs should fit under
   # the 12h cutoff with room for final test evaluation.
+  # Re-test the stronger SAM radius used by the 73.47 layer4 recipe.
+  sam_rho: 0.05
   epochs: 35
   patience: 8

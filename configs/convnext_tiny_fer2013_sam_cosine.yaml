@@ -7,7 +7,7 @@ model:
   arch: "convnext_tiny"
   pretrained: false
   weights: null
-  checkpoint_path: "checkpoints/ensemble/convnext_tiny_fer2013_15052026_accuracy72.97.pth"
+  checkpoint_path: "/kaggle/input/models/lhongphuc3/convnext-72-97/pytorch/default/1/convnext_tiny_fer2013_15052026_accuracy72.97.pth"
   checkpoint_strict: true
 
 data:
