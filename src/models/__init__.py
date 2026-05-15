@@ -1,3 +1,16 @@
+git add \
+  configs/resnet152_unet_mask_attention.yaml \
+  configs/resnet152_unet_mask_attention_alpha025.yaml \
+  docs/unet_mask_guided_region_attention_ke_hoach_chi_tiet.txt \
+  run_command_unet_mask_kaggle.txt \
+  scripts/precompute_face_parsing_region_masks.py \
+  scripts/prepare_kaggle_input_dataset.py \
+  scripts/run_resnet152_unet_mask_attention.py \
+  scripts/train.py \
+  src/data/dataloader.py \
+  src/data/dataset_unet_mask.py \
+  src/models/__init__.py \
+  src/models/resnet152_unet_mask_attention.py
 from .inception import Inception
 from .simple_cnn import SimpleCNN
 from .vgg import VGG19, VGGFusionSpatial, VGGFusionCBAM, VGGFusionSpatialCNN
@@ -10,6 +23,7 @@ from .region_attention import RegionAlignedFER
 from .resnet_region_attention import ResNetRegionAlignedFER
 from .resnet152_region_attention import ResNet152RegionAttentionFER
 from .resnet152_landmark_attention import ResNet152LandmarkAttentionFER
+from .resnet152_unet_mask_attention import ResNet152UNetMaskAttentionFER
 from .swin_region_attention import SwinRegionAlignedFER
 from .GraphNN import MotifGNN
 from .PixelGNN import PixelGNN
@@ -44,6 +58,7 @@ MODEL_REGISTRY = {
     "resnet_region_aligned_fer": lambda **kw: ResNetRegionAlignedFER(config=kw['config'], channels=kw['config']['data']['channels']),
     "resnet152_region_attention": lambda **kw: ResNet152RegionAttentionFER(config=kw['config'], channels=kw['config']['data']['channels']),
     "resnet152_landmark_attention": lambda **kw: ResNet152LandmarkAttentionFER(config=kw['config'], channels=kw['config']['data']['channels']),
+    "resnet152_unet_mask_attention": lambda **kw: ResNet152UNetMaskAttentionFER(config=kw['config'], channels=kw['config']['data']['channels']),
     "swin_region_aligned_fer": lambda **kw: SwinRegionAlignedFER(config=kw['config'], channels=kw['config']['data']['channels']),
     "motif_gnn": lambda **kw: MotifGNN(config=kw['config'], channels=kw['config']['data']['channels']),
     "pixel_gnn": lambda **kw: PixelGNN(config=kw['config'], channels=kw['config']['data']['channels']),

@@ -1,0 +1,24 @@
+_base_: "resnet152_region_attention.yaml"
+
+model:
+  name: "resnet152_unet_mask_attention"
+
+  # Precomputed face-parsing / U-Net masks guide region cross-attention.
+  # Keep this soft: the mask is a bias, not a hard crop.
+  mask_attention_alpha: 0.5
+  mask_floor: 0.05
+  mask_dir: "outputs/unet_region_masks"
+
+data:
+  cache_unet_masks: true
+  use_clean_filter: true
+
+training:
+  # Keep the first ablation clean: no class-aware augmentation, no SAM.
+  epochs: 60
+  patience: 25
+  use_amp: true
+
+logging:
+  use_wandb: true
+  project_name: "FER2013"

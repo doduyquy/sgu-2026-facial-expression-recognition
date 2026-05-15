@@ -1,0 +1,5 @@
+_base_: "resnet152_unet_mask_attention.yaml"
+
+model:
+  # Lighter mask bias if alpha=0.5 over-constrains attention.
+  mask_attention_alpha: 0.25
