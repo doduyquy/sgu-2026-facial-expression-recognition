@@ -1,16 +1,3 @@
-git add \
-  configs/resnet152_unet_mask_attention.yaml \
-  configs/resnet152_unet_mask_attention_alpha025.yaml \
-  docs/unet_mask_guided_region_attention_ke_hoach_chi_tiet.txt \
-  run_command_unet_mask_kaggle.txt \
-  scripts/precompute_face_parsing_region_masks.py \
-  scripts/prepare_kaggle_input_dataset.py \
-  scripts/run_resnet152_unet_mask_attention.py \
-  scripts/train.py \
-  src/data/dataloader.py \
-  src/data/dataset_unet_mask.py \
-  src/models/__init__.py \
-  src/models/resnet152_unet_mask_attention.py
 from .inception import Inception
 from .simple_cnn import SimpleCNN
 from .vgg import VGG19, VGGFusionSpatial, VGGFusionCBAM, VGGFusionSpatialCNN
