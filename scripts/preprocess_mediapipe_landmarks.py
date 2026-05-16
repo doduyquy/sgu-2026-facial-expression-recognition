@@ -7,8 +7,7 @@ import cv2
 
 try:
     import mediapipe as mp
-    # Import trực tiếp từ đường dẫn lõi python.solutions để tránh lỗi AttributeError/ImportError trên Kaggle
-    from mediapipe.python.solutions import face_mesh as mp_face_mesh
+    import mediapipe.solutions.face_mesh as mp_face_mesh
 except Exception as e:
     print(f"[WARNING] MediaPipe import failed with error: {e}")
     print("[WARNING] Please ensure mediapipe is installed correctly (pip install mediapipe).")
