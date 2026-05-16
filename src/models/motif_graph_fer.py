@@ -513,12 +513,23 @@ class MotifGraphModel(nn.Module):
         rel_y, rel_x = torch.meshgrid(torch.linspace(-1.0, 1.0, 4), torch.linspace(-1.0, 1.0, 4), indexing='ij') 
         rel_grid = torch.stack([rel_x, rel_y], dim=-1).to(feat_map.device).view(1, 1, 16, 2) 
         
+        # BẢN VÁ LỊCH SỬ: "Hack Scale" - Bung lưới Đa hình thái (Multi-Shape Graph Sampling)
+        # Định nghĩa Scale X và Scale Y cho 10 điểm vàng theo đúng sinh học khuôn mặt:
+        # 1-2. Forehead, Glabella (Vuông): (1.0, 1.0)
+        # 3-6. L/R Eyebrow, L/R Eye (Dẹp ngang): (1.2, 0.8)
+        # 7. Nose (Kéo dọc): (0.8, 1.2)
+        # 8-9. L/R Mouth (Vuông): (1.0, 1.0)
+        # 10. Chin (Kéo dọc): (0.8, 1.2)
+        scales_x = torch.tensor([1.0, 1.0, 1.2, 1.2, 1.2, 1.2, 0.8, 1.0, 1.0, 0.8], device=feat_map.device, dtype=torch.float32)
+        scales_y = torch.tensor([1.0, 1.0, 0.8, 0.8, 0.8, 0.8, 1.2, 1.0, 1.0, 1.2], device=feat_map.device, dtype=torch.float32)
+        scales = torch.stack([scales_x, scales_y], dim=-1).view(1, num_cands, 1, 2)
+        
         # Tạo Grid chuẩn hóa [-1, 1] cho hàm grid_sample
         c_x = (centers_x.float() / (W - 1)) * 2 - 1.0
         c_y = (centers_y.float() / (H - 1)) * 2 - 1.0
         centers_grid = torch.stack([c_x, c_y], dim=-1).view(B, num_cands, 1, 2) # (B, 10, 1, 2)
         
-        sampling_grid = centers_grid + offsets.unsqueeze(2) + rel_grid * (1.0 / (W-1))
+        sampling_grid = centers_grid + offsets.unsqueeze(2) + (rel_grid * scales) * (1.0 / (W-1))
         sampling_grid = torch.clamp(sampling_grid, -1.0, 1.0)
         sampling_grid = sampling_grid.view(B, num_cands * 16, 1, 2)
         
