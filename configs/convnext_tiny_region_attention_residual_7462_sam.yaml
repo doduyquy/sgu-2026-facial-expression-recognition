@@ -1,0 +1,40 @@
+_base_: "convnext_tiny_region_attention_residual_7462_adamw.yaml"
+
+model:
+  # After the AdamW residual run finds a good region-attention checkpoint,
+  # set this to that checkpoint if you want true SAM continuation.
+  # If left as the 74.62 ConvNeXt checkpoint, this behaves as SAM-from-source.
+  checkpoint_path: "checkpoints/ensemble/convnext_tiny_fer2013_15052026_valaccuracy73.59.pth"
+  checkpoint_strict: false
+
+  # Keep residual correction conservative under SAM.
+  source_logit_weight: 1.0
+  attention_logit_weight: 0.2
+
+data:
+  batch_size: 16
+  num_workers: 2
+
+training:
+  # Fill this after the AdamW residual run if you want true SAM continuation:
+  # init_checkpoint_path: "outputs/checkpoints/convnext_tiny_region_attention/<adamw_run>_best.pth"
+  init_checkpoint_path: null
+  init_checkpoint_strict: true
+
+  optimizer: "sam"
+  base_optimizer: "adamw"
+  sam_rho: 0.03
+  sam_adaptive: false
+
+  lr: 0.00012
+  finetune_lr: 0.00005
+  visual_extractor_lr: 0.000005
+  weight_decay: 0.01
+  scheduler: "cosine"
+  epochs: 35
+  patience: 10
+  use_amp: false
+
+logging:
+  use_wandb: true
+  project_name: "FER2013"

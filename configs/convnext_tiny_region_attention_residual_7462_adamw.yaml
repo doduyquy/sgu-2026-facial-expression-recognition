@@ -1,0 +1,71 @@
+_base_: "convnext_tiny_fer2013.yaml"
+
+model:
+  # Main proposed branch: keep the strong ConvNeXt-Tiny FER classifier as the
+  # source logits, then let the CLIP-region branch learn residual corrections.
+  name: "convnext_tiny_region_attention"
+  arch: "convnext_tiny"
+  pretrained: false
+  weights: null
+  checkpoint_path: "checkpoints/ensemble/convnext_tiny_fer2013_15052026_valaccuracy73.59.pth"
+  checkpoint_strict: false
+  use_source_classifier: true
+
+  embed_dim: 512
+  num_heads: 4
+  num_regions: 6
+  num_encoder_layers: 2
+  transformer_dropout: 0.1
+
+  # ConvNeXt-Tiny final feature map is [B, 768, 7, 7] for 224x224 input.
+  pool_visual_tokens: false
+  token_grid_size: 7
+  use_visual_pos_embed: true
+  use_global_visual_bias: true
+  use_region_slot_embed: true
+  fusion_type: "transformer"
+
+  # Semantic facial-region queries. Keep fallback enabled for Kaggle robustness,
+  # but check logs before claiming CLIP tokens in the report.
+  use_clip_dictionary: true
+  clip_model_name: "openai/clip-vit-base-patch32"
+  clip_fallback_to_learned: true
+
+  # Train the region head first; unfreeze ConvNeXt features gently after that.
+  freeze_backbone_epochs: 4
+  unfreeze_backbone: true
+  unfreeze_backbone_scope: "all"
+  freeze_unfrozen_batchnorm: true
+
+  # Residual logit fusion: source classifier keeps the 74.62% baseline,
+  # region attention learns a small correction signal.
+  logit_fusion: "sum"
+  finetune_logit_fusion: "sum"
+  source_logit_weight: 1.0
+  attention_logit_weight: 0.25
+
+  region_pooling: "concat"
+  classifier_hidden_dim: 1024
+  classifier_dropout1: 0.2
+  classifier_dropout2: 0.1
+  ortho_loss_type: "squared_offdiag"
+  ortho_loss_weight: 0.005
+
+data:
+  batch_size: 16
+  num_workers: 2
+
+training:
+  optimizer: "adamw"
+  lr: 0.0002
+  finetune_lr: 0.00008
+  visual_extractor_lr: 0.000008
+  weight_decay: 0.01
+  scheduler: "cosine"
+  epochs: 45
+  patience: 12
+  use_amp: true
+
+logging:
+  use_wandb: true
+  project_name: "FER2013"
