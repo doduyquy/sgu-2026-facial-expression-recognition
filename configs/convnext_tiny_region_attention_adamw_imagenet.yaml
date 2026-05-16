@@ -1,0 +1,74 @@
+_base_: "convnext_tiny_fer2013.yaml"
+
+model:
+  # Phase 1 for the ConvNeXt region-attention branch:
+  # start from ImageNet ConvNeXt-Tiny weights and train the new attention head
+  # with AdamW before trying a slower SAM fine-tune.
+  name: "convnext_tiny_region_attention"
+  arch: "convnext_tiny"
+  pretrained: true
+  weights: "DEFAULT"
+  checkpoint_path: null
+  checkpoint_strict: false
+  use_source_classifier: false
+
+  embed_dim: 512
+  num_heads: 4
+  num_regions: 6
+  num_encoder_layers: 2
+  transformer_dropout: 0.2
+
+  # ConvNeXt-Tiny final feature map is [B, 768, 7, 7] for 224x224 input.
+  pool_visual_tokens: false
+  token_grid_size: 7
+  use_visual_pos_embed: true
+  use_global_visual_bias: true
+  use_region_slot_embed: true
+  fusion_type: "transformer"
+
+  # Use CLIP text embeddings as semantic facial-region queries.
+  # Keep fallback disabled so the run fails loudly if CLIP is not available.
+  use_clip_dictionary: true
+  clip_model_name: "openai/clip-vit-base-patch32"
+  clip_fallback_to_learned: false
+
+  # Stabilize the new region branch first, then gently fine-tune ConvNeXt.
+  freeze_backbone_epochs: 4
+  unfreeze_backbone: true
+  unfreeze_backbone_scope: "all"
+  freeze_unfrozen_batchnorm: true
+
+  logit_fusion: "attention"
+  finetune_logit_fusion: "attention"
+  attention_logit_weight: 1.0
+  source_logit_weight: 0.0
+
+  region_pooling: "concat"
+  classifier_hidden_dim: 1024
+  classifier_dropout1: 0.3
+  classifier_dropout2: 0.2
+  ortho_loss_type: "squared_offdiag"
+  ortho_loss_weight: 0.02
+
+data:
+  batch_size: 16
+  num_workers: 2
+
+training:
+  optimizer: "adamw"
+
+  # Head LR trains region attention; visual_extractor_lr protects the ImageNet
+  # ConvNeXt backbone after unfreeze.
+  lr: 0.0002
+  finetune_lr: 0.00008
+  visual_extractor_lr: 0.000008
+  weight_decay: 0.01
+
+  scheduler: "cosine"
+  epochs: 45
+  patience: 12
+  use_amp: true
+
+logging:
+  use_wandb: true
+  project_name: "FER2013"
