@@ -1,0 +1,73 @@
+_base_: "convnext_tiny_fer2013.yaml"
+
+model:
+  # New direction after residual-logit fusion failed to improve validation:
+  # keep the FER-trained ConvNeXt feature extractor, but remove the original
+  # ConvNeXt classifier from the decision path. The region-attention head owns
+  # the final logits.
+  name: "convnext_tiny_region_attention"
+  arch: "convnext_tiny"
+  pretrained: false
+  weights: null
+  checkpoint_path: "checkpoints/ensemble/convnext_tiny_fer2013_15052026_valaccuracy73.59.pth"
+  checkpoint_strict: false
+  use_source_classifier: false
+
+  embed_dim: 384
+  num_heads: 4
+  num_regions: 6
+  num_encoder_layers: 2
+  transformer_dropout: 0.25
+
+  # ConvNeXt-Tiny final feature map is [B, 768, 7, 7] for 224x224 input.
+  pool_visual_tokens: false
+  token_grid_size: 7
+  use_visual_pos_embed: true
+  use_global_visual_bias: true
+  use_region_slot_embed: true
+  fusion_type: "transformer"
+
+  use_clip_dictionary: true
+  clip_model_name: "openai/clip-vit-base-patch32"
+  clip_fallback_to_learned: true
+
+  # Train the region classifier first. If validation survives the warm-up,
+  # unfreeze ConvNeXt with a very small visual LR so features do not drift hard.
+  freeze_backbone_epochs: 5
+  unfreeze_backbone: true
+  unfreeze_backbone_scope: "all"
+  freeze_unfrozen_batchnorm: true
+
+  logit_fusion: "attention"
+  finetune_logit_fusion: "attention"
+  attention_logit_weight: 1.0
+  source_logit_weight: 0.0
+
+  region_pooling: "concat"
+  classifier_hidden_dim: 512
+  classifier_dropout1: 0.35
+  classifier_dropout2: 0.25
+  ortho_loss_type: "squared_offdiag"
+  ortho_loss_weight: 0.01
+
+data:
+  batch_size: 16
+  num_workers: 2
+  use_clean_filter: false
+
+training:
+  optimizer: "adamw"
+  lr: 0.0001
+  finetune_lr: 0.00005
+  visual_extractor_lr: 0.000002
+  weight_decay: 0.02
+  scheduler: "reduce_lr_on_plateau"
+  lr_factor: 0.5
+  lr_patience: 2
+  epochs: 45
+  patience: 12
+  use_amp: false
+
+logging:
+  use_wandb: true
+  project_name: "FER2013"
