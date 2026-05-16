@@ -54,6 +54,7 @@ model:
 data:
   batch_size: 16
   num_workers: 2
+  use_clean_filter: false
 
 training:
   optimizer: "adamw"

@@ -1,0 +1,24 @@
+_base_: "convnext_tiny_region_attention_residual_7462_frozen_adamw.yaml"
+
+model:
+  source_logit_weight: 1.0
+  attention_logit_weight: 0.08
+
+training:
+  # Fill this after the frozen AdamW run finds a good checkpoint:
+  # init_checkpoint_path: "outputs/checkpoints/convnext_tiny_region_attention/<frozen_adamw_run>_best.pth"
+  init_checkpoint_path: null
+  init_checkpoint_strict: true
+
+  optimizer: "sam"
+  base_optimizer: "adamw"
+  sam_rho: 0.02
+  sam_adaptive: false
+
+  lr: 0.00006
+  finetune_lr: 0.00003
+  visual_extractor_lr: 0.0
+  epochs: 20
+  patience: 6
+  use_amp: false
+
