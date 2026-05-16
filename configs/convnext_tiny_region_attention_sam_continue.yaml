@@ -5,11 +5,12 @@ model:
   name: "convnext_tiny_region_attention"
   arch: "convnext_tiny"
 
-  # Load only ConvNeXt feature weights from the strong FER checkpoint.
-  # The ConvNeXt avgpool/classifier path is dropped; region attention has a new head.
-  pretrained: false
-  weights: null
-  checkpoint_path: "/kaggle/input/datasets/lhongphuc3/convnext-74-62/convnext_tiny_fer2013_15052026_valaccuracy73.59.pth"
+  # Start from ImageNet ConvNeXt-Tiny weights. The ConvNeXt avgpool/classifier
+  # path is dropped; only backbone.features is used as the feature map for the
+  # region-attention architecture.
+  pretrained: true
+  weights: "DEFAULT"
+  checkpoint_path: null
   checkpoint_strict: false
   use_source_classifier: false
 
