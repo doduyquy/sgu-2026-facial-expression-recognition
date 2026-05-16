@@ -23,35 +23,6 @@ class MaskBlock(nn.Sequential): # Kế thừa nn.Sequential thay vì nn.Module �
             nn.Sigmoid()
         )
 
-class STN(nn.Module):
-    """Mạng biến đổi không gian (STN) căn chỉnh khuôn mặt"""
-    def __init__(self, in_channels=1):
-        super().__init__()
-        self.localization = nn.Sequential(
-            nn.Conv2d(in_channels, 8, kernel_size=7, padding=3),
-            nn.MaxPool2d(2, stride=2),
-            nn.ReLU(True),
-            nn.Conv2d(8, 10, kernel_size=5, padding=2),
-            nn.MaxPool2d(2, stride=2),
-            nn.ReLU(True),
-            nn.AdaptiveAvgPool2d((12, 12)) # Ensure fixed size for Linear layer
-        )
-        self.fc_loc = nn.Sequential(
-            nn.Linear(10 * 12 * 12, 32),
-            nn.ReLU(True),
-            nn.Linear(32, 3 * 2)
-        )
-        # Identity initialization - CỰC KỲ QUAN TRỌNG
-        self.fc_loc[2].weight.data.zero_()
-        self.fc_loc[2].bias.data.copy_(torch.tensor([1, 0, 0, 0, 1, 0], dtype=torch.float))
-
-    def forward(self, x):
-        xs = self.localization(x)
-        xs = xs.view(-1, 10 * 12 * 12)
-        theta = self.fc_loc(xs).view(-1, 2, 3)
-        grid = F.affine_grid(theta, x.size(), align_corners=False)
-        x = F.grid_sample(x, grid, align_corners=False)
-        return x
 class MotifBackbone(nn.Module):
     """
     Advanced Backbone following Pham Qui Luan's ResMaskingNet structure.
@@ -59,7 +30,6 @@ class MotifBackbone(nn.Module):
     """
     def __init__(self, in_channels=1, feat_dim=128):
         super().__init__()
-        self.stn = STN(in_channels)
         
         # Load cấu trúc ResNet152 chuẩn từ PyTorch để hứng trọng số
         import torchvision.models as models
@@ -131,7 +101,6 @@ class MotifBackbone(nn.Module):
             self.load_state_dict(pretrained_dict, strict=False)
 
     def forward(self, x):
-        x = self.stn(x)
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
