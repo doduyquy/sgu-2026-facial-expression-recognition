@@ -7,7 +7,7 @@ import cv2
 
 try:
     import mediapipe as mp
-    import mediapipe.solutions.face_mesh as mp_face_mesh
+    mp_face_mesh = mp.solutions.face_mesh
 except Exception as e:
     print(f"[WARNING] MediaPipe import failed with error: {e}")
     print("[WARNING] Please ensure mediapipe is installed correctly (pip install mediapipe).")
