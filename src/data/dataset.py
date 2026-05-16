@@ -43,8 +43,13 @@ class FER2013(Dataset):
             print(f"--> [Landmarks] Loading 10 Golden Landmarks from {landmark_path}...")
             ldf = pd.read_csv(landmark_path)
             self.landmarks = ldf.iloc[:, 2:].values # (N, 20)
+            if 'status' in ldf.columns:
+                status_col = ldf['status'].values
+                self.statuses = np.array([1.0 if s == 'success' else 0.0 for s in status_col], dtype=np.float32)
+            else:
+                self.statuses = np.ones(len(self.labels), dtype=np.float32)
         else:
-            print(f"[WARNING] Landmark CSV not found for {split}. Using default mean 10-landmark matrix.")
+            print(f"[WARNING] Landmark CSV not found for {split}. Using default mean 10-landmark matrix (treated as failed/subgraph fallback).")
             mean_matrix = np.array([
                 20.0, 6.0,   # forehead
                 20.0, 12.0,  # glabella
@@ -58,6 +63,7 @@ class FER2013(Dataset):
                 20.0, 44.0   # chin
             ])
             self.landmarks = np.tile(mean_matrix, (len(self.labels), 1))
+            self.statuses = np.zeros(len(self.labels), dtype=np.float32)
         
         print(f"--> Done caching {len(self.images)} images for {split}.")
 
@@ -75,7 +81,8 @@ class FER2013(Dataset):
             image = self.transform(image)
 
         landmarks_tensor = torch.tensor(self.landmarks[index].reshape(10, 2), dtype=torch.float32)
-        return image, label, landmarks_tensor
+        status_tensor = torch.tensor(self.statuses[index], dtype=torch.float32)
+        return image, label, landmarks_tensor, status_tensor
     
     def label_to_emotion(self, label):
         return EMOTION_DICT[label]

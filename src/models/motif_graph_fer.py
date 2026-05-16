@@ -462,30 +462,30 @@ class MotifGraphModel(nn.Module):
         
         return l_intra + 1.0 * l_inter
 
-    def _extract_deformable_subgraphs(self, feat_map, H, W, node_feats, landmarks_48):
+    def _extract_deformable_subgraphs(self, feat_map, H, W, node_feats, landmarks_48, statuses):
         B, C_feat, _, _ = feat_map.shape
         num_cands = 10 # BỘ 10 ĐIỂM VÀNG
         
-        if landmarks_48 is None:
-            # Tọa độ lý tưởng trên lưới 48x48 cho 10 điểm
-            mean_matrix = torch.tensor([
-                [20.0, 6.0],   # forehead
-                [20.0, 12.0],  # glabella
-                [12.0, 10.0],  # left_eyebrow
-                [28.0, 10.0],  # right_eyebrow
-                [12.0, 16.0],  # left_eye
-                [28.0, 16.0],  # right_eye
-                [20.0, 24.0],  # nose
-                [12.0, 36.0],  # left_mouth
-                [28.0, 36.0],  # right_mouth
-                [20.0, 44.0]   # chin
-            ], device=feat_map.device, dtype=torch.float32).unsqueeze(0).expand(B, -1, -1)
-            landmarks_48 = mean_matrix
+        # Tọa độ neo sinh học mặc định trên lưới 12x12 (dùng khi failed)
+        default_centers_y = torch.tensor([1, 3, 2, 2, 4, 4, 6, 9, 9, 11], device=feat_map.device, dtype=torch.long).unsqueeze(0).expand(B, -1)
+        default_centers_x = torch.tensor([5, 5, 3, 7, 3, 7, 5, 3, 7, 5], device=feat_map.device, dtype=torch.long).unsqueeze(0).expand(B, -1)
 
-        # 1. Ép tọa độ từ ảnh 48x48 về không gian Feature Map (12x12)
-        # landmarks_48 shape: (B, 10, 2) -> index 0 là X, index 1 là Y
-        centers_x = torch.clamp((landmarks_48[:, :, 0] / 48.0 * W).long(), 0, W - 1)
-        centers_y = torch.clamp((landmarks_48[:, :, 1] / 48.0 * H).long(), 0, H - 1)
+        if landmarks_48 is None:
+            centers_x = default_centers_x
+            centers_y = default_centers_y
+        else:
+            # 1. Ép tọa độ từ ảnh 48x48 về không gian Feature Map (12x12)
+            csv_centers_x = torch.clamp((landmarks_48[:, :, 0] / 48.0 * W).long(), 0, W - 1)
+            csv_centers_y = torch.clamp((landmarks_48[:, :, 1] / 48.0 * H).long(), 0, H - 1)
+            
+            if statuses is not None:
+                # statuses shape: (B,) -> reshape thành (B, 1)
+                mask_success = statuses.view(B, 1).long().to(feat_map.device)
+                centers_x = csv_centers_x * mask_success + default_centers_x * (1 - mask_success)
+                centers_y = csv_centers_y * mask_success + default_centers_y * (1 - mask_success)
+            else:
+                centers_x = csv_centers_x
+                centers_y = csv_centers_y
         
         # Tính index 1D cho từng ảnh trong batch, shape: (B, 10)
         center_indices = centers_y * W + centers_x
@@ -501,6 +501,13 @@ class MotifGraphModel(nn.Module):
         
         offsets = self.offset_predictor(combined_feats) * getattr(self, 'offset_amplitude', 0.2)
         self._latest_offsets = offsets
+        
+        # BẢN VÁ LỊCH SỬ: Phân nhánh Success vs Failed
+        if statuses is not None:
+            # Nếu success (1.0): mask_failed = 0.0 -> offsets bị triệt tiêu về 0, giữ nguyên tọa độ CSV chuẩn xác 100%
+            # Nếu failed (0.0): mask_failed = 1.0 -> giữ nguyên offsets do offset_predictor tự học (cơ chế subgraph nguyên bản)
+            mask_failed = (1.0 - statuses.view(B, 1, 1)).to(feat_map.device)
+            offsets = offsets * mask_failed
         
         # 4. Tính toán Lưới lấy mẫu (Sampling Grid)
         rel_y, rel_x = torch.meshgrid(torch.linspace(-1.0, 1.0, 4), torch.linspace(-1.0, 1.0, 4), indexing='ij') 
@@ -528,7 +535,7 @@ class MotifGraphModel(nn.Module):
             
         return sampled_feats, adj, centers_coords
 
-    def forward(self, x, return_selection=False, targets=None, landmarks=None):
+    def forward(self, x, return_selection=False, targets=None, landmarks=None, statuses=None):
         if targets is not None:
             self._latest_targets = targets
         else:
@@ -544,9 +551,9 @@ class MotifGraphModel(nn.Module):
                 crop_x = x[:, t, :, :, :] # Lấy crop thứ t, shape: (B, C, H, W)
                 
                 if targets is not None:
-                    out = self.forward(crop_x, return_selection=return_selection, targets=targets, landmarks=landmarks)
+                    out = self.forward(crop_x, return_selection=return_selection, targets=targets, landmarks=landmarks, statuses=statuses)
                 else:
-                    out = self.forward(crop_x, return_selection=return_selection, landmarks=landmarks) 
+                    out = self.forward(crop_x, return_selection=return_selection, landmarks=landmarks, statuses=statuses) 
                 
                 # Lưu lại kết quả
                 if return_selection:
@@ -590,7 +597,7 @@ class MotifGraphModel(nn.Module):
         for gnn in self.gnn_layers:
             node_feats = gnn(node_feats, adj)
             
-        candidates, cand_adjs, centers = self._extract_deformable_subgraphs(feat_map, H, W, node_feats, landmarks)
+        candidates, cand_adjs, centers = self._extract_deformable_subgraphs(feat_map, H, W, node_feats, landmarks, statuses)
         num_cands = candidates.shape[1]
         
         # Advanced Motif Module Forward
