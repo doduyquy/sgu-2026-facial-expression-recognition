@@ -63,8 +63,8 @@ def process_split(data_path, output_dir, split_name):
     print(f"--> Processing {len(pixels_list)} images for {split_name} (Resize 48->256, Detect, Scale 256->48)...")
     
     for idx, p in enumerate(pixels_list):
-        # 1. Parse chuỗi pixel thành ảnh 48x48 numpy array
-        img_48 = np.fromstring(p, sep=' ', dtype=np.uint8).reshape(48, 48)
+        # 1. Parse chuỗi pixel thành ảnh 48x48 numpy array (Loại bỏ DeprecationWarning)
+        img_48 = np.array(p.split(), dtype=np.uint8).reshape(48, 48)
         
         # 2. Chuyển sang ảnh màu RGB và resize lên 256x256 để MediaPipe hoạt động chính xác
         img_rgb = cv2.cvtColor(img_48, cv2.COLOR_GRAY2RGB)

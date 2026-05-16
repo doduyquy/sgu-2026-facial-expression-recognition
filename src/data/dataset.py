@@ -21,8 +21,8 @@ class FER2013(Dataset):
         self.labels = self.data.iloc[:, 0].astype(int).tolist()
         pixels_list = self.data.iloc[:, 1].tolist()
         
-        # Parse list of strings into a single optimized list of numpy arrays
-        self.images = [np.fromstring(p, sep=' ', dtype=np.uint8).reshape(48, 48) for p in pixels_list]
+        # Parse list of strings into a single optimized list of numpy arrays (Loại bỏ DeprecationWarning)
+        self.images = [np.array(p.split(), dtype=np.uint8).reshape(48, 48) for p in pixels_list]
         
         print(f"--> Done caching {len(self.images)} images for {split}.")
 
