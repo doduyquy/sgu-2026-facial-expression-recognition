@@ -16,9 +16,11 @@ def parse_args():
     parser.add_argument('--data_path', type=str, default='dataset/fer13-split', help='Path to FER2013 split directory')
     parser.add_argument('--output_dir', type=str, default='dataset/landmarks', help='Directory to save landmark CSV files')
     parser.add_argument('--split', type=str, default='test', choices=['train', 'val', 'test', 'all'], help='Dataset split to process')
+    parser.add_argument('--vis_samples', type=int, default=20, help='Number of sample images to export with drawn landmark points')
+    parser.add_argument('--vis_dir', type=str, default='dataset/landmarks_vis', help='Directory to save visualization images')
     return parser.parse_args()
 
-def process_split(data_path, output_dir, split_name):
+def process_split(data_path, output_dir, split_name, vis_samples=20, vis_dir='dataset/landmarks_vis'):
     csv_path = os.path.join(data_path, f"{split_name}.csv")
     if not os.path.exists(csv_path):
         print(f"[ERROR] CSV file not found at {csv_path}")
@@ -89,6 +91,27 @@ def process_split(data_path, output_dir, split_name):
             row.update(coords)
             results_list.append(row)
             successful_coords.append([coords[k] for k in coords.keys()])
+            
+            if idx < vis_samples:
+                # Vẽ 6 điểm neo lên ảnh 256x256 để kiểm chứng trực quan
+                vis_img = img_256.copy()
+                # Màu sắc BGR cho 6 điểm
+                COLORS = {
+                    'forehead': (255, 0, 0),    # Blue
+                    'left_eye': (0, 255, 0),    # Green
+                    'right_eye': (255, 255, 0), # Cyan
+                    'nose': (0, 255, 255),      # Yellow
+                    'left_mouth': (255, 0, 255),# Magenta
+                    'right_mouth': (0, 0, 255)  # Red
+                }
+                for name, l_idx in LANDMARK_INDICES.items():
+                    pt_x = int(landmarks[l_idx].x * 256.0)
+                    pt_y = int(landmarks[l_idx].y * 256.0)
+                    cv2.circle(vis_img, (pt_x, pt_y), radius=4, color=COLORS[name], thickness=-1)
+                
+                os.makedirs(vis_dir, exist_ok=True)
+                vis_path = os.path.join(vis_dir, f"{split_name}_sample_{idx}_success.png")
+                cv2.imwrite(vis_path, vis_img)
         else:
             # Ghi nhận thất bại để đắp tọa độ trung bình (Mean Coordinates) sau
             row = {'sample_id': idx, 'status': 'failed'}
@@ -149,6 +172,6 @@ if __name__ == "__main__":
     
     if args.split == 'all':
         for s in ['train', 'val', 'test']:
-            process_split(args.data_path, args.output_dir, s)
+            process_split(args.data_path, args.output_dir, s, vis_samples=args.vis_samples, vis_dir=args.vis_dir)
     else:
-        process_split(args.data_path, args.output_dir, args.split)
+        process_split(args.data_path, args.output_dir, args.split, vis_samples=args.vis_samples, vis_dir=args.vis_dir)
