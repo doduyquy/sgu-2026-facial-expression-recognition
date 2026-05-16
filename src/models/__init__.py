@@ -9,6 +9,7 @@ from .dual_fusion import VGGResNetAttentionFusion
 from .region_attention import RegionAlignedFER
 from .resnet_region_attention import ResNetRegionAlignedFER
 from .resnet152_region_attention import ResNet152RegionAttentionFER
+from .convnext_region_attention import ConvNeXtRegionAttentionFER
 from .resnet152_landmark_attention import ResNet152LandmarkAttentionFER
 from .resnet152_unet_mask_attention import ResNet152UNetMaskAttentionFER
 from .swin_region_attention import SwinRegionAlignedFER
@@ -45,6 +46,7 @@ MODEL_REGISTRY = {
     "region_aligned_fer": lambda **kw: RegionAlignedFER(config=kw['config'], channels=kw['config']['data']['channels']),
     "resnet_region_aligned_fer": lambda **kw: ResNetRegionAlignedFER(config=kw['config'], channels=kw['config']['data']['channels']),
     "resnet152_region_attention": lambda **kw: ResNet152RegionAttentionFER(config=kw['config'], channels=kw['config']['data']['channels']),
+    "convnext_tiny_region_attention": lambda **kw: ConvNeXtRegionAttentionFER(config=kw['config'], channels=kw['config']['data']['channels']),
     "resnet152_landmark_attention": lambda **kw: ResNet152LandmarkAttentionFER(config=kw['config'], channels=kw['config']['data']['channels']),
     "resnet152_unet_mask_attention": lambda **kw: ResNet152UNetMaskAttentionFER(config=kw['config'], channels=kw['config']['data']['channels']),
     "swin_region_aligned_fer": lambda **kw: SwinRegionAlignedFER(config=kw['config'], channels=kw['config']['data']['channels']),

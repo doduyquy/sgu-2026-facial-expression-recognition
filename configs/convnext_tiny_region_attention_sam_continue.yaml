@@ -1,0 +1,80 @@
+_base_: "convnext_tiny_fer2013.yaml"
+
+model:
+  # ConvNeXt supplies visual tokens; region attention is a new trainable head.
+  name: "convnext_tiny_region_attention"
+  arch: "convnext_tiny"
+
+  # Load only ConvNeXt feature weights from the strong FER checkpoint.
+  # The ConvNeXt avgpool/classifier path is dropped; region attention has a new head.
+  pretrained: false
+  weights: null
+  checkpoint_path: "/kaggle/input/datasets/lhongphuc3/convnext-74-62/convnext_tiny_fer2013_15052026_valaccuracy73.59.pth"
+  checkpoint_strict: false
+  use_source_classifier: false
+
+  embed_dim: 512
+  num_heads: 4
+  num_regions: 6
+  num_encoder_layers: 2
+  transformer_dropout: 0.2
+
+  # ConvNeXt-Tiny final feature map is [B, 768, 7, 7] for 224x224 input.
+  pool_visual_tokens: false
+  token_grid_size: 7
+  use_visual_pos_embed: true
+  use_global_visual_bias: true
+  use_region_slot_embed: true
+  fusion_type: "transformer"
+
+  # This matches the diagram: 6 semantic facial-region tokens query local
+  # ConvNeXt visual tokens. If Kaggle cannot load CLIP/transformers, the model
+  # falls back to learned region tokens instead of crashing.
+  use_clip_dictionary: true
+  clip_model_name: "openai/clip-vit-base-patch32"
+  clip_fallback_to_learned: true
+
+  # Train the region branch first, then gently fine-tune ConvNeXt features.
+  freeze_backbone_epochs: 4
+  unfreeze_backbone: true
+  unfreeze_backbone_scope: "all"
+  freeze_unfrozen_batchnorm: true
+
+  # Pure region-attention logits; ConvNeXt's original classifier is removed.
+  logit_fusion: "attention"
+  finetune_logit_fusion: "attention"
+  attention_logit_weight: 1.0
+  source_logit_weight: 0.0
+
+  region_pooling: "concat"
+  classifier_hidden_dim: 1024
+  classifier_dropout1: 0.3
+  classifier_dropout2: 0.2
+  ortho_loss_type: "squared_offdiag"
+  ortho_loss_weight: 0.02
+
+data:
+  batch_size: 16
+  num_workers: 2
+
+training:
+  optimizer: "sam"
+  base_optimizer: "adamw"
+  sam_rho: 0.03
+  sam_adaptive: false
+
+  # Head LR trains region attention; visual_extractor_lr protects the loaded
+  # ConvNeXt feature extractor from drifting too aggressively after unfreeze.
+  lr: 0.0002
+  finetune_lr: 0.00008
+  visual_extractor_lr: 0.000008
+  weight_decay: 0.01
+
+  scheduler: "cosine"
+  epochs: 40
+  patience: 10
+  use_amp: false
+
+logging:
+  use_wandb: true
+  project_name: "FER2013"
