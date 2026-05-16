@@ -12,10 +12,10 @@ def build_optimizer(model, config):
     head_params = []
     
     for name, param in model.named_parameters():
-        # BẢN VÁ: Loại bỏ STN khỏi danh sách bị khóa LR
-        if 'backbone.layer' in name or 'backbone.conv1' in name or 'backbone.bn1' in name or 'backbone.mask' in name:
+        # TRÓI STN LẠI: STN bắt buộc phải học với tốc độ cực chậm (lr * 0.1) để không làm nát ảnh
+        if 'backbone.layer' in name or 'backbone.conv1' in name or 'backbone.bn1' in name or 'backbone.mask' in name or 'stn' in name:
             backbone_params.append(param)
-        # Các khối mới: STN, Graph, Motif module, Gated Fusion... dùng LR chuẩn
+        # Các khối mới: Graph, Motif module, Gated Fusion... dùng LR chuẩn
         else:
             head_params.append(param)
             
