@@ -7,9 +7,11 @@ import cv2
 
 try:
     import mediapipe as mp
+    import mediapipe.solutions.face_mesh as mp_face_mesh
 except ImportError:
     print("[WARNING] MediaPipe is not installed. Please install it using: pip install mediapipe")
     mp = None
+    mp_face_mesh = None
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Offline MediaPipe Landmark Detection for FER2013")
@@ -46,11 +48,11 @@ def process_split(data_path, output_dir, split_name, vis_samples=20, vis_dir='da
         'right_mouth': 291
     }
 
-    if mp is None:
+    if mp_face_mesh is None:
         print("[ERROR] Cannot run detection without MediaPipe.")
         return
 
-    mp_face_mesh = mp.solutions.face_mesh
+    # Sử dụng trực tiếp mô-đun mp_face_mesh đã import ở đầu file
     face_mesh = mp_face_mesh.FaceMesh(
         static_image_mode=True,
         max_num_faces=1,
