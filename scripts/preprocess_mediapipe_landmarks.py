@@ -33,20 +33,18 @@ def process_split(data_path, output_dir, split_name, vis_samples=20, vis_dir='da
     df = pd.read_csv(csv_path, usecols=[0, 1])
     pixels_list = df.iloc[:, 1].tolist()
     
-    # Định nghĩa 6 điểm neo sinh học tương ứng với MediaPipe Face Mesh (468 points)
-    # 151: Trán (Forehead center)
-    # 159: Mắt trái (Left eye upper center)
-    # 386: Mắt phải (Right eye upper center)
-    # 1: Chóp mũi (Nose tip)
-    # 61: Mép trái (Left mouth corner)
-    # 291: Mép phải (Right mouth corner)
+    # BỘ 10 ĐIỂM VÀNG CHO FER2013
     LANDMARK_INDICES = {
-        'forehead': 151,
-        'left_eye': 159,
-        'right_eye': 386,
-        'nose': 1,
-        'left_mouth': 61,
-        'right_mouth': 291
+        'forehead': 151,       # Trán
+        'glabella': 9,         # Ấn đường (Giữa 2 lông mày - Cực kỳ quan trọng cho Angry/Sad)
+        'left_eyebrow': 65,    # Giữa lông mày trái
+        'right_eyebrow': 295,  # Giữa lông mày phải
+        'left_eye': 159,       # Mắt trái
+        'right_eye': 386,      # Mắt phải
+        'nose': 1,             # Chóp mũi
+        'left_mouth': 61,      # Mép trái
+        'right_mouth': 291,    # Mép phải
+        'chin': 152            # Đỉnh cằm (Quan trọng cho Surprise/Fear)
     }
 
     if mp_face_mesh is None:
@@ -96,16 +94,20 @@ def process_split(data_path, output_dir, split_name, vis_samples=20, vis_dir='da
             successful_coords.append([coords[k] for k in coords.keys()])
             
             if idx < vis_samples:
-                # Vẽ 6 điểm neo lên ảnh 256x256 để kiểm chứng trực quan
+                # Vẽ 10 điểm neo lên ảnh 256x256 để kiểm chứng trực quan
                 vis_img = img_256.copy()
-                # Màu sắc BGR cho 6 điểm
+                # Màu sắc BGR cho 10 điểm
                 COLORS = {
-                    'forehead': (255, 0, 0),    # Blue
-                    'left_eye': (0, 255, 0),    # Green
-                    'right_eye': (255, 255, 0), # Cyan
-                    'nose': (0, 255, 255),      # Yellow
-                    'left_mouth': (255, 0, 255),# Magenta
-                    'right_mouth': (0, 0, 255)  # Red
+                    'forehead': (255, 0, 0),      # Blue
+                    'glabella': (128, 0, 128),    # Purple
+                    'left_eyebrow': (0, 128, 0),  # Dark Green
+                    'right_eyebrow': (128, 128, 0),# Teal/Olive
+                    'left_eye': (0, 255, 0),      # Bright Green
+                    'right_eye': (255, 255, 0),   # Cyan
+                    'nose': (0, 255, 255),        # Yellow
+                    'left_mouth': (255, 0, 255),  # Magenta
+                    'right_mouth': (0, 0, 255),   # Red
+                    'chin': (0, 165, 255)         # Orange
                 }
                 for name, l_idx in LANDMARK_INDICES.items():
                     pt_x = int(landmarks[l_idx].x * 256.0)
@@ -133,27 +135,33 @@ def process_split(data_path, output_dir, split_name, vis_samples=20, vis_dir='da
     # 4. XỬ LÝ NGOẠI LỆ (FALLBACK TO MEAN COORDINATES)
     print(f"\n--> [Exception Handling] Calculating Mean Coordinates from {len(successful_coords)} successful detections...")
     if len(successful_coords) > 0:
-        mean_matrix = np.mean(successful_coords, axis=0) # shape: (12,)
+        mean_matrix = np.mean(successful_coords, axis=0) # shape: (20,)
     else:
-        # Fallback khẩn cấp về tọa độ sinh học lý tưởng trên lưới 48x48 nếu toàn bộ thất bại
-        # 6 điểm neo trên lưới 12x12 tương ứng với tọa độ 48x48: (y*4, x*4)
-        # [(2,5), (4,3), (4,8), (6,5), (9,3), (9,8)] -> nhân 4 -> y: [8, 16, 16, 24, 36, 36], x: [20, 12, 32, 20, 12, 32]
+        # Tọa độ lý tưởng trên lưới 48x48 cho 10 điểm
         mean_matrix = np.array([
-            20.0, 8.0,   # forehead
+            20.0, 6.0,   # forehead
+            20.0, 12.0,  # glabella (nằm giữa 2 mắt, hơi dịch lên trên)
+            12.0, 10.0,  # left_eyebrow (nằm trên mắt trái)
+            28.0, 10.0,  # right_eyebrow (nằm trên mắt phải)
             12.0, 16.0,  # left_eye
-            32.0, 16.0,  # right_eye
+            28.0, 16.0,  # right_eye
             20.0, 24.0,  # nose
             12.0, 36.0,  # left_mouth
-            32.0, 36.0   # right_mouth
+            28.0, 36.0,  # right_mouth
+            20.0, 44.0   # chin (nằm tuốt dưới đáy khuôn mặt)
         ])
 
     keys_order = [
         'x_forehead', 'y_forehead',
+        'x_glabella', 'y_glabella',
+        'x_left_eyebrow', 'y_left_eyebrow',
+        'x_right_eyebrow', 'y_right_eyebrow',
         'x_left_eye', 'y_left_eye',
         'x_right_eye', 'y_right_eye',
         'x_nose', 'y_nose',
         'x_left_mouth', 'y_left_mouth',
-        'x_right_mouth', 'y_right_mouth'
+        'x_right_mouth', 'y_right_mouth',
+        'x_chin', 'y_chin'
     ]
 
     print(f"--> Mean Coordinates: {dict(zip(keys_order, np.round(mean_matrix, 2)))}")
