@@ -462,69 +462,73 @@ class MotifGraphModel(nn.Module):
         
         return l_intra + 1.0 * l_inter
 
-    def _extract_deformable_subgraphs(self, feat_map, H, W, node_feats):
+    def _extract_deformable_subgraphs(self, feat_map, H, W, node_feats, landmarks_48):
         B, C_feat, _, _ = feat_map.shape
+        num_cands = 10 # BỘ 10 ĐIỂM VÀNG
         
-        # FIX 1 & 2: Rải đều 6 điểm neo (Tương ứng top_k=6) trên lưới 12x12
-        # Mô phỏng đúng cấu trúc sinh học của khuôn mặt người:
-        # 1. Trán (Surprise/Sad), 2. Mắt trái, 3. Mắt phải
-        # 4. Chóp mũi (Disgust), 5. Mép trái, 6. Mép phải
-        centers = [
-            (2, 5),   # Trán (Giữa trên)
-            (4, 3),   # Mắt trái
-            (4, 8),   # Mắt phải
-            (6, 5),   # Chóp mũi (Trung tâm)
-            (9, 3),   # Khóe mép trái
-            (9, 8)    # Khóe mép phải
-        ]
+        if landmarks_48 is None:
+            # Tọa độ lý tưởng trên lưới 48x48 cho 10 điểm
+            mean_matrix = torch.tensor([
+                [20.0, 6.0],   # forehead
+                [20.0, 12.0],  # glabella
+                [12.0, 10.0],  # left_eyebrow
+                [28.0, 10.0],  # right_eyebrow
+                [12.0, 16.0],  # left_eye
+                [28.0, 16.0],  # right_eye
+                [20.0, 24.0],  # nose
+                [12.0, 36.0],  # left_mouth
+                [28.0, 36.0],  # right_mouth
+                [20.0, 44.0]   # chin
+            ], device=feat_map.device, dtype=torch.float32).unsqueeze(0).expand(B, -1, -1)
+            landmarks_48 = mean_matrix
+
+        # 1. Ép tọa độ từ ảnh 48x48 về không gian Feature Map (12x12)
+        # landmarks_48 shape: (B, 10, 2) -> index 0 là X, index 1 là Y
+        centers_x = torch.clamp((landmarks_48[:, :, 0] / 48.0 * W).long(), 0, W - 1)
+        centers_y = torch.clamp((landmarks_48[:, :, 1] / 48.0 * H).long(), 0, H - 1)
         
-        center_indices = torch.tensor([i * W + j for i, j in centers], device=feat_map.device)
-        num_cands = len(center_indices) # Lúc này num_cands = 6 chuẩn xác!
+        # Tính index 1D cho từng ảnh trong batch, shape: (B, 10)
+        center_indices = centers_y * W + centers_x
         
-        center_feats = node_feats[:, center_indices, :] 
+        # 2. Trích xuất Node Features cho TỪNG ẢNH bằng torch.gather
+        # node_feats shape: (B, 144, 128)
+        center_indices_expanded = center_indices.unsqueeze(-1).expand(-1, -1, C_feat)
+        center_feats = torch.gather(node_feats, 1, center_indices_expanded) # (B, 10, 128)
         
-        # Global-Guided Offsets
-        global_feat = feat_map.mean(dim=(2, 3)) 
-        global_feat = global_feat.unsqueeze(1).expand(-1, num_cands, -1) 
+        # 3. Global-Guided Offsets
+        global_feat = feat_map.mean(dim=(2, 3)).unsqueeze(1).expand(-1, num_cands, -1) 
         combined_feats = torch.cat([center_feats, global_feat], dim=-1) 
         
         offsets = self.offset_predictor(combined_feats) * getattr(self, 'offset_amplitude', 0.2)
         self._latest_offsets = offsets
         
-        # FIX 3: Thu gọn lưới rel_grid để không bị tràn viền (Out of bounds)
-        # Giảm khoảng cách trải dài từ [-1.5 -> 1.5] xuống [-1.0 -> 1.0]
-        rel_y, rel_x = torch.meshgrid(
-            torch.linspace(-1.0, 1.0, 4),
-            torch.linspace(-1.0, 1.0, 4),
-            indexing='ij'
-        ) 
-        rel_grid = torch.stack([rel_x, rel_y], dim=-1).to(feat_map.device) 
-        rel_grid = rel_grid.view(1, 1, 16, 2) 
+        # 4. Tính toán Lưới lấy mẫu (Sampling Grid)
+        rel_y, rel_x = torch.meshgrid(torch.linspace(-1.0, 1.0, 4), torch.linspace(-1.0, 1.0, 4), indexing='ij') 
+        rel_grid = torch.stack([rel_x, rel_y], dim=-1).to(feat_map.device).view(1, 1, 16, 2) 
         
-        c_y = (center_indices // W).float() / (H - 1) * 2 - 1
-        c_x = (center_indices % W).float() / (W - 1) * 2 - 1
-        centers_grid = torch.stack([c_x, c_y], dim=-1).view(1, num_cands, 1, 2) 
+        # Tạo Grid chuẩn hóa [-1, 1] cho hàm grid_sample
+        c_x = (centers_x.float() / (W - 1)) * 2 - 1.0
+        c_y = (centers_y.float() / (H - 1)) * 2 - 1.0
+        centers_grid = torch.stack([c_x, c_y], dim=-1).view(B, num_cands, 1, 2) # (B, 10, 1, 2)
         
-        # Tính toán Sampling Grid
         sampling_grid = centers_grid + offsets.unsqueeze(2) + rel_grid * (1.0 / (W-1))
-        
-        # Kẹp tọa độ lại (Clamp) để chắc chắn 100% không bị quét ra ngoài viền ảnh
         sampling_grid = torch.clamp(sampling_grid, -1.0, 1.0)
-        
         sampling_grid = sampling_grid.view(B, num_cands * 16, 1, 2)
         
         sampled_feats = F.grid_sample(feat_map, sampling_grid, align_corners=True)
         sampled_feats = sampled_feats.view(B, C_feat, num_cands, 16).permute(0, 2, 3, 1) 
         
+        # Update ma trận kề cho 10 điểm
         adj = self.grid_adj.unsqueeze(0).unsqueeze(0).expand(B, num_cands, -1, -1)
         
+        # Centers debug (lấy của ảnh đầu tiên trong batch)
         centers_coords = []
-        for idx in center_indices:
-            centers_coords.append((int(idx.item() // W), int(idx.item() % W)))
+        for i in range(num_cands):
+            centers_coords.append((centers_y[0, i].item(), centers_x[0, i].item()))
             
         return sampled_feats, adj, centers_coords
 
-    def forward(self, x, return_selection=False, targets=None):
+    def forward(self, x, return_selection=False, targets=None, landmarks=None):
         if targets is not None:
             self._latest_targets = targets
         else:
@@ -540,9 +544,9 @@ class MotifGraphModel(nn.Module):
                 crop_x = x[:, t, :, :, :] # Lấy crop thứ t, shape: (B, C, H, W)
                 
                 if targets is not None:
-                    out = self.forward(crop_x, return_selection=return_selection, targets=targets)
+                    out = self.forward(crop_x, return_selection=return_selection, targets=targets, landmarks=landmarks)
                 else:
-                    out = self.forward(crop_x, return_selection=return_selection) 
+                    out = self.forward(crop_x, return_selection=return_selection, landmarks=landmarks) 
                 
                 # Lưu lại kết quả
                 if return_selection:
@@ -586,7 +590,7 @@ class MotifGraphModel(nn.Module):
         for gnn in self.gnn_layers:
             node_feats = gnn(node_feats, adj)
             
-        candidates, cand_adjs, centers = self._extract_deformable_subgraphs(feat_map, H, W, node_feats)
+        candidates, cand_adjs, centers = self._extract_deformable_subgraphs(feat_map, H, W, node_feats, landmarks)
         num_cands = candidates.shape[1]
         
         # Advanced Motif Module Forward

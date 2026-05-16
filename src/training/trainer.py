@@ -192,8 +192,8 @@ class Trainer:
         # accumulator for scn metrics across batches
         _scn_acc = {"scn_weight_mean": [], "scn_conf_mean": [], "scn_rank_loss": []}
 
-        for images, labels in self.train_loader:
-            images, labels = images.to(self.device), labels.to(self.device)
+        for images, labels, landmarks in self.train_loader:
+            images, labels, landmarks = images.to(self.device), labels.to(self.device), landmarks.to(self.device)
             self.optimizer.zero_grad()
 
             # MixUp: disabled by default in FER pipeline (SCN preferred)
@@ -213,11 +213,11 @@ class Trainer:
             with autocast():
                 if hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
                     if mixup_active:
-                        outputs = self.model(images) # Bỏ targets đi khi đang MixUp
+                        outputs = self.model(images, landmarks=landmarks) # Bỏ targets đi khi đang MixUp
                     else:
-                        outputs = self.model(images, targets=labels) # Chỉ truyền targets khi ảnh sạch
+                        outputs = self.model(images, targets=labels, landmarks=landmarks) # Chỉ truyền targets khi ảnh sạch
                 else:
-                    outputs = self.model(images)
+                    outputs = self.model(images, landmarks=landmarks)
                 logits = self._extract_logits(outputs)
 
             # batch confidence used to scale landmark diversity: low-confidence batches
@@ -477,8 +477,8 @@ class Trainer:
         total = 0
 
         with torch.no_grad():
-            for images, labels in self.val_loader:
-                images, labels = images.to(self.device), labels.to(self.device)
+            for images, labels, landmarks in self.val_loader:
+                images, labels, landmarks = images.to(self.device), labels.to(self.device), landmarks.to(self.device)
 
                 # sync runtime pos_sup lambda into model (validate path)
                 try:
@@ -489,9 +489,9 @@ class Trainer:
                 # Pass labels to forward for internal loss calculation
                 with autocast():
                     if hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
-                        outputs = self.model(images, targets=labels)
+                        outputs = self.model(images, targets=labels, landmarks=landmarks)
                     else:
-                        outputs = self.model(images)
+                        outputs = self.model(images, landmarks=landmarks)
                 
                 logits = self._extract_logits(outputs)
                 cls_loss = self.criterion(logits, labels)

@@ -34,17 +34,11 @@ def build_transform(config, split="train") -> Compose: # train | val | test
             transforms.Normalize(mean=(mu,), std=(st,))
         ])
     else:
-        # TEST-TIME AUGMENTATION: Use TenCrop only for final evaluation
-        # Resize to 56, then crop 10 patches of exactly 48x48 to match training dimensions
+        # TEST PHASE: Disable TenCrop when using Landmark CSV to preserve exact facial alignment
         trans = transforms.Compose([
-            transforms.Resize((56, 56)),
-            transforms.TenCrop(image_size),
-            transforms.Lambda(lambda crops: torch.stack([
-                transforms.ToTensor()(crop) for crop in crops
-            ])),  
-            transforms.Lambda(lambda tensors: torch.stack([
-                transforms.Normalize(mean=(mu,), std=(st,))(t) for t in tensors
-            ])),  
+            transforms.Resize((image_size, image_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=(mu,), std=(st,))
         ])
 
     return trans

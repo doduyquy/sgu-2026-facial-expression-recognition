@@ -4,7 +4,7 @@ model:
   feat_dim: 128
   num_classes: 7
   motifs_per_class: 16
-  top_k: 6
+  top_k: 10
   offset_amplitude: 0.2  # Giảm biên độ nhảy để soi kỹ vùng cục bộ trên lưới 12x12
   dropout: 0.3
 
