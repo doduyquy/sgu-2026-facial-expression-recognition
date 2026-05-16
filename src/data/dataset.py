@@ -2,6 +2,7 @@ from PIL.Image import fromarray
 import os
 import pandas as pd
 import numpy as np
+import torch
 from torch.utils.data import Dataset
 from PIL import Image
 from src.data.emotions_dict import EMOTION_DICT
