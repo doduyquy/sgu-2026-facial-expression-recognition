@@ -64,8 +64,8 @@ training:
   scheduler: "reduce_lr_on_plateau"
   lr_factor: 0.5
   lr_patience: 2
-  epochs: 45
-  patience: 12
+  epochs: 55
+  patience: 15
   use_amp: false
 
 logging:
