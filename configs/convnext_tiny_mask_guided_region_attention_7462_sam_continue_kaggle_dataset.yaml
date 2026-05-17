@@ -1,0 +1,18 @@
+_base_: "convnext_tiny_mask_guided_region_attention_7462_sam_continue.yaml"
+
+# Kaggle Add Input layout:
+# - Convnext_74.62 contains convnext_tiny_fer2013_15052026_valaccuracy73.59.pth
+# - fer13-split contains train.csv, val.csv, test.csv
+# - mediapipe_mask_datasets contains mediapipe_region_masks/{train,val,test}
+#
+# The 74.62 checkpoint path is inherited from the base config and is discovered
+# by basename under /kaggle/input.
+
+paths:
+  data_path: "/kaggle/input/fer13-split"
+
+model:
+  mask_dir: "/kaggle/input/mediapipe_mask_datasets/mediapipe_region_masks"
+
+data:
+  mask_dir: "/kaggle/input/mediapipe_mask_datasets/mediapipe_region_masks"

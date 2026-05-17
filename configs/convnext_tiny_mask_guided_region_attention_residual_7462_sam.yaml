@@ -1,0 +1,26 @@
+_base_: "convnext_tiny_region_attention_residual_7462_sam.yaml"
+
+model:
+  # Same training idea as convnext_tiny_region_attention_residual_7462_sam:
+  # keep the strong 74.62 ConvNeXt source classifier, then let the region
+  # attention branch learn a small residual correction. The only architectural
+  # addition here is MediaPipe mask-guided cross-attention.
+  name: "convnext_tiny_mask_guided_region_attention"
+
+  # Keep source classifier + residual logit fusion inherited from the residual
+  # config. This avoids the weak attention-only behavior seen in the first
+  # mask-guided AdamW run.
+  use_source_classifier: true
+  logit_fusion: "sum"
+  finetune_logit_fusion: "sum"
+  source_logit_weight: 1.0
+  attention_logit_weight: 0.2
+
+  # MediaPipe masks guide, but do not hard-constrain, region-token attention.
+  mask_guided_attention: true
+  mask_attention_alpha: 0.3
+  mask_floor: 0.05
+  mask_dir: "outputs/mediapipe_region_masks"
+
+data:
+  mask_dir: "outputs/mediapipe_region_masks"

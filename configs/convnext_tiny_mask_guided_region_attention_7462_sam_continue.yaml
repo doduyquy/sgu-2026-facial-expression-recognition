@@ -1,0 +1,45 @@
+_base_: "convnext_tiny_mask_guided_region_attention_7462_adamw.yaml"
+
+model:
+  # Attention-only version: ConvNeXt 74.62 is used only as the visual backbone.
+  # The original ConvNeXt classifier/source logits are not used in the final
+  # prediction.
+  use_source_classifier: false
+  logit_fusion: "attention"
+  finetune_logit_fusion: "attention"
+  source_logit_weight: 0.0
+  attention_logit_weight: 1.0
+
+  # Train like convnext_tiny_region_attention_sam_continue: warm up the region
+  # head, then gently fine-tune ConvNeXt features with SAM.
+  freeze_backbone_epochs: 4
+  unfreeze_backbone: true
+  unfreeze_backbone_scope: "all"
+  freeze_unfrozen_batchnorm: true
+
+  # Keep mask as a soft spatial prior, not a hard crop.
+  mask_guided_attention: true
+  mask_attention_alpha: 0.3
+  mask_floor: 0.05
+
+  # Slightly less dropout than the frozen AdamW attention-only trial; SAM and
+  # gentle unfreezing are expected to do part of the regularization.
+  classifier_dropout1: 0.35
+  classifier_dropout2: 0.25
+  ortho_loss_weight: 0.005
+
+training:
+  optimizer: "sam"
+  base_optimizer: "adamw"
+  sam_rho: 0.03
+  sam_adaptive: false
+
+  lr: 0.00008
+  finetune_lr: 0.00004
+  visual_extractor_lr: 0.000002
+  weight_decay: 0.02
+
+  scheduler: "cosine"
+  epochs: 40
+  patience: 10
+  use_amp: false
