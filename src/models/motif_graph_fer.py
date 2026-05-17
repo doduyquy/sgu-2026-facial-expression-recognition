@@ -100,8 +100,8 @@ class MotifBackbone(nn.Module):
                     if isinstance(ckpt, dict) and key in ckpt:
                         state = ckpt[key]
                         break
-                # Xoa prefix 'module.' neu duoc train voi DataParallel
-                state = {k.replace('module.', ''): v for k, v in state.items()}
+                # Xoa prefix 'module.' neu duoc train voi DataParallel, va loai bo fc layer de tranh size mismatch (7 vs 1000)
+                state = {k.replace('module.', ''): v for k, v in state.items() if not k.replace('module.', '').startswith('fc.')}
                 missing, unexpected = resnet.load_state_dict(state, strict=False)
                 loaded = len(state) - len(unexpected)
                 total  = len(resnet.state_dict())
