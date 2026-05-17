@@ -1,0 +1,32 @@
+_base_: "convnext_tiny_region_attention_sam_continue.yaml"
+
+model:
+  # Full model weights are restored from training.init_checkpoint_path below,
+  # so skip ImageNet weight download during continuation startup.
+  pretrained: false
+  weights: null
+  checkpoint_path: null
+
+  # Continue the late-stage model gently: one head-only epoch, then unfreeze
+  # ConvNeXt with a tiny visual LR.
+  freeze_backbone_epochs: 1
+  unfreeze_backbone: true
+  unfreeze_backbone_scope: "all"
+  freeze_unfrozen_batchnorm: true
+
+training:
+  init_checkpoint_path: "/kaggle/input/datasets/lhongphuc3/regionattention-74-51/convnext_tiny_region_attention_16052026_1636_best.pth"
+  init_checkpoint_strict: true
+
+  optimizer: "adamw"
+  lr: 0.00003
+  finetune_lr: 0.00002
+  visual_extractor_lr: 0.000001
+  weight_decay: 0.01
+
+  scheduler: "reduce_lr_on_plateau"
+  lr_factor: 0.5
+  lr_patience: 2
+  epochs: 12
+  patience: 4
+  use_amp: false
