@@ -19,6 +19,29 @@ from PIL import Image
 from .dataset import FER2013
 
 
+def resolve_mask_dir(mask_dir, split):
+    requested = Path(mask_dir)
+    if (requested / split).exists():
+        return requested
+
+    folder_name = requested.name
+    search_roots = [Path.cwd()]
+    kaggle_input = Path("/kaggle/input")
+    if kaggle_input.exists():
+        search_roots.insert(0, kaggle_input)
+
+    for root in search_roots:
+        for current_dir, dirs, _ in os.walk(root):
+            current = Path(current_dir)
+            if current.name == folder_name and split in dirs:
+                print(
+                    f"--> [FER2013WithUNetMasks] Using discovered mask_dir: {current}"
+                )
+                return current
+
+    return requested
+
+
 class FER2013WithUNetMasks(FER2013):
     """
     FER2013 dataset that reads precomputed region masks from disk.
@@ -49,7 +72,7 @@ class FER2013WithUNetMasks(FER2013):
             transforms=transforms,
             use_clean_filter=use_clean_filter,
         )
-        self.mask_dir = Path(mask_dir)
+        self.mask_dir = resolve_mask_dir(mask_dir, split)
         self.split_mask_dir = self.mask_dir / split
         self.grid_size = int(grid_size)
         self.num_regions = int(num_regions)
@@ -118,4 +141,3 @@ class FER2013WithUNetMasks(FER2013):
                 image = self.transform(image)
 
         return image, label, region_masks
-
