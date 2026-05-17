@@ -80,7 +80,7 @@ class MotifBackbone(nn.Module):
 
     Khong can load_pretrained_cnn() phuc tap voi key mapping nua.
     """
-    def __init__(self, checkpoint_path="", in_channels=1, feat_dim=128):
+    def __init__(self, pretrained_cnn_path="", in_channels=1, feat_dim=128):
         super().__init__()
 
         import torchvision.models as models
@@ -90,10 +90,10 @@ class MotifBackbone(nn.Module):
         resnet = models.resnet152(weights=None)
 
         # ── BUOC 2: Load checkpoint TRUC TIEP vao ResNet152 ─────────────────
-        if checkpoint_path and os.path.exists(checkpoint_path):
-            print(f"Loading pretrained CNN from {checkpoint_path}...")
+        if pretrained_cnn_path and os.path.exists(pretrained_cnn_path):
+            print(f"Loading pretrained CNN from {pretrained_cnn_path}...")
             try:
-                ckpt = torch.load(checkpoint_path, map_location='cpu')
+                ckpt = torch.load(pretrained_cnn_path, map_location='cpu')
                 # Ho tro nhieu dinh dang checkpoint khac nhau
                 state = ckpt
                 for key in ['state_dict', 'model_state_dict', 'net', 'model']:
@@ -110,8 +110,9 @@ class MotifBackbone(nn.Module):
                     print(f"  [INFO] {len(missing)} keys not in checkpoint (new layers, OK): e.g. {missing[:2]}")
             except Exception as e:
                 print(f"[WARNING] Could not load checkpoint: {e}. Using random init.")
-        elif checkpoint_path:
-            print(f"[WARNING] Checkpoint not found: {checkpoint_path}. Using random init.")
+        elif pretrained_cnn_path:
+            print(f"[WARNING] Checkpoint not found: {pretrained_cnn_path}. Using random init.")
+
 
         # ── BUOC 3: Adapt conv1 (7x7 RGB) -> (3x3 Grayscale) ────────────────
         # Dung chinh TRONG SO DA DUOC PRETRAIN tu checkpoint (khong phai random!)
@@ -375,8 +376,9 @@ class MotifGraphModel(nn.Module):
         self.temperature = config.get('motif_tau', 0.1) 
         
         pretrained_cnn_path = config.get('pretrained_cnn_path', "")
-        # Truyen checkpoint_path truc tiep vao MotifBackbone → load ngay trong __init__
-        self.backbone = MotifBackbone(checkpoint_path=pretrained_cnn_path, feat_dim=self.feat_dim)
+        # Truyen pretrained_cnn_path truc tiep vao MotifBackbone → load ngay trong __init__
+        self.backbone = MotifBackbone(pretrained_cnn_path=pretrained_cnn_path, feat_dim=self.feat_dim)
+
 
         
         # A. MULTI-SCALE FEATURE FUSION COMPONENTS
