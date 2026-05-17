@@ -30,15 +30,15 @@ REGION_LANDMARK_GROUPS = {
 REGION_ORDER = ["forehead", "left_eye", "right_eye", "nose", "mouth", "chin"]
 
 
-def import_mediapipe():
+def import_mediapipe_face_mesh():
     try:
-        import mediapipe as mp
+        from mediapipe.python.solutions import face_mesh
     except ImportError as exc:
         raise ImportError(
             "mediapipe is required for this script. Install it in the training "
             "environment first, for example: pip install mediapipe"
         ) from exc
-    return mp
+    return face_mesh
 
 
 def pixels_to_rgb(pixels):
@@ -167,8 +167,8 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     dtype = np.float16 if args.save_dtype == "float16" else np.float32
 
-    mp = import_mediapipe()
-    face_mesh = mp.solutions.face_mesh.FaceMesh(
+    face_mesh_solution = import_mediapipe_face_mesh()
+    face_mesh = face_mesh_solution.FaceMesh(
         static_image_mode=True,
         max_num_faces=1,
         refine_landmarks=True,
