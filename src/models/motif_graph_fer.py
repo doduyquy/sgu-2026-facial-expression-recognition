@@ -13,15 +13,32 @@ except ImportError:
     from models.CBAM import CBAM
 
 
-class MaskBlock(nn.Sequential): # Kế thừa nn.Sequential thay vì nn.Module để làm phẳng tên biến
+class MaskBlock(nn.Module):
+    """
+    Spatial Attention Block (simplified version of ResMaskingNet's U-Net mask).
+    Output: attention map in [0, 1] via Sigmoid.
+    Applied as: x = x * (1 + mask)  →  mask≈0 means identity (no change).
+    Init: mask outputs near-zero at start to preserve pretrained features.
+    """
     def __init__(self, in_channels):
-        super().__init__(
+        super().__init__()
+        self.net = nn.Sequential(
             nn.Conv2d(in_channels, in_channels // 4, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(in_channels // 4),
             nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels // 4, 1, kernel_size=1, bias=False),
+            nn.Conv2d(in_channels // 4, 1, kernel_size=1, bias=True),  # bias=True de near-zero init
             nn.Sigmoid()
         )
+        # Near-zero init: Sigmoid(-4) ≈ 0.018 ≈ 0
+        # → x * (1 + 0.018) ≈ x → giu nguyen pretrained features luc dau
+        final_conv = self.net[3]  # Conv2d(→1ch) la layer thu 3 (0-indexed)
+        nn.init.zeros_(final_conv.weight)
+        nn.init.constant_(final_conv.bias, -4.0)
+
+    def forward(self, x):
+        return self.net(x)
+
+
 
 class MotifBackbone(nn.Module):
     """
@@ -46,24 +63,13 @@ class MotifBackbone(nn.Module):
         self.layer3 = resnet.layer3
         self.layer4 = resnet.layer4
         
-        # PHAM QUI LUAN'S MASKING BLOCKS (Cập nhật số kênh cho ResNet152)
-        self.mask1 = MaskBlock(256)   # Layer 1 của ResNet152 xuất ra 256
-        self.mask2 = MaskBlock(512)   # Layer 2 xuất ra 512
-        self.mask3 = MaskBlock(1024)  # Layer 3 xuất ra 1024
-        self.mask4 = MaskBlock(2048)  # Layer 4 xuất ra 2048
+        # PHAM QUI LUAN'S MASKING BLOCKS
+        # MaskBlock tu init near-zero (Sigmoid(-4) ≈ 0.018) → bao toan pretrained features
+        self.mask1 = MaskBlock(256)
+        self.mask2 = MaskBlock(512)
+        self.mask3 = MaskBlock(1024)
+        self.mask4 = MaskBlock(2048)
 
-        # CRITICAL: Khởi tạo mask blocks để output gần ~0 lúc đầu
-        # Lý do: x * (1 + mask) - nếu mask = random -> làm nhiễu pretrained features
-        # Giải pháp: biến final conv của mỗi mask -> near-zero bias
-        # -> x * (1 + ~0) = x -> giữ nguyên pretrained signal
-        for mask in [self.mask1, self.mask2, self.mask3, self.mask4]:
-            # Tìm conv cuối cùng trong MaskBlock (là nn.Conv2d trước Sigmoid)
-            for m in mask.modules():
-                if isinstance(m, nn.Conv2d):
-                    nn.init.zeros_(m.weight)
-                    if m.bias is not None:
-                        nn.init.constant_(m.bias, -4.0)  # Sigmoid(-4) ≈ 0.018 → mask ≈ 0
-        
         # Reducers for Multi-Scale Fusion (Sẽ được quản lý ở MotifGraphModel)
         # self.dim_reducer đã bị loại bỏ ở đây để chuyển sang MotifGraphModel
 
