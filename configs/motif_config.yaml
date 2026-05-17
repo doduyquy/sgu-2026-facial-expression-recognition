@@ -18,7 +18,7 @@ data:
   # Tren Kaggle: upload 3 file CSV len 1 dataset rieng, sau do dien path vao day
   # Vi du: /kaggle/input/fer13-landmarks
   # De trong neu de auto-discovery tim kiem
-  landmark_dir: "/kaggle/input/datalandmark"
+  landmark_dir: "/kaggle/input/datasets/ltlttt/datalandmark"
 
 training:
   epochs: 1000

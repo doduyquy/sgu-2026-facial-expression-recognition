@@ -27,28 +27,12 @@ class FER2013(Dataset):
         
         # CAY GHEP BO 10 DIEM VANG (The 10 Golden Landmarks)
         base_dir = os.path.dirname(data_path)
-
-        # Thu muc ung vien theo thu tu uu tien
-        candidate_dirs = []
-        if landmark_dir:
-            candidate_dirs.append(landmark_dir)
-        candidate_dirs += [
-            os.path.join(data_path, "landmarks"),
-            os.path.join(base_dir, "landmarks"),
-            "/kaggle/input/datalandmark",
-            "/kaggle/input/landmarks",
-            "/kaggle/input/fer-landmarks",
-            "/kaggle/input/fer13-landmarks",
-            "/kaggle/input/datasets/doduyquynii/landmarks",
-            "/kaggle/working/dataset/landmarks",
-            "dataset/landmarks",
+        possible_paths = [
+            os.path.join(data_path, "landmarks", f"landmarks_{split}.csv"),
+            os.path.join(base_dir, "landmarks", f"landmarks_{split}.csv"),
+            os.path.join("dataset", "landmarks", f"landmarks_{split}.csv"),
+            os.path.join("/kaggle/input/datasets/ltlttt/datalandmark", f"landmarks_{split} (1).csv")
         ]
-
-        # Thu ca 2 bien the ten file: co "(1)" va khong co "(1)"
-        possible_paths = []
-        for d in candidate_dirs:
-            possible_paths.append(os.path.join(d, f"landmarks_{split}.csv"))
-            possible_paths.append(os.path.join(d, f"landmarks_{split} (1).csv"))
 
         landmark_path = None
         for p in possible_paths:
