@@ -1,11 +1,13 @@
 _base_: "convnext_tiny_region_attention_sam_continue.yaml"
 
 model:
-  # Full model weights are restored from training.init_checkpoint_path below,
-  # so skip ImageNet weight download during continuation startup.
+  # Full model weights are restored from the 74.51 region-attention checkpoint.
+  # Keep the path here too so older Kaggle train.py copies that ignore
+  # training.init_checkpoint_path still initialize from the checkpoint.
   pretrained: false
   weights: null
-  checkpoint_path: null
+  checkpoint_path: "/kaggle/input/datasets/lhongphuc3/regionattention-74-51/convnext_tiny_region_attention_16052026_1636_best.pth"
+  checkpoint_strict: true
 
   # Continue the late-stage model gently: one head-only epoch, then unfreeze
   # ConvNeXt with a tiny visual LR.

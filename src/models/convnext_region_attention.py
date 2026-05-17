@@ -375,6 +375,7 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         self.current_epoch_index = 0
         self.is_frozen = False
         self.return_attn = False
+        self.checkpoint_strict = bool(model_cfg.get("checkpoint_strict", False))
 
         num_classes = int(data_cfg.get("num_classes", 7))
         if self.region_pooling not in ("mean", "concat"):
@@ -504,7 +505,39 @@ class ConvNeXtRegionAttentionFER(nn.Module):
     def load_pretrained_backbones(self, convnext_ckpt_path=None, device="cpu", **kwargs):
         if convnext_ckpt_path is None:
             convnext_ckpt_path = kwargs.get("pretrained_convnext_path")
-        self.convnext_backbone.load_from_checkpoint(convnext_ckpt_path, device=device)
+        checkpoint_path = self.convnext_backbone.resolve_checkpoint_path(convnext_ckpt_path)
+        checkpoint = safe_torch_load(checkpoint_path, map_location=device)
+        state_dict = strip_known_prefixes(extract_state_dict(checkpoint))
+
+        full_model_prefixes = (
+            "convnext_backbone.",
+            "region_dict.",
+            "alignment.",
+            "visual_proj.",
+            "transformer_encoder.",
+            "classifier.",
+            "visual_pos_embed",
+            "pos_embed",
+        )
+        if any(key.startswith(full_model_prefixes) for key in state_dict):
+            print(
+                "--> [ConvNeXtRegionAttention] Loading full region-attention "
+                f"checkpoint: {checkpoint_path}"
+            )
+            incompatible = self.load_state_dict(state_dict, strict=self.checkpoint_strict)
+            if incompatible.missing_keys:
+                print(
+                    "--> [ConvNeXtRegionAttention] Missing keys after full load: "
+                    f"{len(incompatible.missing_keys)}"
+                )
+            if incompatible.unexpected_keys:
+                print(
+                    "--> [ConvNeXtRegionAttention] Unexpected keys after full load: "
+                    f"{len(incompatible.unexpected_keys)}"
+                )
+            return
+
+        self.convnext_backbone.load_from_checkpoint(checkpoint_path, device=device)
 
     def freeze_backbones(self):
         for param in self.convnext_backbone.backbone.features.parameters():

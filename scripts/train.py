@@ -64,6 +64,76 @@ def cleanup_distributed():
 def is_main_process():
     return not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == 0
 
+
+def _safe_torch_load(path, map_location="cpu"):
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
+def _extract_state_dict(checkpoint):
+    if isinstance(checkpoint, dict):
+        for key in ("model_state_dict", "state_dict", "model", "net"):
+            value = checkpoint.get(key)
+            if isinstance(value, dict):
+                return value
+
+    if isinstance(checkpoint, dict) and all(torch.is_tensor(v) for v in checkpoint.values()):
+        return checkpoint
+
+    raise ValueError("Checkpoint does not contain a valid model state dict.")
+
+
+def _strip_known_prefixes(state_dict):
+    prefixes = ("module.", "_orig_mod.")
+    cleaned = {}
+    for key, value in state_dict.items():
+        name = key
+        changed = True
+        while changed:
+            changed = False
+            for prefix in prefixes:
+                if name.startswith(prefix):
+                    name = name[len(prefix):]
+                    changed = True
+        cleaned[name] = value
+    return cleaned
+
+
+def _resolve_checkpoint_path(checkpoint_path):
+    if os.path.exists(checkpoint_path):
+        return checkpoint_path
+
+    basename = os.path.basename(checkpoint_path)
+    search_roots = [os.getcwd()]
+    if os.path.exists("/kaggle/input"):
+        search_roots.insert(0, "/kaggle/input")
+
+    for root in search_roots:
+        for current_dir, _, files in os.walk(root):
+            if basename in files:
+                found = os.path.join(current_dir, basename)
+                print(f"--> Using discovered init checkpoint: {found}")
+                return found
+
+    raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+
+def load_model_init_checkpoint(model, checkpoint_path, strict=True):
+    checkpoint_path = _resolve_checkpoint_path(checkpoint_path)
+    print(f"--> Loading model init checkpoint: {checkpoint_path}")
+    checkpoint = _safe_torch_load(checkpoint_path, map_location="cpu")
+    state_dict = _strip_known_prefixes(_extract_state_dict(checkpoint))
+    target_model = model.module if hasattr(model, "module") else model
+    incompatible = target_model.load_state_dict(state_dict, strict=strict)
+    if incompatible.missing_keys:
+        print(f"--> Init checkpoint missing keys: {len(incompatible.missing_keys)}")
+    if incompatible.unexpected_keys:
+        print(f"--> Init checkpoint unexpected keys: {len(incompatible.unexpected_keys)}")
+    print("--> Model init checkpoint loaded.")
+
+
 def resolve_data_path(data_path):
     required_files = {"train.csv", "val.csv", "test.csv"}
     if os.path.isdir(data_path):
@@ -139,6 +209,11 @@ def main():
         model = get_model(
             name=config['model']['name'],
             config=config)
+
+        init_checkpoint_path = config.get('training', {}).get('init_checkpoint_path')
+        if init_checkpoint_path:
+            init_strict = bool(config.get('training', {}).get('init_checkpoint_strict', True))
+            load_model_init_checkpoint(model, init_checkpoint_path, strict=init_strict)
         
 
         # ── Transfer Learning: load pretrained backbone weights ──
