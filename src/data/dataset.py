@@ -33,6 +33,9 @@ class FER2013(Dataset):
             os.path.join("dataset", "landmarks", f"landmarks_{split}.csv"),
             os.path.join("/kaggle/input/datasets/ltlttt/datalandmark", f"landmarks_{split} (1).csv")
         ]
+        if landmark_dir and os.path.exists(landmark_dir):
+            possible_paths.insert(0, os.path.join(landmark_dir, f"landmarks_{split}.csv"))
+            possible_paths.insert(0, os.path.join(landmark_dir, f"landmarks_{split} (1).csv"))
 
         landmark_path = None
         for p in possible_paths:
