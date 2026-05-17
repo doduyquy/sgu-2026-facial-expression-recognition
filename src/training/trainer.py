@@ -376,9 +376,9 @@ class Trainer:
                     # Phase 3: Unfreeze full backbone
                     for param in backbone.parameters():
                         param.requires_grad = True
-                    # Cập nhật LR cho nhóm Backbone
-                    self.optimizer.param_groups[0]['lr'] = main_lr * 0.01
-                    print(f"[Phase 3] Epoch {ep+1}: Full backbone UNFROZEN with lr={main_lr * 0.01:.2e}")
+                    # Cập nhật LR cho nhóm Backbone (Giảm xuống 0.001 thay vì 0.01)
+                    self.optimizer.param_groups[0]['lr'] = main_lr * 0.001 
+                    print(f"[Phase 3] Epoch {ep+1}: Full backbone UNFROZEN with lr={main_lr * 0.001:.2e}")
 
             progress = ep / self.epochs
             set_progress = getattr(self.model, "set_training_progress", None)
@@ -388,19 +388,19 @@ class Trainer:
                 except Exception:
                     pass
 
-            # apply 3-phase staged schedule tuned for noisy FER datasets
-            if progress <= 0.065:
-                # Phase 1 (0-65 epochs): conservative — SCN OFF, MixUp OFF
+            # Áp dụng Lịch trình 3 Giai đoạn (Tuned)
+            if progress <= 0.05:
+                # Phase 1 (0-5%): SCN OFF, MixUp OFF - Để Motif Head học cách định hướng cơ bản
                 self._runtime_use_scn = False
                 self._runtime_use_mixup = False
                 self._runtime_phase = 1
-            elif progress <= 0.7:
-                # Phase 2 (20-70%): SCN OFF, MixUp OFF
-                self._runtime_use_scn = False
+            elif progress <= 0.25:
+                # Phase 2 (5-25%): SCN BẬT NHẸ - Chuẩn bị tinh thần trước khi rã đông
+                self._runtime_use_scn = True
                 self._runtime_use_mixup = False
                 self._runtime_phase = 2
             else:
-                # Phase 3 (70-100%): enable SCN
+                # Phase 3 (25-100%): SCN BẬT TOÀN DIỆN - Trấn áp ResNet152
                 self._runtime_use_scn = True
                 self._runtime_use_mixup = False
                 self._runtime_phase = 3

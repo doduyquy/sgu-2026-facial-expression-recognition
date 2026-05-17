@@ -21,14 +21,15 @@ def build_transform(config, split="train") -> Compose: # train | val | test
         # Tuyệt đối KHÔNG dùng: RandomRotation, RandomCrop, RandomFlip, RandomAffine
         # (các spatial transforms sẽ dịch chuyển ảnh nhưng tọa độ CSV vẫn giữ nguyên → nhiễu)
         trans = transforms.Compose([
-            transforms.Resize((image_size, image_size)),  # Đảm bảo kích thước đúng dù config thay đổi
+            transforms.Resize((image_size, image_size)),
+            # Thêm ColorJitter: Đổi độ sáng, tương phản ngẫu nhiên (KHÔNG làm sai tọa độ)
+            transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2), 
             transforms.ToTensor(),
             transforms.Normalize(mean=(mu,), std=(st,)),
-            # Pixel-level augmentation: thay đổi độ sáng/tương phản nhưng KHÔNG dịch landmark
             transforms.RandomApply([
-                transforms.Lambda(lambda x: x + torch.randn_like(x) * 0.02)  # Gaussian noise nhẹ
+                transforms.Lambda(lambda x: x + torch.randn_like(x) * 0.03)  # Tăng noise lên 0.03
             ], p=0.3),
-            transforms.RandomErasing(p=0.25, scale=(0.02, 0.08), ratio=(0.5, 2.0), value=0),  # Cutout nhẹ
+            transforms.RandomErasing(p=0.3, scale=(0.02, 0.1), ratio=(0.5, 2.0), value=0), # Tăng p lên 0.3
         ])
     elif split == "val":
         # FAST VALIDATION: No TenCrop during training phase to save RAM/Time
