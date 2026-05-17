@@ -561,10 +561,10 @@ class MotifGraphModel(nn.Module):
         offsets = self.offset_predictor(combined_feats) * getattr(self, 'offset_amplitude', 0.2)
         self._latest_offsets = offsets.detach()  # BUG FIX: detach để tránh memory leak
         
-        # BẢN VÁ LỊCH SỬ: Phân nhánh Success vs Failed
-        if statuses is not None:
-            mask_failed = (1.0 - statuses.view(B, 1, 1)).to(feat_map.device)
-            offsets = offsets * mask_failed
+        # ĐẠI PHẪU QUAN TRỌNG CHỐNG OVERFITTING:
+        # Bỏ đi đoạn code ép offsets = 0 khi MediaPipe detect thành công!
+        # Cho phép offset_predictor LUÔN LUÔN được quyền tự do dịch chuyển điểm lấy mẫu
+        # từ mốc Giải phẫu (Anatomical) sang mốc Cảm xúc (Semantic) để tránh học vẹt tọa độ!
         
         # 4. Tính toán Lưới lấy mẫu (Sampling Grid)
         rel_y, rel_x = torch.meshgrid(torch.linspace(-1.0, 1.0, 4), torch.linspace(-1.0, 1.0, 4), indexing='ij') 
@@ -580,6 +580,16 @@ class MotifGraphModel(nn.Module):
         # → Mạng học được: "điểm này bị che khuất, không đáng tin" → dồn attention sang điểm khác
         c_x = (centers_x_float / (W - 1)) * 2 - 1.0
         c_y = (centers_y_float / (H - 1)) * 2 - 1.0
+        
+        # JITTERING HÌNH HỌC (GEOMETRIC AUGMENTATION):
+        # Tránh việc model học vẹt tọa độ cố định của MediaPipe!
+        # Cộng thêm nhiễu ngẫu nhiên +/- 1 pixel (tương đương +/- 0.04 trong hệ tọa độ [-1, 1])
+        if self.training:
+            jitter_x = (torch.rand_like(c_x) - 0.5) * 0.08
+            jitter_y = (torch.rand_like(c_y) - 0.5) * 0.08
+            c_x = c_x + jitter_x
+            c_y = c_y + jitter_y
+            
         centers_grid = torch.stack([c_x, c_y], dim=-1).view(B, num_cands, 1, 2)
         
         patch_scale = 3.0 / W
