@@ -148,9 +148,7 @@ class MotifBackbone(nn.Module):
         self.layer3  = resnet.layer3   # [B, 256, 12, 12] - DA PRETRAINED
         self.layer4  = resnet.layer4   # [B, 512,  6,  6] - DA PRETRAINED
 
-        # Gọi cấu trúc U-Net chuẩn theo đúng số kênh của ResNet18
-        self.mask1 = LuanUNetMaskBlock(64)
-        self.mask2 = LuanUNetMaskBlock(128)
+        # Gọi cấu trúc U-Net chuẩn theo đúng số kênh của ResNet18 (Chỉ áp dụng ở L3 và L4 để tránh Covariate Shift)
         self.mask3 = LuanUNetMaskBlock(256)
         self.mask4 = LuanUNetMaskBlock(512)
 
@@ -162,21 +160,17 @@ class MotifBackbone(nn.Module):
         x = self.relu(x)
         x = self.maxpool(x)
 
-        # Layer 1 + Mask 1
-        x = self.layer1(x)
-        x = x * (1 + self.mask1(x))
+        # Giữ nguyên luồng chảy tự nhiên của ResNet để không làm gãy tạ Pre-trained!
+        x1 = self.layer1(x)
+        x2 = self.layer2(x1)
+        x3_raw = self.layer3(x2)
+        x4_raw = self.layer4(x3_raw)
 
-        # Layer 2 + Mask 2
-        x = self.layer2(x)
-        x = x * (1 + self.mask2(x))
-
-        # Layer 3 + Mask 3 → x3 (multi-scale output)
-        x = self.layer3(x)
-        x3 = x * (1 + self.mask3(x))
-
-        # Layer 4 + Mask 4 → x4 (main output)
-        x = self.layer4(x)
-        x4 = x * (1 + self.mask4(x))
+        # ÁP DỤNG U-NET MASK NHƯ CÁC NHÁNH RẼ NGANG (Side-Branch Attention)
+        # Thay vì nhân đè vào luồng chính (gây mất ổn định phân phối số học của layer tiếp theo),
+        # ta áp dụng mặt nạ vào đầu ra cuối cùng của layer 3 và layer 4!
+        x3 = x3_raw * (1 + self.mask3(x3_raw))
+        x4 = x4_raw * (1 + self.mask4(x4_raw))
 
         return x3, x4   # (B, 256, 12, 12), (B, 512, 6, 6)
 
