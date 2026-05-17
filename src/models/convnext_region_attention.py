@@ -88,6 +88,221 @@ class CrossDimSemanticVisualAlignment(nn.Module):
         return region_enriched, attn_weights
 
 
+class SwinLocalRefinerBlock(nn.Module):
+    """Shifted-window self-attention over a ConvNeXt feature map."""
+
+    def __init__(
+        self,
+        dim,
+        num_heads=4,
+        window_size=4,
+        shift_size=0,
+        mlp_ratio=2.0,
+        dropout=0.1,
+        layer_scale_init=1e-4,
+    ):
+        super().__init__()
+        self.dim = int(dim)
+        self.num_heads = int(num_heads)
+        self.window_size = max(int(window_size), 1)
+        self.shift_size = max(int(shift_size), 0)
+
+        self.norm1 = nn.LayerNorm(self.dim)
+        self.attn = nn.MultiheadAttention(
+            embed_dim=self.dim,
+            num_heads=self.num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        hidden_dim = int(self.dim * float(mlp_ratio))
+        self.norm2 = nn.LayerNorm(self.dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(self.dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, self.dim),
+            nn.Dropout(dropout),
+        )
+        self.drop_path = DropPath(dropout if dropout > 0.0 else 0.0)
+        self.gamma_attn = nn.Parameter(torch.full((self.dim,), float(layer_scale_init)))
+        self.gamma_ffn = nn.Parameter(torch.full((self.dim,), float(layer_scale_init)))
+
+    @staticmethod
+    def _window_partition(x, window_size):
+        b, h, w, c = x.shape
+        x = x.view(
+            b,
+            h // window_size,
+            window_size,
+            w // window_size,
+            window_size,
+            c,
+        )
+        windows = x.permute(0, 1, 3, 2, 4, 5).contiguous()
+        return windows.view(-1, window_size * window_size, c)
+
+    @staticmethod
+    def _window_reverse(windows, batch_size, height, width, window_size):
+        x = windows.view(
+            batch_size,
+            height // window_size,
+            width // window_size,
+            window_size,
+            window_size,
+            -1,
+        )
+        x = x.permute(0, 1, 3, 2, 4, 5).contiguous()
+        return x.view(batch_size, height, width, -1)
+
+    def _pad_to_window(self, x):
+        b, h, w, c = x.shape
+        pad_h = (self.window_size - h % self.window_size) % self.window_size
+        pad_w = (self.window_size - w % self.window_size) % self.window_size
+        if pad_h == 0 and pad_w == 0:
+            valid_mask = torch.ones((b, h, w), device=x.device, dtype=torch.bool)
+            return x, valid_mask, h, w
+
+        padded = x.new_zeros((b, h + pad_h, w + pad_w, c))
+        padded[:, :h, :w, :] = x
+        valid_mask = torch.zeros(
+            (b, h + pad_h, w + pad_w),
+            device=x.device,
+            dtype=torch.bool,
+        )
+        valid_mask[:, :h, :w] = True
+        return padded, valid_mask, h, w
+
+    def _build_shift_mask(self, height, width, shift_size, device):
+        if shift_size <= 0:
+            return None
+
+        img_mask = torch.zeros((1, height, width, 1), device=device)
+        h_slices = (
+            slice(0, -self.window_size),
+            slice(-self.window_size, -shift_size),
+            slice(-shift_size, None),
+        )
+        w_slices = (
+            slice(0, -self.window_size),
+            slice(-self.window_size, -shift_size),
+            slice(-shift_size, None),
+        )
+        count = 0
+        for h_slice in h_slices:
+            for w_slice in w_slices:
+                img_mask[:, h_slice, w_slice, :] = count
+                count += 1
+
+        mask_windows = self._window_partition(img_mask, self.window_size).squeeze(-1)
+        return mask_windows.unsqueeze(1) != mask_windows.unsqueeze(2)
+
+    def forward(self, feat_map):
+        b, c, h, w = feat_map.shape
+        x = feat_map.permute(0, 2, 3, 1).contiguous()
+        shortcut = x
+
+        attn_input = self.norm1(x)
+        attn_input, valid_mask, orig_h, orig_w = self._pad_to_window(attn_input)
+        padded_h, padded_w = attn_input.shape[1:3]
+        shift_size = (
+            min(self.shift_size, self.window_size - 1)
+            if min(padded_h, padded_w) > self.window_size
+            else 0
+        )
+
+        if shift_size > 0:
+            attn_input = torch.roll(
+                attn_input,
+                shifts=(-shift_size, -shift_size),
+                dims=(1, 2),
+            )
+            valid_mask = torch.roll(
+                valid_mask,
+                shifts=(-shift_size, -shift_size),
+                dims=(1, 2),
+            )
+
+        windows = self._window_partition(attn_input, self.window_size)
+        valid_windows = self._window_partition(
+            valid_mask.unsqueeze(-1).float(),
+            self.window_size,
+        ).squeeze(-1)
+        key_padding_mask = valid_windows < 0.5
+
+        attn_mask = self._build_shift_mask(
+            padded_h,
+            padded_w,
+            shift_size,
+            device=attn_input.device,
+        )
+        if attn_mask is not None:
+            attn_mask = attn_mask.repeat(b, 1, 1)
+            attn_mask = attn_mask.repeat_interleave(self.num_heads, dim=0)
+
+        attn_out, _ = self.attn(
+            windows,
+            windows,
+            windows,
+            attn_mask=attn_mask,
+            key_padding_mask=key_padding_mask,
+            need_weights=False,
+        )
+        attn_out = self._window_reverse(
+            attn_out,
+            b,
+            padded_h,
+            padded_w,
+            self.window_size,
+        )
+
+        if shift_size > 0:
+            attn_out = torch.roll(
+                attn_out,
+                shifts=(shift_size, shift_size),
+                dims=(1, 2),
+            )
+
+        attn_out = attn_out[:, :orig_h, :orig_w, :]
+        x = shortcut + self.drop_path(self.gamma_attn * attn_out)
+        ffn_out = self.ffn(self.norm2(x))
+        x = x + self.drop_path(self.gamma_ffn * ffn_out)
+        return x.permute(0, 3, 1, 2).contiguous()
+
+
+class SwinLocalRefiner(nn.Module):
+    """Small W-MSA/SW-MSA stack placed before local-token flattening."""
+
+    def __init__(
+        self,
+        dim,
+        depth=2,
+        num_heads=4,
+        window_size=4,
+        mlp_ratio=2.0,
+        dropout=0.1,
+        layer_scale_init=1e-4,
+    ):
+        super().__init__()
+        blocks = []
+        for index in range(int(depth)):
+            shift_size = 0 if index % 2 == 0 else max(int(window_size) // 2, 1)
+            blocks.append(
+                SwinLocalRefinerBlock(
+                    dim=dim,
+                    num_heads=num_heads,
+                    window_size=window_size,
+                    shift_size=shift_size,
+                    mlp_ratio=mlp_ratio,
+                    dropout=dropout,
+                    layer_scale_init=layer_scale_init,
+                )
+            )
+        self.blocks = nn.Sequential(*blocks)
+
+    def forward(self, feat_map):
+        return self.blocks(feat_map)
+
+
 class ConvNeXtSpatialTokenizer(nn.Module):
     """ConvNeXt ImageNet features -> local visual tokens for region attention."""
 
@@ -126,6 +341,28 @@ class ConvNeXtSpatialTokenizer(nn.Module):
             if self.pool_visual_tokens
             else nn.Identity()
         )
+        self.use_swin_local_refiner = bool(
+            model_cfg.get("use_swin_local_refiner", False)
+        )
+        if self.use_swin_local_refiner:
+            self.swin_refiner = SwinLocalRefiner(
+                dim=self.feature_dim,
+                depth=int(model_cfg.get("swin_refiner_depth", 2)),
+                num_heads=int(model_cfg.get("swin_refiner_heads", model_cfg.get("num_heads", 4))),
+                window_size=int(model_cfg.get("swin_window_size", 4)),
+                mlp_ratio=float(model_cfg.get("swin_refiner_mlp_ratio", 2.0)),
+                dropout=float(
+                    model_cfg.get(
+                        "swin_refiner_dropout",
+                        model_cfg.get("transformer_dropout", 0.1),
+                    )
+                ),
+                layer_scale_init=float(
+                    model_cfg.get("swin_refiner_layer_scale_init", 1e-4)
+                ),
+            )
+        else:
+            self.swin_refiner = nn.Identity()
         if self.use_source_classifier:
             self.source_classifier = self._build_source_classifier(model_cfg)
         else:
@@ -141,6 +378,11 @@ class ConvNeXtSpatialTokenizer(nn.Module):
             f"feature_dim={self.feature_dim}, tokens={self.num_visual_tokens}, "
             f"source_classifier={self.use_source_classifier}"
         )
+        if self.use_swin_local_refiner:
+            print(
+                "--> [ConvNeXtTokenizer] Swin local refiner enabled before "
+                "local-token flattening."
+            )
 
     def _resolve_weights(self, model_cfg):
         if not bool(model_cfg.get("pretrained", False)):
@@ -244,6 +486,7 @@ class ConvNeXtSpatialTokenizer(nn.Module):
     def forward(self, x):
         feat_map = self.backbone.features(x)
         token_map = self.token_pool(feat_map)
+        token_map = self.swin_refiner(token_map)
         visual_tokens = token_map.flatten(2).transpose(1, 2)
         pooled_map = F.adaptive_avg_pool2d(feat_map, 1)
         global_feat = torch.flatten(pooled_map, 1)

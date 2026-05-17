@@ -1,0 +1,41 @@
+_base_: "convnext_tiny_region_attention_7451_continue_adamw.yaml"
+
+model:
+  # Paper branch: keep the 74.51 region-attention checkpoint as the starting
+  # point, then insert a lightweight Swin-style local refiner before
+  # flattening ConvNeXt local tokens.
+  checkpoint_strict: false
+
+  use_swin_local_refiner: true
+  swin_refiner_depth: 2
+  swin_window_size: 4
+  swin_refiner_heads: 4
+  swin_refiner_mlp_ratio: 2.0
+  swin_refiner_dropout: 0.1
+  swin_refiner_layer_scale_init: 0.0001
+
+  # Do not unfreeze ConvNeXt for this first Swin ablation. The new refiner,
+  # region attention, and classifier are enough moving parts.
+  freeze_backbone_epochs: 999
+  unfreeze_backbone: false
+  freeze_unfrozen_batchnorm: true
+
+training:
+  # The model-level checkpoint_path above partially loads the old 74.51
+  # region-attention weights. A full strict init checkpoint would fail because
+  # the Swin refiner is new and has no saved weights yet.
+  init_checkpoint_path: null
+  init_checkpoint_strict: false
+
+  optimizer: "adamw"
+  lr: 0.00001
+  finetune_lr: 0.00001
+  visual_extractor_lr: 0.0
+  weight_decay: 0.01
+
+  scheduler: "reduce_lr_on_plateau"
+  lr_factor: 0.5
+  lr_patience: 1
+  epochs: 8
+  patience: 3
+  use_amp: false
