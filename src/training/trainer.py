@@ -35,34 +35,8 @@ class Trainer:
         self.run_name = run_name
         self.config = config
         self.path_save_ckpt = save_dir
-        # Tuned defaults to avoid over-constraint (Sunset suggestions)
-        self.landmark_diversity_lambda = config['training'].get('landmark_diversity_lambda', 0.25)
-        # keep entropy off by default for low-res FER unless explicitly enabled
-        self.landmark_entropy_lambda = config['training'].get('landmark_entropy_lambda', 0.0)
-        # keep edge_align disabled by default
-        self.landmark_edge_align_lambda = config['training'].get('landmark_edge_align_lambda', 0.0)
-        # per-keypoint edge consistency - disabled by default for SOTA simplicity
-        self.landmark_edge_consistency_lambda = config['training'].get('landmark_edge_consistency_lambda', 0.0)
-        # disable heavy regularizers by default (keep code but no loss contribution)
-        self.landmark_edge_conv_reg_lambda = config['training'].get('landmark_edge_conv_reg_lambda', 0.0)
-        self.landmark_edge_tv_lambda = config['training'].get('landmark_edge_tv_lambda', 0.0)
-        # augment consistency disabled by default (expensive / can harm alignment)
-        self.landmark_augment_consistency_lambda = config['training'].get('landmark_augment_consistency_lambda', 0.0)
-        # coordinate-level consistency (coords(T(x)) vs T(coords(x))) lightweight
-        self.landmark_consistency_lambda = config['training'].get('landmark_consistency_lambda', 0.0)
-        # probability to run augment-consistency per batch (to save compute). Disabled by default.
-        self.landmark_augment_consistency_prob = config['training'].get('landmark_augment_consistency_prob', 0.0)
-        # Target entropy for attention maps; regularize toward this value (abs diff)
-        self.landmark_target_entropy = config['training'].get('landmark_target_entropy', 2.0)
-        # auxiliary classification head weight for landmark features (lighter default)
-        self.landmark_aux_cls_lambda = config['training'].get('landmark_aux_cls_lambda', 0.05)
-        # optional positional supervision (upper/lower face guidance) - off by default
-        self.landmark_pos_sup_lambda = config['training'].get('landmark_pos_sup_lambda', 0.0)
-        # heatmap overlap penalty default
-        self.landmark_overlap_lambda = config['training'].get('landmark_overlap_lambda', 0.05)
-        # auxiliary logits consistency (KL) weight: disabled by default (can destabilize)
-        self.landmark_aux_consistency_lambda = config['training'].get('landmark_aux_consistency_lambda', 0.0)
-        # focal loss removed to avoid conflict with SCN; use base criterion only
+        # (Cac tham so lambda cu cua landmark branch da duoc loai bo de toi uu hoa)
+
         # === SCN (light) ===
         self.use_scn = config['training'].get('use_scn', True)
         # default warmup: disabled by default, SCN controlled by phase schedule
@@ -168,26 +142,7 @@ class Trainer:
 
         # accumulator for scn metrics across batches
 
-        # runtime lambdas (may be set by fit() for staged schedule)
-        div_lambda = getattr(self, '_runtime_diversity_lambda', self.landmark_diversity_lambda)
-        # entropy and overlap lambdas (used to shape heatmaps)
-        entropy_lambda = getattr(self, '_runtime_entropy_lambda', self.landmark_entropy_lambda)
-        overlap_lambda = getattr(self, '_runtime_overlap_lambda', self.landmark_overlap_lambda)
-        edge_consistency_lambda = getattr(self, '_runtime_edge_consistency_lambda', self.landmark_edge_consistency_lambda)
-        # coordinate-level consistency weight
-        consistency_lambda = getattr(self, '_runtime_landmark_consistency_lambda', self.landmark_consistency_lambda)
-        # augment consistency intentionally disabled to avoid destabilizing landmarks on small images
-        augment_lambda = 0.0
-        aux_cls_lambda = getattr(self, '_runtime_aux_cls_lambda', self.landmark_aux_cls_lambda)
-        pos_sup_lambda = getattr(self, '_runtime_pos_sup_lambda', self.landmark_pos_sup_lambda)
-        # convert lambdas to tensors to avoid dtype/interop issues when combining with torch tensors
-        div_lambda_t = torch.tensor(float(div_lambda), device=self.device)
-        entropy_lambda_t = torch.tensor(float(entropy_lambda), device=self.device)
-        overlap_lambda_t = torch.tensor(float(overlap_lambda), device=self.device)
-        edge_consistency_lambda_t = torch.tensor(float(edge_consistency_lambda), device=self.device)
-        augment_lambda_t = torch.tensor(float(augment_lambda), device=self.device)
-        aux_cls_lambda_t = torch.tensor(float(aux_cls_lambda), device=self.device)
-        consistency_lambda_t = torch.tensor(float(consistency_lambda), device=self.device)
+
 
         # accumulator for scn metrics across batches
         _scn_acc = {"scn_weight_mean": [], "scn_conf_mean": [], "scn_rank_loss": []}
@@ -260,57 +215,15 @@ class Trainer:
                     cls_loss = self._base_criterion(logits, labels)
             aux_losses = self._extract_aux_losses(outputs)
 
-            # (no target) use raw entropy directly for both train and val
-
-            # extract aux losses first
-            div_loss = aux_losses.get("landmark_diversity", torch.tensor(0.0, device=self.device))
-            entropy_loss = aux_losses.get(
-                "landmark_entropy",
-                aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
-            )
-            overlap_loss = aux_losses.get("landmark_overlap", torch.tensor(0.0, device=self.device))
-            try:
-                # scale all landmark auxiliary losses by batch confidence (detached)
-                # stronger SCN-style scaling: (1 - conf)^2 to focus hard batches
-                scale = ((1.0 - conf_batch_mean) ** 2).detach()
-                try:
-                    scale = torch.clamp(scale, 0.5, 1.5)
-                except Exception:
-                    scale = torch.tensor(max(0.5, min(1.5, float(scale))), device=self.device)
-                div_loss = div_loss * scale
-                overlap_loss = overlap_loss * scale
-                entropy_loss = entropy_loss * scale
-            except Exception:
-                pass
-            # (entropy regularization removed) keep raw value if needed elsewhere
-            heatmaps_now, _ = self.model.get_landmark_outputs()
-            if heatmaps_now is not None:
-                try:
-                    _, _, H_att, W_att = heatmaps_now.shape
-                    denom = float(np.log(max(2, H_att * W_att)))
-                    if denom <= 0:
-                        denom = 1e-6
-                except Exception:
-                    denom = 1.0
-            else:
-                denom = 1.0
-            edge_align_loss = aux_losses.get("landmark_edge_align", torch.tensor(0.0, device=self.device))
-            edge_consistency_loss = aux_losses.get("landmark_edge_consistency", torch.tensor(0.0, device=self.device))
-            pos_sup_loss = aux_losses.get("landmark_pos_supervision", torch.tensor(0.0, device=self.device))
-            edge_conv_reg = aux_losses.get("landmark_edge_conv_reg", torch.tensor(0.0, device=self.device))
-            edge_tv = aux_losses.get("landmark_edge_tv", torch.tensor(0.0, device=self.device))
-            # Compose simplified loss: classification + diversity + overlap (light)
-            loss = cls_loss + (div_lambda_t * div_loss)
+            loss = cls_loss
             
-            # Aggregate scalar auxiliary losses automatically
+            # Aggregate scalar auxiliary losses automatically (doc tu config hoac mac dinh 0.1)
             for k, v in aux_losses.items():
-                # Exclude non-scalar keys and already handled ones
-                if k not in ["landmark_diversity", "landmark_entropy", "landmark_sparsity", "landmark_overlap", "logits_global", "logits_motif"]:
-                    # Default weight 0.1 for new/unknown aux losses or use config
+                if k not in ["logits_global", "logits_motif"]:
                     w = self.config.get('training', {}).get(f'{k}_weight', 0.1)
                     loss = loss + float(w) * v
             
-            # BẢN VÁ: DGS phải tuân thủ luật của MixUp
+            # BẢN VÁ: DGS (Dynamic Gate Supervision) phải tuân thủ luật của MixUp
             l_glob = aux_losses.get("logits_global", None)
             l_mot = aux_losses.get("logits_motif", None)
             if l_glob is not None and l_mot is not None:
@@ -322,112 +235,7 @@ class Trainer:
                     loss = loss + 0.3 * self.criterion(l_glob, labels)
                     loss = loss + 0.3 * self.criterion(l_mot, labels)
             
-            try:
-                if overlap_lambda_t.item() > 0.0:
-                    loss = loss + (overlap_lambda_t * overlap_loss)
-            except Exception:
-                pass
 
-            # Auxiliary classification on landmark features (encourage feat_k to be useful)
-            aux_logits_getter = getattr(self.model, 'get_landmark_aux_logits', None)
-            if callable(aux_logits_getter):
-                aux_logits = aux_logits_getter()
-            else:
-                aux_logits = None
-            if aux_logits is not None:
-                try:
-                    if aux_cls_lambda_t.item() > 0.0:
-                        aux_cls_loss = F.cross_entropy(aux_logits, labels)
-                        loss = loss + (aux_cls_lambda_t * aux_cls_loss)
-                    # KL consistency: make aux logits follow main logits' decision
-                    aux_consistency_lambda = getattr(self, '_runtime_aux_consistency_lambda', self.landmark_aux_consistency_lambda)
-                    aux_consistency_lambda_t = torch.tensor(float(aux_consistency_lambda), device=self.device)
-                    if aux_consistency_lambda_t.item() > 0.0:
-                        # safer: guide main prediction with aux (aux -> main)
-                        p_main = F.softmax(logits.detach(), dim=1)
-                        kl = F.kl_div(F.log_softmax(aux_logits, dim=1), p_main, reduction='batchmean')
-                        loss = loss + (aux_consistency_lambda_t * kl)
-                except Exception:
-                    pass
-
-            # Augment-consistency: pred(Aug(x)) ≈ Aug(pred(x)) using heatmaps
-            # probabilistically run augment-consistency to save compute (and only when enabled)
-            if augment_lambda > 0.0 and getattr(self.model, 'use_learned_landmark_branch', False) and (np.random.rand() < getattr(self, 'landmark_augment_consistency_prob', 0.3)):
-                try:
-                    # get latest landmark heatmaps from original forward
-                    heatmaps_orig, coords_orig = self.model.get_landmark_outputs()
-                    if heatmaps_orig is not None:
-                        # build an augmented batch (same random params for whole batch)
-                        bsz, c, H, W = heatmaps_orig.shape
-                        # sample milder random affine params to avoid heavy misalignment on small images
-                        angle = float(np.random.uniform(-5, 5))
-                        max_tx = max(1, int(0.05 * W))
-                        max_ty = max(1, int(0.05 * H))
-                        translate = (int(np.random.randint(-max_tx, max_tx + 1)), int(np.random.randint(-max_ty, max_ty + 1)))
-                        scale = 1.0
-                        shear = 0.0
-
-                        # apply same transform to input images
-                        images_aug = torch.stack([TF.affine(img, angle=angle, translate=translate, scale=scale, shear=shear, fill=0) for img in images])
-
-                        # forward pass on augmented images without updating grads
-                        # use eval() to keep BN/dropout behavior stable for consistency signal
-                        was_training = self.model.training
-                        self.model.eval()
-                        with torch.no_grad():
-                            _ = self.model(images_aug)
-                        heatmaps_aug, coords_aug = self.model.get_landmark_outputs()
-                        if was_training:
-                            # restore train mode if we started in train
-                            self.model.train()
-
-                        if heatmaps_aug is not None:
-                            # transform original heatmaps (detach to use as pseudo-target)
-                            heatmaps_orig_det = heatmaps_orig.detach()
-                            transformed = []
-                            for i in range(heatmaps_orig_det.size(0)):
-                                # heatmaps_orig_det[i]: (K, H, W) -> apply TF.affine per-channel
-                                chs = []
-                                for k in range(heatmaps_orig_det.size(1)):
-                                    hm = heatmaps_orig_det[i, k:k+1]
-                                    hm_t = TF.affine(hm, angle=angle, translate=translate, scale=scale, shear=shear, fill=0)
-                                    chs.append(hm_t)
-                                transformed.append(torch.cat(chs, dim=0))
-                            transformed = torch.stack(transformed, dim=0).to(heatmaps_aug.dtype)
-
-                            augment_consistency_loss = F.l1_loss(heatmaps_aug, transformed, reduction='mean')
-                            loss = loss + (augment_lambda * augment_consistency_loss)
-
-                            # Coordinate-level consistency (lightweight): compare coords from transformed
-                            try:
-                                # compute soft-argmax coords from transformed heatmaps
-                                flat_t = transformed.view(bsz, transformed.size(1), -1)
-                                flat_t = flat_t / flat_t.sum(dim=-1, keepdim=True).clamp(min=1e-6)
-                                xs_t = torch.linspace(0, 1, W, device=transformed.device, dtype=transformed.dtype)
-                                ys_t = torch.linspace(0, 1, H, device=transformed.device, dtype=transformed.dtype)
-                                grid_y_t, grid_x_t = torch.meshgrid(ys_t, xs_t, indexing='ij')
-                                grid_x_t = grid_x_t.reshape(-1)
-                                grid_y_t = grid_y_t.reshape(-1)
-                                x_t = (flat_t * grid_x_t).sum(dim=-1)
-                                y_t = (flat_t * grid_y_t).sum(dim=-1)
-                                coords_transformed = torch.stack([x_t, y_t], dim=-1)
-                                # coords_aug from model forward earlier
-                                if coords_aug is not None:
-                                    try:
-                                        consistency_loss = F.mse_loss(coords_transformed, coords_aug, reduction='mean')
-                                        loss = loss + (consistency_lambda_t * consistency_loss)
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                pass
-                                
-                            # VRAM Optimization: Giải phóng bộ nhớ sau khi tính Consistency
-                            del images_aug, heatmaps_aug, transformed
-                            torch.cuda.empty_cache()
-                except Exception:
-                    # if any issue with augment or TF, skip augment consistency for this batch
-                    pass
-            
             # Use scaler for backward and step (AMP)
             self.scaler.scale(loss).backward()
             try:
@@ -480,12 +288,6 @@ class Trainer:
             for images, labels, landmarks, statuses in self.val_loader:
                 images, labels, landmarks, statuses = images.to(self.device), labels.to(self.device), landmarks.to(self.device), statuses.to(self.device)
 
-                # sync runtime pos_sup lambda into model (validate path)
-                try:
-                    if hasattr(self.model, 'pos_supervision_weight'):
-                        self.model.pos_supervision_weight = float(getattr(self, '_runtime_pos_sup_lambda', self.landmark_pos_sup_lambda))
-                except Exception:
-                    pass
                 # Pass labels to forward for internal loss calculation
                 with autocast():
                     if hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
@@ -496,35 +298,12 @@ class Trainer:
                 logits = self._extract_logits(outputs)
                 cls_loss = self.criterion(logits, labels)
                 aux_losses = self._extract_aux_losses(outputs)
-                div_loss = aux_losses.get("landmark_diversity", torch.tensor(0.0, device=self.device))
-                # entropy auxiliary is present but not used as an explicit regularizer
-                entropy_loss = aux_losses.get(
-                    "landmark_entropy",
-                    aux_losses.get("landmark_sparsity", torch.tensor(0.0, device=self.device)),
-                )
-                overlap_loss = aux_losses.get("landmark_overlap", torch.tensor(0.0, device=self.device))
-                edge_align_loss = aux_losses.get("landmark_edge_align", torch.tensor(0.0, device=self.device))
-                edge_consistency_loss = aux_losses.get("landmark_edge_consistency", torch.tensor(0.0, device=self.device))
-                edge_conv_reg = aux_losses.get("landmark_edge_conv_reg", torch.tensor(0.0, device=self.device))
-                edge_tv = aux_losses.get("landmark_edge_tv", torch.tensor(0.0, device=self.device))
-                # Use runtime lambdas if scheduled by fit(), otherwise fall back to configured defaults
-                div_lambda = getattr(self, '_runtime_diversity_lambda', self.landmark_diversity_lambda)
-                edge_consistency_lambda = getattr(self, '_runtime_edge_consistency_lambda', self.landmark_edge_consistency_lambda)
-                # convert to tensors to avoid type-mixing errors
-                div_lambda_t = torch.tensor(float(div_lambda), device=self.device)
-                edge_consistency_lambda_t = torch.tensor(float(edge_consistency_lambda), device=self.device)
-                entropy_lambda_t = torch.tensor(float(getattr(self, '_runtime_entropy_lambda', self.landmark_entropy_lambda)), device=self.device)
-                overlap_lambda_t = torch.tensor(float(getattr(self, '_runtime_overlap_lambda', self.landmark_overlap_lambda)), device=self.device)
-                loss = (
-                    cls_loss
-                    + (div_lambda_t * div_loss)
-                    + (edge_consistency_lambda_t * edge_consistency_loss)
-                )
+                
+                loss = cls_loss
                 
                 # Aggregate scalar auxiliary losses automatically
                 for k, v in aux_losses.items():
-                    # Exclude non-scalar keys and already handled ones
-                    if k not in ["landmark_diversity", "landmark_entropy", "landmark_sparsity", "landmark_overlap", "logits_global", "logits_motif"]:
+                    if k not in ["logits_global", "logits_motif"]:
                         w = self.config.get('training', {}).get(f'{k}_weight', 0.1)
                         loss = loss + float(w) * v
 
@@ -534,13 +313,7 @@ class Trainer:
                 if l_glob is not None and l_mot is not None:
                     loss = loss + 0.3 * self.criterion(l_glob, labels)
                     loss = loss + 0.3 * self.criterion(l_mot, labels)
-                try:
-                    if overlap_lambda_t.item() > 0.0:
-                        loss = loss + (overlap_lambda_t * overlap_loss)
-                    if entropy_lambda_t.item() > 0.0:
-                        loss = loss + (entropy_lambda_t * entropy_loss)
-                except Exception:
-                    pass
+
                 running_loss += loss.item() * images.size(0)
 
                 _, preds = torch.max(logits, dim=1)
@@ -612,6 +385,7 @@ class Trainer:
                         self.optimizer.add_param_group({'params': [p for p in backbone.parameters() if p.requires_grad], 'lr': backbone_lr})
                     print(f"[Phase 3] Epoch {ep+1}: Full backbone UNFROZEN with lr={backbone_lr:.2e}")
 
+            progress = ep / self.epochs
             set_progress = getattr(self.model, "set_training_progress", None)
             if callable(set_progress):
                 try:
@@ -619,46 +393,23 @@ class Trainer:
                 except Exception:
                     pass
 
-            # apply 3-phase staged lambda schedule tuned for noisy FER datasets
-            # Phase 1: very early (0-20%): SCN OFF, MixUp ON
-            # Phase 2: (20-70%): SCN ON, stronger landmark signals
-            # Phase 3: (70-100%): heavy refinement for landmark branch
+            # apply 3-phase staged schedule tuned for noisy FER datasets
             if progress <= 0.065:
-                # Phase 1 (0-65 epochs): conservative — 
-                self._runtime_diversity_lambda = 0.0
-                self._runtime_entropy_lambda = 0.0
-                self._runtime_overlap_lambda = 0.0
-                self._runtime_augment_lambda = 0.0
-                self._runtime_edge_consistency_lambda = 0.0
-                self._runtime_aux_cls_lambda = 0.0
-                self._runtime_aux_consistency_lambda = 0.0
+                # Phase 1 (0-65 epochs): conservative — SCN OFF, MixUp OFF
                 self._runtime_use_scn = False
                 self._runtime_use_mixup = False
                 self._runtime_phase = 1
             elif progress <= 0.7:
-                # Phase 2 (20-70%): enable SCN and stronger landmark auxiliaries
-                self._runtime_diversity_lambda = 0.18
-                self._runtime_entropy_lambda = 0.004
-                self._runtime_overlap_lambda = 0.07
-                self._runtime_augment_lambda = 0.0
-                self._runtime_edge_consistency_lambda = 0.0
-                self._runtime_aux_cls_lambda = 0.1
-                self._runtime_aux_consistency_lambda = 0.0
+                # Phase 2 (20-70%): SCN OFF, MixUp OFF
                 self._runtime_use_scn = False
                 self._runtime_use_mixup = False
                 self._runtime_phase = 2
             else:
-                # Phase 3 (70-100%): strong refinement — increase landmark lambdas
-                self._runtime_diversity_lambda = 0.30
-                self._runtime_entropy_lambda = 0.008
-                self._runtime_overlap_lambda = 0.10
-                self._runtime_augment_lambda = 0.0
-                self._runtime_edge_consistency_lambda = 0.0
-                self._runtime_aux_cls_lambda = 0.2
-                self._runtime_aux_consistency_lambda = 0.0
+                # Phase 3 (70-100%): enable SCN
                 self._runtime_use_scn = True
                 self._runtime_use_mixup = False
                 self._runtime_phase = 3
+
 
             train_loss, train_acc = self.train_one_epoch()
             val_loss, val_acc = self.validate()
