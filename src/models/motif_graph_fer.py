@@ -70,15 +70,13 @@ class LuanUNetMaskBlock(nn.Module):
 
 class MotifBackbone(nn.Module):
     """
-    Backbone dung de Fine-tune tu checkpoint ResNet152 pretrained.
+    Backbone dung de Fine-tune tu checkpoint ResNet18 pretrained hoac torchvision pretrain.
 
     Quy trinh DUNG:
-      1. Load checkpoint TRUC TIEP vao ResNet152 chuan
+      1. Load checkpoint TRUC TIEP vao ResNet18 chuan
       2. Rut tung layer ra (weights DA DUOC load san)
       3. Adapt conv1: 7x7 RGB -> 3x3 Grayscale bang cach cat tam + average kenh
-      4. Them MaskBlocks (spatial attention, init near-zero de bao toan pretrained features)
-
-    Khong can load_pretrained_cnn() phuc tap voi key mapping nua.
+      4. Them LuanUNetMaskBlocks (spatial attention, init near-zero de bao toan pretrained features)
     """
     def __init__(self, pretrained_cnn_path="", in_channels=1, feat_dim=128):
         super().__init__()
@@ -86,10 +84,13 @@ class MotifBackbone(nn.Module):
         import torchvision.models as models
         import os
 
-        # ── BUOC 1: Tao ResNet152 chuan (rong) ──────────────────────────────
-        resnet = models.resnet152(weights=None)
+        # ── BUOC 1: Tao ResNet18 chuan (rong hoac pretrain ImageNet) ──────────
+        try:
+            resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+        except Exception:
+            resnet = models.resnet18(pretrained=True)
 
-        # ── BUOC 2: Load checkpoint TRUC TIEP vao ResNet152 ─────────────────
+        # ── BUOC 2: Load checkpoint TRUC TIEP vao ResNet18 (neu co) ──────────
         if pretrained_cnn_path and os.path.exists(pretrained_cnn_path):
             print(f"Loading pretrained CNN from {pretrained_cnn_path}...")
             try:
@@ -101,7 +102,7 @@ class MotifBackbone(nn.Module):
                         state = ckpt[key]
                         break
                 # Xoa prefix 'module.' neu duoc train voi DataParallel, va loai bo fc layer de tranh size mismatch (7 vs 1000)
-                state = {k.replace('module.', ''): v for k, v in state.items() if not k.replace('module.', '').startswith('fc.')}
+                state = {k.replace('module.', '').replace('backbone.', '').replace('resnet.', '').replace('net.', ''): v for k, v in state.items() if not k.replace('module.', '').startswith('fc.')}
                 missing, unexpected = resnet.load_state_dict(state, strict=False)
                 loaded = len(state) - len(unexpected)
                 total  = len(resnet.state_dict())
@@ -109,9 +110,9 @@ class MotifBackbone(nn.Module):
                 if missing:
                     print(f"  [INFO] {len(missing)} keys not in checkpoint (new layers, OK): e.g. {missing[:2]}")
             except Exception as e:
-                print(f"[WARNING] Could not load checkpoint: {e}. Using random init.")
+                print(f"[WARNING] Could not load checkpoint: {e}. Using torchvision ImageNet weights.")
         elif pretrained_cnn_path:
-            print(f"[WARNING] Checkpoint not found: {pretrained_cnn_path}. Using random init.")
+            print(f"[WARNING] Checkpoint not found: {pretrained_cnn_path}. Using torchvision ImageNet weights.")
 
 
         # ── BUOC 3: Adapt conv1 (7x7 RGB) -> (3x3 Grayscale) ────────────────
@@ -128,20 +129,20 @@ class MotifBackbone(nn.Module):
             # Trung binh 3 kenh RGB -> 1 kenh Grayscale
             self.conv1.weight.copy_(center.mean(dim=1, keepdim=True))  # [64, 1, 3, 3]
 
-        # ── BUOC 4: Rut cac layer DA CO WEIGHTS tu ResNet152 ─────────────────
+        # ── BUOC 4: Rut cac layer DA CO WEIGHTS tu ResNet18 ──────────────────
         self.bn1     = resnet.bn1
         self.relu    = resnet.relu
         self.maxpool = nn.Identity()   # Khong downsample: giu 48x48 -> 48x48
-        self.layer1  = resnet.layer1   # [B, 256,  48, 48] - DA PRETRAINED
-        self.layer2  = resnet.layer2   # [B, 512,  24, 24] - DA PRETRAINED
-        self.layer3  = resnet.layer3   # [B, 1024, 12, 12] - DA PRETRAINED
-        self.layer4  = resnet.layer4   # [B, 2048,  6,  6] - DA PRETRAINED
+        self.layer1  = resnet.layer1   # [B, 64,  48, 48] - DA PRETRAINED
+        self.layer2  = resnet.layer2   # [B, 128, 24, 24] - DA PRETRAINED
+        self.layer3  = resnet.layer3   # [B, 256, 12, 12] - DA PRETRAINED
+        self.layer4  = resnet.layer4   # [B, 512,  6,  6] - DA PRETRAINED
 
-        # Gọi cấu trúc U-Net chuẩn
-        self.mask1 = LuanUNetMaskBlock(256)
-        self.mask2 = LuanUNetMaskBlock(512)
-        self.mask3 = LuanUNetMaskBlock(1024)
-        self.mask4 = LuanUNetMaskBlock(2048)
+        # Gọi cấu trúc U-Net chuẩn theo đúng số kênh của ResNet18
+        self.mask1 = LuanUNetMaskBlock(64)
+        self.mask2 = LuanUNetMaskBlock(128)
+        self.mask3 = LuanUNetMaskBlock(256)
+        self.mask4 = LuanUNetMaskBlock(512)
 
 
 
@@ -167,7 +168,7 @@ class MotifBackbone(nn.Module):
         x = self.layer4(x)
         x4 = x * (1 + self.mask4(x))
 
-        return x3, x4   # (B, 1024, 12, 12), (B, 2048, 6, 6)
+        return x3, x4   # (B, 256, 12, 12), (B, 512, 6, 6)
 
 class GraphAttentionLayer(nn.Module):
     """
@@ -382,14 +383,14 @@ class MotifGraphModel(nn.Module):
 
         
         # A. MULTI-SCALE FEATURE FUSION COMPONENTS
-        # Ép Layer 3 (1024 channels) và Layer 4 (2048 channels) về feat_dim
+        # Ép Layer 3 (256 channels) và Layer 4 (512 channels) của ResNet18 về feat_dim
         self.reducer_l3 = nn.Sequential(
-            nn.Conv2d(1024, self.feat_dim, kernel_size=1, bias=False),
+            nn.Conv2d(256, self.feat_dim, kernel_size=1, bias=False),
             nn.BatchNorm2d(self.feat_dim),
             nn.ReLU(inplace=True)
         )
         self.reducer_l4 = nn.Sequential(
-            nn.Conv2d(2048, self.feat_dim, kernel_size=1, bias=False),
+            nn.Conv2d(512, self.feat_dim, kernel_size=1, bias=False),
             nn.BatchNorm2d(self.feat_dim),
             nn.ReLU(inplace=True)
         )
@@ -403,7 +404,7 @@ class MotifGraphModel(nn.Module):
         dropout = config.get('dropout', 0.3)
         self.global_fc = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(2048, 128),
+            nn.Linear(512, 128),
             nn.ReLU(),
             nn.Dropout(dropout),  # BUG FIX: đọc từ config thay vì hardcode 0.3
             nn.Linear(128, self.num_classes)
