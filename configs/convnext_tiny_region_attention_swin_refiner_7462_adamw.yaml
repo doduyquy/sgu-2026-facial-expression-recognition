@@ -1,0 +1,40 @@
+_base_: "convnext_tiny_region_attention_7462_attention_adamw.yaml"
+
+model:
+  # Paper branch: start from the strongest plain ConvNeXt/SAM/TTA source
+  # checkpoint, then add Swin-style local refinement before flattening local
+  # visual tokens for CLIP-guided region attention.
+  use_swin_local_refiner: true
+  swin_refiner_depth: 2
+  swin_window_size: 4
+  swin_refiner_heads: 4
+  swin_refiner_mlp_ratio: 2.0
+  swin_refiner_dropout: 0.1
+  swin_refiner_layer_scale_init: 0.0001
+
+  # Keep ConvNeXt frozen for the first Swin experiment. This tests whether the
+  # proposed Swin + semantic-region head adds value without drifting the strong
+  # 74.62 ConvNeXt features.
+  freeze_backbone_epochs: 999
+  unfreeze_backbone: false
+  freeze_unfrozen_batchnorm: true
+
+training:
+  # This branch loads only the ConvNeXt feature extractor via model.checkpoint_path
+  # inherited from convnext_tiny_region_attention_7462_attention_adamw.yaml.
+  # The Swin refiner and region-attention classifier are trained from scratch.
+  init_checkpoint_path: null
+  init_checkpoint_strict: false
+
+  optimizer: "adamw"
+  lr: 0.00008
+  finetune_lr: 0.00008
+  visual_extractor_lr: 0.0
+  weight_decay: 0.02
+
+  scheduler: "reduce_lr_on_plateau"
+  lr_factor: 0.5
+  lr_patience: 2
+  epochs: 45
+  patience: 10
+  use_amp: false
