@@ -357,11 +357,12 @@ class MotifGraphModel(nn.Module):
             
         # 4. Global Branch: Capture overall face context
         self.global_pool = nn.AdaptiveAvgPool2d(1)
+        dropout = config.get('dropout', 0.3)
         self.global_fc = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(2048, 128), # FIX: Phải là 2048 để khớp với Layer 4 của ResNet152
+            nn.Linear(2048, 128),
             nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.Dropout(dropout),  # BUG FIX: đọc từ config thay vì hardcode 0.3
             nn.Linear(128, self.num_classes)
         )
         
@@ -399,7 +400,7 @@ class MotifGraphModel(nn.Module):
             # Đã xóa LayerNorm để tránh nhiễu trên vector 7 chiều (num_classes=7)
             nn.Sigmoid()
         )
-        self.gate_drop = nn.Dropout(0.3) # Tăng Dropout để ép học đều 2 nhánh
+        self.gate_drop = nn.Dropout(dropout) # BUG FIX: đọc từ config thay vì hardcode 0.3
         
         # Learnable query for candidate-level attention
         self.cand_query = nn.Parameter(torch.randn(1, 1, self.num_classes))
@@ -469,7 +470,7 @@ class MotifGraphModel(nn.Module):
         combined_feats = torch.cat([center_feats, global_feat], dim=-1) 
         
         offsets = self.offset_predictor(combined_feats) * getattr(self, 'offset_amplitude', 0.2)
-        self._latest_offsets = offsets
+        self._latest_offsets = offsets.detach()  # BUG FIX: detach để tránh memory leak
         
         # BẢN VÁ LỊCH SỬ: Phân nhánh Success vs Failed
         if statuses is not None:
@@ -706,7 +707,7 @@ class MotifGraphModel(nn.Module):
         if hasattr(self, '_latest_targets') and self._latest_targets is not None:
             progress = getattr(self, 'training_progress', 1.0)
             # Tạm tắt Motif Consistency trong Phase 1 (progress <= 0.065) vì Mixup trộn nhãn
-            if self.training and progress <= 0.065:
+            if self.training and progress <= 0.005:  # BUG FIX: đồng bộ threshold với trainer.py Phase 1
                 l_motif_consist = torch.tensor(0.0, device=self._latest_scores.device)
             else:
                 l_motif_consist = self.motif_consistency_loss(
