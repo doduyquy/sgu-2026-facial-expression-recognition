@@ -402,9 +402,14 @@ class MotifGraphModel(nn.Module):
         )
         self.gate_drop = nn.Dropout(dropout) # BUG FIX: đọc từ config thay vì hardcode 0.3
         
-        # Learnable query for candidate-level attention
-        self.cand_query = nn.Parameter(torch.randn(1, 1, self.num_classes))
-        nn.init.xavier_uniform_(self.cand_query)
+        # FIX 1: Bahdanau Feature Attention thay vi Static cand_query
+        # cand_query cũ: vector tĩnh 7 chiều → luôn chọn điểm dự đoán Happy cao nhất, bất kể chất lượng ảnh
+        # cand_attn_net mới: đánh giá UY TÍN từ Feature nguyên thủy → điểm nào “rõ nét” hơn được trọng số cao hơn
+        self.cand_attn_net = nn.Sequential(
+            nn.Linear(self.feat_dim, 32),
+            nn.Tanh(),
+            nn.Linear(32, 1)
+        )
 
         # Khởi tạo Motif Consistency Loss
         self.motif_consistency_loss = MotifConsistencyLoss(
@@ -513,12 +518,8 @@ class MotifGraphModel(nn.Module):
         # Update ma trận kề cho 10 điểm
         adj = self.grid_adj.unsqueeze(0).unsqueeze(0).expand(B, num_cands, -1, -1)
         
-        # Centers debug (lấy của ảnh đầu tiên trong batch)
-        centers_coords = []
-        for i in range(num_cands):
-            centers_coords.append((centers_y[0, i].item(), centers_x[0, i].item()))
-            
-        return sampled_feats, adj, centers_coords
+        # Trả về tensor đầy đủ (B, 10) cho cả batch để dùng trong Bahdanau Attention
+        return sampled_feats, adj, (centers_y, centers_x)
 
     def forward(self, x, return_selection=False, targets=None, landmarks=None, statuses=None):
         if targets is not None:
@@ -571,13 +572,14 @@ class MotifGraphModel(nn.Module):
         logits_global = self.global_fc(self.global_pool(x4))
         self._latest_logits_global = logits_global # Lưu cho DGS Loss
         
-        # 4. Motif Branch (Hoạt động trên không gian 12x12 giàu chi tiết)
+        # FIX 2: Bơm nhận thức không gian vào GAT (GPS cho Graph)
+        # Cũ: cắt [:-2] bỏ tọa độ → GAT mù, không biết Trán khác Cằm
+        # Mới: giữ nguyên (feat_dim+2), project xuống feat_dim → GAT biết “Bên trái, Trên, Dưới”
         nodes_with_coords, adj = self._get_global_graph(feat_map)
-        node_feats = nodes_with_coords[:, :, :-2]
-        if node_feats.shape[-1] != self.feat_dim:
-            if not hasattr(self, 'proj_node'):
-                self.proj_node = nn.Linear(node_feats.shape[-1], self.feat_dim).to(x.device)
-            node_feats = self.proj_node(node_feats)
+        node_feats = nodes_with_coords  # giữ nguyên cả tọa độ (feat_dim + 2)
+        if not hasattr(self, 'proj_node_with_coords') or self.proj_node_with_coords.in_features != node_feats.shape[-1]:
+            self.proj_node_with_coords = nn.Linear(node_feats.shape[-1], self.feat_dim).to(x.device)
+        node_feats = self.proj_node_with_coords(node_feats)
             
         for gnn in self.gnn_layers:
             node_feats = gnn(node_feats, adj)
@@ -602,10 +604,16 @@ class MotifGraphModel(nn.Module):
         # logits_cand: (B*num_cands, num_classes)
         logits_cand = logits_cand.view(B, num_cands, self.num_classes)
         
-        # Point 5: Candidate-level attention using learnable query
-        cand_scores = (logits_cand * self.cand_query).sum(dim=-1) # (B, num_cands)
+        # FIX 1: Đánh giá uy tín từ Post-GNN Features của từng điểm landmark
+        # centers = (centers_y, centers_x) — tensor (B, 10) mỗi cái
+        centers_y_idx, centers_x_idx = centers  # (B, 10) each
+        center_indices_attn = (centers_y_idx * W + centers_x_idx).long()  # (B, 10)
+        center_indices_attn = center_indices_attn.unsqueeze(-1).expand(-1, -1, self.feat_dim)  # (B, 10, feat_dim)
+        post_gnn_center_feats = torch.gather(node_feats, 1, center_indices_attn)  # (B, 10, feat_dim)
+        
+        cand_scores = self.cand_attn_net(post_gnn_center_feats).squeeze(-1)  # (B, 10)
         cand_tau = 1.0
-        attn_weights = F.softmax(cand_scores / cand_tau, dim=1).unsqueeze(-1) 
+        attn_weights = F.softmax(cand_scores / cand_tau, dim=1).unsqueeze(-1)
         
         logits_motif = torch.sum(logits_cand * attn_weights, dim=1)
         logits_motif = logits_motif * self.logit_scale 
