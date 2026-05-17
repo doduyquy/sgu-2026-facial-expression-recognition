@@ -508,8 +508,14 @@ class MotifGraphModel(nn.Module):
             
             # NHÁNH 1: FLOAT (KHÔNG CLAMP) — giữ nguyên hình học thực cho F.grid_sample
             # grid_sample xử lý số âm tự nhiên = Zero Padding (trả về vector 0 = "không nhìn thấy")
-            csv_centers_x_float = landmarks_48[:, :, 0] / 48.0 * W
-            csv_centers_y_float = landmarks_48[:, :, 1] / 48.0 * H
+            # Nếu ảnh đầu vào có kích thước W == 40 (TenCrop) và landmarks đã được chuyển đổi sang lưới 40x40
+            # thì không chia cho 48.0 nữa!
+            if W == 40 and hasattr(self, '_tencrop_landmarks_active') and self._tencrop_landmarks_active:
+                csv_centers_x_float = landmarks_48[:, :, 0]
+                csv_centers_y_float = landmarks_48[:, :, 1]
+            else:
+                csv_centers_x_float = landmarks_48[:, :, 0] / 48.0 * W
+                csv_centers_y_float = landmarks_48[:, :, 1] / 48.0 * H
             
             # NHÁNH 2: LONG (CÓ CLAMP) — để torch.gather không văng IndexError
             # Chỉ dùng để lấy node features, không ảnh hưởng đến vùng sampling thực
@@ -594,15 +600,34 @@ class MotifGraphModel(nn.Module):
         if x.dim() == 5:
             B, T, C, H, W = x.shape
             logits_list = []
+            self._tencrop_landmarks_active = True
             
             # XỬ LÝ CUỐN CHIẾU: Cho từng crop chạy qua model để chống Tràn RAM
             for t in range(T):
                 crop_x = x[:, t, :, :, :] # Lấy crop thứ t, shape: (B, C, H, W)
                 
+                # ĐẠI PHẪU TOÁN HỌC: Chuyển đổi tọa độ Landmark 48x48 sang lưới 40x40 của từng Crop
+                crop_landmarks = None
+                if landmarks is not None:
+                    crop_landmarks = landmarks.clone()
+                    # Các độ lệch (offset) của 5 vị trí crop chuẩn trong torchvision TenCrop(40) từ ảnh 48x48:
+                    # t=0: Top-Left (0, 0), t=1: Top-Right (8, 0), t=2: Bottom-Left (0, 8), t=3: Bottom-Right (8, 8), t=4: Center (4, 4)
+                    # t=5..9: Tương ứng là lật ngang (Horizontal Flip) của t=0..4
+                    off_x = [0, 8, 0, 8, 4, 0, 8, 0, 8, 4][t]
+                    off_y = [0, 0, 8, 8, 4, 0, 0, 8, 8, 4][t]
+                    
+                    # Trừ đi độ lệch crop
+                    crop_landmarks[:, :, 0] = crop_landmarks[:, :, 0] - off_x
+                    crop_landmarks[:, :, 1] = crop_landmarks[:, :, 1] - off_y
+                    
+                    # Nếu là các crop lật ngang (t >= 5), lật tọa độ x qua trục giữa của ảnh 40x40
+                    if t >= 5:
+                        crop_landmarks[:, :, 0] = 39.0 - crop_landmarks[:, :, 0]
+                        
                 if targets is not None:
-                    out = self.forward(crop_x, return_selection=return_selection, targets=targets, landmarks=landmarks, statuses=statuses)
+                    out = self.forward(crop_x, return_selection=return_selection, targets=targets, landmarks=crop_landmarks, statuses=statuses)
                 else:
-                    out = self.forward(crop_x, return_selection=return_selection, landmarks=landmarks, statuses=statuses) 
+                    out = self.forward(crop_x, return_selection=return_selection, landmarks=crop_landmarks, statuses=statuses) 
                 
                 # Lưu lại kết quả
                 if return_selection:
@@ -610,6 +635,7 @@ class MotifGraphModel(nn.Module):
                 else:
                     logits_list.append(out)
                     
+            self._tencrop_landmarks_active = False
             # Tính trung bình dự đoán của 10 crop
             mean_logits = torch.stack(logits_list, dim=1).mean(dim=1)
             
