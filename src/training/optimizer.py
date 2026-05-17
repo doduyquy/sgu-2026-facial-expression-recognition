@@ -20,8 +20,9 @@ def build_optimizer(model, config):
             head_params.append(param)
             
     param_groups = [
-        {'params': backbone_params, 'lr': lr * 0.1}, # LR cực nhỏ = 1/10 LR chuẩn (Bảo vệ checkpoint)
-        {'params': head_params, 'lr': lr}            # LR chuẩn để train Graph/Motif
+        # Khởi tạo bằng lr chuẩn, trainer.py sẽ tự lo việc hãm tốc độ sau
+        {'params': backbone_params, 'lr': lr}, 
+        {'params': head_params, 'lr': lr}            
     ]
 
     if opt_name == 'adam':

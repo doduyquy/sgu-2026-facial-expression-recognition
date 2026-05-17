@@ -353,32 +353,31 @@ class Trainer:
             # =========================================================
             backbone = getattr(self.model, 'backbone', None) or getattr(self.model, 'resnet', None)
             if backbone is not None:
-                # Lấy LR hiện tại của khối Head (luôn là param_groups[-1])
+                # Lấy LR hiện tại của khối Head (Graph Motif)
                 main_lr = self.optimizer.param_groups[-1]['lr'] 
                 
                 if ep == 0:
-                    # Phase 1: Freeze all backbone
                     for param in backbone.parameters():
                         param.requires_grad = False
                     print(f"[Phase 1] Epoch {ep+1}: Backbone FROZEN. Only training Motif Graph Head.")
                     
                 elif ep == 15:
-                    # Phase 2: Unfreeze layer4
                     layer4 = getattr(backbone, 'layer4', None)
                     if layer4 is not None:
                         for param in layer4.parameters():
                             param.requires_grad = True
-                    # Cập nhật LR cho nhóm Backbone (luôn là param_groups[0])
-                    self.optimizer.param_groups[0]['lr'] = main_lr * 0.05
-                    print(f"[Phase 2] Epoch {ep+1}: Unfreeze backbone.layer4 with lr={main_lr * 0.05:.2e}")
+                    # BẢN VÁ: Dùng 1/10 LR chính (đủ lớn để học, đủ nhỏ để không phá tạ)
+                    phase2_lr = main_lr * 0.1 
+                    self.optimizer.param_groups[0]['lr'] = phase2_lr
+                    print(f"[Phase 2] Epoch {ep+1}: Unfreeze backbone.layer4 with lr={phase2_lr:.2e}")
                     
                 elif ep == 30:
-                    # Phase 3: Unfreeze full backbone
                     for param in backbone.parameters():
                         param.requires_grad = True
-                    # Cập nhật LR cho nhóm Backbone (Giảm xuống 0.001 thay vì 0.01)
-                    self.optimizer.param_groups[0]['lr'] = main_lr * 0.001 
-                    print(f"[Phase 3] Epoch {ep+1}: Full backbone UNFROZEN with lr={main_lr * 0.001:.2e}")
+                    # BẢN VÁ: Dùng 1/50 LR chính để tinh chỉnh vi mô toàn mạng
+                    phase3_lr = main_lr * 0.02 
+                    self.optimizer.param_groups[0]['lr'] = phase3_lr
+                    print(f"[Phase 3] Epoch {ep+1}: Full backbone UNFROZEN with lr={phase3_lr:.2e}")
 
             progress = ep / self.epochs
             set_progress = getattr(self.model, "set_training_progress", None)
