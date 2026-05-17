@@ -34,9 +34,17 @@ def import_mediapipe_face_mesh():
     try:
         from mediapipe.python.solutions import face_mesh
     except ImportError as exc:
+        try:
+            import mediapipe as mp
+
+            version = getattr(mp, "__version__", "unknown")
+        except ImportError:
+            version = "not installed"
         raise ImportError(
-            "mediapipe is required for this script. Install it in the training "
-            "environment first, for example: pip install mediapipe"
+            "MediaPipe FaceMesh legacy API is required for this script. "
+            f"Current mediapipe version: {version}. On Kaggle, install a legacy "
+            "wheel first, for example: pip install --force-reinstall "
+            "'mediapipe==0.10.14'"
         ) from exc
     return face_mesh
 
