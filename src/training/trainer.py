@@ -396,7 +396,7 @@ class Trainer:
                 self._runtime_phase = 1
             elif progress <= 0.25:
                 # Phase 2 (5-25%): SCN BẬT NHẸ - Chuẩn bị tinh thần trước khi rã đông
-                self._runtime_use_scn = True
+                self._runtime_use_scn = False
                 self._runtime_use_mixup = False
                 self._runtime_phase = 2
             else:
