@@ -1,0 +1,30 @@
+_base_: "convnext_tiny_region_attention_swin_refiner_7462_adamw.yaml"
+
+model:
+  # Residual-logit branch for the paper/performance run:
+  # source_logits come from the strong ConvNeXt 74.62 classifier, while the
+  # Swin + CLIP-region path learns a small correction term.
+  use_source_classifier: true
+  logit_fusion: "sum"
+  finetune_logit_fusion: "sum"
+  source_logit_weight: 1.0
+  attention_logit_weight: 0.1
+
+  # Keep the strong source classifier and ConvNeXt features stable. The trainable
+  # part is the Swin local refiner plus the semantic region-attention branch.
+  freeze_backbone_epochs: 999
+  unfreeze_backbone: false
+
+training:
+  optimizer: "adamw"
+  lr: 0.00006
+  finetune_lr: 0.00006
+  visual_extractor_lr: 0.0
+  weight_decay: 0.02
+
+  scheduler: "reduce_lr_on_plateau"
+  lr_factor: 0.5
+  lr_patience: 2
+  epochs: 35
+  patience: 8
+  use_amp: false

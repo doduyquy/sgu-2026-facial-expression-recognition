@@ -1,0 +1,7 @@
+_base_: "convnext_tiny_region_attention_residual_7462_frozen_adamw.yaml"
+
+model:
+  # No Swin here. This is the clean residual-logit branch:
+  # ConvNeXt 74.62 source classifier + CLIP region-attention correction.
+  use_swin_local_refiner: false
+
