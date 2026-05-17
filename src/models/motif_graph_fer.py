@@ -448,19 +448,38 @@ class MotifGraphModel(nn.Module):
         if landmarks_48 is None:
             centers_x = default_centers_x
             centers_y = default_centers_y
+            centers_x_float = default_centers_x.float()
+            centers_y_float = default_centers_y.float()
         else:
-            # 1. Ép tọa độ từ ảnh 48x48 về không gian Feature Map (12x12)
-            csv_centers_x = torch.clamp((landmarks_48[:, :, 0] / 48.0 * W).long(), 0, W - 1)
-            csv_centers_y = torch.clamp((landmarks_48[:, :, 1] / 48.0 * H).long(), 0, H - 1)
+            # ĐẠI PHẪU: TÁCH ĐÔI KHÔNG GIAN (Discrete vs Continuous)
+            # Vấn đề cũ: clamp() "thiến" tọa độ âm → 2 điểm đè lên nhau → cấu trúc hình học bị hủy
+            
+            # NHÁNH 1: FLOAT (KHÔNG CLAMP) — giữ nguyên hình học thực cho F.grid_sample
+            # grid_sample xử lý số âm tự nhiên = Zero Padding (trả về vector 0 = "không nhìn thấy")
+            csv_centers_x_float = landmarks_48[:, :, 0] / 48.0 * W
+            csv_centers_y_float = landmarks_48[:, :, 1] / 48.0 * H
+            
+            # NHÁNH 2: LONG (CÓ CLAMP) — để torch.gather không văng IndexError
+            # Chỉ dùng để lấy node features, không ảnh hưởng đến vùng sampling thực
+            csv_centers_x_long = torch.clamp(csv_centers_x_float.long(), 0, W - 1)
+            csv_centers_y_long = torch.clamp(csv_centers_y_float.long(), 0, H - 1)
             
             if statuses is not None:
-                # statuses shape: (B,) -> reshape thành (B, 1)
-                mask_success = statuses.view(B, 1).long().to(feat_map.device)
-                centers_x = csv_centers_x * mask_success + default_centers_x * (1 - mask_success)
-                centers_y = csv_centers_y * mask_success + default_centers_y * (1 - mask_success)
+                mask_success_float = statuses.view(B, 1).to(feat_map.device)
+                mask_success_long  = statuses.view(B, 1).long().to(feat_map.device)
+                
+                # gather dùng bản LONG (an toàn index)
+                centers_x = csv_centers_x_long * mask_success_long + default_centers_x * (1 - mask_success_long)
+                centers_y = csv_centers_y_long * mask_success_long + default_centers_y * (1 - mask_success_long)
+                
+                # grid_sample dùng bản FLOAT (cho phép số âm bay ra ngoài → zero padding)
+                centers_x_float = csv_centers_x_float * mask_success_float + default_centers_x.float() * (1 - mask_success_float)
+                centers_y_float = csv_centers_y_float * mask_success_float + default_centers_y.float() * (1 - mask_success_float)
             else:
-                centers_x = csv_centers_x
-                centers_y = csv_centers_y
+                centers_x = csv_centers_x_long
+                centers_y = csv_centers_y_long
+                centers_x_float = csv_centers_x_float
+                centers_y_float = csv_centers_y_float
         
         # Tính index 1D cho từng ảnh trong batch, shape: (B, 10)
         center_indices = centers_y * W + centers_x
@@ -479,8 +498,6 @@ class MotifGraphModel(nn.Module):
         
         # BẢN VÁ LỊCH SỬ: Phân nhánh Success vs Failed
         if statuses is not None:
-            # Nếu success (1.0): mask_failed = 0.0 -> offsets bị triệt tiêu về 0, giữ nguyên tọa độ CSV chuẩn xác 100%
-            # Nếu failed (0.0): mask_failed = 1.0 -> giữ nguyên offsets do offset_predictor tự học (cơ chế subgraph nguyên bản)
             mask_failed = (1.0 - statuses.view(B, 1, 1)).to(feat_map.device)
             offsets = offsets * mask_failed
         
@@ -488,28 +505,22 @@ class MotifGraphModel(nn.Module):
         rel_y, rel_x = torch.meshgrid(torch.linspace(-1.0, 1.0, 4), torch.linspace(-1.0, 1.0, 4), indexing='ij') 
         rel_grid = torch.stack([rel_x, rel_y], dim=-1).to(feat_map.device).view(1, 1, 16, 2) 
         
-        # BẢN VÁ LỊCH SỬ: "Hack Scale" - Bung lưới Đa hình thái (Multi-Shape Graph Sampling)
-        # Định nghĩa Scale X và Scale Y cho 10 điểm vàng theo đúng sinh học khuôn mặt:
-        # 1-2. Forehead, Glabella (Vuông): (1.0, 1.0)
-        # 3-6. L/R Eyebrow, L/R Eye (Dẹp ngang): (1.2, 0.8)
-        # 7. Nose (Kéo dọc): (0.8, 1.2)
-        # 8-9. L/R Mouth (Vuông): (1.0, 1.0)
-        # 10. Chin (Kéo dọc): (0.8, 1.2)
+        # Multi-Shape Graph Sampling
         scales_x = torch.tensor([1.0, 1.0, 1.2, 1.2, 1.2, 1.2, 0.8, 1.0, 1.0, 0.8], device=feat_map.device, dtype=torch.float32)
         scales_y = torch.tensor([1.0, 1.0, 0.8, 0.8, 0.8, 0.8, 1.2, 1.0, 1.0, 1.2], device=feat_map.device, dtype=torch.float32)
         scales = torch.stack([scales_x, scales_y], dim=-1).view(1, num_cands, 1, 2)
         
-        # Tạo Grid chuẩn hóa [-1, 1] cho hàm grid_sample
-        c_x = (centers_x.float() / (W - 1)) * 2 - 1.0
-        c_y = (centers_y.float() / (H - 1)) * 2 - 1.0
-        centers_grid = torch.stack([c_x, c_y], dim=-1).view(B, num_cands, 1, 2) # (B, 10, 1, 2)
+        # ĐẠI PHẪU: Dùng centers_x_float (KHÔNG CLAMP) để grid_sample nhận tọa độ thực
+        # Nếu điểm nằm ngoài ảnh (y < 0, x < 0...): grid_sample tự trả về vector 0
+        # → Mạng học được: "điểm này bị che khuất, không đáng tin" → dồn attention sang điểm khác
+        c_x = (centers_x_float / (W - 1)) * 2 - 1.0
+        c_y = (centers_y_float / (H - 1)) * 2 - 1.0
+        centers_grid = torch.stack([c_x, c_y], dim=-1).view(B, num_cands, 1, 2)
         
-        # BUG FIX: Factor (1.0/(W-1)) = 1/11 ≈ 0.09 quá nhỏ!
-        # → Patch 4×4 chỉ cover ≈ 1.3 pixel trên lưới 12×12 → 16 nodes gần như copy nhau!
-        # Fix: dùng (3.0/W) ≈ 0.25 → patch cover ±2 cells, bán kính thực ≈ 1.5 pixel → có nghĩa về không gian
         patch_scale = 3.0 / W
         sampling_grid = centers_grid + offsets.unsqueeze(2) + (rel_grid * scales) * patch_scale
-        sampling_grid = torch.clamp(sampling_grid, -1.0, 1.0)
+        # KHÔNG CLAMP sampling_grid nữa! grid_sample tự xử lý out-of-bounds = zero padding
+        # (padding_mode='zeros' là default của F.grid_sample)
         sampling_grid = sampling_grid.view(B, num_cands * 16, 1, 2)
         
         sampled_feats = F.grid_sample(feat_map, sampling_grid, align_corners=True)
