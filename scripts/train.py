@@ -83,21 +83,12 @@ def main():
             class_weights = 1.0 / torch.sqrt(class_counts)
         elif class_weight_mode == 'inverse':
             class_weights = 1.0 / class_counts
-        elif class_weight_mode == 'boosted_inverse':
-            # Inverse + 2x boost cho Angry(0), Fear(2), Sad(4) — phá vỡ tam giác nhầm lẫn
-            class_weights = 1.0 / class_counts
-            BOOST_CLASSES = [0, 2, 4]  # angry, fear, sad
-            BOOST_FACTOR = 2.0
-            for c in BOOST_CLASSES:
-                if c < len(class_weights):
-                    class_weights[c] *= BOOST_FACTOR
         else:
             raise ValueError(f"Unsupported class_weight_mode: {class_weight_mode}")
 
         class_weights = class_weights / class_weights.sum()
         class_weights = class_weights.to(device)
         print(f"--- Class weight mode: {class_weight_mode}")
-        print(f"--- Class weights: {class_weights.cpu().numpy().round(4)}")
     else:
         print("--- Class weights disabled")
 

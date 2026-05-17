@@ -6,7 +6,7 @@ model:
   motifs_per_class: 16
   top_k: 10
   offset_amplitude: 0.2  # Giảm biên độ nhảy để soi kỹ vùng cục bộ trên lưới 12x12
-  dropout: 0.5          # tăng từ 0.3 để chống overfit mạnh hơn
+  dropout: 0.3
 
 data:
   batch_size: 64
@@ -17,10 +17,10 @@ data:
 training:
   epochs: 1000
   lr: 0.0001
-  weight_decay: 1e-3     # tăng từ 5e-4 để regularize backbone mạnh hơn
+  weight_decay: 5e-4
   loss: "cross_entropy"
-  label_smoothing: 0.05   # giảm từ 0.15 để calibration tốt hơn
-  class_weight_mode: "boosted_inverse"   # 2x boost Angry/Fear/Sad để phá tam giác nhầm lẫn
+  label_smoothing: 0.15
+  class_weight_mode: "sqrt_inverse"
   motif_consistency_weight: 0.05
   motif_diversity_weight: 0.05
   attn_entropy_weight: 0.01
@@ -28,7 +28,7 @@ training:
   motif_tau: 0.07           # Tăng độ sắc nét cho hàm Loss đối lập
   scheduler: "reduce_lr_on_plateau"
   lr_patience: 5   
-  patience: 50   # tăng từ 30 — ResNet152 cần nhiều thời gian converge
+  patience: 30
   factor: 0.5
   use_scn: true
   scn_warmup_epochs: 10

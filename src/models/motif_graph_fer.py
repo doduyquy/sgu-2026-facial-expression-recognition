@@ -498,7 +498,11 @@ class MotifGraphModel(nn.Module):
         c_y = (centers_y.float() / (H - 1)) * 2 - 1.0
         centers_grid = torch.stack([c_x, c_y], dim=-1).view(B, num_cands, 1, 2) # (B, 10, 1, 2)
         
-        sampling_grid = centers_grid + offsets.unsqueeze(2) + (rel_grid * scales) * (1.0 / (W-1))
+        # BUG FIX: Factor (1.0/(W-1)) = 1/11 ≈ 0.09 quá nhỏ!
+        # → Patch 4×4 chỉ cover ≈ 1.3 pixel trên lưới 12×12 → 16 nodes gần như copy nhau!
+        # Fix: dùng (3.0/W) ≈ 0.25 → patch cover ±2 cells, bán kính thực ≈ 1.5 pixel → có nghĩa về không gian
+        patch_scale = 3.0 / W
+        sampling_grid = centers_grid + offsets.unsqueeze(2) + (rel_grid * scales) * patch_scale
         sampling_grid = torch.clamp(sampling_grid, -1.0, 1.0)
         sampling_grid = sampling_grid.view(B, num_cands * 16, 1, 2)
         

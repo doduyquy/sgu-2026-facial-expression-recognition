@@ -583,11 +583,11 @@ class Trainer:
                     pass
 
             # apply 3-phase staged lambda schedule tuned for noisy FER datasets
-            # Phase 1 (0-5%   = epoch 1-5):   Warmup — SCN OFF, plain CE
-            # Phase 2 (5-60%  = epoch 6-600):  SCN ON  + Diversity/Overlap losses
-            # Phase 3 (60-100%= epoch 601-1000): SCN ON + tăng mạnh Landmark regularizers
-            if progress <= 0.005:
-                # Phase 1 (epoch 1-5): warmup thuần túy với plain CrossEntropy
+            # Phase 1: very early (0-20%): SCN OFF, MixUp ON
+            # Phase 2: (20-70%): SCN ON, stronger landmark signals
+            # Phase 3: (70-100%): heavy refinement for landmark branch
+            if progress <= 0.065:
+                # Phase 1 (0-65 epochs): conservative — 
                 self._runtime_diversity_lambda = 0.0
                 self._runtime_entropy_lambda = 0.0
                 self._runtime_overlap_lambda = 0.0
@@ -596,28 +596,28 @@ class Trainer:
                 self._runtime_aux_cls_lambda = 0.0
                 self._runtime_aux_consistency_lambda = 0.0
                 self._runtime_use_scn = False
-                self._runtime_use_mixup = True  # MixUp warmup: chống overfit sớm
+                self._runtime_use_mixup = False
                 self._runtime_phase = 1
-            elif progress <= 0.6:
-                # Phase 2 (epoch 6-600): bật SCN + Diversity để regularize Motif Bank
-                self._runtime_diversity_lambda = 0.15
-                self._runtime_entropy_lambda = 0.003
-                self._runtime_overlap_lambda = 0.05
+            elif progress <= 0.7:
+                # Phase 2 (20-70%): enable SCN and stronger landmark auxiliaries
+                self._runtime_diversity_lambda = 0.18
+                self._runtime_entropy_lambda = 0.004
+                self._runtime_overlap_lambda = 0.07
                 self._runtime_augment_lambda = 0.0
                 self._runtime_edge_consistency_lambda = 0.0
                 self._runtime_aux_cls_lambda = 0.1
                 self._runtime_aux_consistency_lambda = 0.0
-                self._runtime_use_scn = True   # SCN bật sớm để chặn overfit
+                self._runtime_use_scn = False
                 self._runtime_use_mixup = False
                 self._runtime_phase = 2
             else:
-                # Phase 3 (epoch 601-1000): tinh chỉnh mạnh — tăng Landmark lambdas
-                self._runtime_diversity_lambda = 0.25
-                self._runtime_entropy_lambda = 0.006
-                self._runtime_overlap_lambda = 0.08
+                # Phase 3 (70-100%): strong refinement — increase landmark lambdas
+                self._runtime_diversity_lambda = 0.30
+                self._runtime_entropy_lambda = 0.008
+                self._runtime_overlap_lambda = 0.10
                 self._runtime_augment_lambda = 0.0
                 self._runtime_edge_consistency_lambda = 0.0
-                self._runtime_aux_cls_lambda = 0.15
+                self._runtime_aux_cls_lambda = 0.2
                 self._runtime_aux_consistency_lambda = 0.0
                 self._runtime_use_scn = True
                 self._runtime_use_mixup = False
