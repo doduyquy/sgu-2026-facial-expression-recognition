@@ -90,25 +90,35 @@ class MotifBackbone(nn.Module):
         except Exception:
             resnet = models.resnet18(pretrained=True)
 
-        # ── BUOC 2: Load checkpoint TRUC TIEP vao ResNet18 (neu co) ──────────
+        # ── BUOC 2: Load checkpoint TRUC TIEP vao ResNet18 bang Manual Shape-Matching ──
         if pretrained_cnn_path and os.path.exists(pretrained_cnn_path):
             print(f"Loading pretrained CNN from {pretrained_cnn_path}...")
             try:
                 ckpt = torch.load(pretrained_cnn_path, map_location='cpu')
-                # Ho tro nhieu dinh dang checkpoint khac nhau
                 state = ckpt
                 for key in ['state_dict', 'model_state_dict', 'net', 'model']:
                     if isinstance(ckpt, dict) and key in ckpt:
                         state = ckpt[key]
                         break
-                # Xoa prefix 'module.' neu duoc train voi DataParallel, va loai bo fc layer de tranh size mismatch (7 vs 1000)
-                state = {k.replace('module.', '').replace('backbone.', '').replace('resnet.', '').replace('net.', ''): v for k, v in state.items() if not k.replace('module.', '').startswith('fc.')}
-                missing, unexpected = resnet.load_state_dict(state, strict=False)
-                loaded = len(state) - len(unexpected)
-                total  = len(resnet.state_dict())
-                print(f"Successfully loaded {loaded}/{total} matching layers.")
-                if missing:
-                    print(f"  [INFO] {len(missing)} keys not in checkpoint (new layers, OK): e.g. {missing[:2]}")
+                
+                model_dict = resnet.state_dict()
+                pretrained_dict = {}
+                
+                for k, v in state.items():
+                    name = k.replace('module.', '').replace('backbone.', '').replace('resnet.', '').replace('net.', '')
+                    if name in model_dict:
+                        if v.shape == model_dict[name].shape:
+                            pretrained_dict[name] = v
+                        else:
+                            # Skip layers with shape mismatch (e.g., conv1 7x7 vs 3x3, bottleneck vs basicblock)
+                            pass
+                            
+                if len(pretrained_dict) == 0:
+                    print("WARNING: No matching keys found. Checkpoint format might be unsupported.")
+                else:
+                    print(f"Successfully loaded {len(pretrained_dict)}/{len(model_dict)} matching layers from CNN checkpoint.")
+                    model_dict.update(pretrained_dict)
+                    resnet.load_state_dict(model_dict)
             except Exception as e:
                 print(f"[WARNING] Could not load checkpoint: {e}. Using torchvision ImageNet weights.")
         elif pretrained_cnn_path:
