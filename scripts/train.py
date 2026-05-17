@@ -83,15 +83,8 @@ def main():
             class_weights = 1.0 / torch.sqrt(class_counts)
         elif class_weight_mode == 'inverse':
             class_weights = 1.0 / class_counts
-        elif class_weight_mode == 'boosted_inverse':
-            # Confusion Triangle Fix: Angry(0), Fear(2), Sad(4) × 2
-            # FER2013 label order: 0=Angry, 1=Disgust, 2=Fear, 3=Happy, 4=Sad, 5=Surprise, 6=Neutral
-            class_weights = 1.0 / torch.sqrt(class_counts)
-            boost_classes = [0, 2, 4]  # Angry, Fear, Sad
-            class_weights[boost_classes] *= 2.0
-            print(f"--- Boosted classes: Angry(0), Fear(2), Sad(4) × 2.0")
         else:
-            raise ValueError(f"Unsupported class_weight_mode: {class_weight_mode}. Choices: sqrt_inverse, inverse, boosted_inverse")
+            raise ValueError(f"Unsupported class_weight_mode: {class_weight_mode}")
 
         class_weights = class_weights / class_weights.sum()
         class_weights = class_weights.to(device)
