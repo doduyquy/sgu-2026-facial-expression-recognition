@@ -16,10 +16,13 @@ def build_dataloader(config, data_path):
     trans_val = build_transform(config, "val")
     trans_test = build_transform(config, "test")
 
+    # Lay landmark_dir tu config neu co (cho phep ghi de duong dan tren Kaggle)
+    landmark_dir = config['data'].get('landmark_dir', None)
+
     # build dataset
-    data_train = FER2013(data_path=data_path, split="train", transforms=trans_train)
-    data_val = FER2013(data_path=data_path, split="val", transforms=trans_val)
-    data_test = FER2013(data_path=data_path, split="test", transforms=trans_test)
+    data_train = FER2013(data_path=data_path, split="train", transforms=trans_train, landmark_dir=landmark_dir)
+    data_val   = FER2013(data_path=data_path, split="val",   transforms=trans_val,   landmark_dir=landmark_dir)
+    data_test  = FER2013(data_path=data_path, split="test",  transforms=trans_test,  landmark_dir=landmark_dir)
 
     # batch the dataset
     train_loader = DataLoader(

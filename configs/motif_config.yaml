@@ -13,6 +13,12 @@ data:
   num_workers: 4
   input_size: 48
   in_channels: 1
+  image_size: 48
+  # Duong dan den thu muc chua 3 file CSV landmark (train/val/test)
+  # Tren Kaggle: upload 3 file CSV len 1 dataset rieng, sau do dien path vao day
+  # Vi du: /kaggle/input/fer13-landmarks
+  # De trong neu de auto-discovery tim kiem
+  landmark_dir: "/kaggle/input/fer13-landmarks"
 
 training:
   epochs: 1000

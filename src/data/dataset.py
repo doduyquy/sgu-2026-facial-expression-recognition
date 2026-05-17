@@ -11,7 +11,7 @@ from src.data.emotions_dict import EMOTION_DICT
 class FER2013(Dataset):
     """Load and Cache Dataset into RAM for Ultra-Fast Dataloading"""
 
-    def __init__(self, data_path, split="train", transforms=None):
+    def __init__(self, data_path, split="train", transforms=None, landmark_dir=None):
         self.data_split_path = os.path.join(data_path, f"{split}.csv")
         self.data = pd.read_csv(self.data_split_path, usecols=[0, 1])
         self.transform = transforms
@@ -25,14 +25,25 @@ class FER2013(Dataset):
         # Parse list of strings into a single optimized list of numpy arrays (Loại bỏ DeprecationWarning)
         self.images = [np.array(p.split(), dtype=np.uint8).reshape(48, 48) for p in pixels_list]
         
-        # CẤY GHÉP BỘ 10 ĐIỂM VÀNG (The 10 Golden Landmarks)
+        # CAY GHEP BO 10 DIEM VANG (The 10 Golden Landmarks)
         base_dir = os.path.dirname(data_path)
         possible_paths = [
+            # 1. Explicit landmark_dir truyen vao tu config (uu tien cao nhat)
+            os.path.join(landmark_dir, f"landmarks_{split}.csv") if landmark_dir else None,
+            # 2. Landmark nam trong thu muc cua data_path
             os.path.join(data_path, "landmarks", f"landmarks_{split}.csv"),
+            # 3. Landmark nam 1 cap tren data_path
             os.path.join(base_dir, "landmarks", f"landmarks_{split}.csv"),
+            # 4. Kaggle: dataset rieng duoc mount vao /kaggle/input/
+            f"/kaggle/input/landmarks/landmarks_{split}.csv",
+            f"/kaggle/input/fer-landmarks/landmarks_{split}.csv",
+            f"/kaggle/input/fer13-landmarks/landmarks_{split}.csv",
+            f"/kaggle/input/datasets/doduyquynii/landmarks/landmarks_{split}.csv",
+            # 5. Working dir fallback
+            os.path.join("/kaggle/working/dataset/landmarks", f"landmarks_{split}.csv"),
             os.path.join("dataset", "landmarks", f"landmarks_{split}.csv"),
-            os.path.join("/kaggle/working/dataset/landmarks", f"landmarks_{split}.csv")
         ]
+        possible_paths = [p for p in possible_paths if p is not None]  # Loc None ra
         
         landmark_path = None
         for p in possible_paths:
