@@ -51,6 +51,18 @@ class MotifBackbone(nn.Module):
         self.mask2 = MaskBlock(512)   # Layer 2 xuất ra 512
         self.mask3 = MaskBlock(1024)  # Layer 3 xuất ra 1024
         self.mask4 = MaskBlock(2048)  # Layer 4 xuất ra 2048
+
+        # CRITICAL: Khởi tạo mask blocks để output gần ~0 lúc đầu
+        # Lý do: x * (1 + mask) - nếu mask = random -> làm nhiễu pretrained features
+        # Giải pháp: biến final conv của mỗi mask -> near-zero bias
+        # -> x * (1 + ~0) = x -> giữ nguyên pretrained signal
+        for mask in [self.mask1, self.mask2, self.mask3, self.mask4]:
+            # Tìm conv cuối cùng trong MaskBlock (là nn.Conv2d trước Sigmoid)
+            for m in mask.modules():
+                if isinstance(m, nn.Conv2d):
+                    nn.init.zeros_(m.weight)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, -4.0)  # Sigmoid(-4) ≈ 0.018 → mask ≈ 0
         
         # Reducers for Multi-Scale Fusion (Sẽ được quản lý ở MotifGraphModel)
         # self.dim_reducer đã bị loại bỏ ở đây để chuyển sang MotifGraphModel
