@@ -88,6 +88,58 @@ class CrossDimSemanticVisualAlignment(nn.Module):
         return region_enriched, attn_weights
 
 
+class MaskGuidedCrossDimSemanticVisualAlignment(CrossDimSemanticVisualAlignment):
+    """
+    Region-token cross-attention with an additive soft mask prior.
+
+    The mask is injected before softmax as:
+        attention_score += alpha * log(clamp(mask, floor, 1.0))
+    """
+
+    def __init__(
+        self,
+        embed_dim=512,
+        visual_dim=768,
+        num_heads=4,
+        dropout=0.1,
+        mask_attention_alpha=0.3,
+        mask_floor=0.05,
+    ):
+        super().__init__(
+            embed_dim=embed_dim,
+            visual_dim=visual_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+        )
+        self.mask_attention_alpha = float(mask_attention_alpha)
+        self.mask_floor = float(mask_floor)
+        if self.mask_attention_alpha < 0.0:
+            raise ValueError("model.mask_attention_alpha must be >= 0.")
+        if not 0.0 < self.mask_floor <= 1.0:
+            raise ValueError("model.mask_floor must be in (0, 1].")
+
+    def _build_log_mask(self, region_masks):
+        masks = region_masks.clamp(min=self.mask_floor, max=1.0)
+        log_mask = self.mask_attention_alpha * torch.log(masks + 1e-6)
+        return log_mask.repeat_interleave(self.cross_attn.num_heads, dim=0)
+
+    def forward(self, region_tokens, visual_features, region_masks=None):
+        attn_mask = None
+        if region_masks is not None and self.mask_attention_alpha > 0.0:
+            attn_mask = self._build_log_mask(region_masks)
+
+        attn_out, attn_weights = self.cross_attn(
+            query=region_tokens,
+            key=visual_features,
+            value=visual_features,
+            attn_mask=attn_mask,
+        )
+        region_enriched = self.norm1(region_tokens + self.drop_path(attn_out))
+        ffn_out = self.ffn(region_enriched)
+        region_enriched = self.norm2(region_enriched + self.drop_path(ffn_out))
+        return region_enriched, attn_weights
+
+
 class SwinLocalRefinerBlock(nn.Module):
     """Shifted-window self-attention over a ConvNeXt feature map."""
 
@@ -619,6 +671,10 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         self.is_frozen = False
         self.return_attn = False
         self.checkpoint_strict = bool(model_cfg.get("checkpoint_strict", False))
+        self.mask_guided_attention = bool(model_cfg.get("mask_guided_attention", False))
+        self.use_learnable_clip_region_tokens = bool(
+            model_cfg.get("use_learnable_clip_region_tokens", False)
+        )
 
         num_classes = int(data_cfg.get("num_classes", 7))
         if self.region_pooling not in ("mean", "concat"):
@@ -648,7 +704,46 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             )
 
         self.use_clip_dictionary = bool(model_cfg.get("use_clip_dictionary", True))
-        if self.use_clip_dictionary:
+        self.learned_region_dict = None
+        self.clip_region_dict = None
+        self.clip_region_gamma = None
+        if self.use_learnable_clip_region_tokens:
+            self.learned_region_dict = FacialRegionDictionary(
+                num_regions=self.num_regions,
+                embed_dim=self.embed_dim,
+            )
+            self.region_dict = self.learned_region_dict
+            gamma_init = float(model_cfg.get("clip_region_gamma_init", 0.1))
+            gamma_value = torch.tensor(gamma_init, dtype=torch.float32)
+            if bool(model_cfg.get("clip_region_gamma_learnable", True)):
+                self.clip_region_gamma = nn.Parameter(gamma_value)
+            else:
+                self.register_buffer("clip_region_gamma", gamma_value)
+
+            if self.use_clip_dictionary:
+                clip_model_name = model_cfg.get("clip_model_name", "openai/clip-vit-base-patch32")
+                try:
+                    self.clip_region_dict = CLIPFacialRegionDictionary(
+                        num_regions=self.num_regions,
+                        embed_dim=self.embed_dim,
+                        clip_model_name=clip_model_name,
+                    )
+                    print(
+                        "--> [ConvNeXtRegionAttention] Mixed region tokens: "
+                        f"learned + gamma*CLIP, gamma_init={gamma_init}"
+                    )
+                except Exception as exc:
+                    if not bool(model_cfg.get("clip_fallback_to_learned", True)):
+                        raise
+                    print(
+                        "--> [ConvNeXtRegionAttention] CLIP region tokens unavailable; "
+                        "using learned region tokens only. "
+                        f"Reason: {exc}"
+                    )
+                    self.clip_region_dict = None
+            else:
+                print("--> [ConvNeXtRegionAttention] Learned region tokens only.")
+        elif self.use_clip_dictionary:
             clip_model_name = model_cfg.get("clip_model_name", "openai/clip-vit-base-patch32")
             try:
                 self.region_dict = CLIPFacialRegionDictionary(
@@ -675,12 +770,26 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             )
             print(f"--> [ConvNeXtRegionAttention] Learned region tokens: K={self.num_regions}")
 
-        self.alignment = CrossDimSemanticVisualAlignment(
-            embed_dim=self.embed_dim,
-            visual_dim=self.visual_dim,
-            num_heads=self.num_heads,
-            dropout=self.dropout_rate,
-        )
+        if self.mask_guided_attention:
+            self.alignment = MaskGuidedCrossDimSemanticVisualAlignment(
+                embed_dim=self.embed_dim,
+                visual_dim=self.visual_dim,
+                num_heads=self.num_heads,
+                dropout=self.dropout_rate,
+                mask_attention_alpha=float(model_cfg.get("mask_attention_alpha", 0.3)),
+                mask_floor=float(model_cfg.get("mask_floor", 0.05)),
+            )
+            print(
+                "--> [ConvNeXtRegionAttention] Mask-guided cross-attention enabled: "
+                f"alpha={self.alignment.mask_attention_alpha}, floor={self.alignment.mask_floor}"
+            )
+        else:
+            self.alignment = CrossDimSemanticVisualAlignment(
+                embed_dim=self.embed_dim,
+                visual_dim=self.visual_dim,
+                num_heads=self.num_heads,
+                dropout=self.dropout_rate,
+            )
 
         if self.use_global_visual_bias:
             self.visual_proj = nn.Sequential(
@@ -867,7 +976,33 @@ class ConvNeXtRegionAttentionFER(nn.Module):
 
         return attention_logits
 
-    def forward(self, x):
+    def _region_tokens(self, batch_size):
+        if not self.use_learnable_clip_region_tokens:
+            return self.region_dict(batch_size)
+
+        tokens = self.learned_region_dict(batch_size)
+        if self.clip_region_dict is None:
+            return tokens
+
+        gamma = self.clip_region_gamma.to(device=tokens.device, dtype=tokens.dtype)
+        clip_tokens = self.clip_region_dict(batch_size).to(device=tokens.device, dtype=tokens.dtype)
+        return tokens + gamma * clip_tokens
+
+    def _flatten_region_masks(self, region_masks, visual_features):
+        if region_masks is None:
+            return None
+
+        flat_masks = region_masks.view(region_masks.size(0), self.num_regions, -1)
+        if flat_masks.size(2) != visual_features.size(1):
+            raise ValueError(
+                f"region_masks spatial size {region_masks.shape[2:]} "
+                f"flattens to {flat_masks.size(2)} tokens, but the backbone "
+                f"produces {visual_features.size(1)} visual tokens. "
+                "Make sure mask_size matches the ConvNeXt visual token grid."
+            )
+        return flat_masks
+
+    def forward(self, x, region_masks=None):
         batch_size = x.shape[0]
         visual_features, global_feat, pooled_map = self.convnext_backbone(x)
         if visual_features.size(1) != self.visual_pos_embed.size(1):
@@ -878,8 +1013,16 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             )
         visual_features = visual_features + self.visual_pos_embed
 
-        region_tokens = self.region_dict(batch_size)
-        phi_sem, attn_weights = self.alignment(region_tokens, visual_features)
+        flat_masks = self._flatten_region_masks(region_masks, visual_features)
+        region_tokens = self._region_tokens(batch_size)
+        if self.mask_guided_attention:
+            phi_sem, attn_weights = self.alignment(
+                region_tokens,
+                visual_features,
+                region_masks=flat_masks,
+            )
+        else:
+            phi_sem, attn_weights = self.alignment(region_tokens, visual_features)
 
         hyper_visual = phi_sem + self.pos_embed
         if self.use_global_visual_bias:

@@ -189,7 +189,7 @@ def main():
         model_name = config['model'].get('name')
         if model_name == 'resnet152_landmark_attention':
             dataloader_builder = build_landmark_dataloader
-        elif model_name == 'resnet152_unet_mask_attention':
+        elif model_name in {'resnet152_unet_mask_attention', 'convnext_tiny_mask_guided_region_attention'}:
             dataloader_builder = build_unet_mask_dataloader
         else:
             dataloader_builder = build_dataloader
@@ -197,7 +197,7 @@ def main():
         if is_main_process() and dataloader_builder is build_landmark_dataloader:
             print("--> Using landmark dataloader for landmark-guided attention.")
         if is_main_process() and dataloader_builder is build_unet_mask_dataloader:
-            print("--> Using U-Net mask dataloader for mask-guided attention.")
+            print("--> Using precomputed mask dataloader for mask-guided attention.")
 
         train_loader, val_loader, test_loader = dataloader_builder(
             config=config,

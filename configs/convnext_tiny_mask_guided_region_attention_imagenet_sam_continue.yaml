@@ -1,0 +1,32 @@
+_base_: "convnext_tiny_mask_guided_region_attention_imagenet_adamw.yaml"
+
+model:
+  # Phase 2 continues from the best AdamW checkpoint. Keep one short head-only
+  # warm-up epoch, then let SAM polish the already adapted model gently.
+  freeze_backbone_epochs: 1
+  unfreeze_backbone: true
+  freeze_unfrozen_batchnorm: true
+
+training:
+  # Replace this with the best checkpoint from phase 1 before running.
+  # Example:
+  # /kaggle/working/outputs/checkpoints/convnext_tiny_mask_guided_region_attention/<run>_best.pth
+  init_checkpoint_path: "REPLACE_WITH_ADAMW_BEST_CHECKPOINT.pth"
+  init_checkpoint_strict: true
+
+  optimizer: "sam"
+  base_optimizer: "adamw"
+  sam_rho: 0.03
+  sam_adaptive: false
+
+  lr: 0.00001
+  finetune_lr: 0.00001
+  visual_extractor_lr: 0.0000005
+  weight_decay: 0.01
+
+  scheduler: "reduce_lr_on_plateau"
+  lr_factor: 0.5
+  lr_patience: 2
+  epochs: 12
+  patience: 4
+  use_amp: false

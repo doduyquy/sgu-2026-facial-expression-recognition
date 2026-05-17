@@ -18,8 +18,14 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Package mask artifacts as a Kaggle dataset folder.")
     parser.add_argument("--source-dir", type=str, required=True)
     parser.add_argument("--dataset-dir", type=str, default="/kaggle/working/unet-mask-input-dataset")
-    parser.add_argument("--dataset-id", type=str, required=True, help="Example: yourname/fer2013-unet-region-masks")
+    parser.add_argument("--dataset-id", type=str, required=True, help="Example: yourname/fer2013-mediapipe-region-masks")
     parser.add_argument("--title", type=str, default="FER2013 U-Net Region Masks")
+    parser.add_argument(
+        "--artifact-name",
+        type=str,
+        default="unet_region_masks",
+        help="Folder name stored inside the Kaggle dataset.",
+    )
     return parser.parse_args()
 
 
@@ -48,7 +54,7 @@ def main():
         shutil.rmtree(dataset_dir)
     dataset_dir.mkdir(parents=True, exist_ok=True)
 
-    copytree_contents(source_dir, dataset_dir / "unet_region_masks")
+    copytree_contents(source_dir, dataset_dir / args.artifact_name)
     metadata = {
         "id": args.dataset_id,
         "title": args.title,
@@ -58,6 +64,9 @@ def main():
         json.dump(metadata, f, indent=2)
 
     print(f"--> Prepared Kaggle dataset folder: {dataset_dir}")
+    dataset_slug = args.dataset_id.split("/", 1)[-1]
+    print("--> Reuse path after adding this dataset as Kaggle input:")
+    print(f"    /kaggle/input/{dataset_slug}/{args.artifact_name}")
     print("--> If Kaggle API credentials are available, create it with:")
     print(f"    kaggle datasets create -p {dataset_dir} -r zip")
     print("--> Otherwise, save this notebook version and add the output dataset as input next run.")
@@ -65,4 +74,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

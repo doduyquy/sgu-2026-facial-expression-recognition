@@ -1,0 +1,60 @@
+_base_: "convnext_tiny_region_attention_7462_attention_adamw.yaml"
+
+model:
+  # Architecture:
+  # ConvNeXt backbone -> flatten local visual tokens -> mask-guided
+  # CLIP/learned region attention -> region transformer -> classifier.
+  name: "convnext_tiny_mask_guided_region_attention"
+
+  # Keep ConvNeXt as backbone only. No Swin refiner and no source classifier.
+  use_swin_local_refiner: false
+  use_source_classifier: false
+  logit_fusion: "attention"
+  finetune_logit_fusion: "attention"
+  source_logit_weight: 0.0
+  attention_logit_weight: 1.0
+
+  # Q = learned_region_token + gamma * clip_region_token.
+  use_clip_dictionary: true
+  use_learnable_clip_region_tokens: true
+  clip_region_gamma_init: 0.1
+  clip_region_gamma_learnable: true
+  clip_fallback_to_learned: true
+
+  # attention_logits += alpha * log(clamp(region_masks, floor, 1.0)).
+  mask_guided_attention: true
+  mask_attention_alpha: 0.3
+  mask_floor: 0.05
+  mask_dir: "outputs/mediapipe_region_masks"
+
+  # ConvNeXt final token grid is 7x7 for 224x224 input.
+  pool_visual_tokens: false
+  token_grid_size: 7
+
+  # Keep the FER-trained ConvNeXt features stable for the first ablation.
+  freeze_backbone_epochs: 999
+  unfreeze_backbone: false
+  freeze_unfrozen_batchnorm: true
+
+  classifier_dropout1: 0.45
+  classifier_dropout2: 0.35
+  ortho_loss_weight: 0.01
+
+data:
+  batch_size: 16
+  num_workers: 2
+  use_clean_filter: false
+  mask_dir: "outputs/mediapipe_region_masks"
+
+training:
+  optimizer: "adamw"
+  lr: 0.00003
+  finetune_lr: 0.00003
+  visual_extractor_lr: 0.0
+  weight_decay: 0.02
+  scheduler: "reduce_lr_on_plateau"
+  lr_factor: 0.5
+  lr_patience: 2
+  epochs: 25
+  patience: 6
+  use_amp: false

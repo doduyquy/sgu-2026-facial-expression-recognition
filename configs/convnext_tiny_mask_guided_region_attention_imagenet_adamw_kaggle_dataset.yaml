@@ -1,0 +1,7 @@
+_base_: "convnext_tiny_mask_guided_region_attention_imagenet_adamw.yaml"
+
+model:
+  mask_dir: "/kaggle/input/fer2013-mediapipe-region-masks/mediapipe_region_masks"
+
+data:
+  mask_dir: "/kaggle/input/fer2013-mediapipe-region-masks/mediapipe_region_masks"
