@@ -4,4 +4,6 @@ model:
   # No Swin here. This is the clean residual-logit branch:
   # ConvNeXt 74.62 source classifier + CLIP region-attention correction.
   use_swin_local_refiner: false
+  source_logit_weight: 1.0
+  attention_logit_weight: 0.2
 
