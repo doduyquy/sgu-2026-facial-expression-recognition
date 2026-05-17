@@ -27,24 +27,29 @@ class FER2013(Dataset):
         
         # CAY GHEP BO 10 DIEM VANG (The 10 Golden Landmarks)
         base_dir = os.path.dirname(data_path)
-        possible_paths = [
-            # 1. Explicit landmark_dir truyen vao tu config (uu tien cao nhat)
-            os.path.join(landmark_dir, f"landmarks_{split}.csv") if landmark_dir else None,
-            # 2. Landmark nam trong thu muc cua data_path
-            os.path.join(data_path, "landmarks", f"landmarks_{split}.csv"),
-            # 3. Landmark nam 1 cap tren data_path
-            os.path.join(base_dir, "landmarks", f"landmarks_{split}.csv"),
-            # 4. Kaggle: dataset rieng duoc mount vao /kaggle/input/
-            f"/kaggle/input/landmarks/landmarks_{split}.csv",
-            f"/kaggle/input/fer-landmarks/landmarks_{split}.csv",
-            f"/kaggle/input/fer13-landmarks/landmarks_{split}.csv",
-            f"/kaggle/input/datasets/doduyquynii/landmarks/landmarks_{split}.csv",
-            # 5. Working dir fallback
-            os.path.join("/kaggle/working/dataset/landmarks", f"landmarks_{split}.csv"),
-            os.path.join("dataset", "landmarks", f"landmarks_{split}.csv"),
+
+        # Thu muc ung vien theo thu tu uu tien
+        candidate_dirs = []
+        if landmark_dir:
+            candidate_dirs.append(landmark_dir)
+        candidate_dirs += [
+            os.path.join(data_path, "landmarks"),
+            os.path.join(base_dir, "landmarks"),
+            "/kaggle/input/datalandmark",
+            "/kaggle/input/landmarks",
+            "/kaggle/input/fer-landmarks",
+            "/kaggle/input/fer13-landmarks",
+            "/kaggle/input/datasets/doduyquynii/landmarks",
+            "/kaggle/working/dataset/landmarks",
+            "dataset/landmarks",
         ]
-        possible_paths = [p for p in possible_paths if p is not None]  # Loc None ra
-        
+
+        # Thu ca 2 bien the ten file: co "(1)" va khong co "(1)"
+        possible_paths = []
+        for d in candidate_dirs:
+            possible_paths.append(os.path.join(d, f"landmarks_{split}.csv"))
+            possible_paths.append(os.path.join(d, f"landmarks_{split} (1).csv"))
+
         landmark_path = None
         for p in possible_paths:
             if os.path.exists(p):
