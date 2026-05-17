@@ -31,22 +31,35 @@ REGION_ORDER = ["forehead", "left_eye", "right_eye", "nose", "mouth", "chin"]
 
 
 def import_mediapipe_face_mesh():
+    version = "not installed"
+    module_path = "unknown"
     try:
-        from mediapipe.python.solutions import face_mesh
-    except ImportError as exc:
-        try:
-            import mediapipe as mp
+        import mediapipe as mp
 
-            version = getattr(mp, "__version__", "unknown")
-        except ImportError:
-            version = "not installed"
+        version = getattr(mp, "__version__", "unknown")
+        module_path = getattr(mp, "__file__", "unknown")
+        if hasattr(mp, "solutions") and hasattr(mp.solutions, "face_mesh"):
+            return mp.solutions.face_mesh
+    except ImportError as exc:
         raise ImportError(
-            "MediaPipe FaceMesh legacy API is required for this script. "
-            f"Current mediapipe version: {version}. On Kaggle, install a legacy "
+            "mediapipe is required for this script. On Kaggle, install a legacy "
             "wheel first, for example: pip install --force-reinstall "
             "'mediapipe==0.10.14'"
         ) from exc
-    return face_mesh
+
+    try:
+        from mediapipe.python.solutions import face_mesh
+
+        return face_mesh
+    except ImportError as exc:
+        raise ImportError(
+            "MediaPipe FaceMesh legacy API is required for this script. "
+            f"Current mediapipe version: {version}; module path: {module_path}. "
+            "Neither 'mediapipe.solutions.face_mesh' nor "
+            "'mediapipe.python.solutions.face_mesh' is available. On Kaggle, "
+            "restart the session and reinstall with: pip install "
+            "--force-reinstall 'mediapipe==0.10.14'"
+        ) from exc
 
 
 def pixels_to_rgb(pixels):
