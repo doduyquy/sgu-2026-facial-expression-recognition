@@ -1,0 +1,32 @@
+_base_: "convnext_tiny_mask_guided_region_attention_7462_sam_continue.yaml"
+
+# Proof run:
+# - Start from the plain ConvNeXt-Tiny FER checkpoint that scores 72.97% on test.
+# - Use ConvNeXt only as the visual backbone.
+# - Do not reuse the original ConvNeXt classifier/source logits.
+# This keeps the comparison focused on the mask-guided region-attention method.
+
+experiment:
+  source_backbone: "convnext_tiny_acc72_97"
+  source_checkpoint: "convnext_tiny_fer2013_15052026_accuracy72.97.pth"
+  fair_baseline_config: "convnext_tiny_fer2013_sam_cosine"
+  final_logits: "attention_logits"
+
+model:
+  pretrained: false
+  weights: null
+  checkpoint_path: "checkpoints/ensemble/convnext_tiny_fer2013_15052026_accuracy72.97.pth"
+  checkpoint_strict: false
+
+  use_source_classifier: false
+  logit_fusion: "attention"
+  finetune_logit_fusion: "attention"
+  source_logit_weight: 0.0
+  attention_logit_weight: 1.0
+
+  mask_dir: "outputs/mediapipe_region_masks"
+
+data:
+  # Keep the original train.csv rows for this proof run.
+  use_clean_filter: false
+  mask_dir: "outputs/mediapipe_region_masks"

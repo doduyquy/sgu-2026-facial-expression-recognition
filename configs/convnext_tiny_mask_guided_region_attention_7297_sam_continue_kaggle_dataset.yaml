@@ -1,0 +1,17 @@
+_base_: "convnext_tiny_mask_guided_region_attention_7297_sam_continue.yaml"
+
+# Kaggle Add Input layout:
+# - /kaggle/input/datasets/lhongphuc2/convnext-72-97 contains convnext_tiny_fer2013_15052026_accuracy72.97.pth
+# - fer13-split contains train.csv, val.csv, test.csv
+# - mediapipe-mask-datasets-35887 contains merged_mediapipe_region_masks/{train,val,test}
+
+paths:
+  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
+
+model:
+  checkpoint_path: "/kaggle/input/datasets/lhongphuc2/convnext-72-97/convnext_tiny_fer2013_15052026_accuracy72.97.pth"
+  mask_dir: "/kaggle/input/datasets/lhongphuc2/mediapipe-mask-datasets-35887/merged_mediapipe_region_masks"
+
+data:
+  use_clean_filter: false
+  mask_dir: "/kaggle/input/datasets/lhongphuc2/mediapipe-mask-datasets-35887/merged_mediapipe_region_masks"
