@@ -131,121 +131,100 @@ class Trainer:
         return total_loss, logs
 
 
+    # ==========================================================
+    # EVENT-DRIVEN / HOOK-BASED MODULAR REFACTORING (Lightning/FastAI style)
+    # ==========================================================
+    def on_batch_start(self, images, labels):
+        """Hook executed at the start of each batch. Handles MixUp logic."""
+        mixup_active = bool(getattr(self, '_runtime_use_mixup', False)) and self.model.training
+        if mixup_active:
+            alpha = float(getattr(self, 'mixup_alpha', 0.2))
+            lam = float(np.random.beta(alpha, alpha)) if alpha > 0.0 else 1.0
+            perm = torch.randperm(images.size(0), device=images.device)
+            images = (lam * images) + ((1.0 - lam) * images[perm])
+            labels_a, labels_b = labels, labels[perm]
+            return mixup_active, images, labels_a, labels_b, lam
+        return False, images, labels, labels, 1.0
+
+    def on_loss_compute(self, logits, labels, labels_a, labels_b, lam, mixup_active, aux_losses):
+        """Hook executed to compute total loss including SCN, Auxiliary, and DGS."""
+        scn_logs = None
+        if mixup_active:
+            cls_loss = lam * F.cross_entropy(logits, labels_a) + (1.0 - lam) * F.cross_entropy(logits, labels_b)
+        else:
+            runtime_use_scn = getattr(self, '_runtime_use_scn', self.use_scn)
+            if runtime_use_scn and getattr(self, '_current_epoch', 0) >= getattr(self, 'scn_warmup_epochs', 0):
+                try:
+                    cls_loss, scn_logs = self._scn_loss(logits, labels)
+                except Exception:
+                    cls_loss = self._base_criterion(logits, labels)
+            else:
+                cls_loss = self._base_criterion(logits, labels)
+                
+        loss = cls_loss
+        
+        # Aggregate scalar auxiliary losses automatically
+        for k, v in aux_losses.items():
+            if k not in ["logits_global", "logits_motif"]:
+                w = self.config.get('training', {}).get(f'{k}_weight', 0.1)
+                loss = loss + float(w) * v
+                
+        # Dynamic Gate Supervision (DGS)
+        l_glob = aux_losses.get("logits_global", None)
+        l_mot = aux_losses.get("logits_motif", None)
+        if l_glob is not None and l_mot is not None:
+            if mixup_active:
+                loss_glob = lam * self._base_criterion(l_glob, labels_a) + (1.0 - lam) * self._base_criterion(l_glob, labels_b)
+                loss_mot = lam * self._base_criterion(l_mot, labels_a) + (1.0 - lam) * self._base_criterion(l_mot, labels_b)
+                loss = loss + 0.3 * loss_glob + 0.3 * loss_mot
+            else:
+                loss = loss + 0.3 * self.criterion(l_glob, labels)
+                loss = loss + 0.3 * self.criterion(l_mot, labels)
+                
+        return loss, scn_logs
+
+    def on_backward_end(self):
+        """Hook executed after backward pass. Handles AMP unscaling and gradient clipping."""
+        try:
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
+        except Exception:
+            pass
+
+
     def train_one_epoch(self):
         self.model.train()
-
         running_loss = 0.0
         corrects = 0
         total = 0
-        # reset latest scn logs for this epoch
         self._latest_scn_logs = None
-
-        # accumulator for scn metrics across batches
-
-
-
-        # accumulator for scn metrics across batches
         _scn_acc = {"scn_weight_mean": [], "scn_conf_mean": [], "scn_rank_loss": []}
 
         for images, labels, landmarks, statuses in self.train_loader:
             images, labels, landmarks, statuses = images.to(self.device), labels.to(self.device), landmarks.to(self.device), statuses.to(self.device)
             self.optimizer.zero_grad()
 
-            # MixUp: disabled by default in FER pipeline (SCN preferred)
-            mixup_active = bool(getattr(self, '_runtime_use_mixup', False)) and self.model.training
-            if mixup_active:
-                alpha = float(getattr(self, 'mixup_alpha', 0.2))
-                if alpha > 0.0:
-                    lam = float(np.random.beta(alpha, alpha))
-                else:
-                    lam = 1.0
-                perm = torch.randperm(images.size(0), device=images.device)
-                images = (lam * images) + ((1.0 - lam) * images[perm])
-                labels_a = labels
-                labels_b = labels[perm]
+            # 1. on_batch_start (MixUp)
+            mixup_active, images, labels_a, labels_b, lam = self.on_batch_start(images, labels)
 
-            # BUG FIX: Tuyệt đối không truyền targets cho MotifLoss khi đang MixUp ảnh
+            # 2. Forward pass
             with autocast():
                 if hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
-                    if mixup_active:
-                        outputs = self.model(images, landmarks=landmarks, statuses=statuses) # Bỏ targets đi khi đang MixUp
-                    else:
-                        outputs = self.model(images, targets=labels, landmarks=landmarks, statuses=statuses) # Chỉ truyền targets khi ảnh sạch
+                    outputs = self.model(images, landmarks=landmarks, statuses=statuses) if mixup_active else self.model(images, targets=labels, landmarks=landmarks, statuses=statuses)
                 else:
                     outputs = self.model(images, landmarks=landmarks, statuses=statuses)
                 logits = self._extract_logits(outputs)
+                aux_losses = self._extract_aux_losses(outputs)
 
-            # batch confidence used to scale landmark diversity: low-confidence batches
-            # should emphasize landmark regularizers more (helps hard samples)
-            try:
-                probs_batch = F.softmax(logits, dim=1)
-                conf_batch = probs_batch.gather(1, labels.unsqueeze(1)).squeeze(1)
-                conf_batch_mean = conf_batch.mean()
-            except Exception:
-                conf_batch_mean = torch.tensor(0.0, device=self.device)
+            # 3. on_loss_compute (SCN, Aux, DGS)
+            loss, scn_logs = self.on_loss_compute(logits, labels, labels_a, labels_b, lam, mixup_active, aux_losses)
+            if scn_logs is not None:
+                for k in _scn_acc:
+                    _scn_acc[k].append(scn_logs.get(k, 0.0))
 
-            # determine effective runtime flag for SCN (set by fit phases if present)
-            runtime_use_scn = getattr(self, '_runtime_use_scn', self.use_scn)
-
-            # If mixup is active, compute mixup-style CE and skip SCN ranking (SCN needs hard labels)
-            if mixup_active:
-                try:
-                    cls_loss = lam * F.cross_entropy(logits, labels_a) + (1.0 - lam) * F.cross_entropy(logits, labels_b)
-                    scn_logs = None
-                except Exception:
-                    cls_loss = self._base_criterion(logits, labels)
-                    scn_logs = None
-            else:
-                # apply SCN-light after warmup epochs if enabled by runtime flag
-                if runtime_use_scn and getattr(self, '_current_epoch', 0) >= getattr(self, 'scn_warmup_epochs', 0):
-                    try:
-                        cls_loss, scn_logs = self._scn_loss(logits, labels)
-                        # accumulate scn logs for epoch-level summary
-                        try:
-                            _scn_acc["scn_weight_mean"].append(scn_logs.get("scn_weight_mean", 0.0))
-                            _scn_acc["scn_conf_mean"].append(scn_logs.get("scn_conf_mean", 0.0))
-                            _scn_acc["scn_rank_loss"].append(scn_logs.get("scn_rank_loss", 0.0))
-                        except Exception:
-                            pass
-                    except Exception:
-                        # fallback to base criterion
-                        cls_loss = self._base_criterion(logits, labels)
-                else:
-                    # use base criterion when SCN not active
-                    cls_loss = self._base_criterion(logits, labels)
-            aux_losses = self._extract_aux_losses(outputs)
-
-            loss = cls_loss
-            
-            # Aggregate scalar auxiliary losses automatically (doc tu config hoac mac dinh 0.1)
-            for k, v in aux_losses.items():
-                if k not in ["logits_global", "logits_motif"]:
-                    w = self.config.get('training', {}).get(f'{k}_weight', 0.1)
-                    loss = loss + float(w) * v
-            
-            # BẢN VÁ: DGS (Dynamic Gate Supervision) phải tuân thủ luật của MixUp
-            l_glob = aux_losses.get("logits_global", None)
-            l_mot = aux_losses.get("logits_motif", None)
-            if l_glob is not None and l_mot is not None:
-                if mixup_active: # Nếu đang trộn ảnh, DGS cũng phải trộn nhãn
-                    loss_glob = lam * self._base_criterion(l_glob, labels_a) + (1.0 - lam) * self._base_criterion(l_glob, labels_b)
-                    loss_mot = lam * self._base_criterion(l_mot, labels_a) + (1.0 - lam) * self._base_criterion(l_mot, labels_b)
-                    loss = loss + 0.3 * loss_glob + 0.3 * loss_mot
-                else: # Nếu không trộn, học nhãn sạch bình thường
-                    loss = loss + 0.3 * self.criterion(l_glob, labels)
-                    loss = loss + 0.3 * self.criterion(l_mot, labels)
-            
-
-            # Use scaler for backward and step (AMP)
+            # 4. Backward & on_backward_end
             self.scaler.scale(loss).backward()
-            try:
-                # Unscale before clipping
-                self.scaler.unscale_(self.optimizer)
-                # gradient clipping to stabilize training when combining SCN and landmark auxes
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
-            except Exception:
-                pass
-            
+            self.on_backward_end()
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
@@ -258,20 +237,11 @@ class Trainer:
             epoch_loss = running_loss / total
             epoch_acc = corrects.double() / total
         else:
-            epoch_loss = 0.0
-            epoch_acc = torch.tensor(0.0)
+            epoch_loss = 0.0; epoch_acc = torch.tensor(0.0)
 
-        # finalize SCN logs (mean across batches) if any
-        try:
-            if len(_scn_acc["scn_weight_mean"]) > 0:
-                self._latest_scn_logs = {
-                    "scn_weight_mean": float(sum(_scn_acc["scn_weight_mean"]) / len(_scn_acc["scn_weight_mean"])),
-                    "scn_conf_mean": float(sum(_scn_acc["scn_conf_mean"]) / len(_scn_acc["scn_conf_mean"])),
-                    "scn_rank_loss": float(sum(_scn_acc["scn_rank_loss"]) / len(_scn_acc["scn_rank_loss"])),
-                }
-            else:
-                self._latest_scn_logs = None
-        except Exception:
+        if len(_scn_acc["scn_weight_mean"]) > 0:
+            self._latest_scn_logs = {k: float(sum(v)/len(v)) for k, v in _scn_acc.items()}
+        else:
             self._latest_scn_logs = None
 
         return epoch_loss, epoch_acc
@@ -441,8 +411,8 @@ class Trainer:
             # lr scheduler
             if self.scheduler is not None:
                 if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                    # SỬA LỖI: Track theo val_acc để không bị lừa bởi val_loss ảo
-                    self.scheduler.step(val_acc)
+                    # SỬA LỖI: Track theo val_loss để nhận diện plateau nhạy bén và mịn màng hơn
+                    self.scheduler.step(val_loss)
                 else:
                     self.scheduler.step()
 

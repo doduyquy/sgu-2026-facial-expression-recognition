@@ -424,7 +424,10 @@ class MotifGraphModel(nn.Module):
         self.offset_amplitude = float(config.get('offset_amplitude', 0.35))  # UPDATE: stabilize 4x4 offsets
         
         self.pos_embed = nn.Parameter(torch.randn(1, 16, self.feat_dim))  # UPDATE: 4x4 grid
-        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        try:
+            nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        except AttributeError:
+            nn.init.normal_(self.pos_embed, std=0.02)
         
         self.register_buffer('grid_adj', self._generate_4x4_grid_adj())  # UPDATE: 4x4 grid
         
