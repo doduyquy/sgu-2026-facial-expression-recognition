@@ -626,6 +626,13 @@ class MotifGraphModel(nn.Module):
                     # Nếu là các crop lật ngang (t >= 5), lật tọa độ x qua trục giữa của ảnh 40x40
                     if t >= 5:
                         crop_landmarks[:, :, 0] = 39.0 - crop_landmarks[:, :, 0]
+                        # HOÁN ĐỔI NGỮ NGHĨA (SEMANTIC SWAP) CÁC CẶP ĐỐI XỨNG TRÁI - PHẢI
+                        # Các cặp đối xứng theo thứ tự LANDMARK_INDICES:
+                        # [2, 3]: Lông mày trái <-> phải
+                        # [4, 5]: Mắt trái <-> phải
+                        # [7, 8]: Mép miệng trái <-> phải
+                        # (Trán [0], Ấn đường [1], Mũi [6], Cằm [9] nằm trên trục dọc giữa mặt -> không đổi)
+                        crop_landmarks[:, [2, 3, 4, 5, 7, 8], :] = crop_landmarks[:, [3, 2, 5, 4, 8, 7], :].clone()
                         
                 if targets is not None:
                     out = self.forward(crop_x, return_selection=return_selection, targets=targets, landmarks=crop_landmarks, statuses=statuses)
