@@ -411,6 +411,12 @@ class MotifGraphModel(nn.Module):
             nn.Linear(32, 1)
         )
 
+        # FIX 2 CRITICAL: Khoi tao san trong __init__ thay vi lazy trong forward()
+        # Ly do: optimizer duoc build TRUOC khi model.forward() chay lan dau
+        # Neu tao layer trong forward() -> optimizer khong biet -> weights KHONG BAO GIO duoc update
+        # -> Random weights qua toan bo training -> features explode -> NaN loss
+        self.proj_node_with_coords = nn.Linear(self.feat_dim + 2, self.feat_dim)
+
         # Khởi tạo Motif Consistency Loss
         self.motif_consistency_loss = MotifConsistencyLoss(
             num_classes=self.num_classes,
@@ -578,23 +584,20 @@ class MotifGraphModel(nn.Module):
         feat_map_l4 = self.upsample(self.reducer_l4(x4))   # (B, feat_dim, 12, 12)
         feat_map = feat_map_l3 + feat_map_l4                # Fusion: (B, feat_dim, 12, 12)
         _, _, H, W = feat_map.shape
-        
-        # 3. Global Branch prediction (Vẫn dùng Layer 4 nguyên bản cho Global context)
+        # 3. Global Branch prediction
         logits_global = self.global_fc(self.global_pool(x4))
-        self._latest_logits_global = logits_global # Lưu cho DGS Loss
-        
-        # FIX 2: Bơm nhận thức không gian vào GAT (GPS cho Graph)
-        # Cũ: cắt [:-2] bỏ tọa độ → GAT mù, không biết Trán khác Cằm
-        # Mới: giữ nguyên (feat_dim+2), project xuống feat_dim → GAT biết “Bên trái, Trên, Dưới”
+        self._latest_logits_global = logits_global
+
+        # 4. Motif Branch - proj_node_with_coords da duoc dang ky trong __init__
+        # nen optimizer biet va cap nhat no -> tranh NaN do random weights
         nodes_with_coords, adj = self._get_global_graph(feat_map)
-        node_feats = nodes_with_coords  # giữ nguyên cả tọa độ (feat_dim + 2)
-        if not hasattr(self, 'proj_node_with_coords') or self.proj_node_with_coords.in_features != node_feats.shape[-1]:
-            self.proj_node_with_coords = nn.Linear(node_feats.shape[-1], self.feat_dim).to(x.device)
-        node_feats = self.proj_node_with_coords(node_feats)
-            
+        node_feats = self.proj_node_with_coords(nodes_with_coords)  # (B, 144, feat_dim)
+        node_feats = torch.nan_to_num(node_feats, nan=0.0, posinf=1.0, neginf=-1.0)
+
         for gnn in self.gnn_layers:
             node_feats = gnn(node_feats, adj)
-            
+        node_feats = torch.nan_to_num(node_feats, nan=0.0, posinf=1.0, neginf=-1.0)
+
         candidates, cand_adjs, centers = self._extract_deformable_subgraphs(feat_map, H, W, node_feats, landmarks, statuses)
         num_cands = candidates.shape[1]
         
