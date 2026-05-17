@@ -17,14 +17,17 @@ def build_transform(config, split="train") -> Compose: # train | val | test
     st = 0.5
     
     if split == "train":
-        # BẢN VÁ: Dùng Augment chuẩn mực cho ảnh nhỏ, bảo toàn cấu trúc khuôn mặt
+        # LANDMARK-SAFE AUGMENTATION: Chỉ dùng pixel-level transforms
+        # Tuyệt đối KHÔNG dùng: RandomRotation, RandomCrop, RandomFlip, RandomAffine
+        # (các spatial transforms sẽ dịch chuyển ảnh nhưng tọa độ CSV vẫn giữ nguyên → nhiễu)
         trans = transforms.Compose([
-            transforms.RandomCrop(image_size, padding=4, padding_mode='reflect'),
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomApply([transforms.RandomRotation(15)], p=0.5),
-            # TUYỆT ĐỐI KHÔNG DÙNG RandAugment cho bài toán nhận diện vi biểu cảm
             transforms.ToTensor(),
-            transforms.Normalize(mean=(mu,), std=(st,))
+            transforms.Normalize(mean=(mu,), std=(st,)),
+            # Pixel-level augmentation: thay đổi độ sáng/tương phản nhưng KHÔNG dịch landmark
+            transforms.RandomApply([
+                transforms.Lambda(lambda x: x + torch.randn_like(x) * 0.02)  # Gaussian noise nhẹ
+            ], p=0.3),
+            transforms.RandomErasing(p=0.25, scale=(0.02, 0.08), ratio=(0.5, 2.0), value=0),  # Cutout nhẹ
         ])
     elif split == "val":
         # FAST VALIDATION: No TenCrop during training phase to save RAM/Time
