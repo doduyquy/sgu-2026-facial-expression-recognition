@@ -350,40 +350,35 @@ class Trainer:
 
             # =========================================================
             # BACKBONE FREEZE SCHEDULE (chong Overfitting ResNet152)
-            # Phase 1 (ep 0-14) : Freeze TOAN BO backbone -> chi train Motif Graph Head
-            # Phase 2 (ep 15-29): Unfreeze layer4 voi LR rat nho (backbone_lr = main_lr * 0.05)
-            # Phase 3 (ep 30+)  : Unfreeze full backbone (LR = main_lr * 0.01)
             # =========================================================
             backbone = getattr(self.model, 'backbone', None) or getattr(self.model, 'resnet', None)
             if backbone is not None:
+                # Lấy LR hiện tại của khối Head (luôn là param_groups[-1])
+                main_lr = self.optimizer.param_groups[-1]['lr'] 
+                
                 if ep == 0:
                     # Phase 1: Freeze all backbone
                     for param in backbone.parameters():
                         param.requires_grad = False
                     print(f"[Phase 1] Epoch {ep+1}: Backbone FROZEN. Only training Motif Graph Head.")
+                    
                 elif ep == 15:
-                    # Phase 2: Unfreeze layer4 with 10x smaller LR
-                    for param in backbone.parameters():
-                        param.requires_grad = False
+                    # Phase 2: Unfreeze layer4
                     layer4 = getattr(backbone, 'layer4', None)
                     if layer4 is not None:
                         for param in layer4.parameters():
                             param.requires_grad = True
-                    main_lr = self.optimizer.param_groups[0]['lr']
-                    backbone_lr = main_lr * 0.05
-                    # Add backbone layer4 as new param group nếu chưa có
-                    if len(self.optimizer.param_groups) == 1 and layer4 is not None:
-                        self.optimizer.add_param_group({'params': [p for p in layer4.parameters() if p.requires_grad], 'lr': backbone_lr})
-                    print(f"[Phase 2] Epoch {ep+1}: Unfreeze backbone.layer4 with lr={backbone_lr:.2e}")
+                    # Cập nhật LR cho nhóm Backbone (luôn là param_groups[0])
+                    self.optimizer.param_groups[0]['lr'] = main_lr * 0.05
+                    print(f"[Phase 2] Epoch {ep+1}: Unfreeze backbone.layer4 with lr={main_lr * 0.05:.2e}")
+                    
                 elif ep == 30:
-                    # Phase 3: Unfreeze full backbone with 100x smaller LR
+                    # Phase 3: Unfreeze full backbone
                     for param in backbone.parameters():
                         param.requires_grad = True
-                    main_lr = self.optimizer.param_groups[0]['lr']
-                    backbone_lr = main_lr * 0.01
-                    if len(self.optimizer.param_groups) <= 2:
-                        self.optimizer.add_param_group({'params': [p for p in backbone.parameters() if p.requires_grad], 'lr': backbone_lr})
-                    print(f"[Phase 3] Epoch {ep+1}: Full backbone UNFROZEN with lr={backbone_lr:.2e}")
+                    # Cập nhật LR cho nhóm Backbone
+                    self.optimizer.param_groups[0]['lr'] = main_lr * 0.01
+                    print(f"[Phase 3] Epoch {ep+1}: Full backbone UNFROZEN with lr={main_lr * 0.01:.2e}")
 
             progress = ep / self.epochs
             set_progress = getattr(self.model, "set_training_progress", None)
