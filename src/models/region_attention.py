@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributed as dist
 from .vgg import VGGFusionSpatialCNN
 from .resnet import ResNet50
 
@@ -143,9 +144,26 @@ class CLIPFacialRegionDictionary(nn.Module):
         
         if CLIPTokenizer is None or CLIPTextModel is None:
             raise ImportError("Please install transformers to use CLIPFacialRegionDictionary: `pip install transformers`")
-            
-        tokenizer = CLIPTokenizer.from_pretrained(clip_model_name)
-        text_model = CLIPTextModel.from_pretrained(clip_model_name)
+
+        dist_ready = dist.is_available() and dist.is_initialized()
+        rank = dist.get_rank() if dist_ready else 0
+        if dist_ready and rank != 0:
+            # Let rank 0 populate the HuggingFace cache first. Concurrent CLIP
+            # downloads from multiple Kaggle DDP workers can appear to hang.
+            dist.barrier()
+            tokenizer = CLIPTokenizer.from_pretrained(
+                clip_model_name,
+                local_files_only=True,
+            )
+            text_model = CLIPTextModel.from_pretrained(
+                clip_model_name,
+                local_files_only=True,
+            )
+        else:
+            tokenizer = CLIPTokenizer.from_pretrained(clip_model_name)
+            text_model = CLIPTextModel.from_pretrained(clip_model_name)
+            if dist_ready:
+                dist.barrier()
         
         print(f"--> Initializing CLIP Text Embeddings from: {clip_model_name}")
         with torch.no_grad():
