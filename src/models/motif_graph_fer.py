@@ -42,81 +42,80 @@ class MaskBlock(nn.Module):
 
 class MotifBackbone(nn.Module):
     """
-    Advanced Backbone following Pham Qui Luan's ResMaskingNet structure.
-    NÂNG CẤP LÊN RESNET152 ĐỂ KHỚP VỚI CHECKPOINT.
+    Backbone dung de Fine-tune tu checkpoint ResNet152 pretrained.
+
+    Quy trinh DUNG:
+      1. Load checkpoint TRUC TIEP vao ResNet152 chuan
+      2. Rut tung layer ra (weights DA DUOC load san)
+      3. Adapt conv1: 7x7 RGB -> 3x3 Grayscale bang cach cat tam + average kenh
+      4. Them MaskBlocks (spatial attention, init near-zero de bao toan pretrained features)
+
+    Khong can load_pretrained_cnn() phuc tap voi key mapping nua.
     """
-    def __init__(self, in_channels=1, feat_dim=128):
+    def __init__(self, checkpoint_path="", in_channels=1, feat_dim=128):
         super().__init__()
-        
-        # Load cấu trúc ResNet152 chuẩn từ PyTorch để hứng trọng số
+
         import torchvision.models as models
+        import os
+
+        # ── BUOC 1: Tao ResNet152 chuan (rong) ──────────────────────────────
         resnet = models.resnet152(weights=None)
-        
+
+        # ── BUOC 2: Load checkpoint TRUC TIEP vao ResNet152 ─────────────────
+        if checkpoint_path and os.path.exists(checkpoint_path):
+            print(f"Loading pretrained CNN from {checkpoint_path}...")
+            try:
+                ckpt = torch.load(checkpoint_path, map_location='cpu')
+                # Ho tro nhieu dinh dang checkpoint khac nhau
+                state = ckpt
+                for key in ['state_dict', 'model_state_dict', 'net', 'model']:
+                    if isinstance(ckpt, dict) and key in ckpt:
+                        state = ckpt[key]
+                        break
+                # Xoa prefix 'module.' neu duoc train voi DataParallel
+                state = {k.replace('module.', ''): v for k, v in state.items()}
+                missing, unexpected = resnet.load_state_dict(state, strict=False)
+                loaded = len(state) - len(unexpected)
+                total  = len(resnet.state_dict())
+                print(f"Successfully loaded {loaded}/{total} matching layers.")
+                if missing:
+                    print(f"  [INFO] {len(missing)} keys not in checkpoint (new layers, OK): e.g. {missing[:2]}")
+            except Exception as e:
+                print(f"[WARNING] Could not load checkpoint: {e}. Using random init.")
+        elif checkpoint_path:
+            print(f"[WARNING] Checkpoint not found: {checkpoint_path}. Using random init.")
+
+        # ── BUOC 3: Adapt conv1 (7x7 RGB) -> (3x3 Grayscale) ────────────────
+        # Dung chinh TRONG SO DA DUOC PRETRAIN tu checkpoint (khong phai random!)
+        old_w = resnet.conv1.weight  # [64, 3, 7, 7] - da pretrained
         self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn1 = resnet.bn1
-        self.relu = resnet.relu
-        self.maxpool = nn.Identity() # Giữ nguyên để output là 6x6
-        
-        # ResNet152 Layers
-        self.layer1 = resnet.layer1
-        self.layer2 = resnet.layer2
-        self.layer3 = resnet.layer3
-        self.layer4 = resnet.layer4
-        
-        # PHAM QUI LUAN'S MASKING BLOCKS
-        # MaskBlock tu init near-zero (Sigmoid(-4) ≈ 0.018) → bao toan pretrained features
+        with torch.no_grad():
+            if old_w.shape[2:] == (7, 7):
+                # Cat tam 3x3 tu kernel 7x7 (vung quan trong nhat)
+                center = old_w[:, :, 2:5, 2:5]          # [64, 3, 3, 3]
+                print("[*] Extracting center 3x3 from 7x7 kernel + averaging RGB -> Grayscale for conv1.")
+            else:
+                center = old_w                            # [64, 3, k, k]
+            # Trung binh 3 kenh RGB -> 1 kenh Grayscale
+            self.conv1.weight.copy_(center.mean(dim=1, keepdim=True))  # [64, 1, 3, 3]
+
+        # ── BUOC 4: Rut cac layer DA CO WEIGHTS tu ResNet152 ─────────────────
+        self.bn1     = resnet.bn1
+        self.relu    = resnet.relu
+        self.maxpool = nn.Identity()   # Khong downsample: giu 48x48 -> 48x48
+        self.layer1  = resnet.layer1   # [B, 256,  48, 48] - DA PRETRAINED
+        self.layer2  = resnet.layer2   # [B, 512,  24, 24] - DA PRETRAINED
+        self.layer3  = resnet.layer3   # [B, 1024, 12, 12] - DA PRETRAINED
+        self.layer4  = resnet.layer4   # [B, 2048,  6,  6] - DA PRETRAINED
+
+        # ── BUOC 5: Them MaskBlocks (SPATIAL ATTENTION - hoc them tu dau) ────
+        # near-zero init: Sigmoid(-4) ≈ 0.018 → x*(1+0.018) ≈ x
+        # Dam bao pretrained features khong bi nhieu ngay tu epoch 0
         self.mask1 = MaskBlock(256)
         self.mask2 = MaskBlock(512)
         self.mask3 = MaskBlock(1024)
         self.mask4 = MaskBlock(2048)
 
-        # Reducers for Multi-Scale Fusion (Sẽ được quản lý ở MotifGraphModel)
-        # self.dim_reducer đã bị loại bỏ ở đây để chuyển sang MotifGraphModel
-
-    def load_pretrained_cnn(self, checkpoint_path):
-        import os
-        if not os.path.exists(checkpoint_path):
-            print(f"WARNING: CNN checkpoint {checkpoint_path} not found. Skipping.")
-            return
-
-        print(f"Loading pretrained CNN from {checkpoint_path}...")
-        try:
-            checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        except Exception as e:
-            print(f"Error loading checkpoint: {e}")
-            return
-            
-        state_dict = checkpoint.get('state_dict', checkpoint.get('model_state_dict', checkpoint.get('net', checkpoint)))
-            
-        model_dict = self.state_dict()
-        pretrained_dict = {}
-        
-        for k, v in state_dict.items():
-            name = k.replace('module.', '').replace('backbone.', '').replace('resnet.', '').replace('net.', '')
-            
-            if name in model_dict:
-                if v.shape == model_dict[name].shape:
-                    pretrained_dict[name] = v
-                    
-                # BẢN VÁ LỖI CỨU LỚP CONV1 (Cắt 7x7 xuống 3x3 và ép về Grayscale)
-                elif 'conv1.weight' in name and v.shape[1] == 3 and model_dict[name].shape[1] == 1:
-                    if v.shape[2:] == (7, 7) and model_dict[name].shape[2:] == (3, 3):
-                        print(f"[*] Extracting center 3x3 from 7x7 kernel and adapting to 1 channel for {name}...")
-                        # Cắt lõi 3x3 từ tâm bộ lọc 7x7
-                        center_v = v[:, :, 2:5, 2:5]
-                        # Ép 3 kênh RGB về 1 kênh
-                        pretrained_dict[name] = center_v.mean(dim=1, keepdim=True)
-                    elif v.shape[2:] == model_dict[name].shape[2:]:
-                        print(f"[*] Adapting {name} from 3 channels to 1 channel (Grayscale)...")
-                        pretrained_dict[name] = v.mean(dim=1, keepdim=True)
-                else:
-                    pass
-                    
-        if len(pretrained_dict) == 0:
-            print("WARNING: No matching keys found. Check your checkpoint architecture.")
-        else:
-            print(f"Successfully loaded {len(pretrained_dict)}/{len(model_dict)} matching layers.")
-            self.load_state_dict(pretrained_dict, strict=False)
 
     def forward(self, x):
         x = self.conv1(x)
@@ -126,25 +125,21 @@ class MotifBackbone(nn.Module):
 
         # Layer 1 + Mask 1
         x = self.layer1(x)
-        m1 = self.mask1(x)
-        x = x * (1 + m1)
+        x = x * (1 + self.mask1(x))
 
         # Layer 2 + Mask 2
         x = self.layer2(x)
-        m2 = self.mask2(x)
-        x = x * (1 + m2)
+        x = x * (1 + self.mask2(x))
 
-        # Layer 3 + Mask 3 (Dùng cho Multi-scale)
+        # Layer 3 + Mask 3 → x3 (multi-scale output)
         x = self.layer3(x)
-        m3 = self.mask3(x)
-        x3 = x * (1 + m3)
+        x3 = x * (1 + self.mask3(x))
 
-        # Layer 4 + Mask 4
+        # Layer 4 + Mask 4 → x4 (main output)
         x = self.layer4(x)
-        m4 = self.mask4(x)
-        x4 = x * (1 + m4)
-        
-        return x3, x4
+        x4 = x * (1 + self.mask4(x))
+
+        return x3, x4   # (B, 1024, 12, 12), (B, 2048, 6, 6)
 
 class GraphAttentionLayer(nn.Module):
     """
@@ -352,7 +347,10 @@ class MotifGraphModel(nn.Module):
         self.top_k = config.get('top_k', 6)  # UPDATE: more candidate diversity for 4x4
         self.temperature = config.get('motif_tau', 0.1) 
         
-        self.backbone = MotifBackbone(feat_dim=self.feat_dim)
+        pretrained_cnn_path = config.get('pretrained_cnn_path', "")
+        # Truyen checkpoint_path truc tiep vao MotifBackbone → load ngay trong __init__
+        self.backbone = MotifBackbone(checkpoint_path=pretrained_cnn_path, feat_dim=self.feat_dim)
+
         
         # A. MULTI-SCALE FEATURE FUSION COMPONENTS
         # Ép Layer 3 (1024 channels) và Layer 4 (2048 channels) về feat_dim
@@ -368,10 +366,8 @@ class MotifGraphModel(nn.Module):
         )
         self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
         
-        # UPDATE: Load custom CNN checkpoint if provided
-        pretrained_cnn_path = config.get('pretrained_cnn_path', "")
-        if pretrained_cnn_path != "":
-            self.backbone.load_pretrained_cnn(pretrained_cnn_path)
+        # (checkpoint da duoc load trong MotifBackbone.__init__ roi, khong can goi lai)
+
             
         # 4. Global Branch: Capture overall face context
         self.global_pool = nn.AdaptiveAvgPool2d(1)
@@ -759,31 +755,6 @@ class MotifGraphModel(nn.Module):
             
         return aux_dict
 
-
-    def _get_grid_graph(self, feat_map):
-        """ Vectorized version of graph building """
-        B, C, H, W = feat_map.shape
-        N = H * W
-        
-        # Node features
-        y, x = torch.meshgrid(torch.linspace(0, 1, H), torch.linspace(0, 1, W), indexing='ij')
-        coords = torch.stack([x, y], dim=-1).to(feat_map.device).view(1, N, 2).expand(B, -1, -1)
-        nodes = feat_map.permute(0, 2, 3, 1).reshape(B, N, C)
-        nodes_with_coords = torch.cat([nodes, coords], dim=-1)
-        
-        # Adjacency using 8-neighborhood mask + vectorized similarity
-        # 1. Spatial mask
-        grid_y, grid_x = torch.meshgrid(torch.arange(H), torch.arange(W), indexing='ij')
-        grid_coords = torch.stack([grid_x, grid_y], dim=-1).view(N, 2)
-        dist_spatial = torch.cdist(grid_coords.float(), grid_coords.float(), p=float('inf'))
-        mask = (dist_spatial <= 1).float().to(feat_map.device)
-        
-        # 2. Feature similarity
-        dist_feat = torch.cdist(nodes, nodes) / math.sqrt(C)
-        sim = torch.exp(-dist_feat)
-        
-        adj = sim * mask.unsqueeze(0)
-        return nodes_with_coords, adj
 
 if __name__ == "__main__":
     config = {
