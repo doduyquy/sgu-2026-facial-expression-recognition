@@ -26,6 +26,12 @@ def parse_args():
         default="unet_region_masks",
         help="Folder name stored inside the Kaggle dataset.",
     )
+    parser.add_argument(
+        "--required-extension",
+        type=str,
+        default=None,
+        help="Optional safety check, for example .npy for mask datasets.",
+    )
     return parser.parse_args()
 
 
@@ -49,6 +55,19 @@ def main():
     dataset_dir = Path(args.dataset_dir)
     if not source_dir.exists():
         raise FileNotFoundError(f"source-dir not found: {source_dir}")
+    if args.required_extension:
+        required_extension = args.required_extension
+        if not required_extension.startswith("."):
+            required_extension = f".{required_extension}"
+        matched_files = list(source_dir.rglob(f"*{required_extension}"))
+        if not matched_files:
+            raise FileNotFoundError(
+                f"No '{required_extension}' files found under source-dir: {source_dir}. "
+                "Run the mask precompute step first, or fix --source-dir."
+            )
+        print(
+            f"--> Found {len(matched_files)} '{required_extension}' files under source-dir."
+        )
 
     if dataset_dir.exists():
         shutil.rmtree(dataset_dir)
