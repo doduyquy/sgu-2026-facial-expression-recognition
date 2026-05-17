@@ -12,17 +12,15 @@ def build_optimizer(model, config):
     head_params = []
     
     for name, param in model.named_parameters():
-        # Backbone (ResNet152) học với tốc độ chậm (lr * 0.1) để bảo vệ checkpoint
-        if 'backbone.layer' in name or 'backbone.conv1' in name or 'backbone.bn1' in name or 'backbone.mask' in name:
+        # Backbone ResNet layers get standard LR. New heads/reducers get 2x LR.
+        if 'backbone' in name and 'dim_reducer' not in name and 'final_cbam' not in name:
             backbone_params.append(param)
-        # Các khối mới: Graph, Motif module, Gated Fusion... dùng LR chuẩn
         else:
             head_params.append(param)
             
     param_groups = [
-        # Khởi tạo bằng lr chuẩn, trainer.py sẽ tự lo việc hãm tốc độ sau
-        {'params': backbone_params, 'lr': lr}, 
-        {'params': head_params, 'lr': lr}            
+        {'params': backbone_params, 'lr': lr},
+        {'params': head_params, 'lr': lr * 2.0}
     ]
 
     if opt_name == 'adam':
