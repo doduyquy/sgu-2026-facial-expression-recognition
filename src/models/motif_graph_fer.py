@@ -13,30 +13,58 @@ except ImportError:
     from models.CBAM import CBAM
 
 
-class MaskBlock(nn.Module):
+class LuanUNetMaskBlock(nn.Module):
     """
-    Spatial Attention Block (simplified version of ResMaskingNet's U-Net mask).
-    Output: attention map in [0, 1] via Sigmoid.
-    Applied as: x = x * (1 + mask)  →  mask≈0 means identity (no change).
-    Init: mask outputs near-zero at start to preserve pretrained features.
+    Tái hiện kiến trúc Segmentation U-Net thu nhỏ của Phạm Quý Luân (ResMaskingNet).
+    Bóp nhỏ đặc trưng để nhìn bối cảnh toàn cục (Encoder), sau đó phóng to để tạo mặt nạ (Decoder).
     """
     def __init__(self, in_channels):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv2d(in_channels, in_channels // 4, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(in_channels // 4),
+        
+        # Giảm số kênh để khối U-Net chạy nhẹ và nhanh như bản gốc
+        mid_channels = max(in_channels // 4, 16)
+        
+        # --- ENCODER (Bóp nhỏ kích thước Không gian xuống 1/2) ---
+        self.down = nn.Sequential(
+            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(mid_channels),
             nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels // 4, 1, kernel_size=1, bias=True),  # bias=True de near-zero init
-            nn.Sigmoid()
+            # Dùng MaxPool để tạo nút thắt cổ chai
+            nn.MaxPool2d(kernel_size=2, stride=2, padding=0, ceil_mode=True) 
         )
-        # Near-zero init: Sigmoid(-4) ≈ 0.018 ≈ 0
-        # → x * (1 + 0.018) ≈ x → giu nguyen pretrained features luc dau
-        final_conv = self.net[3]  # Conv2d(→1ch) la layer thu 3 (0-indexed)
-        nn.init.zeros_(final_conv.weight)
-        nn.init.constant_(final_conv.bias, -4.0)
+        
+        # --- DECODER (Phóng to trở lại kích thước ban đầu) ---
+        self.up = nn.Sequential(
+            # ConvTranspose2d nhân đôi kích thước để vẽ mặt nạ
+            nn.ConvTranspose2d(mid_channels, in_channels, kernel_size=2, stride=2),
+            nn.BatchNorm2d(in_channels),
+            nn.ReLU(inplace=True)
+        )
+        
+        # --- TẠO MẶT NẠ (1 Kênh Không gian) ---
+        self.final_conv = nn.Conv2d(in_channels, 1, kernel_size=1, bias=True)
+        self.sigmoid = nn.Sigmoid()
+        
+        # BẢO TỒN PRETRAIN: Near-Zero Initialization
+        # Ép khối U-Net này nhả ra giá trị ~0 ở những Epoch đầu tiên
+        nn.init.zeros_(self.final_conv.weight)
+        nn.init.constant_(self.final_conv.bias, -4.0)
 
     def forward(self, x):
-        return self.net(x)
+        # Lưu lại kích thước gốc để ép upsample khớp 100%
+        _, _, H, W = x.shape
+        
+        # Đi qua nút thắt cổ chai
+        encoded = self.down(x)
+        decoded = self.up(encoded)
+        
+        # Cắt xén (Crop) an toàn: Chống lỗi lệch 1 pixel khi Upsample Feature Map bị lẻ
+        decoded = decoded[:, :, :H, :W]
+        
+        # Xuất ra mặt nạ [0, 1]
+        mask = self.sigmoid(self.final_conv(decoded))
+        return mask
+
 
 
 
@@ -108,13 +136,12 @@ class MotifBackbone(nn.Module):
         self.layer3  = resnet.layer3   # [B, 1024, 12, 12] - DA PRETRAINED
         self.layer4  = resnet.layer4   # [B, 2048,  6,  6] - DA PRETRAINED
 
-        # ── BUOC 5: Them MaskBlocks (SPATIAL ATTENTION - hoc them tu dau) ────
-        # near-zero init: Sigmoid(-4) ≈ 0.018 → x*(1+0.018) ≈ x
-        # Dam bao pretrained features khong bi nhieu ngay tu epoch 0
-        self.mask1 = MaskBlock(256)
-        self.mask2 = MaskBlock(512)
-        self.mask3 = MaskBlock(1024)
-        self.mask4 = MaskBlock(2048)
+        # Gọi cấu trúc U-Net chuẩn
+        self.mask1 = LuanUNetMaskBlock(256)
+        self.mask2 = LuanUNetMaskBlock(512)
+        self.mask3 = LuanUNetMaskBlock(1024)
+        self.mask4 = LuanUNetMaskBlock(2048)
+
 
 
     def forward(self, x):
@@ -461,9 +488,11 @@ class MotifGraphModel(nn.Module):
         B, C_feat, _, _ = feat_map.shape
         num_cands = 10 # BỘ 10 ĐIỂM VÀNG
         
-        # Tọa độ neo sinh học mặc định trên lưới 12x12 (dùng khi failed)
-        default_centers_y = torch.tensor([1, 3, 2, 2, 4, 4, 6, 9, 9, 11], device=feat_map.device, dtype=torch.long).unsqueeze(0).expand(B, -1)
-        default_centers_x = torch.tensor([5, 5, 3, 7, 3, 7, 5, 3, 7, 5], device=feat_map.device, dtype=torch.long).unsqueeze(0).expand(B, -1)
+        # Tọa độ neo sinh học mặc định trên lưới 12x12 (dùng khi failed), tự động co giãn theo H, W thực tế
+        base_y = torch.tensor([1, 3, 2, 2, 4, 4, 6, 9, 9, 11], device=feat_map.device, dtype=torch.float) * (H / 12.0)
+        base_x = torch.tensor([5, 5, 3, 7, 3, 7, 5, 3, 7, 5], device=feat_map.device, dtype=torch.float) * (W / 12.0)
+        default_centers_y = torch.clamp(base_y.long(), 0, H - 1).unsqueeze(0).expand(B, -1)
+        default_centers_x = torch.clamp(base_x.long(), 0, W - 1).unsqueeze(0).expand(B, -1)
 
         if landmarks_48 is None:
             centers_x = default_centers_x
