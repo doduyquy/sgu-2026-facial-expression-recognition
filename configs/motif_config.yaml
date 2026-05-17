@@ -3,10 +3,10 @@ model:
   pretrained_cnn_path: "/kaggle/input/datasets/lhngphc/resnet152-0-73/resnet152_rot30_2019Nov14_12.47" # ""
   feat_dim: 128
   num_classes: 7
-  motifs_per_class: 16
+  motifs_per_class: 8   # Giảm để tránh overfit motif bank (7×8=56 motifs với 28K ảnh)
   top_k: 10
   offset_amplitude: 0.2  # Giảm biên độ nhảy để soi kỹ vùng cục bộ trên lưới 12x12
-  dropout: 0.3
+  dropout: 0.5           # Tăng mạnh để ép ResNet152 (60M params) tổng quát hóa trên FER2013 (28K ảnh)
 
 data:
   batch_size: 64

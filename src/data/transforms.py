@@ -21,6 +21,7 @@ def build_transform(config, split="train") -> Compose: # train | val | test
         # Tuyệt đối KHÔNG dùng: RandomRotation, RandomCrop, RandomFlip, RandomAffine
         # (các spatial transforms sẽ dịch chuyển ảnh nhưng tọa độ CSV vẫn giữ nguyên → nhiễu)
         trans = transforms.Compose([
+            transforms.Resize((image_size, image_size)),  # Đảm bảo kích thước đúng dù config thay đổi
             transforms.ToTensor(),
             transforms.Normalize(mean=(mu,), std=(st,)),
             # Pixel-level augmentation: thay đổi độ sáng/tương phản nhưng KHÔNG dịch landmark
