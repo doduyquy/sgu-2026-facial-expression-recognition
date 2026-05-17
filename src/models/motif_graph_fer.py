@@ -338,7 +338,9 @@ class GraphMotifModule(nn.Module):
         
         topo_sim = 0
         if adj is not None:
-            topo_sim = (motif_adj.unsqueeze(0) * edge_weights).sum(dim=(-1, -2))
+            # Sửa lỗi chí mạng: adj truyền vào trước đây bị bỏ qua hoàn toàn!
+            # Phải nhân motif_adj (prototypes) với adj (input graph) để tính độ tương đồng cấu trúc!
+            topo_sim = (motif_adj.unsqueeze(0) * adj.unsqueeze(1).unsqueeze(1) * edge_weights).sum(dim=(-1, -2))
             
         # 5. Combined Similarity
         # s_node: (B, L, M, K)
@@ -693,8 +695,13 @@ class MotifGraphModel(nn.Module):
         for gnn in self.gnn_layers:
             node_feats = gnn(node_feats, adj)
         node_feats = torch.nan_to_num(node_feats, nan=0.0, posinf=1.0, neginf=-1.0)
+        
+        # ĐẠI PHẪU KIẾN TRÚC TỔNG THỂ:
+        # Bắt buộc Grid Sample phải lấy mẫu từ Đặc trưng Đồ thị (GNN Features) thay vì raw CNN features!
+        # Như vậy Motif Module mới có thể đối sánh trên không gian Semantic Context-Aware!
+        gnn_feat_map = node_feats.view(B, H, W, self.feat_dim).permute(0, 3, 1, 2).contiguous()
 
-        candidates, cand_adjs, centers = self._extract_deformable_subgraphs(feat_map, H, W, node_feats, landmarks, statuses)
+        candidates, cand_adjs, centers = self._extract_deformable_subgraphs(gnn_feat_map, H, W, node_feats, landmarks, statuses)
         num_cands = candidates.shape[1]
         
         # Advanced Motif Module Forward
