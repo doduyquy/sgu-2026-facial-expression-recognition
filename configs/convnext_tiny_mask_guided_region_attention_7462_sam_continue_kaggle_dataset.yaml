@@ -12,7 +12,7 @@ paths:
   data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
 
 model:
-  mask_dir: "/kaggle/input/datasets/lhongphuc3/mediapipe-mask-datasets/mediapipe_region_masks"
+  mask_dir: "/kaggle/input/datasets/lhongphuc2/mediapipe-mask-datasets-35887/merged_mediapipe_region_masks"
 
 data:
-  mask_dir: "/kaggle/input/datasets/lhongphuc3/mediapipe-mask-datasets/mediapipe_region_masks"
+  mask_dir: "/kaggle/input/datasets/lhongphuc2/mediapipe-mask-datasets-35887/merged_mediapipe_region_masks"

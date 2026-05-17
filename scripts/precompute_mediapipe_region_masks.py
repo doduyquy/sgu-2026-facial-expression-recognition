@@ -14,6 +14,8 @@ because ConvNeXt-Tiny final visual tokens are 7x7 for 224x224 inputs.
 import argparse
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from urllib.request import urlretrieve
 
 import numpy as np
 import pandas as pd
@@ -28,6 +30,66 @@ REGION_LANDMARK_GROUPS = {
     "chin": [136, 148, 149, 150, 152, 172, 176, 288, 361, 365, 377, 378, 379, 397, 400],
 }
 REGION_ORDER = ["forehead", "left_eye", "right_eye", "nose", "mouth", "chin"]
+FACE_LANDMARKER_MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
+    "face_landmarker/float16/latest/face_landmarker.task"
+)
+DEFAULT_FACE_LANDMARKER_MODEL_PATH = (
+    Path("outputs") / "mediapipe_failed_retry_masks" / "assets" / "face_landmarker.task"
+)
+
+
+class TasksFaceMeshAdapter:
+    """Compatibility wrapper for MediaPipe 0.10.30+ FaceLandmarker Tasks API."""
+
+    def __init__(
+        self,
+        static_image_mode=True,
+        max_num_faces=1,
+        refine_landmarks=True,
+        min_detection_confidence=0.5,
+        model_path=DEFAULT_FACE_LANDMARKER_MODEL_PATH,
+        **kwargs,
+    ):
+        import mediapipe as mp
+        from mediapipe.tasks import python
+        from mediapipe.tasks.python import vision
+
+        self.mp = mp
+        self.model_path = Path(model_path)
+        self.model_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.model_path.exists():
+            print(f"--> Downloading FaceLandmarker model: {FACE_LANDMARKER_MODEL_URL}")
+            urlretrieve(FACE_LANDMARKER_MODEL_URL, self.model_path)
+            print(f"--> Saved FaceLandmarker model: {self.model_path}")
+
+        options = vision.FaceLandmarkerOptions(
+            base_options=python.BaseOptions(model_asset_path=str(self.model_path)),
+            running_mode=vision.RunningMode.IMAGE,
+            num_faces=int(max_num_faces),
+            min_face_detection_confidence=float(min_detection_confidence),
+            min_face_presence_confidence=float(min_detection_confidence),
+            min_tracking_confidence=float(min_detection_confidence),
+            output_face_blendshapes=False,
+            output_facial_transformation_matrixes=False,
+        )
+        self.landmarker = vision.FaceLandmarker.create_from_options(options)
+
+    def process(self, image):
+        image = np.ascontiguousarray(np.asarray(image, dtype=np.uint8))
+        mp_image = self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=image)
+        result = self.landmarker.detect(mp_image)
+        if not result.face_landmarks:
+            return SimpleNamespace(multi_face_landmarks=None)
+        face = SimpleNamespace(landmark=result.face_landmarks[0])
+        return SimpleNamespace(multi_face_landmarks=[face])
+
+    def close(self):
+        self.landmarker.close()
+
+
+class TasksFaceMeshSolution:
+    FaceMesh = TasksFaceMeshAdapter
 
 
 def import_mediapipe_face_mesh():
@@ -52,6 +114,17 @@ def import_mediapipe_face_mesh():
 
         return face_mesh
     except ImportError as exc:
+        try:
+            from mediapipe.tasks.python import vision
+
+            if hasattr(vision, "FaceLandmarker"):
+                print(
+                    "--> MediaPipe legacy solutions.face_mesh not available; "
+                    "using Tasks FaceLandmarker adapter."
+                )
+                return TasksFaceMeshSolution
+        except ImportError:
+            pass
         raise ImportError(
             "MediaPipe FaceMesh legacy API is required for this script. "
             f"Current mediapipe version: {version}; module path: {module_path}. "
