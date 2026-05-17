@@ -9,10 +9,10 @@ _base_: "convnext_tiny_mask_guided_region_attention_7462_sam_continue.yaml"
 # by basename under /kaggle/input.
 
 paths:
-  data_path: "/kaggle/input/fer13-split"
+  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
 
 model:
-  mask_dir: "/kaggle/input/mediapipe_mask_datasets/mediapipe_region_masks"
+  mask_dir: "/kaggle/input/datasets/lhongphuc3/mediapipe-mask-datasets/mediapipe_region_masks"
 
 data:
-  mask_dir: "/kaggle/input/mediapipe_mask_datasets/mediapipe_region_masks"
+  mask_dir: "/kaggle/input/datasets/lhongphuc3/mediapipe-mask-datasets/mediapipe_region_masks"
