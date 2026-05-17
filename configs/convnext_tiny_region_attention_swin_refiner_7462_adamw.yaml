@@ -1,40 +1,49 @@
 _base_: "convnext_tiny_region_attention_7462_attention_adamw.yaml"
 
 model:
-  # Paper branch: start from the strongest plain ConvNeXt/SAM/TTA source
-  # checkpoint, then add Swin-style local refinement before flattening local
-  # visual tokens for CLIP-guided region attention.
+  # Pure architecture branch:
+  # ConvNeXt is used only as the visual backbone, then Swin refines the local
+  # feature map before it is flattened into visual tokens for region attention.
   use_swin_local_refiner: true
   swin_refiner_depth: 2
   swin_window_size: 4
   swin_refiner_heads: 4
   swin_refiner_mlp_ratio: 2.0
-  swin_refiner_dropout: 0.1
+  swin_refiner_dropout: 0.15
   swin_refiner_layer_scale_init: 0.0001
 
-  # Keep ConvNeXt frozen for the first Swin experiment. This tests whether the
-  # proposed Swin + semantic-region head adds value without drifting the strong
-  # 74.62 ConvNeXt features.
+  use_source_classifier: false
+  logit_fusion: "attention"
+  finetune_logit_fusion: "attention"
+  source_logit_weight: 0.0
+  attention_logit_weight: 1.0
+
+  # Keep ConvNeXt frozen for this ablation so validation reflects whether the
+  # Swin-refined visual tokens help the region-attention head.
   freeze_backbone_epochs: 999
   unfreeze_backbone: false
   freeze_unfrozen_batchnorm: true
 
+  # Extra regularization because this branch no longer uses the strong ConvNeXt
+  # classifier and the Swin/refiner + region classifier can overfit quickly.
+  classifier_dropout1: 0.45
+  classifier_dropout2: 0.35
+
 training:
-  # This branch loads only the ConvNeXt feature extractor via model.checkpoint_path
-  # inherited from convnext_tiny_region_attention_7462_attention_adamw.yaml.
-  # The Swin refiner and region-attention classifier are trained from scratch.
+  # Load only ConvNeXt feature weights through inherited model.checkpoint_path.
+  # Swin/refiner and region-attention classifier are trained from scratch.
   init_checkpoint_path: null
   init_checkpoint_strict: false
 
   optimizer: "adamw"
-  lr: 0.00008
-  finetune_lr: 0.00008
+  lr: 0.00003
+  finetune_lr: 0.00003
   visual_extractor_lr: 0.0
   weight_decay: 0.02
 
   scheduler: "reduce_lr_on_plateau"
   lr_factor: 0.5
   lr_patience: 2
-  epochs: 45
-  patience: 10
+  epochs: 25
+  patience: 6
   use_amp: false
