@@ -11,7 +11,7 @@ model:
   # Make the residual branch conservative; it should correct hard samples,
   # not overpower the strong ConvNeXt classifier.
   source_logit_weight: 1.0
-  attention_logit_weight: 0.1
+  attention_logit_weight: 0.2
 
   ortho_loss_weight: 0.002
 
