@@ -159,15 +159,10 @@ class Trainer:
         l_glob = aux_losses.get("logits_global", None)
         l_mot = aux_losses.get("logits_motif", None)
         if l_glob is not None and l_mot is not None:
-            if mixup_active:
-                loss_glob = lam * self._base_criterion(l_glob, labels_a) + (1.0 - lam) * self._base_criterion(l_glob, labels_b)
-                loss_mot = lam * self._base_criterion(l_mot, labels_a) + (1.0 - lam) * self._base_criterion(l_mot, labels_b)
-                loss = loss + 0.1 * loss_glob + 0.1 * loss_mot
-            else:
-                # SỬA LỖI LOGIC (VI-BUG 4): Hạ trọng số DGS xuống 0.1 
-                # để ngăn gradient từ nhãn nhiễu lọt qua "cửa sau" làm hỏng Backbone
-                loss = loss + 0.1 * self.criterion(l_glob, labels)
-                loss = loss + 0.1 * self.criterion(l_mot, labels)
+            # SỬA LỖI CRASH HỆ THỐNG: Đã xóa bóng ma MixUp (NameError)
+            # DGS giờ đây chỉ dùng CrossEntropy thông thường với hệ số nhỏ (0.1)
+            loss = loss + 0.1 * self.criterion(l_glob, labels)
+            loss = loss + 0.1 * self.criterion(l_mot, labels)
                 
         return loss, scn_logs
 

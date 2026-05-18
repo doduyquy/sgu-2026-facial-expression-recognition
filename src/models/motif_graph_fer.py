@@ -456,7 +456,6 @@ class MotifGraphModel(nn.Module):
             # Đã xóa LayerNorm để tránh nhiễu trên vector 7 chiều (num_classes=7)
             nn.Sigmoid()
         )
-        self.gate_drop = nn.Dropout(dropout) # BUG FIX: đọc từ config thay vì hardcode 0.3
         
         # FIX 1: Bahdanau Feature Attention thay vi Static cand_query
         # cand_query cũ: vector tĩnh 7 chiều → luôn chọn điểm dự đoán Happy cao nhất, bất kể chất lượng ảnh
