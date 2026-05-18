@@ -29,22 +29,26 @@ class DeformableCoreMotifModule(nn.Module):
         self._latest_diversity = sim_m.masked_fill(mask, 0.0).sum() / (L * M * (M - 1))
         
         tau = F.softplus(self.temperature).clamp(min=0.05)
-        sim_matrix = torch.einsum('bic,lmjc->blmij', node_features_norm, motifs_norm)
         
-        # [SỬA LỖI VŨ KHÍ 1]: MOTIF DROPOUT CHUẨN TOÁN HỌC SOFTMAX
-        if self.training:
-            # Random drop khoảng 15% motif (True = Drop)
-            drop_mask = torch.rand(L, M, device=node_features.device) < 0.15 
-            # Reshape để khớp với sim_matrix (B, L, M, 10, 10)
-            drop_mask = drop_mask.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
-            # Gán âm vô cùng để Softmax lờ đi hoàn toàn Motif bị drop
-            sim_matrix = sim_matrix.masked_fill(drop_mask, -1e9)
-            
+        # 1. Soft Alignment (Không can thiệp mask ở đây để bảo toàn Softmax)
+        sim_matrix = torch.einsum('bic,lmjc->blmij', node_features_norm, motifs_norm)
         align_weights = F.softmax(sim_matrix / tau, dim=-1)
+        
         aligned_motifs = torch.einsum('blmij,lmjc->blmic', align_weights, motifs_norm)
         aligned_motifs = F.normalize(aligned_motifs, p=2, dim=-1)
         
+        # 2. Tính điểm số S (Score) của từng Motif
         S = torch.einsum('bic,blmic->blmi', node_features_norm, aligned_motifs).mean(dim=-1)
+        
+        # [VŨ KHÍ 1]: MOTIF DROPOUT CHUẨN TOÁN HỌC (Drop ở khâu tổng hợp)
+        if self.training:
+            # Random drop khoảng 15% motif (True = Drop)
+            drop_mask = torch.rand(L, M, device=S.device) < 0.15
+            drop_mask = drop_mask.unsqueeze(0) # Shape: (1, L, M) khớp với (B, L, M)
+            # Gán -1e9 vào S. Khi qua logsumexp, exp(-1e9) = 0 (Triệt tiêu hoàn toàn Motif)
+            S = S.masked_fill(drop_mask, -1e9)
+        
+        # 3. Lựa chọn mềm (Smooth Maximum)
         logits = tau * torch.logsumexp(S / tau, dim=-1)
         
         return logits, S
