@@ -10,9 +10,8 @@ def build_optimizer(model, config):
     # Differential learning rate for transfer learning
     backbone_params = []
     head_params = []
-    
     for name, param in model.named_parameters():
-        # Backbone ResNet layers get standard LR. New heads/reducers get 2x LR.
+        # Backbone ResNet layers get standard LR. New heads/reducers get 10x LR.
         if 'backbone' in name and 'dim_reducer' not in name and 'final_cbam' not in name:
             backbone_params.append(param)
         else:
@@ -20,9 +19,7 @@ def build_optimizer(model, config):
             
     param_groups = [
         {'params': backbone_params, 'lr': lr},
-        # SỬA LỖI: GNN và Cross-Attention có Gradient đi qua Softmax rất phức tạp, 
-        # x2 LR sẽ khiến trọng số bị văng khỏi cực tiểu (Local Minima) gây ra đồ thị Val giật cục!
-        {'params': head_params, 'lr': lr} 
+        {'params': head_params, 'lr': lr * 2.0}
     ]
 
     if opt_name == 'adam':
@@ -42,10 +39,10 @@ def build_scheduler(optimizer, config):
         return None
 
     elif scheduler_name == 'reduce_lr_on_plateau':
-        # SỬA LỖI: Chuyển sang theo dõi Loss (mode='min') để nhận diện plateau nhạy bén hơn
+        # reduce when val loss stopping reduce
         factor = float(config['training'].get('lr_factor', 0.5)) 
         patience = int(config['training'].get('lr_patience', 3)) 
-        print(f"--> [Scheduler] ReduceLROnPlateau (mode='min', factor={factor}, patience={patience})")
+        print(f"--> [Scheduler] ReduceLROnPlateau (factor={factor}, patience={patience})")
         
         return lr_scheduler.ReduceLROnPlateau(
             optimizer,

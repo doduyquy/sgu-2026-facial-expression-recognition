@@ -19,9 +19,9 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> Non
 
     os.makedirs(save_dir, exist_ok=True)
     with torch.no_grad():
-        for images, labels, landmarks, statuses in tqdm(test_loader, desc="Evaluate test set..."):
-            images, labels, landmarks, statuses = images.to(device), labels.to(device), landmarks.to(device), statuses.to(device)
-            outputs = model(images, landmarks=landmarks, statuses=statuses)
+        for images, labels in tqdm(test_loader, desc="Evaluate test set..."):
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
             _, preds = torch.max(outputs, 1)
             
             imgs_cpu = images.cpu()

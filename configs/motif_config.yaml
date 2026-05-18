@@ -1,42 +1,36 @@
 model:
   name: "motif_graph_fer"
-  # pretrained_cnn_path: "/kaggle/input/datasets/lhngphc/resnet152-0-73/resnet152_rot30_2019Nov14_12.47" # ""
+  pretrained_cnn_path: "/kaggle/input/datasets/lhngphc/resnet152-0-73/resnet152_rot30_2019Nov14_12.47" # ""
   feat_dim: 128
   num_classes: 7
   motifs_per_class: 16
-  num_heads: 4             # Them num_heads cho kien truc DAT
-  top_k: 10
-  offset_amplitude: 0.2  # Giam bien do nhay de soi ky vung cuc bo tren luoi 12x12
-  dropout: 0.5           # Tang len de chong Overfitting (truoc: 0.3)
+  top_k: 6
+  offset_amplitude: 0.35
+  dropout: 0.3
 
 data:
-  batch_size: 128
+  batch_size: 64
   num_workers: 4
   input_size: 48
   in_channels: 1
-  image_size: 48
-  # Duong dan den thu muc chua 3 file CSV landmark (train/val/test)
-  # Tren Kaggle: upload 3 file CSV len 1 dataset rieng, sau do dien path vao day
-  # Vi du: /kaggle/input/fer13-landmarks
-  # De trong neu de auto-discovery tim kiem
-  landmark_dir: "/kaggle/input/datasets/ltlttt/datalandmark"
 
 training:
   epochs: 1000
-  lr: 0.0005
-  weight_decay: 1e-3
+  lr: 0.0001
+  weight_decay: 5e-4
   loss: "cross_entropy"
-  label_smoothing: 0.1     # Giam tu 0.2 xuong 0.1 theo yeu cau cua MS-DCMN
+  label_smoothing: 0.1
   class_weight_mode: "sqrt_inverse"
+  motif_consistency_weight: 0.05
+  motif_diversity_weight: 0.05
   attn_entropy_weight: 0.01
-  offset_reg_weight: 0.1
-  motif_tau: 0.07           # Tăng độ sắc nét cho hàm Loss đối lập
+  offset_reg_weight: 0.01
+  motif_tau: 0.2
   scheduler: "reduce_lr_on_plateau"
-  lr_patience: 3   
-  patience: 30
+  patience: 25
   factor: 0.5
   use_scn: true
   scn_warmup_epochs: 10
   scn_alpha: 1.0
   scn_rank_lambda: 0.5
-  scn_margin: 0.2
+  scn_margin: 0.5

@@ -17,33 +17,27 @@ def build_transform(config, split="train") -> Compose: # train | val | test
     st = 0.5
     
     if split == "train":
-        # LANDMARK-SAFE AUGMENTATION: Chỉ dùng pixel-level transforms
-        # Tuyệt đối KHÔNG dùng: RandomRotation, RandomCrop, RandomFlip, RandomAffine
-        # (các spatial transforms sẽ dịch chuyển ảnh nhưng tọa độ CSV vẫn giữ nguyên → nhiễu)
+        # Standard augmentation for training (NO TenCrop - too slow)
         trans = transforms.Compose([
-            transforms.Resize((image_size, image_size)),
-            # Thêm ColorJitter: Đổi độ sáng, tương phản ngẫu nhiên (KHÔNG làm sai tọa độ)
-            transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2), 
-            transforms.ToTensor(),
-            transforms.Normalize(mean=(mu,), std=(st,)),
-            transforms.RandomApply([
-                transforms.Lambda(lambda x: x + torch.randn_like(x) * 0.03)  # Tăng noise lên 0.03
-            ], p=0.3),
-            transforms.RandomErasing(p=0.5, scale=(0.02, 0.1), ratio=(0.5, 2.0), value=0), # Tăng p lên 0.5
-        ])
-    elif split == "val":
-        # FAST VALIDATION: No TenCrop during training phase to save RAM/Time
-        trans = transforms.Compose([
-            transforms.Resize((image_size, image_size)),
+            transforms.RandomResizedCrop(image_size, scale=(0.8, 1.2)),
+            transforms.RandomApply([transforms.RandomAffine(0, translate=(0.2, 0.2))], p=0.5),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomApply([transforms.RandomRotation(10)], p=0.5),
             transforms.ToTensor(),
             transforms.Normalize(mean=(mu,), std=(st,))
         ])
     else:
-        # TEST PHASE: Disable TenCrop when using Landmark CSV to preserve exact facial alignment
+        # Test-time augmentation with TenCrop for val/test
+        # Resize to 56, then crop 10 patches of exactly 48x48 to match training dimensions
         trans = transforms.Compose([
-            transforms.Resize((image_size, image_size)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=(mu,), std=(st,))
+            transforms.Resize((56, 56)),
+            transforms.TenCrop(48),
+            transforms.Lambda(lambda crops: torch.stack([
+                transforms.ToTensor()(crop) for crop in crops
+            ])),  # Convert to tensor: (10, 1, 40, 40)
+            transforms.Lambda(lambda tensors: torch.stack([
+                transforms.Normalize(mean=(mu,), std=(st,))(t) for t in tensors
+            ])),  # Normalize each crop: (10, 1, 40, 40)
         ])
 
     return trans
