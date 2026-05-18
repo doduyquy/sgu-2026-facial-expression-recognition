@@ -1,0 +1,24 @@
+_base_: "convnext_tiny_mask_guided_region_attention_residual_7462_sam.yaml"
+
+model:
+  # Frozen residual variant after the unfrozen SAM run drifted the 74.62 source
+  # classifier. ConvNeXt stays fixed; only the mask-guided region correction
+  # branch is trained.
+  freeze_backbone_epochs: 999
+  unfreeze_backbone: false
+  freeze_unfrozen_batchnorm: true
+
+  # Keep the strong ConvNeXt logits as the anchor.
+  logit_fusion: "sum"
+  finetune_logit_fusion: "sum"
+  source_logit_weight: 1.0
+  attention_logit_weight: 0.2
+
+training:
+  # Do not update ConvNeXt features. This protects the source classifier from
+  # feature drift while the region branch learns a residual correction.
+  visual_extractor_lr: 0.0
+  lr: 0.00008
+  finetune_lr: 0.00008
+  epochs: 25
+  patience: 7
