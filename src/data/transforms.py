@@ -4,7 +4,7 @@ import torch
 from torchvision import transforms
 
 def build_transform(config, split="train") -> Compose: # train | val | test
-    """Build transform matching SOTA pipeline
+    """Build transform with TenCrop for test-time augmentation (val/test only)
     
     Args: 
         config: for image size
@@ -17,24 +17,27 @@ def build_transform(config, split="train") -> Compose: # train | val | test
     st = 0.5
     
     if split == "train":
-        # Standard augmentation matching SOTA pipeline
-        # LƯU Ý QUAN TRỌNG: RandomHorizontalFlip đã được thực hiện thủ công bên trong dataset.py 
-        # để đồng bộ hóa chính xác với việc lật tọa độ Landmark (tránh lệch pha ảnh và tọa độ).
+        # Standard augmentation for training (NO TenCrop - too slow)
         trans = transforms.Compose([
-            transforms.Resize((image_size, image_size)),
-            transforms.RandomApply([transforms.RandomAffine(degrees=10, translate=(0.05, 0.05), scale=(0.95, 1.05))], p=0.5),
-            transforms.RandomApply([transforms.ColorJitter(brightness=0.1)], p=0.5),
-            transforms.RandomApply([transforms.GaussianBlur(kernel_size=3)], p=0.3),
+            transforms.RandomResizedCrop(image_size, scale=(0.8, 1.2)),
+            transforms.RandomApply([transforms.RandomAffine(0, translate=(0.2, 0.2))], p=0.5),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomApply([transforms.RandomRotation(10)], p=0.5),
             transforms.ToTensor(),
-            transforms.RandomErasing(p=0.2, scale=(0.02, 0.2), value='random'),
             transforms.Normalize(mean=(mu,), std=(st,))
         ])
     else:
-        # Clean validation/testing pipeline (NO TenCrop, NO augment)
+        # Test-time augmentation with TenCrop for val/test
+        # Resize to 56, then crop 10 patches of exactly 48x48 to match training dimensions
         trans = transforms.Compose([
-            transforms.Resize((image_size, image_size)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=(mu,), std=(st,))
+            transforms.Resize((56, 56)),
+            transforms.TenCrop(48),
+            transforms.Lambda(lambda crops: torch.stack([
+                transforms.ToTensor()(crop) for crop in crops
+            ])),  # Convert to tensor: (10, 1, 40, 40)
+            transforms.Lambda(lambda tensors: torch.stack([
+                transforms.Normalize(mean=(mu,), std=(st,))(t) for t in tensors
+            ])),  # Normalize each crop: (10, 1, 40, 40)
         ])
 
     return trans
