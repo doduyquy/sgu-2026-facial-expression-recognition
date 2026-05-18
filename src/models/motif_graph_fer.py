@@ -188,12 +188,6 @@ class GraphAttentionLayer(nn.Module):
         self.k_lin = nn.Linear(in_dim, out_dim)
         self.v_lin = nn.Linear(in_dim, out_dim)
         self.out_lin = nn.Linear(out_dim, out_dim)
-        # UPDATE: edge-aware attention + learnable adjacency gating
-        self.edge_gate = nn.Sequential(
-            nn.Linear(2 * in_dim, out_dim),
-            nn.ReLU(),
-            nn.Linear(out_dim, 1)
-        )
         self.edge_bias = nn.Sequential(
             nn.Linear(2 * in_dim, out_dim),
             nn.ReLU(),
@@ -214,18 +208,17 @@ class GraphAttentionLayer(nn.Module):
         # (B, H, N, N)
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k) #matmul có tác dụng tính toán điểm số attention giữa các node, chia cho sqrt(d_k) để ổn định gradient khi d_k lớn
 
-        # UPDATE: edge-aware bias + learnable gate per edge
+        # SỬA LỖI TOÁN HỌC CHÍ MẠNG: Đã xóa bỏ edge_gate! 
+        # Việc nhân trực tiếp gate (0 -> 1) vào scores (pre-softmax logits) là sai lầm toán học.
+        # Ví dụ: Nếu scores = -5.0 (tệ), nhân gate = 0.1 (muốn chặn) -> scores = -0.5 (TĂNG LÊN ĐÁNG KỂ!).
+        # Nghĩa là gate càng nhỏ, điểm số của các cạnh tệ lại càng cao lên -> Phá hủy hoàn toàn Attention!
+        # Dùng edge_bias (cộng/trừ logit) là giải pháp hoàn hảo và duy nhất đúng về mặt toán học.
         x_i = x.unsqueeze(2).expand(B, N, N, -1)
         x_j = x.unsqueeze(1).expand(B, N, N, -1)
         edge_feat = torch.cat([x_i, x_j], dim=-1)
-        edge_gate = torch.sigmoid(self.edge_gate(edge_feat)).squeeze(-1) # (B, N, N)
         edge_bias = self.edge_bias(edge_feat).squeeze(-1) # (B, N, N)
 
-        if adj is not None:
-            edge_gate = edge_gate * adj
-
         scores = scores + edge_bias.unsqueeze(1)
-        scores = scores * edge_gate.unsqueeze(1)
 
         if adj is not None:
             # FIX: Dùng -1e4 thay vì -1e9 để tránh lỗi overflow khi dùng AMP (Float16)
