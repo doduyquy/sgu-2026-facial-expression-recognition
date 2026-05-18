@@ -230,7 +230,13 @@ def load_checkpoint_state(path: Path) -> Dict[str, torch.Tensor]:
 
 
 def load_model(config: Dict, checkpoint_path: Path, device: torch.device, strict: bool) -> torch.nn.Module:
-    model = get_model(config).to(device)
+    model_name = config.get("model", {}).get("name")
+    if not isinstance(model_name, str):
+        raise TypeError(
+            "Expected config['model']['name'] to be a string, "
+            f"got {type(model_name).__name__}: {model_name!r}"
+        )
+    model = get_model(model_name, config=config).to(device)
     state_dict = load_checkpoint_state(checkpoint_path)
     incompatible = model.load_state_dict(state_dict, strict=strict)
     if not strict:
