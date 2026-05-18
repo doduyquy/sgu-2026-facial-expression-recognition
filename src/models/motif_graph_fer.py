@@ -302,7 +302,8 @@ class GraphMotifModule(nn.Module):
         motifs = F.normalize(self.motifs, p=2, dim=-1)
         
         # 2. Soft node alignment (cross-graph matching)
-        tau = F.softplus(self.temperature).clamp(min=1e-3) # Đem tau lên đầu để dùng chung
+        # SỬA LỖI: Tăng ngưỡng an toàn cho tau từ 1e-3 lên 0.05 để tránh Softmax quá gắt (Argmax) trên tập Val
+        tau = F.softplus(self.temperature).clamp(min=0.05)
         
         sim_align = torch.einsum('bkc,lmjc->blmkj', region_features, motifs)
         # SỬA LỖI CHÍ MẠNG: Cosine Similarity nằm trong [-1, 1]. Nếu không chia cho tau, 
@@ -357,7 +358,7 @@ class GraphMotifModule(nn.Module):
         S = w_node * node_sim_agg + w_edge * s_struct
         
         # 6. Smooth Selection via logsumexp
-        logits = torch.logsumexp(S / tau.clamp(min=1e-3), dim=-1)
+        logits = torch.logsumexp(S / tau, dim=-1)
         
         # 7. Entropy for stability
         entropy = -(node_attn * torch.log(node_attn + 1e-8)).sum(dim=-1).mean()

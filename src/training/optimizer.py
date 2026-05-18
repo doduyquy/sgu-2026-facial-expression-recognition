@@ -20,7 +20,9 @@ def build_optimizer(model, config):
             
     param_groups = [
         {'params': backbone_params, 'lr': lr},
-        {'params': head_params, 'lr': lr * 2.0}
+        # SỬA LỖI: GNN và Cross-Attention có Gradient đi qua Softmax rất phức tạp, 
+        # x2 LR sẽ khiến trọng số bị văng khỏi cực tiểu (Local Minima) gây ra đồ thị Val giật cục!
+        {'params': head_params, 'lr': lr} 
     ]
 
     if opt_name == 'adam':

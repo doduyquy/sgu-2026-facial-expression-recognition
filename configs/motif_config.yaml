@@ -22,7 +22,7 @@ data:
 
 training:
   epochs: 1000
-  lr: 0.0005
+  lr: 0.0002
   weight_decay: 2e-3       # Tang len de chong Overfitting (truoc: 5e-4)
   loss: "cross_entropy"
   label_smoothing: 0.2     # Tang len (truoc: 0.15)

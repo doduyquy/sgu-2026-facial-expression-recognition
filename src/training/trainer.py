@@ -269,20 +269,9 @@ class Trainer:
                 cls_loss = self.criterion(logits, labels)
                 aux_losses = self._extract_aux_losses(outputs)
                 
-                loss = cls_loss
-                
-                # Aggregate scalar auxiliary losses automatically
-                for k, v in aux_losses.items():
-                    if k not in ["logits_global", "logits_motif"]:
-                        w = self.config.get('training', {}).get(f'{k}_weight', 0.1)
-                        loss = loss + float(w) * v
-
-                # DYNAMIC GATE SUPERVISION (DGS) for Validation consistency
-                l_glob = aux_losses.get("logits_global", None)
-                l_mot = aux_losses.get("logits_motif", None)
-                if l_glob is not None and l_mot is not None:
-                    loss = loss + 0.3 * self.criterion(l_glob, labels)
-                    loss = loss + 0.3 * self.criterion(l_mot, labels)
+                loss = cls_loss # SỬA LỖI TRẦM TRỌNG: TRÊN TẬP VAL, CHỈ DÙNG CLASSIFICATION LOSS ĐỂ THEO DÕI!
+                # Đã xóa phần cộng dồn Aux Losses (Diversity, Entropy, DGS) trên tập Val 
+                # vì chúng gây nhiễu loạn đồ thị Loss và đánh lừa Scheduler!
 
                 running_loss += loss.item() * images.size(0)
 
