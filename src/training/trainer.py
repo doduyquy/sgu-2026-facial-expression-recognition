@@ -134,33 +134,19 @@ class Trainer:
     # ==========================================================
     # EVENT-DRIVEN / HOOK-BASED MODULAR REFACTORING (Lightning/FastAI style)
     # ==========================================================
-    def on_batch_start(self, images, labels):
-        """Hook executed at the start of each batch. Handles MixUp logic."""
-        mixup_active = bool(getattr(self, '_runtime_use_mixup', False)) and self.model.training
-        if mixup_active:
-            alpha = float(getattr(self, 'mixup_alpha', 0.2))
-            lam = float(np.random.beta(alpha, alpha)) if alpha > 0.0 else 1.0
-            perm = torch.randperm(images.size(0), device=images.device)
-            images = (lam * images) + ((1.0 - lam) * images[perm])
-            labels_a, labels_b = labels, labels[perm]
-            return mixup_active, images, labels_a, labels_b, lam
-        return False, images, labels, labels, 1.0
-
-    def on_loss_compute(self, logits, labels, labels_a, labels_b, lam, mixup_active, aux_losses):
+    def on_loss_compute(self, logits, labels, aux_losses):
         """Hook executed to compute total loss including SCN, Auxiliary, and DGS."""
         scn_logs = None
-        if mixup_active:
-            cls_loss = lam * F.cross_entropy(logits, labels_a) + (1.0 - lam) * F.cross_entropy(logits, labels_b)
-        else:
-            runtime_use_scn = getattr(self, '_runtime_use_scn', self.use_scn)
-            if runtime_use_scn and getattr(self, '_current_epoch', 0) >= getattr(self, 'scn_warmup_epochs', 0):
-                try:
-                    cls_loss, scn_logs = self._scn_loss(logits, labels)
-                except Exception:
-                    cls_loss = self._base_criterion(logits, labels)
-            else:
+        
+        runtime_use_scn = getattr(self, '_runtime_use_scn', self.use_scn)
+        if runtime_use_scn and getattr(self, '_current_epoch', 0) >= getattr(self, 'scn_warmup_epochs', 0):
+            try:
+                cls_loss, scn_logs = self._scn_loss(logits, labels)
+            except Exception:
                 cls_loss = self._base_criterion(logits, labels)
-                
+        else:
+            cls_loss = self._base_criterion(logits, labels)
+            
         loss = cls_loss
         
         # Aggregate scalar auxiliary losses automatically
@@ -204,20 +190,17 @@ class Trainer:
             images, labels, landmarks, statuses = images.to(self.device), labels.to(self.device), landmarks.to(self.device), statuses.to(self.device)
             self.optimizer.zero_grad()
 
-            # 1. on_batch_start (MixUp)
-            mixup_active, images, labels_a, labels_b, lam = self.on_batch_start(images, labels)
-
-            # 2. Forward pass
+            # 1. Forward pass
             with autocast():
                 if hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
-                    outputs = self.model(images, landmarks=landmarks, statuses=statuses) if mixup_active else self.model(images, targets=labels, landmarks=landmarks, statuses=statuses)
+                    outputs = self.model(images, targets=labels, landmarks=landmarks, statuses=statuses)
                 else:
                     outputs = self.model(images, landmarks=landmarks, statuses=statuses)
                 logits = self._extract_logits(outputs)
                 aux_losses = self._extract_aux_losses(outputs)
 
-            # 3. on_loss_compute (SCN, Aux, DGS)
-            loss, scn_logs = self.on_loss_compute(logits, labels, labels_a, labels_b, lam, mixup_active, aux_losses)
+            # 2. on_loss_compute (SCN, Aux, DGS)
+            loss, scn_logs = self.on_loss_compute(logits, labels, aux_losses)
             if scn_logs is not None:
                 for k in _scn_acc:
                     _scn_acc[k].append(scn_logs.get(k, 0.0))

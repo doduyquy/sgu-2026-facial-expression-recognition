@@ -91,8 +91,8 @@ class FER2013(Dataset):
         if hasattr(self, 'data_split_path') and 'train' in self.data_split_path and random.random() > 0.5:
             image = image.transpose(Image.FLIP_LEFT_RIGHT)
             
-            # Lật trục X (Ảnh 48x48 nên X_new = 48.0 - X_old)
-            landmarks[:, 0] = 48.0 - landmarks[:, 0]
+            # Lật trục X (Ảnh 48x48, index từ 0-47, nên X_new = 47.0 - X_old)
+            landmarks[:, 0] = 47.0 - landmarks[:, 0]
             
             # Hoán đổi (Swap) các cặp điểm đối xứng Trái <-> Phải
             # [2, 3]: Lông mày trái <-> phải
