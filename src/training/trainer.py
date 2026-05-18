@@ -190,8 +190,20 @@ class Trainer:
         # accumulator for scn metrics across batches
         _scn_acc = {"scn_weight_mean": [], "scn_conf_mean": [], "scn_rank_loss": []}
 
-        for images, labels in self.train_loader:
+        for batch in self.train_loader:
+            valid_lms = None
+            if len(batch) == 4:
+                images, labels, landmarks, valid_lms = batch
+            elif len(batch) == 3:
+                images, labels, landmarks = batch
+            else:
+                images, labels = batch
+                landmarks = None
             images, labels = images.to(self.device), labels.to(self.device)
+            if landmarks is not None:
+                landmarks = landmarks.to(self.device)
+            if valid_lms is not None:
+                valid_lms = valid_lms.to(self.device)
             self.optimizer.zero_grad()
 
             # MixUp: disabled by default in FER pipeline (SCN preferred)
@@ -209,7 +221,10 @@ class Trainer:
 
             # Pass labels to forward for internal loss calculation
             if hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
-                outputs = self.model(images, targets=labels)
+                if 'landmarks' in self.model.forward.__code__.co_varnames:
+                    outputs = self.model(images, targets=labels, landmarks=landmarks, valid_lms=valid_lms)
+                else:
+                    outputs = self.model(images, targets=labels)
             else:
                 outputs = self.model(images)
             logits = self._extract_logits(outputs)
@@ -543,12 +558,18 @@ class Trainer:
                     set_progress(progress)
                 except Exception:
                     pass
+            set_epoch = getattr(self.model, "set_current_epoch", None)
+            if callable(set_epoch):
+                try:
+                    set_epoch(ep)
+                except Exception:
+                    pass
 
             # apply 3-phase staged lambda schedule tuned for noisy FER datasets
             # Phase 1: very early (0-20%): SCN OFF, MixUp ON
             # Phase 2: (20-70%): SCN ON, stronger landmark signals
             # Phase 3: (70-100%): heavy refinement for landmark branch
-            if progress <= 0.06:
+            if progress <= 0.1:
                 # Phase 1 (0-20%): conservative — 
                 self._runtime_diversity_lambda = 0.0
                 self._runtime_entropy_lambda = 0.0
@@ -558,7 +579,7 @@ class Trainer:
                 self._runtime_aux_cls_lambda = 0.0
                 self._runtime_aux_consistency_lambda = 0.0
                 self._runtime_use_scn = False
-                self._runtime_use_mixup = True
+                self._runtime_use_mixup = False
                 self._runtime_phase = 1
             elif progress <= 0.7:
                 # Phase 2 (20-70%): enable SCN and stronger landmark auxiliaries

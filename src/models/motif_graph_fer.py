@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from src.training.losses import MotifConsistencyLoss
+from src.training.losses import MotifConsistencyLoss, SoftLandmarkSupervisionLoss
 
 try:
     from .CBAM import CBAM
@@ -390,6 +390,8 @@ class MotifGraphModel(nn.Module):
             motifs_per_class=self.motifs_per_class,
             tau=self.temperature
         )
+        # Khởi tạo Soft Landmark Supervision Loss (Teacher KD)
+        self.soft_landmark_loss = SoftLandmarkSupervisionLoss(sigma=0.15)
 
     def compute_motif_diversity_loss(self):
         # Point 1: Replace motif_bank with motif_module
@@ -445,6 +447,9 @@ class MotifGraphModel(nn.Module):
         sampling_grid = centers_grid + offsets.unsqueeze(2) + rel_grid * (1.0 / (W-1))
         sampling_grid = sampling_grid.view(B, num_cands * 16, 1, 2)
         
+        # Lưu sampling grid để tính Soft Landmark Supervision Loss
+        self._latest_sampling_grid = sampling_grid.squeeze(-2) # Shape: (B, num_cands * 16, 2)
+
         sampled_feats = F.grid_sample(feat_map, sampling_grid, align_corners=True)
         sampled_feats = sampled_feats.view(B, C_feat, num_cands, 16).permute(0, 2, 3, 1) 
         
@@ -456,9 +461,13 @@ class MotifGraphModel(nn.Module):
             
         return sampled_feats, adj, centers_coords
 
-    def forward(self, x, return_selection=False, targets=None):
+    def forward(self, x, return_selection=False, targets=None, landmarks=None, valid_lms=None):
         if targets is not None:
             self._latest_targets = targets
+        if landmarks is not None:
+            self._latest_true_landmarks = landmarks
+        if valid_lms is not None:
+            self._latest_valid_lms = valid_lms
             
         # Handle TenCrop input: (B, 10, C, H, W)
         if x.dim() == 5:
@@ -467,9 +476,17 @@ class MotifGraphModel(nn.Module):
             # Recursive call to handle all crops (expand targets to match B*T)
             if targets is not None:
                 targets_expanded = targets.unsqueeze(1).expand(-1, T).reshape(-1)
-                logits = self.forward(x, targets=targets_expanded)
             else:
-                logits = self.forward(x) 
+                targets_expanded = None
+            if landmarks is not None:
+                landmarks_expanded = landmarks.unsqueeze(1).expand(-1, T, -1, -1).reshape(B * T, 10, 2)
+            else:
+                landmarks_expanded = None
+            if valid_lms is not None:
+                valid_lms_expanded = valid_lms.unsqueeze(1).expand(-1, T).reshape(-1)
+            else:
+                valid_lms_expanded = None
+            logits = self.forward(x, targets=targets_expanded, landmarks=landmarks_expanded, valid_lms=valid_lms_expanded)
             # Average predictions across all 10 crops
             return logits.view(B, T, -1).mean(dim=1)
 
@@ -568,6 +585,9 @@ class MotifGraphModel(nn.Module):
 
     def set_training_progress(self, progress):
         self.training_progress = progress
+
+    def set_current_epoch(self, epoch):
+        self.current_epoch = epoch
         
     def get_current_prior_strength(self):
         return 0.0
@@ -618,6 +638,12 @@ class MotifGraphModel(nn.Module):
                     self._latest_targets
                 )
             aux_dict["motif_consistency"] = l_motif_consist
+            
+        # 5. Kích hoạt Soft Landmark Supervision Loss (Teacher KD) tại đây
+        if hasattr(self, '_latest_true_landmarks') and self._latest_true_landmarks is not None and hasattr(self, '_latest_sampling_grid'):
+            cur_ep = getattr(self, 'current_epoch', 0)
+            l_soft = self.soft_landmark_loss(self._latest_sampling_grid, self._latest_true_landmarks, getattr(self, '_latest_valid_lms', None), cur_ep)
+            aux_dict["landmark_soft_supervision"] = l_soft
             
         return aux_dict
 

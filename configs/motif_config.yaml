@@ -25,6 +25,7 @@ training:
   motif_diversity_weight: 0.05
   attn_entropy_weight: 0.01
   offset_reg_weight: 0.01
+  landmark_soft_supervision_weight: 2.0
   motif_tau: 0.2
   scheduler: "reduce_lr_on_plateau"
   patience: 25
