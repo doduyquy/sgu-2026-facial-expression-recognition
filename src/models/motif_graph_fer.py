@@ -276,8 +276,9 @@ class GraphMotifModule(nn.Module):
         self.beta = nn.Parameter(torch.zeros(1))  # Edge similarity weight (logit scale)
         
         # 4. Stability parameters
-        self.temperature = nn.Parameter(torch.ones(1) * 0.1)
-        # Temperature parameter để điều chỉnh độ mềm của phân phối attention, giúp quá trình huấn luyện ổn định hơn và tránh overfitting vào các motif cụ thể.
+        # Khởi tạo temperature = -2.0 -> tau = softplus(-2.0) = 0.1269
+        # Mức nhiệt độ ~0.1 này là hoàn hảo để scale Cosine Similarity, giúp phân phối Softmax sắc nét!
+        self.temperature = nn.Parameter(torch.ones(1) * -2.0)
     def compute_diversity_loss(self):
         """
         Orthogonality constraint for motifs.
@@ -308,8 +309,14 @@ class GraphMotifModule(nn.Module):
         motifs = F.normalize(self.motifs, p=2, dim=-1)
         
         # 2. Soft node alignment (cross-graph matching)
+        tau = F.softplus(self.temperature).clamp(min=1e-3) # Đem tau lên đầu để dùng chung
+        
         sim_align = torch.einsum('bkc,lmjc->blmkj', region_features, motifs)
-        align_weights = F.softmax(sim_align, dim=-1)
+        # SỬA LỖI CHÍ MẠNG: Cosine Similarity nằm trong [-1, 1]. Nếu không chia cho tau, 
+        # hàm softmax sẽ phân phối cực kỳ đồng đều (gần như 1/16 cho mọi node).
+        # Điều này khiến aligned_motifs biến thành một đống bùn trung bình (average blob), triệt tiêu hoàn toàn Topology!
+        align_weights = F.softmax(sim_align / tau, dim=-1) 
+        
         aligned_motifs = torch.einsum('blmkj,lmjc->blmkc', align_weights, motifs)
         # UPDATE: Re-normalize aligned motifs to maintain true cosine similarity space
         aligned_motifs = F.normalize(aligned_motifs, p=2, dim=-1)
@@ -325,8 +332,7 @@ class GraphMotifModule(nn.Module):
         # edge_sim_raw: (B, L, M, K, K)
         edge_sim_raw = node_sim_i + node_sim_j - cross_sim - cross_sim.transpose(-1, -2)
         # structure-preserving aggregation with node-attn outer product
-        tau = F.softplus(self.temperature)
-        node_attn = F.softmax(node_sim / tau.clamp(min=1e-3), dim=-1)
+        node_attn = F.softmax(node_sim / tau, dim=-1)
         edge_weights = node_attn.unsqueeze(-2) * node_attn.unsqueeze(-1)
         edge_weights = edge_weights / edge_weights.sum(dim=(-1, -2), keepdim=True).clamp(min=1e-6)
         edge_sim = (edge_sim_raw * edge_weights).sum(dim=(-1, -2))
