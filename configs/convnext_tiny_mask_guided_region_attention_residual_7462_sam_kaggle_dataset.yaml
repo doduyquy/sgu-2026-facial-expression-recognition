@@ -3,16 +3,16 @@ _base_: "convnext_tiny_mask_guided_region_attention_residual_7462_sam.yaml"
 # Kaggle Add Input layout:
 # - Convnext_74.62 contains convnext_tiny_fer2013_15052026_valaccuracy73.59.pth
 # - fer13-split contains train.csv, val.csv, test.csv
-# - mediapipe_mask_datasets contains mediapipe_region_masks/{train,val,test}
+# - mediapipe-mask-datasets-35887 contains merged_mediapipe_region_masks/{train,val,test}
 #
 # The checkpoint path is inherited from the base residual config. The model
 # loader discovers the same checkpoint basename recursively under /kaggle/input.
 
 paths:
-  data_path: "/kaggle/input/fer13-split"
+  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
 
 model:
-  mask_dir: "/kaggle/input/mediapipe_mask_datasets/mediapipe_region_masks"
+  mask_dir: "/kaggle/input/datasets/lhongphuc2/mediapipe-mask-datasets-35887/merged_mediapipe_region_masks"
 
 data:
-  mask_dir: "/kaggle/input/mediapipe_mask_datasets/mediapipe_region_masks"
+  mask_dir: "/kaggle/input/datasets/lhongphuc2/mediapipe-mask-datasets-35887/merged_mediapipe_region_masks"
