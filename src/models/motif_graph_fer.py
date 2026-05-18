@@ -145,12 +145,12 @@ class MotifGraphModel(nn.Module):
             nn.ReLU(inplace=True)
         )
         
-        # 3. GLOBAL CONTEXT BRANCH (Giữ Layer 4 làm nhiệm vụ bối cảnh vĩ mô)
+        # 3. GLOBAL CONTEXT BRANCH (Luồng kép lai: CNN 512 + Relative Geometry 100)
         self.global_pool = nn.AdaptiveAvgPool2d(1)
         dropout = config.get('dropout', 0.5)
         self.global_fc = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(512, self.feat_dim),
+            nn.Linear(512 + 100, self.feat_dim),
             nn.BatchNorm1d(self.feat_dim),
             nn.ReLU(inplace=True),
             nn.Dropout(dropout),
@@ -260,8 +260,24 @@ class MotifGraphModel(nn.Module):
         # --- PHASE 1: CNN TRÍCH XUẤT ĐA TẦNG ---
         x2, x3, x4 = self.backbone(x)
         
-        # --- PHASE 2: NHÁNH TOÀN CỤC (GLOBAL CONTEXT) ---
-        logits_global = self.global_fc(self.global_pool(x4))
+        # --- PHASE 2: NHÁNH TOÀN CỤC DUAL-STREAM (GLOBAL + RELATIVE GEOMETRY) ---
+        glob_cnn = self.global_pool(x4).view(B, 512)
+        
+        # Tính toán Pairwise Distance Matrix (10x10) đại diện hình học vĩ mô tương đối
+        if landmarks is None:
+            base_y = torch.tensor([1, 3, 2, 2, 4, 4, 6, 9, 9, 11], device=x.device, dtype=torch.float) * (img_h / 12.0)
+            base_x = torch.tensor([5, 5, 3, 7, 3, 7, 5, 3, 7, 5], device=x.device, dtype=torch.float) * (img_w / 12.0)
+            lm = torch.stack([base_x, base_y], dim=-1).unsqueeze(0).expand(B, -1, -1)
+        else:
+            lm = landmarks
+            
+        # Ma trận khoảng cách cặp: (B, 10, 1, 2) - (B, 1, 10, 2) -> norm -> (B, 10, 10)
+        diff = lm.unsqueeze(2) - lm.unsqueeze(1)
+        dist_matrix = torch.norm(diff, p=2, dim=-1) / 48.0 # Chuẩn hóa theo thang đo ảnh 48x48
+        rel_geo = dist_matrix.view(B, 100)
+        
+        glob_combined = torch.cat([glob_cnn, rel_geo], dim=-1)
+        logits_global = self.global_fc(glob_combined)
         self._latest_logits_global = logits_global
         
         # --- PHASE 3: NHÁNH CỤC BỘ BIẾN DẠNG ĐA QUY MÔ CAO ---

@@ -24,7 +24,7 @@ data:
 training:
   epochs: 1000
   lr: 0.0005
-  weight_decay: 0.01
+  weight_decay: 1e-3
   loss: "cross_entropy"
   label_smoothing: 0.1     # Giam tu 0.2 xuong 0.1 theo yeu cau cua MS-DCMN
   class_weight_mode: "sqrt_inverse"
