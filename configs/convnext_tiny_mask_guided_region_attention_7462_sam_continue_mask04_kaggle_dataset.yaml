@@ -1,0 +1,18 @@
+_base_: "convnext_tiny_mask_guided_region_attention_7462_sam_continue_mask04.yaml"
+
+# Kaggle Add Input layout:
+# - Convnext_74.62 contains convnext_tiny_fer2013_15052026_valaccuracy73.59.pth
+# - fer13-split contains train.csv, val.csv, test.csv
+# - mediapipe-mask-datasets-35887 contains merged_mediapipe_region_masks/{train,val,test}
+#
+# Same as convnext_tiny_mask_guided_region_attention_7462_sam_continue, but
+# mask_attention_alpha is raised from 0.3 to 0.4.
+
+paths:
+  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
+
+model:
+  mask_dir: "/kaggle/input/datasets/lhongphuc2/mediapipe-mask-datasets-35887/merged_mediapipe_region_masks"
+
+data:
+  mask_dir: "/kaggle/input/datasets/lhongphuc2/mediapipe-mask-datasets-35887/merged_mediapipe_region_masks"

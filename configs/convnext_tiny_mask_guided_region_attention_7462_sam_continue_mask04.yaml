@@ -1,0 +1,7 @@
+_base_: "convnext_tiny_mask_guided_region_attention_7462_sam_continue.yaml"
+
+model:
+  # Mask-strength ablation from the 75.01 recipe:
+  # keep CLIP gamma=0.1 and all training settings unchanged, only make the
+  # spatial mask prior slightly stronger.
+  mask_attention_alpha: 0.4
