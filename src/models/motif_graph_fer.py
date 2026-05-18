@@ -50,6 +50,136 @@ class DeformableCoreMotifModule(nn.Module):
         return logits, S
 
 
+class LuanUNetMaskBlock(nn.Module):
+    """
+    Tái hiện kiến trúc Segmentation U-Net thu nhỏ của Phạm Quý Luân (ResMaskingNet).
+    Bóp nhỏ đặc trưng để nhìn bối cảnh toàn cục (Encoder), sau đó phóng to để tạo mặt nạ (Decoder).
+    """
+    def __init__(self, in_channels):
+        super().__init__()
+        
+        # Giảm số kênh để khối U-Net chạy nhẹ và nhanh như bản gốc
+        mid_channels = max(in_channels // 4, 16)
+        
+        # --- ENCODER (Bóp nhỏ kích thước Không gian xuống 1/2) ---
+        self.down = nn.Sequential(
+            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(mid_channels),
+            nn.ReLU(inplace=True),
+            # Dùng MaxPool để tạo nút thắt cổ chai
+            nn.MaxPool2d(kernel_size=2, stride=2, padding=0, ceil_mode=True) 
+        )
+        
+        # --- DECODER (Phóng to trở lại kích thước ban đầu) ---
+        self.up = nn.Sequential(
+            # ConvTranspose2d nhân đôi kích thước để vẽ mặt nạ
+            nn.ConvTranspose2d(mid_channels, in_channels, kernel_size=2, stride=2),
+            nn.BatchNorm2d(in_channels),
+            nn.ReLU(inplace=True)
+        )
+        
+        # --- TẠO MẶT NẠ (1 Kênh Không gian) ---
+        self.final_conv = nn.Conv2d(in_channels, 1, kernel_size=1, bias=True)
+        self.sigmoid = nn.Sigmoid()
+        
+        # BẢO TỒN PRETRAIN: Near-Zero Initialization
+        # Ép khối U-Net này nhả ra giá trị ~0 ở những Epoch đầu tiên
+        nn.init.zeros_(self.final_conv.weight)
+        nn.init.constant_(self.final_conv.bias, -4.0)
+
+    def forward(self, x):
+        # Lưu lại kích thước gốc để ép upsample khớp 100%
+        _, _, H, W = x.shape
+        
+        # Đi qua nút thắt cổ chai
+        encoded = self.down(x)
+        decoded = self.up(encoded)
+        
+        # Cắt xén (Crop) an toàn: Chống lỗi lệch 1 pixel khi Upsample Feature Map bị lẻ
+        decoded = decoded[:, :, :H, :W]
+        
+        # Xuất ra mặt nạ [0, 1]
+        mask = self.sigmoid(self.final_conv(decoded))
+        return mask
+
+
+class MotifBackbone(nn.Module):
+    """
+    Backbone dung de Fine-tune tu checkpoint ResNet18 pretrained hoac torchvision pretrain.
+    """
+    def __init__(self, pretrained_cnn_path="", in_channels=1, feat_dim=128):
+        super().__init__()
+
+        import torchvision.models as models
+        import os
+
+        try:
+            resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+        except Exception:
+            resnet = models.resnet18(pretrained=True)
+
+        if pretrained_cnn_path and os.path.exists(pretrained_cnn_path):
+            print(f"Loading pretrained CNN from {pretrained_cnn_path}...")
+            try:
+                ckpt = torch.load(pretrained_cnn_path, map_location='cpu')
+                state = ckpt
+                for key in ['state_dict', 'model_state_dict', 'net', 'model']:
+                    if isinstance(ckpt, dict) and key in ckpt:
+                        state = ckpt[key]
+                        break
+                
+                model_dict = resnet.state_dict()
+                pretrained_dict = {}
+                
+                for k, v in state.items():
+                    name = k.replace('module.', '').replace('backbone.', '').replace('resnet.', '').replace('net.', '')
+                    if name in model_dict:
+                        if v.shape == model_dict[name].shape:
+                            pretrained_dict[name] = v
+                
+                if len(pretrained_dict) > 0:
+                    model_dict.update(pretrained_dict)
+                    resnet.load_state_dict(model_dict)
+            except Exception as e:
+                print(f"[WARNING] Could not load checkpoint: {e}")
+
+        old_w = resnet.conv1.weight
+        self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        with torch.no_grad():
+            if old_w.shape[2:] == (7, 7):
+                center = old_w[:, :, 2:5, 2:5]
+            else:
+                center = old_w
+            self.conv1.weight.copy_(center.mean(dim=1, keepdim=True))
+
+        self.bn1     = resnet.bn1
+        self.relu    = resnet.relu
+        self.maxpool = nn.Identity()
+        self.layer1  = resnet.layer1
+        self.layer2  = resnet.layer2
+        self.layer3  = resnet.layer3
+        self.layer4  = resnet.layer4
+
+        self.mask3 = LuanUNetMaskBlock(256)
+        self.mask4 = LuanUNetMaskBlock(512)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x1 = self.layer1(x)
+        x2 = self.layer2(x1)
+        x3_raw = self.layer3(x2)
+        x4_raw = self.layer4(x3_raw)
+
+        x3 = x3_raw * (1 + self.mask3(x3_raw))
+        x4 = x4_raw * (1 + self.mask4(x4_raw))
+
+        return x3, x4
+
+
 class MotifGraphModel(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -59,18 +189,8 @@ class MotifGraphModel(nn.Module):
         self.num_heads = config.get('num_heads', 4)                  # 4 đầu trinh sát tọa độ theo DAT
         self.offset_amplitude = float(config.get('offset_amplitude', 0.25))
         
-        import torchvision.models as models
-        # 1. BACKBONE RESNET18 CHUẨN SOTA HỌC ACADEMIC
-        resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-        self.conv1 = nn.Conv2d(1, 64, kernel_size=3, stride=1, padding=1, bias=False)
-        self.conv1.weight.data = resnet.conv1.weight.data[:, 2:3, 2:5, 2:5].mean(dim=1, keepdim=True)
-        
-        self.bn1 = resnet.bn1
-        self.relu = resnet.relu
-        self.layer1 = resnet.layer1
-        self.layer2 = resnet.layer2
-        self.layer3 = resnet.layer3 # Đầu ra Layer 3: (B, 256, 12, 12)
-        self.layer4 = resnet.layer4 # Đầu ra Layer 4: (B, 512, 6, 6)
+        pretrained_cnn_path = config.get('pretrained_cnn_path', "")
+        self.backbone = MotifBackbone(pretrained_cnn_path=pretrained_cnn_path, feat_dim=self.feat_dim)
         
         # 2. TRIẾT LÝ DEFORMABLE DETR: Bộ nén chiều độc lập, không cộng gộp vụng về
         self.reducer_l3 = nn.Sequential(
@@ -207,15 +327,7 @@ class MotifGraphModel(nn.Module):
         B = x.shape[0]
         
         # --- PHASE 1: CNN TRÍCH XUẤT ĐA TẦNG ---
-        # Tận dụng tối đa xương sống ResNet18 đã được nạp trọng số chuẩn ImageNet
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        
-        x1 = self.layer1(x)
-        x2 = self.layer2(x1)
-        x3 = self.layer3(x2) # (B, 256, 12, 12)
-        x4 = self.layer4(x3) # (B, 512, 6, 6)
+        x3, x4 = self.backbone(x)
         
         # --- PHASE 2: NHÁNH TOÀN CỤC (GLOBAL CONTEXT) ---
         logits_global = self.global_fc(self.global_pool(x4))
