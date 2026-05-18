@@ -320,22 +320,15 @@ class Trainer:
                 except Exception:
                     pass
 
-            # Áp dụng Lịch trình 3 Giai đoạn (Tuned)
-            if progress <= 0.05:
-                # Phase 1 (0-5%): SCN OFF, MixUp OFF - Để Motif Head học cách định hướng cơ bản
+            # Lịch trình SCN chuẩn xác: Bật SCN ngay sau giai đoạn Warmup (10 epochs)
+            if ep < self.scn_warmup_epochs:
                 self._runtime_use_scn = False
                 self._runtime_use_mixup = False
                 self._runtime_phase = 1
-            elif progress <= 0.25:
-                # Phase 2 (5-25%): SCN BẬT NHẸ - Chuẩn bị tinh thần trước khi rã đông
-                self._runtime_use_scn = False
-                self._runtime_use_mixup = False
-                self._runtime_phase = 2
             else:
-                # Phase 3 (25-100%): SCN BẬT TOÀN DIỆN - Trấn áp ResNet152
                 self._runtime_use_scn = True
                 self._runtime_use_mixup = False
-                self._runtime_phase = 3
+                self._runtime_phase = 2
 
 
             train_loss, train_acc = self.train_one_epoch()

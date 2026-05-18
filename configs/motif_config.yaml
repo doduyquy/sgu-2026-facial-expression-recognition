@@ -3,7 +3,7 @@ model:
   # pretrained_cnn_path: "/kaggle/input/datasets/lhngphc/resnet152-0-73/resnet152_rot30_2019Nov14_12.47" # ""
   feat_dim: 128
   num_classes: 7
-  motifs_per_class: 16
+  motifs_per_class: 4
   num_heads: 4             # Them num_heads cho kien truc DAT
   top_k: 10
   offset_amplitude: 0.2  # Giam bien do nhay de soi ky vung cuc bo tren luoi 12x12
