@@ -28,14 +28,18 @@ class DeformableCoreMotifModule(nn.Module):
         # Tính trung bình sự trùng lặp (càng trùng lặp loss càng cao)
         self._latest_diversity = sim_m.masked_fill(mask, 0.0).sum() / (L * M * (M - 1))
         
-        # [VŨ KHÍ 1]: MOTIF DROPOUT (Drop 15% template ngẫu nhiên lúc train)
-        if self.training:
-            drop_mask = (torch.rand(L, M, 1, 1, device=node_features.device) > 0.15).float()
-            motifs_norm = motifs_norm * drop_mask / 0.85 # Bù scale
-            
         tau = F.softplus(self.temperature).clamp(min=0.05)
-        
         sim_matrix = torch.einsum('bic,lmjc->blmij', node_features_norm, motifs_norm)
+        
+        # [SỬA LỖI VŨ KHÍ 1]: MOTIF DROPOUT CHUẨN TOÁN HỌC SOFTMAX
+        if self.training:
+            # Random drop khoảng 15% motif (True = Drop)
+            drop_mask = torch.rand(L, M, device=node_features.device) < 0.15 
+            # Reshape để khớp với sim_matrix (B, L, M, 10, 10)
+            drop_mask = drop_mask.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+            # Gán âm vô cùng để Softmax lờ đi hoàn toàn Motif bị drop
+            sim_matrix = sim_matrix.masked_fill(drop_mask, -1e9)
+            
         align_weights = F.softmax(sim_matrix / tau, dim=-1)
         aligned_motifs = torch.einsum('blmij,lmjc->blmic', align_weights, motifs_norm)
         aligned_motifs = F.normalize(aligned_motifs, p=2, dim=-1)
@@ -283,9 +287,11 @@ class MotifGraphModel(nn.Module):
         self._latest_scores = S
         
         prob_mot = F.softmax(logits_motif, dim=-1)
-        ent_mot = -(prob_mot * torch.log(prob_mot + 1e-8)).sum(dim=-1, keepdim=True)
+        # SỬA LỖI: Bắt buộc phải thêm .detach() để tránh rò rỉ Gradient
+        ent_mot = -(prob_mot * torch.log(prob_mot + 1e-8)).sum(dim=-1, keepdim=True).detach()
         prob_glob = F.softmax(logits_global, dim=-1)
-        ent_glob = -(prob_glob * torch.log(prob_glob + 1e-8)).sum(dim=-1, keepdim=True)
+        # SỬA LỖI: Bắt buộc phải thêm .detach() 
+        ent_glob = -(prob_glob * torch.log(prob_glob + 1e-8)).sum(dim=-1, keepdim=True).detach()
         
         gate_input = torch.cat([logits_motif, logits_global, ent_mot, ent_glob], dim=-1)
         g = self.gate(gate_input)
