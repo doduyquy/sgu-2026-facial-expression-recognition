@@ -1,0 +1,12 @@
+_base_: "convnext_tiny_mask_guided_region_attention_7462_sam_continue_swin_light.yaml"
+
+model:
+  # Shifted-window ablation:
+  # depth=2 gives one W-MSA block followed by one SW-MSA block.
+  # Shapes stay unchanged: [B,768,7,7] -> [B,768,7,7].
+  swin_refiner_depth: 2
+
+training:
+  # Slightly lower LR than depth=1 because this adds a second fresh refiner block.
+  lr: 0.00005
+  finetune_lr: 0.000025
