@@ -1,0 +1,9 @@
+_base_: "convnext_tiny_mask_guided_region_attention_7462_sam_continue.yaml"
+
+model:
+  # Learned-only region-token ablation:
+  # no CLIP text dictionary and no learned+gamma*CLIP mixing.
+  # Region tokens are learned directly from FER2013 while the spatial masks
+  # still guide cross-attention.
+  use_clip_dictionary: false
+  use_learnable_clip_region_tokens: false
