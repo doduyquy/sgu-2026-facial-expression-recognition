@@ -583,7 +583,7 @@ class MotifGraphModel(nn.Module):
         topo_entropy = -(A * torch.log(A + 1e-8)).sum(dim=(2, 3)) / 16.0
         topo_entropy = topo_entropy.unsqueeze(-1) # (B, num_cands, 1)
         
-        topo_strength = A.mean(dim=(2, 3), keepdim=True) # (B, num_cands, 1)
+        topo_strength = A.mean(dim=(2, 3)).unsqueeze(-1) # (B, num_cands, 1)
         
         ana_align = torch.zeros(B, num_cands, 1, device=x.device)
         if getattr(self, '_latest_true_landmarks', None) is not None and getattr(self, '_latest_sampling_grid', None) is not None:
