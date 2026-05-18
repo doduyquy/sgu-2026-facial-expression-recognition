@@ -1,15 +1,15 @@
 model:
   name: "motif_graph_fer"
-  pretrained_cnn_path: "/kaggle/input/datasets/lhngphc/resnet152-0-73/resnet152_rot30_2019Nov14_12.47" # ""
+  # pretrained_cnn_path: "/kaggle/input/datasets/lhngphc/resnet152-0-73/resnet152_rot30_2019Nov14_12.47" # ""
   feat_dim: 128
   num_classes: 7
-  motifs_per_class: 16
+  motifs_per_class: 8
   top_k: 10
   offset_amplitude: 0.2  # Giam bien do nhay de soi ky vung cuc bo tren luoi 12x12
-  dropout: 0.3           # Tang len de chong Overfitting (truoc: 0.3)
+  dropout: 0.5           # Tang len de chong Overfitting (truoc: 0.3)
 
 data:
-  batch_size: 64
+  batch_size: 128
   num_workers: 4
   input_size: 48
   in_channels: 1
@@ -22,10 +22,10 @@ data:
 
 training:
   epochs: 1000
-  lr: 0.0001
-  weight_decay: 5e-4
+  lr: 0.0005
+  weight_decay: 1e-3
   loss: "cross_entropy"
-  label_smoothing: 0.1     # Tang len (truoc: 0.15)
+  label_smoothing: 0.2     # Tang len (truoc: 0.15)
   class_weight_mode: "sqrt_inverse"
   motif_consistency_weight: 0.05
   motif_diversity_weight: 0.05

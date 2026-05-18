@@ -288,29 +288,27 @@ class Trainer:
             self._current_epoch = ep
 
             # =========================================================
-            # BACKBONE FREEZE SCHEDULE (DISABLED FOR RESNET18 CHECKPOINT)
+            # CHIẾN THUẬT ĐÓNG BĂNG BACKBONE (CHỐNG OVERFITTING)
             # =========================================================
-            # backbone = getattr(self.model, 'backbone', None) or getattr(self.model, 'resnet', None)
-            # if backbone is not None:
-            #     main_lr = self.optimizer.param_groups[-1]['lr'] 
-            #     if ep == 0:
-            #         for param in backbone.parameters():
-            #             param.requires_grad = False
-            #         print(f"[Phase 1] Epoch {ep+1}: Backbone FROZEN. Only training Motif Graph Head.")
-            #     elif ep == 15:
-            #         layer4 = getattr(backbone, 'layer4', None)
-            #         if layer4 is not None:
-            #             for param in layer4.parameters():
-            #                 param.requires_grad = True
-            #         phase2_lr = main_lr * 0.1 
-            #         self.optimizer.param_groups[0]['lr'] = phase2_lr
-            #         print(f"[Phase 2] Epoch {ep+1}: Unfreeze backbone.layer4 with lr={phase2_lr:.2e}")
-            #     elif ep == 30:
-            #         for param in backbone.parameters():
-            #             param.requires_grad = True
-            #         phase3_lr = main_lr * 0.02 
-            #         self.optimizer.param_groups[0]['lr'] = phase3_lr
-            #         print(f"[Phase 3] Epoch {ep+1}: Full backbone UNFROZEN with lr={phase3_lr:.2e}")
+            backbone = getattr(self.model, 'backbone', None) or getattr(self.model, 'resnet', None)
+            freeze_epochs = int(self.config.get('training', {}).get('freeze_backbone_epochs', 15))
+            
+            if backbone is not None and freeze_epochs > 0:
+                main_lr = self.optimizer.param_groups[-1]['lr'] 
+                
+                if ep == 0:
+                    # Pha 1: Đóng băng toàn bộ Backbone
+                    for param in backbone.parameters():
+                        param.requires_grad = False
+                    print(f"\n[Chiến thuật Đóng băng] Epoch {ep+1}: Backbone FROZEN. Chỉ train GNN và Motif Head!")
+                    
+                elif ep == freeze_epochs:
+                    # Pha 2: Mở khóa Backbone với Learning Rate cực nhỏ (để tránh phá vỡ tạ gốc)
+                    for param in backbone.parameters():
+                        param.requires_grad = True
+                    phase2_lr = main_lr * 0.1 
+                    self.optimizer.param_groups[0]['lr'] = phase2_lr
+                    print(f"\n[Chiến thuật Đóng băng] Epoch {ep+1}: Backbone UNFROZEN. Tiếp tục Fine-tune với LR = {phase2_lr:.2e}")
 
             progress = ep / self.epochs
             set_progress = getattr(self.model, "set_training_progress", None)
