@@ -50,59 +50,6 @@ class DeformableCoreMotifModule(nn.Module):
         return logits, S
 
 
-class LuanUNetMaskBlock(nn.Module):
-    """
-    Tái hiện kiến trúc Segmentation U-Net thu nhỏ của Phạm Quý Luân (ResMaskingNet).
-    Bóp nhỏ đặc trưng để nhìn bối cảnh toàn cục (Encoder), sau đó phóng to để tạo mặt nạ (Decoder).
-    """
-    def __init__(self, in_channels):
-        super().__init__()
-        
-        # Giảm số kênh để khối U-Net chạy nhẹ và nhanh như bản gốc
-        mid_channels = max(in_channels // 4, 16)
-        
-        # --- ENCODER (Bóp nhỏ kích thước Không gian xuống 1/2) ---
-        self.down = nn.Sequential(
-            nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(mid_channels),
-            nn.ReLU(inplace=True),
-            # Dùng MaxPool để tạo nút thắt cổ chai
-            nn.MaxPool2d(kernel_size=2, stride=2, padding=0, ceil_mode=True) 
-        )
-        
-        # --- DECODER (Phóng to trở lại kích thước ban đầu) ---
-        self.up = nn.Sequential(
-            # ConvTranspose2d nhân đôi kích thước để vẽ mặt nạ
-            nn.ConvTranspose2d(mid_channels, in_channels, kernel_size=2, stride=2),
-            nn.BatchNorm2d(in_channels),
-            nn.ReLU(inplace=True)
-        )
-        
-        # --- TẠO MẶT NẠ (1 Kênh Không gian) ---
-        self.final_conv = nn.Conv2d(in_channels, 1, kernel_size=1, bias=True)
-        self.sigmoid = nn.Sigmoid()
-        
-        # BẢO TỒN PRETRAIN: Near-Zero Initialization
-        # Ép khối U-Net này nhả ra giá trị ~0 ở những Epoch đầu tiên
-        nn.init.zeros_(self.final_conv.weight)
-        nn.init.constant_(self.final_conv.bias, -4.0)
-
-    def forward(self, x):
-        # Lưu lại kích thước gốc để ép upsample khớp 100%
-        _, _, H, W = x.shape
-        
-        # Đi qua nút thắt cổ chai
-        encoded = self.down(x)
-        decoded = self.up(encoded)
-        
-        # Cắt xén (Crop) an toàn: Chống lỗi lệch 1 pixel khi Upsample Feature Map bị lẻ
-        decoded = decoded[:, :, :H, :W]
-        
-        # Xuất ra mặt nạ [0, 1]
-        mask = self.sigmoid(self.final_conv(decoded))
-        return mask
-
-
 class MotifBackbone(nn.Module):
     """
     Backbone dung de Fine-tune tu checkpoint ResNet18 pretrained hoac torchvision pretrain.
@@ -160,9 +107,6 @@ class MotifBackbone(nn.Module):
         self.layer3  = resnet.layer3
         self.layer4  = resnet.layer4
 
-        self.mask3 = LuanUNetMaskBlock(256)
-        self.mask4 = LuanUNetMaskBlock(512)
-
     def forward(self, x):
         x = self.conv1(x)
         x = self.bn1(x)
@@ -171,11 +115,8 @@ class MotifBackbone(nn.Module):
 
         x1 = self.layer1(x)
         x2 = self.layer2(x1)
-        x3_raw = self.layer3(x2)
-        x4_raw = self.layer4(x3_raw)
-
-        x3 = x3_raw * (1 + self.mask3(x3_raw))
-        x4 = x4_raw * (1 + self.mask4(x4_raw))
+        x3 = self.layer3(x2)
+        x4 = self.layer4(x3)
 
         return x2, x3, x4
 
