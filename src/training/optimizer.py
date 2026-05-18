@@ -19,7 +19,7 @@ def build_optimizer(model, config):
             
     param_groups = [
         {'params': backbone_params, 'lr': lr},
-        {'params': head_params, 'lr': lr * 2.0}
+        {'params': head_params, 'lr': lr * 2.5}
     ]
 
     if opt_name == 'adam':
@@ -60,8 +60,8 @@ def build_scheduler(optimizer, config):
     elif scheduler_name == 'cosine':
         # decay with cosine
         T_max = config['training'].get('epochs', 101) 
-        print(f"--> [Scheduler] CosineAnnealingLR (T_max={T_max})")
-        return lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max)
+        print(f"--> [Scheduler] CosineAnnealingLR (T_max={T_max}, eta_min=1e-6)")
+        return lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max, eta_min=1e-6)
 
     else:
         raise ValueError(f"Not supported this {scheduler_name} scheduler!") 

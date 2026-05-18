@@ -422,7 +422,7 @@ class Trainer:
             loss.backward()
             try:
                 # gradient clipping to stabilize training when combining SCN and landmark auxes
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.5)
             except Exception:
                 pass
             self.optimizer.step()
@@ -565,12 +565,11 @@ class Trainer:
                 except Exception:
                     pass
 
-            # apply 3-phase staged lambda schedule tuned for noisy FER datasets
-            # Phase 1: very early (0-20%): SCN OFF, MixUp ON
-            # Phase 2: (20-70%): SCN ON, stronger landmark signals
-            # Phase 3: (70-100%): heavy refinement for landmark branch
-            if progress <= 0.1:
-                # Phase 1 (0-20%): conservative — 
+            # apply 3-phase staged schedule based on epochs
+            # Phase 1: Epoch 1-10 -> SCN OFF, simple motif matching, backbone only
+            # Phase 2: Epoch 11-25 -> SCN ON, GAT ON, motif bank frozen first 5 epochs
+            # Phase 3: Epoch 26+ -> SCN ON, GAT ON, motif consistency ON. Landmark KD ON at Epoch 35+.
+            if ep < 10:
                 self._runtime_diversity_lambda = 0.0
                 self._runtime_entropy_lambda = 0.0
                 self._runtime_overlap_lambda = 0.0
@@ -581,30 +580,51 @@ class Trainer:
                 self._runtime_use_scn = False
                 self._runtime_use_mixup = False
                 self._runtime_phase = 1
-            elif progress <= 0.7:
-                # Phase 2 (20-70%): enable SCN and stronger landmark auxiliaries
-                self._runtime_diversity_lambda = 0.18
-                self._runtime_entropy_lambda = 0.004
-                self._runtime_overlap_lambda = 0.07
+                if hasattr(self.model, 'set_training_phase'):
+                    self.model.set_training_phase(1)
+                
+                # Ensure motif_module is trainable in Phase 1 for simple matching
+                if hasattr(self.model, 'motif_module'):
+                    for param in self.model.motif_module.parameters():
+                        param.requires_grad = True
+
+            elif ep < 25:
+                self._runtime_diversity_lambda = 0.0
+                self._runtime_entropy_lambda = 0.0
+                self._runtime_overlap_lambda = 0.0
                 self._runtime_augment_lambda = 0.0
                 self._runtime_edge_consistency_lambda = 0.0
-                self._runtime_aux_cls_lambda = 0.1
+                self._runtime_aux_cls_lambda = 0.0
                 self._runtime_aux_consistency_lambda = 0.0
                 self._runtime_use_scn = True
                 self._runtime_use_mixup = False
                 self._runtime_phase = 2
+                if hasattr(self.model, 'set_training_phase'):
+                    self.model.set_training_phase(2)
+
+                # Freeze motif module for first 5 epochs of Phase 2 (ep 10->14)
+                if hasattr(self.model, 'motif_module'):
+                    for param in self.model.motif_module.parameters():
+                        param.requires_grad = not (10 <= ep < 15)
+
             else:
-                # Phase 3 (70-100%): strong refinement — increase landmark lambdas
-                self._runtime_diversity_lambda = 0.30
-                self._runtime_entropy_lambda = 0.008
-                self._runtime_overlap_lambda = 0.10
+                self._runtime_diversity_lambda = 0.0
+                self._runtime_entropy_lambda = 0.0
+                self._runtime_overlap_lambda = 0.0
                 self._runtime_augment_lambda = 0.0
                 self._runtime_edge_consistency_lambda = 0.0
-                self._runtime_aux_cls_lambda = 0.2
+                self._runtime_aux_cls_lambda = 0.0
                 self._runtime_aux_consistency_lambda = 0.0
                 self._runtime_use_scn = True
                 self._runtime_use_mixup = False
                 self._runtime_phase = 3
+                if hasattr(self.model, 'set_training_phase'):
+                    self.model.set_training_phase(3)
+
+                # Unfreeze everything
+                if hasattr(self.model, 'motif_module'):
+                    for param in self.model.motif_module.parameters():
+                        param.requires_grad = True
 
             train_loss, train_acc = self.train_one_epoch()
             val_loss, val_acc = self.validate()

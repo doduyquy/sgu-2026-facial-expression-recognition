@@ -148,13 +148,8 @@ class GraphAttentionLayer(nn.Module):
             nn.ReLU(),
             nn.Linear(out_dim, 1)
         )
-        self.edge_bias = nn.Sequential(
-            nn.Linear(2 * in_dim, out_dim),
-            nn.ReLU(),
-            nn.Linear(out_dim, 1)
-        )
         # UPDATE: residual + norm + attention dropout
-        self.attn_drop = nn.Dropout(p=0.1)
+        self.attn_drop = nn.Dropout(p=0.25)
         self.norm = nn.LayerNorm(out_dim)
 
     def forward(self, x, adj):
@@ -173,12 +168,10 @@ class GraphAttentionLayer(nn.Module):
         x_j = x.unsqueeze(1).expand(B, N, N, -1)
         edge_feat = torch.cat([x_i, x_j], dim=-1)
         edge_gate = torch.sigmoid(self.edge_gate(edge_feat)).squeeze(-1) # (B, N, N)
-        edge_bias = self.edge_bias(edge_feat).squeeze(-1) # (B, N, N)
 
         if adj is not None:
             edge_gate = edge_gate * adj
 
-        scores = scores + edge_bias.unsqueeze(1)
         scores = scores * edge_gate.unsqueeze(1)
 
         if adj is not None:
@@ -190,6 +183,7 @@ class GraphAttentionLayer(nn.Module):
 
         out = out.transpose(1, 2).contiguous().view(B, N, -1) #kết hợp các head lại với nhau bằng cách transpose và reshape
         out = self.out_lin(out)
+        out = F.dropout(out, p=0.2, training=self.training) # Tăng regularization
         out = self.norm(out + x) # UPDATE: residual + norm
         return F.relu(out)
 
@@ -220,9 +214,9 @@ class GraphMotifModule(nn.Module):
         # Khởi tạo các motif bằng phương pháp Xavier để đảm bảo phân phối hợp lý của trọng số, giúp quá trình huấn luyện ổn định và hiệu quả hơn.
         # 2. Factorized Motif Topology: (Classes, Motifs, K, Rank)
         # Motif edges A = U @ U^T
-        self.motif_low_rank = nn.Parameter(torch.randn(num_classes, motifs_per_class, K, rank))
-        # Khởi tạo ma trận low-rank để biểu diễn cấu trúc cạnh của motif, giúp giảm số lượng tham số và tăng khả năng tổng quát hóa của mô hình khi học các cấu trúc đồ thị phức tạp.
-        nn.init.xavier_uniform_(self.motif_low_rank)
+        # Tạm tắt topology matching cho FER2013 vì gây unstable
+        # self.motif_low_rank = nn.Parameter(torch.randn(num_classes, motifs_per_class, K, rank))
+        # nn.init.xavier_uniform_(self.motif_low_rank)
         
         # 3. Learnable weights for Node vs Edge similarity
         self.alpha = nn.Parameter(torch.zeros(1)) # Node similarity weight (logit scale)
@@ -278,20 +272,20 @@ class GraphMotifModule(nn.Module):
         # edge_sim_raw: (B, L, M, K, K)
         edge_sim_raw = node_sim_i + node_sim_j - cross_sim - cross_sim.transpose(-1, -2)
         # structure-preserving aggregation with node-attn outer product
-        tau = F.softplus(self.temperature)
+        tau = torch.clamp(F.softplus(self.temperature), min=0.3, max=1.5)
         node_attn = F.softmax(node_sim / tau.clamp(min=1e-3), dim=-1)
         edge_weights = node_attn.unsqueeze(-2) * node_attn.unsqueeze(-1)
         edge_weights = edge_weights / edge_weights.sum(dim=(-1, -2), keepdim=True).clamp(min=1e-6)
         edge_sim = (edge_sim_raw * edge_weights).sum(dim=(-1, -2))
         
         # 4. Topology matching using Low-Rank Motif Edges
-        # motif_adj: (L, M, K, K)
-        motif_adj = torch.matmul(self.motif_low_rank, self.motif_low_rank.transpose(-1, -2))
-        motif_adj = F.softmax(motif_adj, dim=-1)
+        # Tạm tắt topology
+        # motif_adj = torch.matmul(self.motif_low_rank, self.motif_low_rank.transpose(-1, -2))
+        # motif_adj = F.softmax(motif_adj, dim=-1)
         
         topo_sim = 0
-        if adj is not None:
-            topo_sim = (motif_adj.unsqueeze(0) * edge_weights).sum(dim=(-1, -2))
+        # if adj is not None:
+        #     topo_sim = (motif_adj.unsqueeze(0) * edge_weights).sum(dim=(-1, -2))
             
         # 5. Combined Similarity
         # s_node: (B, L, M, K)
@@ -329,7 +323,7 @@ class MotifGraphModel(nn.Module):
         super().__init__()
         self.feat_dim = config.get('feat_dim', 128)
         self.num_classes = config.get('num_classes', 7)
-        self.motifs_per_class = config.get('motifs_per_class', 16)  # UPDATE: more motif diversity
+        self.motifs_per_class = config.get('motifs_per_class', 8)  # UPDATE: reduce motif capacity
         self.top_k = config.get('top_k', 6)  # UPDATE: more candidate diversity for 4x4
         self.temperature = config.get('motif_tau', 0.1) 
         
@@ -344,14 +338,14 @@ class MotifGraphModel(nn.Module):
         self.global_pool = nn.AdaptiveAvgPool2d(1)
         self.global_fc = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(self.feat_dim, 128),
+            nn.Linear(self.feat_dim, 64),
             nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(128, self.num_classes)
+            nn.Dropout(0.5),
+            nn.Linear(64, self.num_classes)
         )
         
+        # Reduce GNN depth to prevent oversmoothing
         self.gnn_layers = nn.ModuleList([
-            GraphAttentionLayer(self.feat_dim, self.feat_dim),
             GraphAttentionLayer(self.feat_dim, self.feat_dim)
         ])
         
@@ -361,7 +355,7 @@ class MotifGraphModel(nn.Module):
             nn.Linear(64, 2), 
             nn.Tanh() 
         )
-        self.offset_amplitude = float(config.get('offset_amplitude', 0.35))  # UPDATE: stabilize 4x4 offsets
+        self.offset_amplitude = float(config.get('offset_amplitude', 0.20))  # UPDATE: stabilize 4x4 offsets
         
         self.pos_embed = nn.Parameter(torch.randn(1, 16, self.feat_dim))  # UPDATE: 4x4 grid
         nn.init.trunc_normal_(self.pos_embed, std=0.02)
@@ -377,8 +371,8 @@ class MotifGraphModel(nn.Module):
         )
         
         self.logit_scale = nn.Parameter(torch.ones(1) * 1.0)
-        # Weight for combining Motif and Global logits
-        self.alpha = nn.Parameter(torch.ones(1) * 0.5)
+        # Weight for combining Motif and Global logits (weaken global)
+        self.alpha = nn.Parameter(torch.tensor(-1.0))
         
         # Learnable query for candidate-level attention
         self.cand_query = nn.Parameter(torch.randn(1, 1, self.num_classes))
@@ -445,6 +439,8 @@ class MotifGraphModel(nn.Module):
         centers_grid = torch.stack([c_x, c_y], dim=-1).view(1, num_cands, 1, 2) 
         
         sampling_grid = centers_grid + offsets.unsqueeze(2) + rel_grid * (1.0 / (W-1))
+        # Stabilize deformable sampling
+        sampling_grid = torch.clamp(sampling_grid, -1.2, 1.2)
         sampling_grid = sampling_grid.view(B, num_cands * 16, 1, 2)
         
         # Lưu sampling grid để tính Soft Landmark Supervision Loss
@@ -503,8 +499,10 @@ class MotifGraphModel(nn.Module):
                 self.proj_node = nn.Linear(node_feats.shape[-1], self.feat_dim).to(x.device)
             node_feats = self.proj_node(node_feats)
             
-        for gnn in self.gnn_layers:
-            node_feats = gnn(node_feats, adj)
+        phase = getattr(self, 'training_phase', 3)
+        if phase >= 2 or not self.training:
+            for gnn in self.gnn_layers:
+                node_feats = gnn(node_feats, adj)
             
         candidates, cand_adjs, centers = self._extract_deformable_subgraphs(feat_map, H, W, node_feats)
         num_cands = candidates.shape[1]
@@ -530,6 +528,10 @@ class MotifGraphModel(nn.Module):
         cand_scores = (logits_cand * self.cand_query).sum(dim=-1) # (B, num_cands)
         cand_tau = 1.0
         attn_weights = F.softmax(cand_scores / cand_tau, dim=1).unsqueeze(-1) 
+        
+        if self.training and phase == 1:
+            # Phase 1: Simple motif matching, no candidate attention
+            attn_weights = torch.ones_like(attn_weights) / num_cands
         
         logits_motif = torch.sum(logits_cand * attn_weights, dim=1)
         logits_motif = logits_motif * self.logit_scale 
@@ -585,6 +587,9 @@ class MotifGraphModel(nn.Module):
 
     def set_current_epoch(self, epoch):
         self.current_epoch = epoch
+
+    def set_training_phase(self, phase):
+        self.training_phase = phase
         
     def get_current_prior_strength(self):
         return 0.0
@@ -624,9 +629,9 @@ class MotifGraphModel(nn.Module):
         
         # 4. Kích hoạt Motif Consistency Loss tại đây
         if hasattr(self, '_latest_targets') and self._latest_targets is not None:
-            progress = getattr(self, 'training_progress', 1.0)
-            # Tạm tắt Motif Consistency trong Phase 1 (progress <= 0.05) vì Mixup trộn nhãn
-            if self.training and progress <= 0.06:
+            phase = getattr(self, 'training_phase', 3)
+            # Tạm tắt Motif Consistency trong Phase 1 và 2 (phase < 3)
+            if self.training and phase < 3:
                 l_motif_consist = torch.tensor(0.0, device=self._latest_scores.device)
             else:
                 l_motif_consist = self.motif_consistency_loss(
@@ -638,8 +643,13 @@ class MotifGraphModel(nn.Module):
             
         # 5. Kích hoạt Soft Landmark Supervision Loss (Teacher KD) tại đây
         if hasattr(self, '_latest_true_landmarks') and self._latest_true_landmarks is not None and hasattr(self, '_latest_sampling_grid'):
+            phase = getattr(self, 'training_phase', 3)
             cur_ep = getattr(self, 'current_epoch', 0)
-            l_soft = self.soft_landmark_loss(self._latest_sampling_grid, self._latest_true_landmarks, getattr(self, '_latest_valid_lms', None), cur_ep)
+            if self.training and cur_ep < 35:
+                # Không nên mở Landmark KD quá sớm ở epoch < 35
+                l_soft = torch.tensor(0.0, device=self._latest_scores.device)
+            else:
+                l_soft = self.soft_landmark_loss(self._latest_sampling_grid, self._latest_true_landmarks, getattr(self, '_latest_valid_lms', None), cur_ep)
             aux_dict["landmark_soft_supervision"] = l_soft
             
         return aux_dict

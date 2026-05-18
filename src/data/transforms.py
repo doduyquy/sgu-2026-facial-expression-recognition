@@ -22,7 +22,8 @@ def build_transform(config, split="train") -> Compose: # train | val | test
         # để đồng bộ hóa chính xác với việc lật tọa độ Landmark (tránh lệch pha ảnh và tọa độ).
         trans = transforms.Compose([
             transforms.Resize((image_size, image_size)),
-            transforms.RandomApply([transforms.RandomAffine(degrees=5, translate=(0.05, 0.05), scale=(0.95, 1.05))], p=0.5),
+            transforms.RandomApply([transforms.RandomAffine(degrees=10, translate=(0.05, 0.05), scale=(0.95, 1.05))], p=0.5),
+            transforms.RandomApply([transforms.ColorJitter(brightness=0.1)], p=0.5),
             transforms.RandomApply([transforms.GaussianBlur(kernel_size=3)], p=0.3),
             transforms.ToTensor(),
             transforms.RandomErasing(p=0.2, scale=(0.02, 0.2), value='random'),
