@@ -177,7 +177,7 @@ class MotifBackbone(nn.Module):
         x3 = x3_raw * (1 + self.mask3(x3_raw))
         x4 = x4_raw * (1 + self.mask4(x4_raw))
 
-        return x3, x4
+        return x2, x3, x4
 
 
 class MotifGraphModel(nn.Module):
@@ -192,21 +192,21 @@ class MotifGraphModel(nn.Module):
         pretrained_cnn_path = config.get('pretrained_cnn_path', "")
         self.backbone = MotifBackbone(pretrained_cnn_path=pretrained_cnn_path, feat_dim=self.feat_dim)
         
-        # 2. TRIẾT LÝ DEFORMABLE DETR: Bộ nén chiều độc lập, không cộng gộp vụng về
+        # 2. TRIẾT LÝ DEFORMABLE DETR: Lấy mẫu đa quy mô mịn (Bỏ Layer 4 thô kệch)
+        self.reducer_l2 = nn.Sequential(
+            nn.Conv2d(128, self.feat_dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(self.feat_dim),
+            nn.ReLU(inplace=True)
+        )
         self.reducer_l3 = nn.Sequential(
             nn.Conv2d(256, self.feat_dim, kernel_size=1, bias=False),
             nn.BatchNorm2d(self.feat_dim),
             nn.ReLU(inplace=True)
         )
-        self.reducer_l4 = nn.Sequential(
-            nn.Conv2d(512, self.feat_dim, kernel_size=1, bias=False),
-            nn.BatchNorm2d(self.feat_dim),
-            nn.ReLU(inplace=True)
-        )
         
-        # 3. GLOBAL CONTEXT BRANCH
+        # 3. GLOBAL CONTEXT BRANCH (Giữ Layer 4 làm nhiệm vụ bối cảnh vĩ mô)
         self.global_pool = nn.AdaptiveAvgPool2d(1)
-        dropout = config.get('dropout', 0.5) # Ép Dropout mạnh tay để diệt Overfit
+        dropout = config.get('dropout', 0.5)
         self.global_fc = nn.Sequential(
             nn.Flatten(),
             nn.Linear(512, self.feat_dim),
@@ -220,14 +220,30 @@ class MotifGraphModel(nn.Module):
         self.offset_predictor = nn.Sequential(
             nn.Linear(self.feat_dim * 2, 64),
             nn.ReLU(inplace=True),
-            nn.Linear(64, self.num_heads * 2), # Xuất ra (num_heads * 2) tọa độ dịch chuyển
+            nn.Linear(64, self.num_heads * 2), 
             nn.Tanh()
         )
         
-        # Bộ trộn đặc trưng sau khi gộp đa tầng và đa đầu
+        # Khối gộp thông tin đa quy mô Layer 2 + Layer 3
         self.feature_fusion = nn.Sequential(
-            nn.Linear(self.feat_dim * 2, self.feat_dim), # Kết hợp kênh L3 + L4
+            nn.Linear(self.feat_dim * 2, self.feat_dim),
             nn.ReLU(inplace=True)
+        )
+        
+        # NÂNG CẤP TRIỆT TIÊU HEAD COLLAPSE: Học cách tổng hợp thông tin đa góc nhìn qua lớp Tuyến tính
+        self.head_fusion = nn.Sequential(
+            nn.Linear(self.feat_dim * self.num_heads, self.feat_dim),
+            nn.ReLU(inplace=True)
+        )
+        
+        # NÂNG CẤP OPTION B: ATTENTION GRAPH (Relational Reasoning / Message Passing)
+        # Ép các bộ phận cơ mặt tự trao đổi thông tin cấu trúc với nhau trước khi mang đi so sánh Motif!
+        self.graph_interaction = nn.TransformerEncoderLayer(
+            d_model=self.feat_dim,
+            nhead=4,
+            dim_feedforward=self.feat_dim * 2,
+            dropout=0.3,
+            batch_first=True
         )
         
         # 5. MOTIF BLOCK 
@@ -237,69 +253,131 @@ class MotifGraphModel(nn.Module):
             feat_dim=self.feat_dim
         )
         
-        # CỔNG HOÀ TRỘN ĐỘNG GATED FUSION (Global + Motif)
+        # CỔNG HOÀ TRỘN ĐỘNG GATED FUSION CẢI TIẾN (Global + Motif + Entropies)
         self.gate = nn.Sequential(
-            nn.Linear(self.num_classes * 2, self.num_classes),
+            nn.Linear(self.num_classes * 2 + 2, self.num_classes),
             nn.Sigmoid()
         )
 
-    def _extract_deformable_multiscale_multihead_nodes(self, feat_map_l3, feat_map_l4, glob_embed, landmarks):
+    def _extract_deformable_multiscale_multihead_nodes(self, feat_map_l2, feat_map_l3, glob_embed, landmarks, img_h=48.0, img_w=48.0):
         B = feat_map_l3.shape[0]
         H3, W3 = feat_map_l3.shape[2:]
         
-        # Thiết lập tọa độ lưới nền trung bình giải phẫu (Fallback)
+        # Tọa độ lưới nền trung bình giải phẫu tự thích ứng kích thước map
         base_y = torch.tensor([1, 3, 2, 2, 4, 4, 6, 9, 9, 11], device=feat_map_l3.device, dtype=torch.float) * (H3 / 12.0)
         base_x = torch.tensor([5, 5, 3, 7, 3, 7, 5, 3, 7, 5], device=feat_map_l3.device, dtype=torch.float) * (W3 / 12.0)
-        default_grid = torch.stack([base_x, base_y], dim=-1).unsqueeze(0).expand(B, -1, -1) # (B, 10, 2)
+        default_grid = torch.stack([base_x, base_y], dim=-1).unsqueeze(0).expand(B, -1, -1)
         
         if landmarks is None:
             base_grid = (default_grid / (W3 - 1)) * 2.0 - 1.0
         else:
-            base_grid = (landmarks / 48.0) * 2.0 - 1.0 # Ánh xạ thẳng vào không gian lưới [-1.0, 1.0]
+            # Tự động hóa không gian chia tỉ lệ để tương thích hoàn hảo TenCrop
+            c_x = (landmarks[:, :, 0] / img_w) * 2.0 - 1.0
+            c_y = (landmarks[:, :, 1] / img_h) * 2.0 - 1.0
+            base_grid = torch.stack([c_x, c_y], dim=-1)
             
-        # Jittering tọa độ lúc Train nhằm triệt tiêu hoàn toàn khả năng học vẹt vị trí
         if self.training:
             base_grid = base_grid + (torch.rand_like(base_grid) - 0.5) * 0.08
             
-        # Lấy mẫu đặc trưng mồi hướng dẫn (Initial Sampling) từ tầng sắc nét L3
+        # Mớm thông tin dẫn đường bằng cách lấy mẫu mồi từ Layer 3
         mboi_feats = F.grid_sample(feat_map_l3, base_grid.unsqueeze(2), align_corners=True).squeeze(-1).transpose(1, 2)
         
         # Dự đoán Đa đầu lệch (Multi-Head Offsets)
         glob_expand = glob_embed.unsqueeze(1).expand(-1, 10, -1)
         combined = torch.cat([mboi_feats, glob_expand], dim=-1)
         
-        raw_offsets = self.offset_predictor(combined) # (B, 10, num_heads * 2)
+        raw_offsets = self.offset_predictor(combined) 
         offsets = raw_offsets.view(B, 10, self.num_heads, 2) * self.offset_amplitude
         self._latest_offsets = offsets
         
-        # Phát tán lưới tọa độ đa vệ tinh (Multi-head coordination sampling map)
-        final_grid = base_grid.unsqueeze(2) + offsets # (B, 10, num_heads, 2)
+        # Phát tán lưới lấy mẫu đa đầu
+        final_grid = base_grid.unsqueeze(2) + offsets
         final_grid_flat = final_grid.view(B, 10 * self.num_heads, 1, 2)
         
-        # Thực hiện trích xuất dữ liệu song song từ 2 quy mô độc lập (Triết lý Deformable DETR)
+        # TRIẾT LÝ DEFORMABLE DETR CẢI TIẾN: Trích xuất song parallel từ Layer 2 mịn và Layer 3 sâu
+        nodes_l2 = F.grid_sample(feat_map_l2, final_grid_flat, align_corners=True).squeeze(-1).transpose(1, 2)
+        nodes_l2 = nodes_l2.view(B, 10, self.num_heads, self.feat_dim)
+        
         nodes_l3 = F.grid_sample(feat_map_l3, final_grid_flat, align_corners=True).squeeze(-1).transpose(1, 2)
         nodes_l3 = nodes_l3.view(B, 10, self.num_heads, self.feat_dim)
         
-        nodes_l4 = F.grid_sample(feat_map_l4, final_grid_flat, align_corners=True).squeeze(-1).transpose(1, 2)
-        nodes_l4 = nodes_l4.view(B, 10, self.num_heads, self.feat_dim)
-        
-        # Tiến hành ép gộp đa tầng và hòa trộn liên thông không gian
-        multiscale_feats = torch.cat([nodes_l3, nodes_l4], dim=-1) # (B, 10, num_heads, feat_dim * 2)
+        # Hòa trộn kênh Đa quy mô
+        multiscale_feats = torch.cat([nodes_l2, nodes_l3], dim=-1) # (B, 10, num_heads, feat_dim * 2)
         fused_head_feats = self.feature_fusion(multiscale_feats)   # (B, 10, num_heads, feat_dim)
         
-        # Gom tụ thông tin từ các đầu trinh sát về Node đại diện cốt lõi bằng phép Mean
-        final_nodes = fused_head_feats.mean(dim=2) # (B, 10, feat_dim)
+        # GIẢI QUYẾT LỖI SỤP ĐỔ ĐẦU: Ép phẳng chiều Heads đưa qua lớp tuyến tính tự học trọng số tổng hợp
+        fused_head_flat = fused_head_feats.view(B, 10, self.num_heads * self.feat_dim)
+        final_nodes = self.head_fusion(fused_head_flat) # Đầu ra hoàn hảo: (B, 10, feat_dim)
+        
         return final_nodes
+
+    def forward_single_crop(self, x, return_selection=False, targets=None, landmarks=None, statuses=None):
+        """Hàm forward đơn lẻ sạch sẽ phục vụ trích xuất đặc trưng cốt lõi"""
+        B = x.shape[0]
+        img_h, img_w = x.shape[2], x.shape[3]
+        
+        # --- PHASE 1: CNN TRÍCH XUẤT ĐA TẦNG ---
+        x2, x3, x4 = self.backbone(x)
+        
+        # --- PHASE 2: NHÁNH TOÀN CỤC (GLOBAL CONTEXT) ---
+        logits_global = self.global_fc(self.global_pool(x4))
+        self._latest_logits_global = logits_global
+        
+        # --- PHASE 3: NHÁNH CỤC BỘ BIẾN DẠNG ĐA QUY MÔ CAO ---
+        feat_map_l2 = self.reducer_l2(x2) # Bản đồ siêu nét (B, 128, 24, 24)
+        feat_map_l3 = self.reducer_l3(x3) # Bản đồ ngữ nghĩa (B, 128, 12, 12)
+        
+        # Tạo vector định hướng từ Layer 4 bối cảnh vĩ mô
+        glob_embed = self.global_pool(x4).view(B, -1)
+        glob_embed = F.adaptive_avg_pool1d(glob_embed.unsqueeze(1), self.feat_dim).squeeze(1) # Match feat_dim
+        
+        # Tiến hành trích xuất thưa thớt (Sparse Nodes Extraction)
+        node_feats = self._extract_deformable_multiscale_multihead_nodes(
+            feat_map_l2=feat_map_l2,
+            feat_map_l3=feat_map_l3,
+            glob_embed=glob_embed,
+            landmarks=landmarks,
+            img_h=img_h,
+            img_w=img_w
+        ) # Shape: (B, 10, feat_dim)
+        
+        # --- KÍCH HOẠT OPTION B: TRUE GRAPH RELATIONAL REASONING ---
+        # Tầng Message Passing giúp mắt nói chuyện với môi để nhận diện cơ học nụ cười/tiếng khóc
+        node_feats = self.graph_interaction(node_feats)
+        
+        # --- PHASE 4: ĐỐI SÁNH TRÚC LƯỚI MOTIF VÀNG ---
+        logits_motif, S = self.motif_module(node_feats)
+        self._latest_logits_motif = logits_motif
+        self._latest_scores = S
+        
+        # --- PHASE 5: CỔNG HÒA TRỘN ĐỘNG GATED FUSION CẢI TIẾN ---
+        # Bổ sung Shannon Entropy để Gate hiểu được độ phân vân/uy tín của từng nhánh
+        prob_mot = F.softmax(logits_motif, dim=-1)
+        ent_mot = -(prob_mot * torch.log(prob_mot + 1e-8)).sum(dim=-1, keepdim=True)
+        
+        prob_glob = F.softmax(logits_global, dim=-1)
+        ent_glob = -(prob_glob * torch.log(prob_glob + 1e-8)).sum(dim=-1, keepdim=True)
+        
+        gate_input = torch.cat([logits_motif, logits_global, ent_mot, ent_glob], dim=-1)
+        
+        g = self.gate(gate_input)
+        logits = g * logits_motif + (1.0 - g) * logits_global
+        
+        self._latest_top_k = torch.zeros(B, self.num_classes, dtype=torch.long, device=x.device)
+        
+        if return_selection:
+            return logits, self._latest_top_k, (None, None), self._latest_scores
+            
+        return logits
 
     def forward(self, x, return_selection=False, targets=None, landmarks=None, statuses=None):
         if targets is not None:
             self._latest_targets = targets
             
-        # Xử lý tự động bọc màng dữ liệu khi kích hoạt cấu trúc TenCrop (5D input tensor)
+        # Giải quyết hoàn toàn lỗi đệ quy lồng trong hàm forward khi kích hoạt TenCrop
         if x.dim() == 5:
             B, T, C, H, W = x.shape
             logits_list = []
-            self._tencrop_landmarks_active = True
             
             for t in range(T):
                 crop_x = x[:, t, :, :, :]
@@ -314,58 +392,16 @@ class MotifGraphModel(nn.Module):
                         crop_landmarks[:, :, 0] = 39.0 - crop_landmarks[:, :, 0]
                         crop_landmarks[:, [2, 3, 4, 5, 7, 8], :] = crop_landmarks[:, [3, 2, 5, 4, 8, 7], :].clone()
                         
-                out = self.forward(crop_x, return_selection=return_selection, targets=targets, landmarks=crop_landmarks, statuses=statuses)
+                out = self.forward_single_crop(crop_x, return_selection=return_selection, targets=targets, landmarks=crop_landmarks, statuses=statuses)
                 if return_selection:
                     logits_list.append(out[0])
                 else:
                     logits_list.append(out)
                     
-            self._tencrop_landmarks_active = False
             mean_logits = torch.stack(logits_list, dim=1).mean(dim=1)
             return (mean_logits, out[1], out[2], out[3]) if return_selection else mean_logits
 
-        B = x.shape[0]
-        
-        # --- PHASE 1: CNN TRÍCH XUẤT ĐA TẦNG ---
-        x3, x4 = self.backbone(x)
-        
-        # --- PHASE 2: NHÁNH TOÀN CỤC (GLOBAL CONTEXT) ---
-        logits_global = self.global_fc(self.global_pool(x4))
-        self._latest_logits_global = logits_global
-        
-        # --- PHASE 3: NHÁNH CỤC BỘ BIẾN DẠNG ĐA QUY MÔ ---
-        feat_map_l3 = self.reducer_l3(x3) # Không gian chi tiết sắc nét (B, 128, 12, 12)
-        feat_map_l4 = self.reducer_l4(x4) # Không gian ngữ nghĩa sâu (B, 128, 6, 6)
-        
-        # Chuẩn bị vector bối cảnh nền cho bộ định hướng
-        glob_embed = feat_map_l4.mean(dim=(2, 3)) # (B, 128)
-        
-        # Trích xuất 10 hạt đặc trưng tinh khiết (Sparse Nodes)
-        node_feats = self._extract_deformable_multiscale_multihead_nodes(
-            feat_map_l3=feat_map_l3,
-            feat_map_l4=feat_map_l4,
-            glob_embed=glob_embed,
-            landmarks=landmarks
-        ) # Đầu ra chuẩn chỉnh: (B, 10, 128)
-        
-        # --- PHASE 4: ĐỐI SÁNH TRÚC LƯỚI MOTIF VÀNG ---
-        logits_motif, S = self.motif_module(node_feats)
-        self._latest_logits_motif = logits_motif
-        self._latest_scores = S
-        
-        # --- PHASE 5: CỔNG HÒA TRỘN ĐỘNG GATED FUSION ---
-        gate_input = torch.cat([logits_motif, logits_global], dim=-1)
-        g = self.gate(gate_input)
-        
-        logits = g * logits_motif + (1.0 - g) * logits_global
-        
-        # Giữ lại các bộ đệm giả lập phục vụ cho khâu Logging/Visualization của Trainer
-        self._latest_top_k = torch.zeros(B, self.num_classes, dtype=torch.long, device=x.device)
-        
-        if return_selection:
-            return logits, self._latest_top_k, (None, None), self._latest_scores
-            
-        return logits
+        return self.forward_single_crop(x, return_selection, targets, landmarks, statuses)
 
     def get_aux_losses(self):
         if not hasattr(self, '_latest_scores') or self._latest_scores is None:
