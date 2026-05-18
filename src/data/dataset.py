@@ -80,11 +80,31 @@ class FER2013(Dataset):
         image_np = self.images[index]
         
         image = Image.fromarray(image_np)
+        
+        # Lấy Landmark gốc
+        landmarks = self.landmarks[index].reshape(10, 2).copy()
+        
+        # 🟢 ANTI-OVERFITTING: Đưa Augmentation Lật ngang (Horizontal Flip) trở lại!
+        # Vì Landmark là điểm hình học, ta không thể để transforms.RandomHorizontalFlip tự làm
+        # Do đó, ta lật BẰNG TAY: Lật cả Ảnh, lật trục X của Landmark, và Hoán đổi Trái/Phải
+        import random
+        if hasattr(self, 'data_split_path') and 'train' in self.data_split_path and random.random() > 0.5:
+            image = image.transpose(Image.FLIP_LEFT_RIGHT)
+            
+            # Lật trục X (Ảnh 48x48 nên X_new = 48.0 - X_old)
+            landmarks[:, 0] = 48.0 - landmarks[:, 0]
+            
+            # Hoán đổi (Swap) các cặp điểm đối xứng Trái <-> Phải
+            # [2, 3]: Lông mày trái <-> phải
+            # [4, 5]: Mắt trái <-> phải
+            # [7, 8]: Mép miệng trái <-> phải
+            # (Trán [0], Ấn đường [1], Mũi [6], Cằm [9] nằm trục giữa -> không đổi)
+            landmarks[[2, 3, 4, 5, 7, 8], :] = landmarks[[3, 2, 5, 4, 8, 7], :]
 
         if self.transform is not None:
             image = self.transform(image)
 
-        landmarks_tensor = torch.tensor(self.landmarks[index].reshape(10, 2), dtype=torch.float32)
+        landmarks_tensor = torch.tensor(landmarks, dtype=torch.float32)
         status_tensor = torch.tensor(self.statuses[index], dtype=torch.float32)
         return image, label, landmarks_tensor, status_tensor
     
