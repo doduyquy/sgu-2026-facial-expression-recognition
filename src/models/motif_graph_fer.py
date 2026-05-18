@@ -499,13 +499,13 @@ class MotifGraphModel(nn.Module):
         
         return l_intra + 1.0 * l_inter
 
-    def _extract_deformable_subgraphs(self, feat_map, H, W, node_feats, landmarks_48, statuses):
-        B, C_feat, _, _ = feat_map.shape
+    def _extract_deformable_subgraphs(self, raw_feat_map, gnn_feat_map, H, W, node_feats, landmarks_48, statuses):
+        B, C_feat, _, _ = raw_feat_map.shape
         num_cands = 10 # BỘ 10 ĐIỂM VÀNG
         
         # Tọa độ neo sinh học mặc định trên lưới 12x12 (dùng khi failed), tự động co giãn theo H, W thực tế
-        base_y = torch.tensor([1, 3, 2, 2, 4, 4, 6, 9, 9, 11], device=feat_map.device, dtype=torch.float) * (H / 12.0)
-        base_x = torch.tensor([5, 5, 3, 7, 3, 7, 5, 3, 7, 5], device=feat_map.device, dtype=torch.float) * (W / 12.0)
+        base_y = torch.tensor([1, 3, 2, 2, 4, 4, 6, 9, 9, 11], device=raw_feat_map.device, dtype=torch.float) * (H / 12.0)
+        base_x = torch.tensor([5, 5, 3, 7, 3, 7, 5, 3, 7, 5], device=raw_feat_map.device, dtype=torch.float) * (W / 12.0)
         default_centers_y = torch.clamp(base_y.long(), 0, H - 1).unsqueeze(0).expand(B, -1)
         default_centers_x = torch.clamp(base_x.long(), 0, W - 1).unsqueeze(0).expand(B, -1)
 
@@ -535,8 +535,8 @@ class MotifGraphModel(nn.Module):
             csv_centers_y_long = torch.clamp(csv_centers_y_float.long(), 0, H - 1)
             
             if statuses is not None:
-                mask_success_float = statuses.view(B, 1).to(feat_map.device)
-                mask_success_long  = statuses.view(B, 1).long().to(feat_map.device)
+                mask_success_float = statuses.view(B, 1).to(raw_feat_map.device)
+                mask_success_long  = statuses.view(B, 1).long().to(raw_feat_map.device)
                 
                 # gather dùng bản LONG (an toàn index)
                 centers_x = csv_centers_x_long * mask_success_long + default_centers_x * (1 - mask_success_long)
@@ -560,7 +560,9 @@ class MotifGraphModel(nn.Module):
         center_feats = torch.gather(node_feats, 1, center_indices_expanded) # (B, 10, 128)
         
         # 3. Global-Guided Offsets
-        global_feat = feat_map.mean(dim=(2, 3)).unsqueeze(1).expand(-1, num_cands, -1) 
+        # 3. Global-Guided Offsets
+        # ĐẠI PHẪU DECOUPLING: Dùng GNN Feat Map để chỉ đường (vì nó hiểu bối cảnh toàn cục)
+        global_feat = gnn_feat_map.mean(dim=(2, 3)).unsqueeze(1).expand(-1, num_cands, -1) 
         
         # 🟢 ANTI-OVERFITTING: Chặn đường tắt (Shortcut) học vẹt của mạng!
         # Ép offset_predictor phải phân tích tọa độ cục bộ (center_feats) thay vì chỉ nhìn lướt 
@@ -582,11 +584,11 @@ class MotifGraphModel(nn.Module):
         
         # 4. Tính toán Lưới lấy mẫu (Sampling Grid)
         rel_y, rel_x = torch.meshgrid(torch.linspace(-1.0, 1.0, 4), torch.linspace(-1.0, 1.0, 4), indexing='ij') 
-        rel_grid = torch.stack([rel_x, rel_y], dim=-1).to(feat_map.device).view(1, 1, 16, 2) 
+        rel_grid = torch.stack([rel_x, rel_y], dim=-1).to(raw_feat_map.device).view(1, 1, 16, 2) 
         
         # Multi-Shape Graph Sampling
-        scales_x = torch.tensor([1.0, 1.0, 1.2, 1.2, 1.2, 1.2, 0.8, 1.0, 1.0, 0.8], device=feat_map.device, dtype=torch.float32)
-        scales_y = torch.tensor([1.0, 1.0, 0.8, 0.8, 0.8, 0.8, 1.2, 1.0, 1.0, 1.2], device=feat_map.device, dtype=torch.float32)
+        scales_x = torch.tensor([1.0, 1.0, 1.2, 1.2, 1.2, 1.2, 0.8, 1.0, 1.0, 0.8], device=raw_feat_map.device, dtype=torch.float32)
+        scales_y = torch.tensor([1.0, 1.0, 0.8, 0.8, 0.8, 0.8, 1.2, 1.0, 1.0, 1.2], device=raw_feat_map.device, dtype=torch.float32)
         scales = torch.stack([scales_x, scales_y], dim=-1).view(1, num_cands, 1, 2)
         
         # ĐẠI PHẪU: Dùng centers_x_float (KHÔNG CLAMP) để grid_sample nhận tọa độ thực
@@ -612,7 +614,8 @@ class MotifGraphModel(nn.Module):
         # (padding_mode='zeros' là default của F.grid_sample)
         sampling_grid = sampling_grid.view(B, num_cands * 16, 1, 2)
         
-        sampled_feats = F.grid_sample(feat_map, sampling_grid, align_corners=True)
+        # ĐẠI PHẪU DECOUPLING: Lấy mẫu từ RAW CNN Feature Map để giữ chi tiết vi biểu cảm!
+        sampled_feats = F.grid_sample(raw_feat_map, sampling_grid, align_corners=True)
         sampled_feats = sampled_feats.view(B, C_feat, num_cands, 16).permute(0, 2, 3, 1) 
         
         # Update ma trận kề cho 10 điểm
@@ -708,12 +711,20 @@ class MotifGraphModel(nn.Module):
             node_feats = gnn(node_feats, adj)
         node_feats = torch.nan_to_num(node_feats, nan=0.0, posinf=1.0, neginf=-1.0)
         
-        # ĐẠI PHẪU KIẾN TRÚC TỔNG THỂ:
-        # Bắt buộc Grid Sample phải lấy mẫu từ Đặc trưng Đồ thị (GNN Features) thay vì raw CNN features!
-        # Như vậy Motif Module mới có thể đối sánh trên không gian Semantic Context-Aware!
+        # ĐẠI PHẪU DECOUPLING (DEFORMABLE DETR STYLE):
+        # Tách bạch nhiệm vụ: 
+        # - Dùng gnn_feat_map (Laplacian smoothed, hiểu ngữ cảnh) để chỉ đường (Navigation/Offsets).
+        # - Dùng feat_map (RAW CNN, sắc nét) để cắt Subgraphs (Feature Extraction) giữ vi biểu cảm!
         gnn_feat_map = node_feats.view(B, H, W, self.feat_dim).permute(0, 3, 1, 2).contiguous()
 
-        candidates, cand_adjs, centers = self._extract_deformable_subgraphs(gnn_feat_map, H, W, node_feats, landmarks, statuses)
+        candidates, cand_adjs, centers = self._extract_deformable_subgraphs(
+            raw_feat_map=feat_map, 
+            gnn_feat_map=gnn_feat_map, 
+            H=H, W=W, 
+            node_feats=node_feats, 
+            landmarks_48=landmarks, 
+            statuses=statuses
+        )
         num_cands = candidates.shape[1]
         
         # Advanced Motif Module Forward
