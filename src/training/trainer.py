@@ -160,9 +160,9 @@ class Trainer:
         l_mot = aux_losses.get("logits_motif", None)
         if l_glob is not None and l_mot is not None:
             # SỬA LỖI CRASH HỆ THỐNG: Đã xóa bóng ma MixUp (NameError)
-            # DGS giờ đây chỉ dùng CrossEntropy thông thường với hệ số nhỏ (0.1)
-            loss = loss + 0.1 * self.criterion(l_glob, labels)
-            loss = loss + 0.1 * self.criterion(l_mot, labels)
+            # DGS giờ đây chỉ dùng CrossEntropy thông thường với hệ số tối thiểu (0.05)
+            loss = loss + 0.05 * self.criterion(l_glob, labels)
+            loss = loss + 0.05 * self.criterion(l_mot, labels)
                 
         return loss, scn_logs
 

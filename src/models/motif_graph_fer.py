@@ -468,31 +468,6 @@ class MotifGraphModel(nn.Module):
 
         # FIX 2 CRITICAL: Đã xóa self.proj_node_with_coords theo yêu cầu phẫu thuật
         # vì chúng ta không còn dùng tọa độ tuyệt đối nữa!
-        # Khởi tạo Motif Consistency Loss
-        self.motif_consistency_loss = MotifConsistencyLoss(
-            num_classes=self.num_classes,
-            motifs_per_class=self.motifs_per_class,
-            tau=self.temperature
-        )
-
-    def compute_motif_diversity_loss(self):
-        # Point 1: Replace motif_bank with motif_module
-        m = self.motif_module.motifs 
-        C, M, N, D = m.shape
-        m_flat = m.view(C, M, -1) 
-        m_flat = F.normalize(m_flat, dim=-1)
-        
-        sim_intra = torch.matmul(m_flat, m_flat.transpose(1, 2))
-        eye = torch.eye(M, device=m.device).unsqueeze(0)
-        l_intra = (torch.abs(sim_intra) * (1 - eye)).mean()
-        
-        class_centers = m_flat.mean(dim=1) 
-        class_centers = F.normalize(class_centers, dim=-1)
-        sim_inter = torch.matmul(class_centers, class_centers.transpose(0, 1))
-        eye_c = torch.eye(C, device=m.device)
-        l_inter = (sim_inter * (1 - eye_c)).mean()
-        
-        return l_intra + 1.0 * l_inter
 
     def _extract_deformable_subgraphs(self, raw_feat_map, gnn_feat_map, H, W, node_feats, landmarks_48, statuses):
         B, C_feat, _, _ = raw_feat_map.shape
@@ -830,9 +805,6 @@ class MotifGraphModel(nn.Module):
         if not hasattr(self, '_latest_scores') or self._latest_scores is None:
             return {}
             
-        # 1. Motif Diversity (Orthogonality)
-        l_div = self.motif_module.compute_diversity_loss()
-        
         # 2. Attention Entropy (Prevent collapse)
         # SỬA LỖI TOÁN HỌC (VI-BUG 1): Thêm dấu âm để Optimizer TỐI ĐA HÓA Entropy,
         # ép mô hình dàn đều Attention thay vì sụp đổ (collapse) vào 1 Node duy nhất!
@@ -842,26 +814,11 @@ class MotifGraphModel(nn.Module):
         l_off = torch.norm(getattr(self, '_latest_offsets', 0.0), p=2, dim=-1).mean()
         
         aux_dict = {
-            "motif_diversity": l_div,
             "attn_entropy": l_ent,
             "offset_reg": l_off,
             "logits_global": self._latest_logits_global, # Gửi cho Trainer tính DGS
             "logits_motif": self._latest_logits_motif    # Gửi cho Trainer tính DGS
         }
-        
-        # 4. Kích hoạt Motif Consistency Loss tại đây
-        if hasattr(self, '_latest_targets') and self._latest_targets is not None:
-            progress = getattr(self, 'training_progress', 1.0)
-            # Tạm tắt Motif Consistency trong Phase 1 (progress <= 0.065) vì Mixup trộn nhãn
-            if self.training and progress <= 0.005:  # BUG FIX: đồng bộ threshold với trainer.py Phase 1
-                l_motif_consist = torch.tensor(0.0, device=self._latest_scores.device)
-            else:
-                l_motif_consist = self.motif_consistency_loss(
-                    self._latest_scores, 
-                    self._latest_top_k, 
-                    self._latest_targets
-                )
-            aux_dict["motif_consistency"] = l_motif_consist
             
         return aux_dict
 
