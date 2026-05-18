@@ -1,0 +1,11 @@
+_base_: "convnext_tiny_mask_guided_region_attention_7462_sam_continue.yaml"
+
+model:
+  # CLIP zero-start ablation:
+  # region_tokens = learned_region_tokens + gamma * clip_region_tokens.
+  # Start with gamma=0 so the model initially behaves like learned-only tokens,
+  # but gamma remains learnable and can increase if CLIP helps validation.
+  use_clip_dictionary: true
+  use_learnable_clip_region_tokens: true
+  clip_region_gamma_init: 0.0
+  clip_region_gamma_learnable: true
