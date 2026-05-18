@@ -29,7 +29,7 @@ def build_transform(config, split="train") -> Compose: # train | val | test
             transforms.RandomApply([
                 transforms.Lambda(lambda x: x + torch.randn_like(x) * 0.03)  # Tăng noise lên 0.03
             ], p=0.3),
-            transforms.RandomErasing(p=0.3, scale=(0.02, 0.1), ratio=(0.5, 2.0), value=0), # Tăng p lên 0.3
+            transforms.RandomErasing(p=0.5, scale=(0.02, 0.1), ratio=(0.5, 2.0), value=0), # Tăng p lên 0.5
         ])
     elif split == "val":
         # FAST VALIDATION: No TenCrop during training phase to save RAM/Time

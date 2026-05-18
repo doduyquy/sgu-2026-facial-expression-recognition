@@ -561,7 +561,14 @@ class MotifGraphModel(nn.Module):
         
         # 3. Global-Guided Offsets
         global_feat = feat_map.mean(dim=(2, 3)).unsqueeze(1).expand(-1, num_cands, -1) 
-        combined_feats = torch.cat([center_feats, global_feat], dim=-1) 
+        
+        # 🟢 ANTI-OVERFITTING: Chặn đường tắt (Shortcut) học vẹt của mạng!
+        # Ép offset_predictor phải phân tích tọa độ cục bộ (center_feats) thay vì chỉ nhìn lướt 
+        # qua global_feat để nhận diện bức ảnh quen thuộc.
+        if self.training:
+            global_feat = F.dropout(global_feat, p=0.5, training=True)
+            
+        combined_feats = torch.cat([center_feats, global_feat], dim=-1)
         
         offsets = self.offset_predictor(combined_feats) * getattr(self, 'offset_amplitude', 0.2)
         # SỬA LỖI: Bỏ .detach() để đồ thị đạo hàm (Computational Graph) không bị đứt.
