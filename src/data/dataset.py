@@ -23,7 +23,9 @@ class FER2013(Dataset):
         self.landmarks = None
         self.lm_status = None
         if split == "train":
-            lm_path = os.path.join(os.path.dirname(__file__), "Data", f"landmarks_{split} (1).csv")
+            lm_path = "/kaggle/input/datasets/ltlttt/datalandmark/landmarks_train (1).csv"
+            if not os.path.exists(lm_path):
+                lm_path = os.path.join(os.path.dirname(__file__), "Data", f"landmarks_{split} (1).csv")
             if not os.path.exists(lm_path):
                 lm_path = os.path.join(data_path, f"landmarks_{split}.csv")
             if os.path.exists(lm_path):

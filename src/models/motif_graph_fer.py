@@ -462,12 +462,9 @@ class MotifGraphModel(nn.Module):
         return sampled_feats, adj, centers_coords
 
     def forward(self, x, return_selection=False, targets=None, landmarks=None, valid_lms=None):
-        if targets is not None:
-            self._latest_targets = targets
-        if landmarks is not None:
-            self._latest_true_landmarks = landmarks
-        if valid_lms is not None:
-            self._latest_valid_lms = valid_lms
+        self._latest_targets = targets
+        self._latest_true_landmarks = landmarks
+        self._latest_valid_lms = valid_lms
             
         # Handle TenCrop input: (B, 10, C, H, W)
         if x.dim() == 5:
