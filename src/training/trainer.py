@@ -1,5 +1,6 @@
 import os
 import torch
+import math
 import numpy as np 
 import torchvision.transforms.functional as TF
 import torch.nn.functional as F
@@ -227,16 +228,16 @@ class Trainer:
             # Compose simplified loss: classification
             loss = cls_loss
             
-            # Aggregate ALL auxiliary losses automatically with Dynamic Bounding (<30%) (Problem 4)
+            # Aggregate ALL auxiliary losses automatically with Soft Bounding (Smooth Decay 0.3 -> 0.15)
             total_aux = torch.tensor(0.0, device=self.device)
             for k, v in aux_losses.items():
                 w = self.config.get('training', {}).get(f'{k}_weight', 0.1)
                 total_aux = total_aux + float(w) * v
                 
-            if total_aux > 0.3 * cls_loss.detach():
-                total_aux = total_aux * (0.3 * cls_loss.detach() / total_aux.detach())
-                
-            loss = cls_loss + total_aux
+            progress = getattr(self, '_current_epoch', 0) / max(getattr(self, 'epochs', 100) - 1, 1)
+            lam_aux = 0.15 + 0.15 * (1.0 + math.cos(math.pi * progress)) / 2.0
+            
+            loss = cls_loss + lam_aux * total_aux
             loss.backward()
             try:
                 # gradient clipping to stabilize training when combining SCN and landmark auxes
@@ -365,7 +366,7 @@ class Trainer:
                         param.requires_grad = False
 
             elif ep < 20:
-                self._runtime_use_scn = True
+                self._runtime_use_scn = False
                 self._runtime_use_mixup = False
                 self._runtime_phase = 2
                 if hasattr(self.model, 'set_training_phase'):
@@ -378,7 +379,7 @@ class Trainer:
                         param.requires_grad = False
 
             elif ep < 35:
-                self._runtime_use_scn = True
+                self._runtime_use_scn = False
                 self._runtime_use_mixup = False
                 self._runtime_phase = 3
                 if hasattr(self.model, 'set_training_phase'):
@@ -391,7 +392,7 @@ class Trainer:
                         param.requires_grad = False
 
             else:
-                self._runtime_use_scn = True
+                self._runtime_use_scn = False
                 self._runtime_use_mixup = False
                 self._runtime_phase = 4
                 if hasattr(self.model, 'set_training_phase'):

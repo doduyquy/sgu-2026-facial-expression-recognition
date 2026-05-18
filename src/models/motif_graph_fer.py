@@ -285,6 +285,11 @@ class GraphMotifModule(nn.Module):
         # Fixed robust weighting for FER2013 (Problem 2)
         S = 0.8 * node_sim_agg + 0.2 * s_struct
         
+        # [VŨ KHÍ MỚI BỔ SUNG]: Motif Dropout chuẩn Toán học
+        if self.training:
+            drop_mask = torch.rand(B, L, M, device=S.device) < 0.15
+            S = S.masked_fill(drop_mask, -1e9)
+        
         # 6. Smooth Selection via logsumexp
         logits = torch.logsumexp(S / tau.clamp(min=1e-3), dim=-1)
         
@@ -742,8 +747,8 @@ class MotifGraphModel(nn.Module):
         if hasattr(self, '_latest_true_landmarks') and self._latest_true_landmarks is not None and hasattr(self, '_latest_sampling_grid'):
             phase = getattr(self, 'training_phase', 3)
             cur_ep = getattr(self, 'current_epoch', 0)
-            if self.training and cur_ep < 35:
-                # Không nên mở Landmark KD quá sớm ở epoch < 35
+            if self.training and cur_ep < 10:
+                # Không nên mở Landmark KD quá sớm ở epoch < 10
                 l_soft = torch.tensor(0.0, device=self._latest_scores.device)
             else:
                 l_soft = self.soft_landmark_loss(self._latest_sampling_grid, self._latest_true_landmarks, getattr(self, '_latest_valid_lms', None), cur_ep)
