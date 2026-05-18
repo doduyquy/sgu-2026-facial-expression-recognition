@@ -162,10 +162,12 @@ class Trainer:
             if mixup_active:
                 loss_glob = lam * self._base_criterion(l_glob, labels_a) + (1.0 - lam) * self._base_criterion(l_glob, labels_b)
                 loss_mot = lam * self._base_criterion(l_mot, labels_a) + (1.0 - lam) * self._base_criterion(l_mot, labels_b)
-                loss = loss + 0.3 * loss_glob + 0.3 * loss_mot
+                loss = loss + 0.1 * loss_glob + 0.1 * loss_mot
             else:
-                loss = loss + 0.3 * self.criterion(l_glob, labels)
-                loss = loss + 0.3 * self.criterion(l_mot, labels)
+                # SỬA LỖI LOGIC (VI-BUG 4): Hạ trọng số DGS xuống 0.1 
+                # để ngăn gradient từ nhãn nhiễu lọt qua "cửa sau" làm hỏng Backbone
+                loss = loss + 0.1 * self.criterion(l_glob, labels)
+                loss = loss + 0.1 * self.criterion(l_mot, labels)
                 
         return loss, scn_logs
 

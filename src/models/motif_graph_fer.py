@@ -521,10 +521,11 @@ class MotifGraphModel(nn.Module):
             # NHÁNH 1: FLOAT (KHÔNG CLAMP) — giữ nguyên hình học thực cho F.grid_sample
             # grid_sample xử lý số âm tự nhiên = Zero Padding (trả về vector 0 = "không nhìn thấy")
             # Nếu ảnh đầu vào có kích thước W == 40 (TenCrop) và landmarks đã được chuyển đổi sang lưới 40x40
-            # thì không chia cho 48.0 nữa!
-            if W == 40 and hasattr(self, '_tencrop_landmarks_active') and self._tencrop_landmarks_active:
-                csv_centers_x_float = landmarks_48[:, :, 0]
-                csv_centers_y_float = landmarks_48[:, :, 1]
+            # SỬA LỖI LOGIC (VI-BUG 2): W ở đây là 10 hoặc 12 (kích thước feature map).
+            if hasattr(self, '_tencrop_landmarks_active') and self._tencrop_landmarks_active:
+                # Nếu đang TenCrop, landmark đầu vào có scale là 40.0
+                csv_centers_x_float = landmarks_48[:, :, 0] / 40.0 * W
+                csv_centers_y_float = landmarks_48[:, :, 1] / 40.0 * H
             else:
                 csv_centers_x_float = landmarks_48[:, :, 0] / 48.0 * W
                 csv_centers_y_float = landmarks_48[:, :, 1] / 48.0 * H
@@ -761,7 +762,8 @@ class MotifGraphModel(nn.Module):
         
         # GATED FUSION: Học cách kết hợp linh hoạt giữa đặc trưng cục bộ (Motif) và toàn cục (Global)
         gate_input = torch.cat([logits_motif, logits_global], dim=-1)
-        gate_input = self.gate_drop(gate_input) # Dropout để ép mô hình chú ý cả 2 nhánh
+        # SỬA LỖI LOGIC (VI-BUG 3): KHÔNG BAO GIỜ dùng Dropout lên Logits (Kết quả dự đoán)!
+        # Việc xóa một nửa logit ngẫu nhiên sẽ làm sai lệch hoàn toàn Gated Fusion.
         g = self.gate(gate_input) # Cổng ra quyết decision (B, num_classes)
         
         # Kết hợp có trọng số động
@@ -838,7 +840,9 @@ class MotifGraphModel(nn.Module):
         l_div = self.motif_module.compute_diversity_loss()
         
         # 2. Attention Entropy (Prevent collapse)
-        l_ent = getattr(self.motif_module, '_latest_attn_entropy', 0.0)
+        # SỬA LỖI TOÁN HỌC (VI-BUG 1): Thêm dấu âm để Optimizer TỐI ĐA HÓA Entropy,
+        # ép mô hình dàn đều Attention thay vì sụp đổ (collapse) vào 1 Node duy nhất!
+        l_ent = -1.0 * getattr(self.motif_module, '_latest_attn_entropy', 0.0)
         
         # 3. Offset Regularization
         l_off = torch.norm(getattr(self, '_latest_offsets', 0.0), p=2, dim=-1).mean()
