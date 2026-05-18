@@ -358,7 +358,10 @@ class GraphMotifModule(nn.Module):
         S = w_node * node_sim_agg + w_edge * s_struct
         
         # 6. Smooth Selection via logsumexp
-        logits = torch.logsumexp(S / tau, dim=-1)
+        # SỬA LỖI TOÁN HỌC CHÍ MẠNG: Phải nhân trả lại tau ở ngoài logsumexp 
+        # để đưa logits về đúng Scale gốc! Nếu không, Motif Logits sẽ to gấp 20 lần 
+        # và đè bẹp Global Logits, phá hỏng hoàn toàn Gated Fusion!
+        logits = tau * torch.logsumexp(S / tau, dim=-1)
         
         # 7. Entropy for stability
         entropy = -(node_attn * torch.log(node_attn + 1e-8)).sum(dim=-1).mean()
@@ -561,7 +564,9 @@ class MotifGraphModel(nn.Module):
         combined_feats = torch.cat([center_feats, global_feat], dim=-1) 
         
         offsets = self.offset_predictor(combined_feats) * getattr(self, 'offset_amplitude', 0.2)
-        self._latest_offsets = offsets.detach()  # BUG FIX: detach để tránh memory leak
+        # SỬA LỖI: Bỏ .detach() để đồ thị đạo hàm (Computational Graph) không bị đứt.
+        # Nếu detach(), offset_predictor sẽ bị "mù" và không nhận được Gradient từ hàm phạt l_off!
+        self._latest_offsets = offsets
         
         # ĐẠI PHẪU QUAN TRỌNG CHỐNG OVERFITTING:
         # Bỏ đi đoạn code ép offsets = 0 khi MediaPipe detect thành công!
