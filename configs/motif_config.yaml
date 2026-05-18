@@ -26,6 +26,8 @@ training:
   attn_entropy_weight: 0.01
   offset_reg_weight: 0.01
   landmark_soft_supervision_weight: 0.05
+  repulsion_loss_weight: 0.05
+  ortho_loss_weight: 0.05
   motif_tau: 0.2
   scheduler: "cosine"
   patience: 25
