@@ -1,0 +1,7 @@
+_base_: "convnext_tiny_mask_guided_region_attention_residual_7462_sam_frozen.yaml"
+
+model:
+  # Stronger residual correction than the 0.2 frozen run.
+  # Try this after 0.2 reached 75.06%; it gives the mask-guided branch more
+  # influence while keeping the ConvNeXt 74.62 source classifier fixed.
+  attention_logit_weight: 0.3

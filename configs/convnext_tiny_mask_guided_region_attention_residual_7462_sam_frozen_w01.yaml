@@ -1,0 +1,7 @@
+_base_: "convnext_tiny_mask_guided_region_attention_residual_7462_sam_frozen.yaml"
+
+model:
+  # Lighter residual correction than the 0.2 frozen run.
+  # Use this if 0.3 becomes noisy or if validation prefers a more conservative
+  # mask-guided correction.
+  attention_logit_weight: 0.1

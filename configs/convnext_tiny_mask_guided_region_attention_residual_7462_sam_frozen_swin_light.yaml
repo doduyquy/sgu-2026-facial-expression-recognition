@@ -1,0 +1,26 @@
+_base_: "convnext_tiny_mask_guided_region_attention_residual_7462_sam_frozen.yaml"
+
+model:
+  # Light Swin local refiner before flattening ConvNeXt local tokens.
+  # ConvNeXt 74.62 and its source classifier remain frozen; Swin only improves
+  # the mask-guided residual correction branch.
+  use_swin_local_refiner: true
+  swin_refiner_depth: 1
+  swin_window_size: 4
+  swin_refiner_heads: 4
+  swin_refiner_mlp_ratio: 1.5
+  swin_refiner_dropout: 0.1
+  swin_refiner_layer_scale_init: 0.0001
+
+  # Keep the current best residual balance.
+  source_logit_weight: 1.0
+  attention_logit_weight: 0.2
+
+training:
+  # Slightly lower than the no-Swin frozen residual run because Swin adds fresh
+  # trainable parameters before the region correction head.
+  lr: 0.00006
+  finetune_lr: 0.00006
+  visual_extractor_lr: 0.0
+  epochs: 25
+  patience: 7

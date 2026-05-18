@@ -1,0 +1,20 @@
+_base_: "convnext_tiny_mask_guided_region_attention_7462_sam_continue.yaml"
+
+model:
+  # Attention-only + light Swin local refiner.
+  # ConvNeXt 74.62 is still used as the visual backbone and the original source
+  # classifier is still not used:
+  # final_logits = attention_logits.
+  use_swin_local_refiner: true
+  swin_refiner_depth: 1
+  swin_window_size: 4
+  swin_refiner_heads: 4
+  swin_refiner_mlp_ratio: 1.5
+  swin_refiner_dropout: 0.1
+  swin_refiner_layer_scale_init: 0.0001
+
+training:
+  # Slightly gentler head LR because the Swin refiner adds fresh trainable
+  # parameters before the region attention head.
+  lr: 0.00006
+  finetune_lr: 0.00003
