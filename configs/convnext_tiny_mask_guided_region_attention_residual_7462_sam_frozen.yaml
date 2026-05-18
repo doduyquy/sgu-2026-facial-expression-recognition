@@ -12,7 +12,7 @@ model:
   logit_fusion: "sum"
   finetune_logit_fusion: "sum"
   source_logit_weight: 1.0
-  attention_logit_weight: 0.2
+  attention_logit_weight: 0.3
 
 training:
   # Do not update ConvNeXt features. This protects the source classifier from
