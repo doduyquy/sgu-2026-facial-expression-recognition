@@ -4,6 +4,7 @@ model:
   feat_dim: 128
   num_classes: 7
   motifs_per_class: 4
+  num_heads: 4             # Them num_heads cho kien truc DAT
   top_k: 10
   offset_amplitude: 0.2  # Giam bien do nhay de soi ky vung cuc bo tren luoi 12x12
   dropout: 0.5           # Tang len de chong Overfitting (truoc: 0.3)
@@ -25,7 +26,7 @@ training:
   lr: 0.0005
   weight_decay: 1e-3
   loss: "cross_entropy"
-  label_smoothing: 0.2     # Tang len (truoc: 0.15)
+  label_smoothing: 0.1     # Giam tu 0.2 xuong 0.1 theo yeu cau cua MS-DCMN
   class_weight_mode: "sqrt_inverse"
   attn_entropy_weight: 0.01
   offset_reg_weight: 0.1
