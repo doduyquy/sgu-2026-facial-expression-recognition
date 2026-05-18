@@ -151,9 +151,14 @@ class Trainer:
         
         # Aggregate scalar auxiliary losses automatically
         for k, v in aux_losses.items():
-            if k not in ["logits_global", "logits_motif"]:
+            if k not in ["logits_global", "logits_motif", "motif_diversity"]:
                 w = self.config.get('training', {}).get(f'{k}_weight', 0.1)
                 loss = loss + float(w) * v
+                
+        # [KÍCH HOẠT VŨ KHÍ 2]: Trọng số Diversity Loss
+        l_div = aux_losses.get("motif_diversity", None)
+        if l_div is not None:
+            loss = loss + 0.5 * l_div # Ép mạnh đa dạng hóa
                 
         # Dynamic Gate Supervision (DGS)
         l_glob = aux_losses.get("logits_global", None)
@@ -320,15 +325,22 @@ class Trainer:
                 except Exception:
                     pass
 
-            # Lịch trình SCN chuẩn xác: Bật SCN ngay sau giai đoạn Warmup (10 epochs)
-            if ep < self.scn_warmup_epochs:
+            # Áp dụng Lịch trình 3 Giai đoạn (Tuned)
+            if progress <= 0.05:
+                # Phase 1 (0-5%): SCN OFF, MixUp OFF - Để Motif Head học cách định hướng cơ bản
                 self._runtime_use_scn = False
                 self._runtime_use_mixup = False
                 self._runtime_phase = 1
-            else:
-                self._runtime_use_scn = True
+            elif progress <= 0.25:
+                # Phase 2 (5-25%): SCN BẬT NHẸ - Chuẩn bị tinh thần trước khi rã đông
+                self._runtime_use_scn = False
                 self._runtime_use_mixup = False
                 self._runtime_phase = 2
+            else:
+                # Phase 3 (25-100%): SCN BẬT TOÀN DIỆN - Trấn áp ResNet152
+                self._runtime_use_scn = True
+                self._runtime_use_mixup = False
+                self._runtime_phase = 3
 
 
             train_loss, train_acc = self.train_one_epoch()
