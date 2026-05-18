@@ -59,11 +59,11 @@ class MotifBackbone(nn.Module):
         self.layer3 = resnet.layer3 # 12x12
         self.layer4 = resnet.layer4 # 6x6, 512 channels
         
-        self.residual_masking = SpatialResidualMasking(512)
+        self.residual_masking = SpatialResidualMasking(768)
         
         # Reduce dimension to expected feat_dim (128)
         self.dim_reducer = nn.Sequential(
-            nn.Conv2d(512, feat_dim, kernel_size=1, bias=False),
+            nn.Conv2d(768, feat_dim, kernel_size=1, bias=False),
             nn.BatchNorm2d(feat_dim),
             nn.ReLU(inplace=True)
         )
@@ -121,10 +121,14 @@ class MotifBackbone(nn.Module):
 
         x = self.layer1(x)
         x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
+        x3 = self.layer3(x)
+        x4 = self.layer4(x3)
         
-        x = self.residual_masking(x)
+        # Downsample x3 để khớp không gian x4
+        x3_down = F.adaptive_avg_pool2d(x3, (6, 6))
+        x_combined = torch.cat([x3_down, x4], dim=1) # (B, 768, 6, 6)
+        
+        x = self.residual_masking(x_combined)
         x = self.dim_reducer(x)
         return x
 

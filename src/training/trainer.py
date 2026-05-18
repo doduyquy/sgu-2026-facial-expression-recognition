@@ -4,6 +4,7 @@ import numpy as np
 import torchvision.transforms.functional as TF
 import torch.nn.functional as F
 from datetime import datetime
+from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from src.utils.logger_wandb import init_wandb, log_image_to_wandb, log_metrics
 
 
@@ -411,6 +412,8 @@ class Trainer:
             except Exception:
                 pass
             self.optimizer.step()
+            if hasattr(self, 'ema_model'):
+                self.ema_model.update_parameters(self.model)
 
             running_loss += loss.item() * images.size(0)
             _, preds = torch.max(logits, dim=1)
@@ -441,7 +444,8 @@ class Trainer:
 
 
     def validate(self):
-        self.model.eval()
+        eval_model = getattr(self, 'ema_model', self.model)
+        eval_model.eval()
 
         running_loss = 0.0
         corrects = 0
@@ -459,9 +463,9 @@ class Trainer:
                     pass
                 # Pass labels to forward for internal loss calculation
                 if hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
-                    outputs = self.model(images, targets=labels)
+                    outputs = eval_model(images, targets=labels)
                 else:
-                    outputs = self.model(images)
+                    outputs = eval_model(images)
                 
                 logits = self._extract_logits(outputs)
                 cls_loss = self.criterion(logits, labels)
@@ -532,6 +536,8 @@ class Trainer:
         all_val_loss = []
 
         print(f'\n--> Start training in total {self.epochs} epochs with {self.device} device. Start...\n')
+
+        self.ema_model = AveragedModel(self.model, multi_avg_fn=get_ema_multi_avg_fn(0.999))
 
         for ep in range(self.epochs):
             # expose current epoch for runtime gating (SCN warmup etc.)
@@ -628,8 +634,9 @@ class Trainer:
             # save checkpoint (tracking val_acc)
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
+                save_state_dict = self.ema_model.module.state_dict() if hasattr(self, 'ema_model') else self.model.state_dict()
                 torch.save({
-                    "model_state_dict": self.model.state_dict(),
+                    "model_state_dict": save_state_dict,
                     "optimizer_state_dict": self.optimizer.state_dict(),
                     "epoch": ep,
                     "val_acc": val_acc.item() if hasattr(val_acc, 'item') else val_acc,
