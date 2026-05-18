@@ -1,6 +1,5 @@
 import os
 import torch
-import math
 import numpy as np 
 import torchvision.transforms.functional as TF
 import torch.nn.functional as F
@@ -72,58 +71,25 @@ class Trainer:
         return {}
 
     def _scn_loss(self, logits, labels):
-        """
-        SCN-light:
-        - sample weighting theo confidence
-        - ranking loss (easy vs hard)
-        Returns: total_loss, logs_dict
-        """
-        # per-sample CE
-        ce = F.cross_entropy(logits, labels, reduction='none')  # (B,)
+        ce = F.cross_entropy(logits, labels, reduction='none')
 
         with torch.no_grad():
             probs = F.softmax(logits, dim=1)
-            conf = probs.gather(1, labels.unsqueeze(1)).squeeze(1)  # (B,)
-            # stronger focus on hard samples: square the (1 - conf) factor
-            weights = (1.0 - conf) ** 2
-            weights = weights.clamp(min=self.scn_min_weight)
+            conf = probs.gather(1, labels.unsqueeze(1)).squeeze(1)
+            
+            # SCN ĐÚNG: Trọng số tỷ lệ thuận với độ tự tin (Confidence-aware)
+            # Mẫu càng mập mờ (conf thấp), trọng số càng nhỏ để mô hình bỏ qua nó
+            weights = conf 
 
-        # main weighted CE term
         loss = (weights * ce).mean()
-
-        # ranking loss: use percentile split (e.g., 30% hardest) to be robust
-        sorted_conf, idx = torch.sort(conf)
-        B = logits.size(0)
-        # use a smaller percentile split and a minimum of 2 for stability on small batches
-        k = max(2, int(0.2 * B))
-        hard_idx = idx[:k]
-        easy_idx = idx[k:]
-        # safe computation in small batches: fallback to zero when empty
-        if hard_idx.numel() > 0:
-            hard_loss = ce[hard_idx].mean()
-        else:
-            hard_loss = torch.tensor(0.0, device=self.device)
-        if easy_idx.numel() > 0:
-            easy_loss = ce[easy_idx].mean()
-        else:
-            easy_loss = torch.tensor(0.0, device=self.device)
-        # margin to enforce separation
-        margin = float(getattr(self, 'scn_margin', 0.4))
-        # start ranking after SCN warmup (scale with config)
-        ranking_start = int(getattr(self, 'scn_warmup_epochs', 0))
-        # use >= so that a zero warmup enables ranking immediately
-        if getattr(self, '_current_epoch', 0) >= ranking_start:
-            ranking_loss = F.relu(easy_loss - hard_loss + margin)
-        else:
-            ranking_loss = torch.tensor(0.0, device=self.device)
-
-        # combine with alpha scaling
-        total_loss = (self.scn_alpha * loss) + (self.scn_rank_lambda * ranking_loss)
-
+        
+        # Bỏ hoàn toàn ranking_loss phức tạp đi, nó không hoạt động tốt trên batch nhỏ
+        total_loss = loss 
+        
         logs = {
             "scn_weight_mean": float(weights.mean().cpu().item()),
             "scn_conf_mean": float(conf.mean().cpu().item()),
-            "scn_rank_loss": float(ranking_loss.cpu().item()),
+            "scn_rank_loss": 0.0
         }
         return total_loss, logs
 
@@ -228,16 +194,16 @@ class Trainer:
             # Compose simplified loss: classification
             loss = cls_loss
             
-            # Aggregate ALL auxiliary losses automatically with Soft Bounding (Smooth Decay 0.3 -> 0.15)
+            # Aggregate ALL auxiliary losses automatically with Dynamic Bounding (<30%) (Problem 4)
             total_aux = torch.tensor(0.0, device=self.device)
             for k, v in aux_losses.items():
                 w = self.config.get('training', {}).get(f'{k}_weight', 0.1)
                 total_aux = total_aux + float(w) * v
                 
-            progress = getattr(self, '_current_epoch', 0) / max(getattr(self, 'epochs', 100) - 1, 1)
-            lam_aux = 0.15 + 0.15 * (1.0 + math.cos(math.pi * progress)) / 2.0
-            
-            loss = cls_loss + lam_aux * total_aux
+            if total_aux > 0.3 * cls_loss.detach():
+                total_aux = total_aux * (0.3 * cls_loss.detach() / total_aux.detach())
+                
+            loss = cls_loss + total_aux
             loss.backward()
             try:
                 # gradient clipping to stabilize training when combining SCN and landmark auxes
@@ -349,61 +315,20 @@ class Trainer:
                 except Exception:
                     pass
 
-            # apply 4-phase staged schedule based on epochs
-            # Phase 1: ep < 10 -> Train backbone, global branch. Freeze motif, offsets, quality scorer.
-            # Phase 2: ep 10..19 -> Mở offsets. Freeze motif bank, quality scorer.
-            # Phase 3: ep 20..34 -> Mở motif bank. Freeze quality scorer.
-            # Phase 4: ep 35+ -> Mở tất cả (kể cả quality scorer).
-            if ep < 10:
-                self._runtime_use_scn = False
-                self._runtime_use_mixup = False
-                self._runtime_phase = 1
-                if hasattr(self.model, 'set_training_phase'):
-                    self.model.set_training_phase(1)
+            # Giải pháp 1: Thay thế "Phase Hard-Freezing" bằng "Soft Learning Rate Scaling"
+            # Cho tất cả các module học ngay từ Epoch 0, không khóa/mở layer đột ngột
+            self._runtime_use_scn = False
+            self._runtime_use_mixup = False
+            self._runtime_phase = 4
+            if hasattr(self.model, 'set_training_phase'):
+                self.model.set_training_phase(4)
                 
-                for name, param in self.model.named_parameters():
-                    if 'motif_module' in name or 'offset_predictor' in name or 'fallback_predictor' in name or 'quality_scorer' in name:
-                        param.requires_grad = False
-
-            elif ep < 20:
-                self._runtime_use_scn = False
-                self._runtime_use_mixup = False
-                self._runtime_phase = 2
-                if hasattr(self.model, 'set_training_phase'):
-                    self.model.set_training_phase(2)
-
-                for name, param in self.model.named_parameters():
-                    if 'offset_predictor' in name or 'fallback_predictor' in name:
-                        param.requires_grad = True
-                    elif 'motif_module' in name or 'quality_scorer' in name:
-                        param.requires_grad = False
-
-            elif ep < 35:
-                self._runtime_use_scn = False
-                self._runtime_use_mixup = False
-                self._runtime_phase = 3
-                if hasattr(self.model, 'set_training_phase'):
-                    self.model.set_training_phase(3)
-
-                for name, param in self.model.named_parameters():
-                    if 'motif_module' in name or 'offset_predictor' in name or 'fallback_predictor' in name:
-                        param.requires_grad = True
-                    elif 'quality_scorer' in name:
-                        param.requires_grad = False
-
-            else:
-                self._runtime_use_scn = False
-                self._runtime_use_mixup = False
-                self._runtime_phase = 4
-                if hasattr(self.model, 'set_training_phase'):
-                    self.model.set_training_phase(4)
-
-                for param in self.model.parameters():
-                    param.requires_grad = True
+            for param in self.model.parameters():
+                param.requires_grad = True
 
             train_loss, train_acc = self.train_one_epoch()
             val_loss, val_acc = self.validate()
-
+    
             all_train_loss.append(train_loss)
             all_val_loss.append(val_loss)
 

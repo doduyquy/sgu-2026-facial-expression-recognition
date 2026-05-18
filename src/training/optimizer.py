@@ -3,27 +3,30 @@ import torch.optim.lr_scheduler as lr_scheduler
 
 def build_optimizer(model, config):
     train_cfg = config.get('training', {})
-    opt_name = train_cfg.get('optimizer', 'adam').lower()
+    opt_name = train_cfg.get('optimizer', 'adamw').lower()
     lr = float(train_cfg.get('lr', train_cfg.get('learning_rate', 0.001)))
     weight_decay = float(train_cfg.get('weight_decay', 0.0001))
 
-    # Differential learning rate for transfer learning
     backbone_params = []
-    head_params = []
+    graph_motif_params = []
+    heavy_experimental_params = [] # Các khối dễ gây bất ổn
+    
     for name, param in model.named_parameters():
-        # Backbone ResNet layers get standard LR. New heads/reducers get 10x LR.
-        if 'backbone' in name and 'dim_reducer' not in name and 'final_cbam' not in name:
+        if 'backbone' in name and 'dim_reducer' not in name:
             backbone_params.append(param)
+        elif 'motif_module' in name or 'gnn_layers' in name:
+            graph_motif_params.append(param) # Module nghiên cứu chính
         else:
-            head_params.append(param)
+            heavy_experimental_params.append(param) # quality_scorer, offset_predictor...
             
     param_groups = [
-        {'params': backbone_params, 'lr': lr},
-        {'params': head_params, 'lr': lr * 2.5}
+        {'params': backbone_params, 'lr': lr * 0.1},       # Tốc độ chậm để giữ pre-train
+        {'params': graph_motif_params, 'lr': lr},          # Tốc độ chuẩn
+        {'params': heavy_experimental_params, 'lr': lr * 0.01} # Cho học cực kỳ chậm để tránh sốc
     ]
 
-    if opt_name == 'adam':
-        return optim.Adam(param_groups, lr=lr, weight_decay=weight_decay)
+    if opt_name in ['adamw', 'adam']:
+        return optim.AdamW(param_groups, lr=lr, weight_decay=weight_decay)
     elif opt_name == 'sgd':
         gamma = train_cfg.get('gamma', 0.9) 
         return optim.SGD(param_groups, lr=lr, weight_decay=weight_decay, momentum=gamma)

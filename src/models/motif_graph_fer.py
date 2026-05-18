@@ -285,11 +285,6 @@ class GraphMotifModule(nn.Module):
         # Fixed robust weighting for FER2013 (Problem 2)
         S = 0.8 * node_sim_agg + 0.2 * s_struct
         
-        # [VŨ KHÍ MỚI BỔ SUNG]: Motif Dropout chuẩn Toán học
-        if self.training:
-            drop_mask = torch.rand(B, L, M, device=S.device) < 0.15
-            S = S.masked_fill(drop_mask, -1e9)
-        
         # 6. Smooth Selection via logsumexp
         logits = torch.logsumexp(S / tau.clamp(min=1e-3), dim=-1)
         
@@ -493,11 +488,11 @@ class MotifGraphModel(nn.Module):
         rel_grid_9 = torch.stack([rel_x.flatten(), rel_y.flatten()], dim=-1)
         rel_grid_10 = torch.cat([rel_grid_9, torch.tensor([[0.0, 0.0]])], dim=0).to(feat_map.device).view(1, 1, 10, 2)
         
-        sampling_grid = centers_grid + offsets + rel_grid_10
-        sampling_grid = torch.clamp(sampling_grid, -1.2, 1.2)
+        fixed_grid = centers_grid + rel_grid_10
+        pred_grid = fixed_grid + offsets
         
-        # Lưu sampling grid 10 nodes để tính Repulsion Loss & Landmark KD
-        self._latest_sampling_grid = sampling_grid.view(B, num_cands * 10, 2)
+        sampling_grid = v_mask * pred_grid + (1.0 - v_mask) * fixed_grid
+        sampling_grid = torch.clamp(sampling_grid, -1.2, 1.2)
         
         flat_grid = sampling_grid.view(B, num_cands * 10, 1, 2)
         sampled_feats = F.grid_sample(feat_map, flat_grid, align_corners=True)
@@ -509,6 +504,9 @@ class MotifGraphModel(nn.Module):
         
         # Tạo dummy coords cho 6 semantic tokens (để tính A_hybrid)
         dummy_coords = torch.cat([sampling_grid, torch.zeros(B, num_cands, 6, 2, device=feat_map.device)], dim=2)
+        
+        # Lưu sampling grid 16 nodes để tính Landmark KD (đảm bảo đủ 16 nodes cho loss nhận diện)
+        self._latest_sampling_grid = dummy_coords.view(B, num_cands * 16, 2)
         
         # 3. Hybrid Topology
         A_hybrid = self._compute_hybrid_adjacency(dummy_coords, candidates)
@@ -562,7 +560,10 @@ class MotifGraphModel(nn.Module):
             for gnn in self.gnn_layers:
                 node_feats = gnn(node_feats, adj)
             
-        candidates, cand_adjs, centers = self._extract_deformable_subgraphs(feat_map, H, W, node_feats)
+        B_n, _, C_n = node_feats.shape
+        gnn_feat_map = node_feats.transpose(1, 2).view(B_n, C_n, H, W)
+        
+        candidates, cand_adjs, centers = self._extract_deformable_subgraphs(gnn_feat_map, H, W, node_feats)
         num_cands = candidates.shape[1]
         
         # Advanced Motif Module Forward
@@ -581,44 +582,17 @@ class MotifGraphModel(nn.Module):
         # 4. Aggregate across all candidate subgraphs
         logits_cand = logits_cand.view(B, num_cands, self.num_classes)
         
-        # Point 5: Candidate-level attention using MLP Quality Scorer
-        max_prob, _ = F.softmax(logits_cand.detach(), dim=-1).max(dim=-1, keepdim=True) # (B, num_cands, 1) - DETACHED (Problem 3)
+        # 2. Lấy logits từ nhánh Motif (Graph)
+        logits_motif = torch.max(logits_cand, dim=1)[0]
         
-        A = flat_adjs.view(B, num_cands, 16, 16)
-        topo_entropy = -(A * torch.log(A + 1e-8)).sum(dim=(2, 3)) / 16.0
-        topo_entropy = topo_entropy.unsqueeze(-1) # (B, num_cands, 1)
-        
-        topo_strength = A.mean(dim=(2, 3)).unsqueeze(-1) # (B, num_cands, 1)
-        
-        ana_align = torch.zeros(B, num_cands, 1, device=x.device)
-        if getattr(self, '_latest_true_landmarks', None) is not None and getattr(self, '_latest_sampling_grid', None) is not None:
-            grid_10 = self._latest_sampling_grid.view(B, num_cands, 10, 2)
-            lms_norm = (self._latest_true_landmarks / 47.0) * 2.0 - 1.0
-            dist = torch.norm(grid_10 - lms_norm.unsqueeze(1), p=2, dim=-1).mean(dim=-1, keepdim=True)
-            ana_align = torch.exp(-dist)
-            if getattr(self, '_latest_valid_lms', None) is not None:
-                ana_align = ana_align * self._latest_valid_lms.view(B, 1, 1)
-                
-        pooled_feat = flat_cands.view(B, num_cands, 16, self.feat_dim).mean(dim=2) # (B, num_cands, C)
-        
-        cand_feats = torch.cat([max_prob, topo_entropy, ana_align, topo_strength, pooled_feat], dim=-1)
-        cand_scores = self.quality_scorer(cand_feats).squeeze(-1) # (B, num_cands)
-        
-        if self.training and phase < 4:
-            attn_weights = torch.ones(B, num_cands, 1, device=x.device) / num_cands
-        else:
-            attn_weights = F.softmax(cand_scores / 1.0, dim=1).unsqueeze(-1)
-        
-        logits_motif = torch.sum(logits_cand * attn_weights, dim=1)
-        logits_motif = logits_motif * self.logit_scale 
-        
-        # Final combined logits
-        logits = logits_motif + torch.sigmoid(self.alpha) * logits_global
+        # 3. Dung hợp bằng tham số learnable alpha (sigmoid để giới hạn 0-1)
+        alpha_w = torch.sigmoid(self.alpha)
+        logits = alpha_w * logits_motif + (1.0 - alpha_w) * logits_global
         
         # Point 2: Reshape for MotifConsistencyLoss (B, num_cands, num_classes * motifs_per_class)
         self._latest_scores = motif_scores_cand.view(B, num_cands, -1)
         # Relevance for Top-K visualization
-        cand_relevance = cand_scores
+        cand_relevance = self._latest_scores.max(dim=-1)[0]
         k = min(self.top_k, cand_relevance.size(1))
         if k > 0:
             _, top_k_idx = torch.topk(cand_relevance, k=k, dim=1)
@@ -688,70 +662,37 @@ class MotifGraphModel(nn.Module):
         if not hasattr(self, '_latest_scores') or self._latest_scores is None:
             return {}
             
-        # 1. Motif Diversity (Orthogonality)
+        # 1. Motif Diversity (Orthogonality) - Giữ lại theo chuẩn SOTA
         l_div = self.motif_module.compute_diversity_loss()
         
-        # 2. Attention Entropy (Prevent collapse)
-        l_ent = getattr(self.motif_module, '_latest_attn_entropy', 0.0)
-        
-        l_off = torch.norm(getattr(self, '_latest_offsets', 0.0), p=2, dim=-1).mean()
-        
-        # Repulsion Loss (VERSION V1)
+        # 2. Các loss phụ khác bị tắt hoàn toàn để tránh xung đột mục tiêu (Objective Conflict)
+        l_ent = torch.tensor(0.0, device=self._latest_scores.device)
+        l_off = torch.tensor(0.0, device=self._latest_scores.device)
         l_rep = torch.tensor(0.0, device=self._latest_scores.device)
-        if hasattr(self, '_latest_sampling_grid') and self._latest_sampling_grid is not None:
-            B = self._latest_sampling_grid.shape[0]
-            # _latest_sampling_grid: (B, num_cands * 10, 2)
-            cands_grid = self._latest_sampling_grid.view(B, 4, 10, 2)
-            centers = cands_grid.mean(dim=2) # (B, 4, 2)
-            delta_min = 0.4
-            for i in range(3):
-                for j in range(i+1, 4):
-                    dist = torch.norm(centers[:, i, :] - centers[:, j, :], p=2, dim=-1)
-                    l_rep = l_rep + torch.relu(delta_min - dist).mean()
-            l_rep = l_rep / 6.0
-            
-        # Attention Orthogonality Loss (STAGE 2 & 3)
         l_ortho = torch.tensor(0.0, device=self._latest_scores.device)
-        if hasattr(self, '_latest_scores') and self._latest_scores is not None:
-            # _latest_scores: (B, 4, 56)
-            M = F.softmax(self._latest_scores, dim=-1)
-            for i in range(3):
-                for j in range(i+1, 4):
-                    sim = (M[:, i, :] * M[:, j, :]).sum(dim=-1)
-                    l_ortho = l_ortho + sim.mean()
-            l_ortho = l_ortho / 6.0
         
         aux_dict = {
             "motif_diversity": l_div,
             "attn_entropy": l_ent,
             "offset_reg": l_off,
             "repulsion_loss": l_rep,
-            "ortho_loss": l_ortho
+            "ortho_loss": l_ortho,
+            "landmark_soft_supervision": torch.tensor(0.0, device=self._latest_scores.device)
         }
         
-        # 4. Kích hoạt Motif Consistency Loss tại đây
+        # 3. Kích hoạt Motif Consistency Loss (InfoNCE style) - Giữ lại theo chuẩn SOTA
         if hasattr(self, '_latest_targets') and self._latest_targets is not None:
-            phase = getattr(self, 'training_phase', 3)
-            # Tạm tắt Motif Consistency trong Phase 1 và 2 (phase < 3)
-            if self.training and phase < 3:
-                l_motif_consist = torch.tensor(0.0, device=self._latest_scores.device)
-            else:
-                l_motif_consist = self.motif_consistency_loss(
-                    self._latest_scores, 
-                    self._latest_top_k, 
-                    self._latest_targets
-                )
+            l_motif_consist = self.motif_consistency_loss(
+                self._latest_scores, 
+                self._latest_top_k, 
+                self._latest_targets
+            )
             aux_dict["motif_consistency"] = l_motif_consist
             
-        # 5. Kích hoạt Soft Landmark Supervision Loss (Teacher KD) tại đây
+        # 4. Kích hoạt Soft Landmark Supervision Loss (Teacher KD) tại đây
         if hasattr(self, '_latest_true_landmarks') and self._latest_true_landmarks is not None and hasattr(self, '_latest_sampling_grid'):
-            phase = getattr(self, 'training_phase', 3)
             cur_ep = getattr(self, 'current_epoch', 0)
-            if self.training and cur_ep < 10:
-                # Không nên mở Landmark KD quá sớm ở epoch < 10
-                l_soft = torch.tensor(0.0, device=self._latest_scores.device)
-            else:
-                l_soft = self.soft_landmark_loss(self._latest_sampling_grid, self._latest_true_landmarks, getattr(self, '_latest_valid_lms', None), cur_ep)
+            l_soft = self.soft_landmark_loss(self._latest_sampling_grid, self._latest_true_landmarks, getattr(self, '_latest_valid_lms', None), cur_ep)
             aux_dict["landmark_soft_supervision"] = l_soft
             
         return aux_dict

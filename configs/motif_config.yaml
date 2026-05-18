@@ -32,7 +32,7 @@ training:
   scheduler: "cosine"
   patience: 25
   factor: 0.5
-  use_scn: true
+  use_scn: false
   scn_warmup_epochs: 10
   scn_alpha: 1.0
   scn_rank_lambda: 0.5
