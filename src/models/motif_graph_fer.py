@@ -466,12 +466,8 @@ class MotifGraphModel(nn.Module):
             nn.Linear(32, 1)
         )
 
-        # FIX 2 CRITICAL: Khoi tao san trong __init__ thay vi lazy trong forward()
-        # Ly do: optimizer duoc build TRUOC khi model.forward() chay lan dau
-        # Neu tao layer trong forward() -> optimizer khong biet -> weights KHONG BAO GIO duoc update
-        # -> Random weights qua toan bo training -> features explode -> NaN loss
-        self.proj_node_with_coords = nn.Linear(self.feat_dim + 2, self.feat_dim)
-
+        # FIX 2 CRITICAL: Đã xóa self.proj_node_with_coords theo yêu cầu phẫu thuật
+        # vì chúng ta không còn dùng tọa độ tuyệt đối nữa!
         # Khởi tạo Motif Consistency Loss
         self.motif_consistency_loss = MotifConsistencyLoss(
             num_classes=self.num_classes,
@@ -701,10 +697,9 @@ class MotifGraphModel(nn.Module):
         logits_global = self.global_fc(self.global_pool(x4))
         self._latest_logits_global = logits_global
 
-        # 4. Motif Branch - proj_node_with_coords da duoc dang ky trong __init__
-        # nen optimizer biet va cap nhat no -> tranh NaN do random weights
-        nodes_with_coords, adj = self._get_global_graph(feat_map)
-        node_feats = self.proj_node_with_coords(nodes_with_coords)  # (B, 144, feat_dim)
+        # 4. Motif Branch 
+        # PHẪU THUẬT: Nhận trực tiếp node_feats từ đồ thị, không đi qua projection nữa
+        node_feats, adj = self._get_global_graph(feat_map)
         node_feats = torch.nan_to_num(node_feats, nan=0.0, posinf=1.0, neginf=-1.0)
 
         for gnn in self.gnn_layers:
@@ -789,10 +784,9 @@ class MotifGraphModel(nn.Module):
         B, C, H, W = feat_map.shape
         N = H * W
         
-        y, x = torch.meshgrid(torch.linspace(0, 1, H), torch.linspace(0, 1, W), indexing='ij')
-        coords = torch.stack([x, y], dim=-1).to(feat_map.device).view(1, N, 2).expand(B, -1, -1)
+        # XÓA BỎ LƯỚI TỌA ĐỘ (meshgrid) VÀ torch.cat
+        # Chỉ lấy đặc trưng nguyên thủy
         nodes = feat_map.permute(0, 2, 3, 1).reshape(B, N, C)
-        nodes_with_coords = torch.cat([nodes, coords], dim=-1)
         
         nodes_norm = F.normalize(nodes, dim=-1)
         sim = torch.matmul(nodes_norm, nodes_norm.transpose(1, 2))
@@ -803,7 +797,8 @@ class MotifGraphModel(nn.Module):
         adj = torch.zeros_like(sim)
         adj.scatter_(-1, topk_idx, topk_sim)
         
-        return nodes_with_coords, adj
+        # Trả về nodes (đã là 128 chiều, không dính dáng đến tọa độ)
+        return nodes, adj
 
     def get_landmark_outputs(self):
         return getattr(self, '_latest_scores', None), getattr(self, '_latest_top_k', None)
