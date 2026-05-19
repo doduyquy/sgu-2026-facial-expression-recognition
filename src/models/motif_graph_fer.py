@@ -265,7 +265,10 @@ class ArcMarginProduct(nn.Module):
         if label is None or not self.training:
             return cosine * self.s
             
-        sine = torch.sqrt(1.0 - torch.pow(cosine, 2)).clamp(0.0, 1.0)
+        # Clamp cosine to prevent NaN gradient when cosine approaches 1.0 or -1.0
+        cosine = cosine.clamp(-1.0 + 1e-7, 1.0 - 1e-7)
+        
+        sine = torch.sqrt(1.0 - torch.pow(cosine, 2))
         phi = cosine * self.cos_m - sine * self.sin_m
         if self.easy_margin:
             phi = torch.where(cosine > 0, phi, cosine)
@@ -562,6 +565,9 @@ class MotifGraphModel(nn.Module):
         # Perform grid sampling to extract subgraphs
         sampled_feats = F.grid_sample(feat_map, sampling_grid, align_corners=True)
         sampled_feats = sampled_feats.view(B, C_feat, num_cands, 16).permute(0, 2, 3, 1) 
+        
+        # Soft attention scaling to route gradients back to spatial_attention
+        sampled_feats = sampled_feats * topk_scores.unsqueeze(-1).unsqueeze(-1)
         
         adj = self.grid_adj.unsqueeze(0).unsqueeze(0).expand(B, num_cands, -1, -1)
         
