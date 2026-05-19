@@ -17,7 +17,28 @@ def _deep_update(base_dict, update_dict):
     return base_dict
 
 
+def _resolve_config_path(model):
+    """Resolve a config stem, yaml filename, or explicit path."""
+    raw_path = Path(str(model))
+    candidates = []
+
+    if raw_path.suffix in {".yaml", ".yml"}:
+        candidates.append(raw_path)
+        if not raw_path.is_absolute():
+            candidates.append(Path(CONFIG_DIR) / raw_path)
+    else:
+        candidates.append(Path(CONFIG_DIR) / f"{model}.yaml")
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+
+    tried = ", ".join(str(path) for path in candidates)
+    raise FileNotFoundError(f"Config '{model}' was not found. Tried: {tried}")
+
+
 def _load_yaml_with_base(config_path):
+    config_path = Path(config_path)
     with open(config_path, "r") as f:
         config = yaml.safe_load(f) or {}
 
@@ -25,8 +46,10 @@ def _load_yaml_with_base(config_path):
     if not base_name:
         return config
 
-    base_path = os.path.join(CONFIG_DIR, base_name)
-    if not os.path.exists(base_path):
+    base_path = config_path.parent / base_name
+    if not base_path.exists():
+        base_path = Path(CONFIG_DIR) / base_name
+    if not base_path.exists():
         raise FileNotFoundError(
             f"Base config '{base_name}' referenced by '{config_path}' was not found."
         )
@@ -46,7 +69,7 @@ def load_config(model='simple_cnn', env='kaggle') -> dict:
     Returns:
         dict: config (gồm base) đã ghi đè (nếu có) và các config env tương ứng
     """
-    model_config_path = os.path.join(CONFIG_DIR, f"{model}.yaml")
+    model_config_path = _resolve_config_path(model)
     env_config_path = os.path.join(CONFIG_DIR, "env.yaml")
     model_config = _load_yaml_with_base(model_config_path)
     with open(env_config_path, "r") as f:
