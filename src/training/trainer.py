@@ -325,17 +325,17 @@ class Trainer:
                     pass
 
             # 3-phase staged lambda schedule for Motif Graph model
-            if progress <= 0.2:
-                # Phase 1: Mixup active, SCN off, all Motif auxiliary weights off
-                self._runtime_motif_diversity_weight = 0.0
-                self._runtime_motif_consistency_weight = 0.0
-                self._runtime_attn_entropy_weight = 0.0
-                self._runtime_offset_reg_weight = 0.0
-                self._runtime_vision_language_grounding_weight = 0.0
-                self._runtime_use_scn = False
-                self._runtime_use_mixup = True
-                self._runtime_phase = 1
-            elif progress <= 0.7:
+            # if progress <= 0.2:
+            #     # Phase 1: Mixup active, SCN off, all Motif auxiliary weights off
+            #     self._runtime_motif_diversity_weight = 0.0
+            #     self._runtime_motif_consistency_weight = 0.0
+            #     self._runtime_attn_entropy_weight = 0.0
+            #     self._runtime_offset_reg_weight = 0.0
+            #     self._runtime_vision_language_grounding_weight = 0.0
+            #     self._runtime_use_scn = False
+            #     self._runtime_use_mixup = True
+            #     self._runtime_phase = 1
+            if progress <= 0.7:
                 # Phase 2: Mixup off, SCN active, Motif weights at configured values
                 self._runtime_motif_diversity_weight = self.motif_diversity_weight
                 self._runtime_motif_consistency_weight = self.motif_consistency_weight
