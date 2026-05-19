@@ -342,8 +342,8 @@ class Trainer:
                 self._runtime_attn_entropy_weight = self.attn_entropy_weight
                 self._runtime_offset_reg_weight = self.offset_reg_weight
                 self._runtime_vision_language_grounding_weight = self.vision_language_grounding_weight
-                self._runtime_use_scn = True
-                self._runtime_use_mixup = False
+                self._runtime_use_scn = False
+                self._runtime_use_mixup = True
                 self._runtime_phase = 2
             else:
                 # Phase 3: Fine-tuning. Slightly boost diversity and consistency weights to optimize clusters
