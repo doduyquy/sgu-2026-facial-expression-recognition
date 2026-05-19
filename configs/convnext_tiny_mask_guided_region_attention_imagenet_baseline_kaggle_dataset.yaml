@@ -1,0 +1,14 @@
+_base_: "convnext_tiny_mask_guided_region_attention_imagenet_baseline.yaml"
+
+# Kaggle counterpart of the ImageNet-only fair ablation.
+# Use the same FER2013 split and the same precomputed MediaPipe masks as the
+# 74.62 learned-only Kaggle config.
+
+paths:
+  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
+
+model:
+  mask_dir: "/kaggle/input/datasets/lhongphuc2/mediapipe-mask-datasets-35887/merged_mediapipe_region_masks"
+
+data:
+  mask_dir: "/kaggle/input/datasets/lhongphuc2/mediapipe-mask-datasets-35887/merged_mediapipe_region_masks"

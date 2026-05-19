@@ -1,0 +1,16 @@
+_base_: "convnext_tiny_mask_guided_region_attention_7462_sam_continue_learned_only.yaml"
+
+# Fair ImageNet-only ablation for:
+# convnext_tiny_mask_guided_region_attention_7462_sam_continue_learned_only.yaml
+#
+# Keep the same mask-guided learned-only region-attention architecture and
+# training recipe, but remove the FER 74.62 checkpoint. The only intended
+# initialization difference is:
+# - this file: ImageNet ConvNeXt-Tiny weights
+# - 7462 learned-only file: FER-trained ConvNeXt 74.62 checkpoint as backbone
+
+model:
+  pretrained: true
+  weights: "DEFAULT"
+  checkpoint_path: null
+  checkpoint_strict: false
