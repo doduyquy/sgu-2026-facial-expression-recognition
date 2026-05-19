@@ -41,7 +41,7 @@ class Trainer:
         self.motif_consistency_weight = float(config['training'].get('motif_consistency_weight', 0.05))
         self.attn_entropy_weight = float(config['training'].get('attn_entropy_weight', 0.01))
         self.offset_reg_weight = float(config['training'].get('offset_reg_weight', 0.01))
-        self.vision_language_grounding_weight = float(config['training'].get('vision_language_grounding_weight', 0.03))
+        self.au_contrastive_weight = float(config['training'].get('au_contrastive_weight', 0.03))
 
         # === SCN (light) ===
         self.use_scn = config['training'].get('use_scn', True)
@@ -137,7 +137,7 @@ class Trainer:
         w_consist = getattr(self, '_runtime_motif_consistency_weight', self.motif_consistency_weight)
         w_ent = getattr(self, '_runtime_attn_entropy_weight', self.attn_entropy_weight)
         w_off = getattr(self, '_runtime_offset_reg_weight', self.offset_reg_weight)
-        w_ground = getattr(self, '_runtime_vision_language_grounding_weight', self.vision_language_grounding_weight)
+        w_contrastive = getattr(self, '_runtime_au_contrastive_weight', self.au_contrastive_weight)
 
         _scn_acc = {"scn_weight_mean": [], "scn_conf_mean": [], "scn_rank_loss": []}
 
@@ -195,12 +195,12 @@ class Trainer:
                 loss = loss + w_ent * aux_losses["attn_entropy"]
             if "offset_reg" in aux_losses:
                 loss = loss + w_off * aux_losses["offset_reg"]
-            if "vision_language_grounding" in aux_losses:
-                loss = loss + w_ground * aux_losses["vision_language_grounding"]
+            if "au_contrastive" in aux_losses:
+                loss = loss + w_contrastive * aux_losses["au_contrastive"]
 
             # Fallback for other unrecognized auxiliary losses
             for k, v in aux_losses.items():
-                if k not in ["motif_diversity", "motif_consistency", "attn_entropy", "offset_reg", "vision_language_grounding"]:
+                if k not in ["motif_diversity", "motif_consistency", "attn_entropy", "offset_reg", "au_contrastive"]:
                     w_other = self.config.get('training', {}).get(f'{k}_weight', 0.1)
                     loss = loss + float(w_other) * v
 
@@ -253,7 +253,7 @@ class Trainer:
         w_consist = getattr(self, '_runtime_motif_consistency_weight', self.motif_consistency_weight)
         w_ent = getattr(self, '_runtime_attn_entropy_weight', self.attn_entropy_weight)
         w_off = getattr(self, '_runtime_offset_reg_weight', self.offset_reg_weight)
-        w_ground = getattr(self, '_runtime_vision_language_grounding_weight', self.vision_language_grounding_weight)
+        w_contrastive = getattr(self, '_runtime_au_contrastive_weight', self.au_contrastive_weight)
 
         with torch.no_grad():
             for images, labels in self.val_loader:
@@ -278,11 +278,11 @@ class Trainer:
                     loss = loss + w_ent * aux_losses["attn_entropy"]
                 if "offset_reg" in aux_losses:
                     loss = loss + w_off * aux_losses["offset_reg"]
-                if "vision_language_grounding" in aux_losses:
-                    loss = loss + w_ground * aux_losses["vision_language_grounding"]
+                if "au_contrastive" in aux_losses:
+                    loss = loss + w_contrastive * aux_losses["au_contrastive"]
 
                 for k, v in aux_losses.items():
-                    if k not in ["motif_diversity", "motif_consistency", "attn_entropy", "offset_reg", "vision_language_grounding"]:
+                    if k not in ["motif_diversity", "motif_consistency", "attn_entropy", "offset_reg", "au_contrastive"]:
                         w_other = self.config.get('training', {}).get(f'{k}_weight', 0.1)
                         loss = loss + float(w_other) * v
 
@@ -324,24 +324,12 @@ class Trainer:
                 except Exception:
                     pass
 
-            # 3-phase staged lambda schedule for Motif Graph model
-            # if progress <= 0.2:
-            #     # Phase 1: Mixup active, SCN off, all Motif auxiliary weights off
-            #     self._runtime_motif_diversity_weight = 0.0
-            #     self._runtime_motif_consistency_weight = 0.0
-            #     self._runtime_attn_entropy_weight = 0.0
-            #     self._runtime_offset_reg_weight = 0.0
-            #     self._runtime_vision_language_grounding_weight = 0.0
-            #     self._runtime_use_scn = False
-            #     self._runtime_use_mixup = True
-            #     self._runtime_phase = 1
             if progress <= 0.7:
                 # Phase 2: Mixup off, SCN active, Motif weights at configured values
                 self._runtime_motif_diversity_weight = self.motif_diversity_weight
                 self._runtime_motif_consistency_weight = self.motif_consistency_weight
                 self._runtime_attn_entropy_weight = self.attn_entropy_weight
                 self._runtime_offset_reg_weight = self.offset_reg_weight
-                self._runtime_vision_language_grounding_weight = self.vision_language_grounding_weight
                 self._runtime_use_scn = False
                 self._runtime_use_mixup = True
                 self._runtime_phase = 2
@@ -351,10 +339,17 @@ class Trainer:
                 self._runtime_motif_consistency_weight = self.motif_consistency_weight * 1.5
                 self._runtime_attn_entropy_weight = self.attn_entropy_weight
                 self._runtime_offset_reg_weight = self.offset_reg_weight
-                self._runtime_vision_language_grounding_weight = self.vision_language_grounding_weight
                 self._runtime_use_scn = True
                 self._runtime_use_mixup = False
                 self._runtime_phase = 3
+
+            # Warmup au_contrastive_weight to prevent cold start issues with random spatial attention
+            if ep < 5:
+                self._runtime_au_contrastive_weight = 0.0
+            elif ep < 10:
+                self._runtime_au_contrastive_weight = self.au_contrastive_weight * ((ep - 4) / 5.0)
+            else:
+                self._runtime_au_contrastive_weight = self.au_contrastive_weight
 
             train_loss, train_acc = self.train_one_epoch()
             val_loss, val_acc = self.validate()

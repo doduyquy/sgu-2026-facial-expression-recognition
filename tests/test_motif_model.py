@@ -5,31 +5,35 @@ import torch
 from src.models.motif_graph_fer import MotifGraphModel
 
 cfg = {
-    'feat_dim': 64, 'num_classes': 7, 'k_neighbors': 8,
-    'num_motifs': 16, 'gat_heads': 4, 'motif_tau': 0.1,
-    'dropout': 0.3, 'motif_div_weight': 0.2,
+    'feat_dim': 64,
+    'num_classes': 7,
+    'motifs_per_class': 16,
+    'top_k': 4,
 }
 device = torch.device('cpu')
-model  = MotifGraphModel(cfg).to(device)
+model = MotifGraphModel(cfg).to(device)
 
-dummy  = torch.randn(4, 1, 48, 48)
-logits = model(dummy)
-print("Output shape    :", logits.shape)           # expect (4, 7)
+# Test 4D forward pass without targets (inference mode)
+dummy_img = torch.randn(4, 1, 48, 48)
+logits_inf = model(dummy_img)
+print("Inference logits shape:", logits_inf.shape)
+assert logits_inf.shape == (4, 7), "Inference shape mismatch!"
 
+# Test 4D forward pass with targets (training mode)
+targets = torch.tensor([0, 1, 2, 3])
+logits_train = model(dummy_img, targets=targets)
+print("Training logits shape :", logits_train.shape)
+assert logits_train.shape == (4, 7), "Training shape mismatch!"
+
+# Test auxiliary losses collection
 aux = model.get_aux_losses()
-div = aux['motif_diversity'].item()
-print("motif_diversity :", round(div, 4))
+print("Auxiliary Losses:")
+for name, loss in aux.items():
+    print(f"  - {name}: {loss.item():.4f}" if isinstance(loss, torch.Tensor) else f"  - {name}: {loss}")
 
-model.freeze_for_phase1()
-n_train = sum(p.numel() for p in model.parameters() if p.requires_grad)
-n_total = sum(p.numel() for p in model.parameters())
-print("Phase-1 trainable:", n_train, "/", n_total)
+assert 'motif_diversity' in aux, "motif_diversity loss missing!"
+assert 'attn_entropy' in aux, "attn_entropy loss missing!"
+assert 'offset_reg' in aux, "offset_reg loss missing!"
+assert 'au_contrastive' in aux, "au_contrastive loss missing!"
 
-model.unfreeze_all()
-n_train2 = sum(p.numel() for p in model.parameters() if p.requires_grad)
-print("Phase-2 trainable:", n_train2, "/", n_total)
-
-assert logits.shape == (4, 7), "Shape mismatch!"
-assert n_train < n_total,      "Phase-1 freeze failed!"
-assert n_train2 == n_total,    "Phase-2 unfreeze failed!"
-print("ALL CHECKS PASSED")
+print("ALL MODEL SANITY CHECKS PASSED!")
