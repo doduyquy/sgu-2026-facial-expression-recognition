@@ -6,7 +6,10 @@ def get_model(name, config):
     Supported: 'motif_graph_fer'  — Hybrid CNN + GATConv + Motif model.
     """
     if name == 'motif_graph_fer':
-        return MotifGraphModel(config['model'])
+        model_config = config['model'].copy()
+        if 'training' in config:
+            model_config['clip_embedding_path'] = config['training'].get('clip_embedding_path', None)
+        return MotifGraphModel(model_config)
     else:
         raise ValueError(
             f"Model '{name}' not found. "

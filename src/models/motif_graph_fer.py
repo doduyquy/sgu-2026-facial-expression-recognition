@@ -223,27 +223,54 @@ class GraphMotifModule(nn.Module):
         
         # Vision-Language Grounding Setup
         clip_embeds = None
-        if clip_embedding_path is not None and os.path.exists(clip_embedding_path):
+        target_path = clip_embedding_path
+        if target_path is not None and not os.path.exists(target_path):
+            # Fallback checks for local workspace run
+            potential_fallbacks = [
+                os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'dataset', 'clip_au_embeddings.pt'),
+                'dataset/clip_au_embeddings.pt'
+            ]
+            for fb in potential_fallbacks:
+                if os.path.exists(fb):
+                    target_path = fb
+                    break
+                    
+        if target_path is not None and os.path.exists(target_path):
             try:
-                clip_embeds = torch.load(clip_embedding_path, map_location='cpu')
+                clip_embeds = torch.load(target_path, map_location='cpu')
             except Exception as e:
-                print(f"[WARNING] Could not load clip embeddings from {clip_embedding_path}: {e}")
+                print(f"[WARNING] Could not load clip embeddings from {target_path}: {e}")
         
         if clip_embeds is not None:
-            self.register_buffer('clip_au_embeds', clip_embeds) # (num_classes, motifs_per_class, 512)
+            self.register_buffer('clip_au_embeds', clip_embeds) # (num_classes, M_ground, 512)
             self.text_projection = nn.Sequential(
                 nn.Linear(512, 256),
                 nn.GELU(),
                 nn.Linear(256, C),
                 nn.LayerNorm(C)
             )
-            # Khởi tạo ban đầu cho self.motifs bằng projected text embeddings (expand sang K nodes)
+            # Khởi tạo ban đầu cho self.motifs:
+            # Partial Grounding: mồi các motifs đầu bằng projected text embeddings, các motifs sau hoàn toàn tự do
             with torch.no_grad():
-                proj_text = self.text_projection(clip_embeds) # (num_classes, motifs_per_class, C)
+                proj_text = self.text_projection(clip_embeds) # (num_classes, M_ground, C)
+                
+                # Lưu mỏ neo CỐ ĐỊNH cho việc grounding
+                self.register_buffer('anchor_motifs', proj_text.clone().detach())
+                
+                M_ground = clip_embeds.shape[1] # Số lượng semantic prompts (ví dụ: 8)
                 proj_text_expanded = proj_text.unsqueeze(2).expand(-1, -1, K, -1)
-                self.motifs.copy_(proj_text_expanded + 0.05 * torch.randn_like(self.motifs))
+                
+                # Mồi M_ground motifs đầu
+                self.motifs.data[:, :M_ground].copy_(proj_text_expanded + 0.05 * torch.randn_like(self.motifs.data[:, :M_ground]))
+                # Các motifs sau được khởi tạo ngẫu nhiên (xavier_uniform_) hoàn toàn tự do
+                nn.init.xavier_uniform_(self.motifs.data[:, M_ground:])
+                
+            # XÓA HOÀN TOÀN projection layer để dọn dẹp Graph và VRAM
+            del self.text_projection
+            self.text_projection = None
         else:
             self.register_buffer('clip_au_embeds', None)
+            self.register_buffer('anchor_motifs', None)
             self.text_projection = None
             
         # 2. Factorized Motif Topology: (Classes, Motifs, K, Rank)
@@ -254,15 +281,26 @@ class GraphMotifModule(nn.Module):
         self.alpha = nn.Parameter(torch.zeros(1)) # Node similarity weight (logit scale)
         self.beta = nn.Parameter(torch.zeros(1))  # Edge similarity weight (logit scale)
         
-        # 4. Stability parameters
+        # 4. Trọng số học được cho K nodes (Khởi tạo bằng 0 để lúc đầu softmax ra đều nhau)
+        self.node_importance = nn.Parameter(torch.zeros(1, 1, K))
+        
+        # 5. Stability parameters
         self.temperature = nn.Parameter(torch.ones(1) * 0.1)
 
     def compute_vision_language_grounding_loss(self):
-        if self.clip_au_embeds is None or self.text_projection is None:
+        if getattr(self, 'anchor_motifs', None) is None:
             return torch.tensor(0.0, device=self.motifs.device)
-        proj_text = self.text_projection(self.clip_au_embeds.to(self.motifs.device))
-        motif_center = self.motifs.mean(dim=2)
-        sim = F.cosine_similarity(motif_center, proj_text, dim=-1)
+            
+        # Partial Grounding: Chỉ áp dụng grounding loss lên M_ground motifs đầu tiên
+        M_ground = self.anchor_motifs.shape[1]
+        motifs_to_ground = self.motifs[:, :M_ground, :, :] # (L, M_ground, K, C)
+        anchors_to_ground = self.anchor_motifs # (L, M_ground, C)
+        
+        # Weighted Pooling thay vì Mean Pooling
+        attn = F.softmax(self.node_importance, dim=-1) # (1, 1, K)
+        motif_center = (motifs_to_ground * attn.unsqueeze(-1)).sum(dim=2) # (L, M_ground, C)
+        
+        sim = F.cosine_similarity(motif_center, anchors_to_ground.to(self.motifs.device), dim=-1)
         return (1.0 - sim).mean()
 
     def compute_diversity_loss(self):
@@ -426,25 +464,6 @@ class MotifGraphModel(nn.Module):
             motifs_per_class=self.motifs_per_class,
             tau=self.temperature
         )
-
-    def compute_motif_diversity_loss(self):
-        # Point 1: Replace motif_bank with motif_module
-        m = self.motif_module.motifs 
-        C, M, N, D = m.shape
-        m_flat = m.view(C, M, -1) 
-        m_flat = F.normalize(m_flat, dim=-1)
-        
-        sim_intra = torch.matmul(m_flat, m_flat.transpose(1, 2))
-        eye = torch.eye(M, device=m.device).unsqueeze(0)
-        l_intra = (torch.abs(sim_intra) * (1 - eye)).mean()
-        
-        class_centers = m_flat.mean(dim=1) 
-        class_centers = F.normalize(class_centers, dim=-1)
-        sim_inter = torch.matmul(class_centers, class_centers.transpose(0, 1))
-        eye_c = torch.eye(C, device=m.device)
-        l_inter = (sim_inter * (1 - eye_c)).mean()
-        
-        return l_intra + 1.0 * l_inter
 
     def _extract_deformable_subgraphs(self, feat_map, H, W, node_feats):
         B, C_feat, _, _ = feat_map.shape
@@ -691,15 +710,21 @@ if __name__ == "__main__":
     config = {
         'feat_dim': 64,
         'num_classes': 7,
-        'motifs_per_class': 4,
-        'top_k': 4
+        'motifs_per_class': 16,
+        'top_k': 4,
+        'clip_embedding_path': 'dataset/clip_au_embeddings.pt'
     }
     model = MotifGraphModel(config)
     
     # Test 4D
     dummy_img_4d = torch.randn(2, 1, 48, 48)
-    out_4d = model(dummy_img_4d)
+    out_4d = model(dummy_img_4d, targets=torch.tensor([0, 3]))
     print(f"4D Output shape: {out_4d.shape}") # (2, 7)
+    
+    aux_losses = model.get_aux_losses()
+    print("Auxiliary Losses:")
+    for name, loss in aux_losses.items():
+        print(f"  - {name}: {loss.item():.4f}" if isinstance(loss, torch.Tensor) else f"  - {name}: {loss}")
     
     # Test 5D (TenCrop)
     dummy_img_5d = torch.randn(2, 10, 1, 40, 40)
