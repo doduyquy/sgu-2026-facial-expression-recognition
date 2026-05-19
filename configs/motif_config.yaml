@@ -18,7 +18,10 @@ training:
   epochs: 1000
   lr: 0.0001
   weight_decay: 5e-4
-  loss: "cross_entropy"
+  loss: "motif_combined"
+  use_sce_base: true
+  sce_alpha: 0.1
+  sce_beta: 1.0
   label_smoothing: 0.1
   class_weight_mode: "sqrt_inverse"
   motif_consistency_weight: 0.05
@@ -26,6 +29,7 @@ training:
   attn_entropy_weight: 0.01
   offset_reg_weight: 0.01
   motif_tau: 0.2
+  motif_margin: 0.4
   scheduler: "reduce_lr_on_plateau"
   patience: 25
   factor: 0.5

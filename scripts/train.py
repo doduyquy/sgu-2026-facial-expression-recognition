@@ -79,7 +79,10 @@ def main():
 
     class_weights = None
     if use_class_weights:
-        if class_weight_mode == 'sqrt_inverse':
+        if class_weight_mode == 'manual':
+            manual_weights = config['training'].get('manual_class_weights', [1.2, 2.0, 1.5, 0.8, 0.8, 1.0, 1.0])
+            class_weights = torch.tensor(manual_weights, dtype=torch.float)
+        elif class_weight_mode == 'sqrt_inverse':
             class_weights = 1.0 / torch.sqrt(class_counts)
         elif class_weight_mode == 'inverse':
             class_weights = 1.0 / class_counts
@@ -89,6 +92,7 @@ def main():
         class_weights = class_weights / class_weights.sum()
         class_weights = class_weights.to(device)
         print(f"--- Class weight mode: {class_weight_mode}")
+        print(f"--- Class weights: {class_weights}")
     else:
         print("--- Class weights disabled")
 

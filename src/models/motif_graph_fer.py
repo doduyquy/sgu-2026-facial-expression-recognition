@@ -47,8 +47,10 @@ class MotifBackbone(nn.Module):
         except Exception:
             resnet = models.resnet18(pretrained=True)
             
-        # Adapt for 1-channel 48x48 input
-        self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        # Keep original 3-channel pretrained conv1 but change stride to 1 to keep spatial size 6x6
+        self.conv1 = resnet.conv1
+        self.conv1.stride = (1, 1)
+        self.conv1.padding = (3, 3)
         self.bn1 = resnet.bn1
         self.relu = resnet.relu
         
@@ -115,6 +117,9 @@ class MotifBackbone(nn.Module):
             self.load_state_dict(model_dict)
 
     def forward(self, x):
+        # Repeat 1-channel input to 3 channels to match pretrained conv1 weight shape
+        if x.shape[1] == 1:
+            x = x.repeat(1, 3, 1, 1)
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
@@ -469,8 +474,8 @@ class MotifGraphModel(nn.Module):
     def _extract_deformable_subgraphs(self, feat_map, H, W, node_feats):
         B, C_feat, _, _ = feat_map.shape
         
-        # Base sampling grid (4 expanded corners instead of clustered center)
-        centers = [(1,1), (1,4), (4,1), (4,4)]
+        # Base sampling grid (4 anatomical priors representing Eyebrow, Left Eye, Right Eye, Mouth)
+        centers = [(1, 2), (2, 1), (2, 4), (4, 3)]
         center_indices = [i * W + j for i, j in centers]
         center_indices = torch.tensor(center_indices, device=feat_map.device)
         num_cands = len(center_indices)
