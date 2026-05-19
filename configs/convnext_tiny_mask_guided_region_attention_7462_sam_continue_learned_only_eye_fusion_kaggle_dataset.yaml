@@ -1,0 +1,13 @@
+_base_: "convnext_tiny_mask_guided_region_attention_7462_sam_continue_learned_only_kaggle_dataset.yaml"
+
+# Variant B: keep the original 6 MediaPipe region masks for cross-attention,
+# then append one learned eye-fusion token after attention:
+#   eye_fusion = MLP([left_eye_token, right_eye_token])
+#
+# This preserves the 75.12 learned-only Kaggle setup while testing whether
+# bilateral eye interaction helps the final region transformer/classifier.
+
+model:
+  use_eye_fusion_token: true
+  eye_fusion_left_index: 0
+  eye_fusion_right_index: 1

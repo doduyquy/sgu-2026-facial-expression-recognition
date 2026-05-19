@@ -675,6 +675,10 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         self.use_learnable_clip_region_tokens = bool(
             model_cfg.get("use_learnable_clip_region_tokens", False)
         )
+        self.use_eye_fusion_token = bool(model_cfg.get("use_eye_fusion_token", False))
+        self.eye_fusion_left_index = int(model_cfg.get("eye_fusion_left_index", 0))
+        self.eye_fusion_right_index = int(model_cfg.get("eye_fusion_right_index", 1))
+        self.num_output_regions = self.num_regions + (1 if self.use_eye_fusion_token else 0)
 
         num_classes = int(data_cfg.get("num_classes", 7))
         if self.region_pooling not in ("mean", "concat"):
@@ -685,6 +689,13 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             raise ValueError("model.logit_fusion must be one of: attention, source, sum")
         if self.finetune_logit_fusion not in ("attention", "source", "sum"):
             raise ValueError("model.finetune_logit_fusion must be one of: attention, source, sum")
+        if self.use_eye_fusion_token:
+            if not (0 <= self.eye_fusion_left_index < self.num_regions):
+                raise ValueError("model.eye_fusion_left_index is out of range.")
+            if not (0 <= self.eye_fusion_right_index < self.num_regions):
+                raise ValueError("model.eye_fusion_right_index is out of range.")
+            if self.eye_fusion_left_index == self.eye_fusion_right_index:
+                raise ValueError("eye-fusion needs two different region indices.")
 
         self.convnext_backbone = ConvNeXtSpatialTokenizer(config, channels=channels)
         self.visual_dim = self.convnext_backbone.feature_dim
@@ -791,6 +802,22 @@ class ConvNeXtRegionAttentionFER(nn.Module):
                 dropout=self.dropout_rate,
             )
 
+        if self.use_eye_fusion_token:
+            self.eye_fusion = nn.Sequential(
+                nn.LayerNorm(self.embed_dim * 2),
+                nn.Linear(self.embed_dim * 2, self.embed_dim),
+                nn.GELU(),
+                nn.Dropout(self.dropout_rate),
+                nn.Linear(self.embed_dim, self.embed_dim),
+            )
+            print(
+                "--> [ConvNeXtRegionAttention] Eye-fusion token enabled: "
+                f"indices=({self.eye_fusion_left_index}, {self.eye_fusion_right_index}), "
+                f"K={self.num_regions}->{self.num_output_regions}"
+            )
+        else:
+            self.eye_fusion = None
+
         if self.use_global_visual_bias:
             self.visual_proj = nn.Sequential(
                 nn.LayerNorm(self.visual_dim),
@@ -827,16 +854,16 @@ class ConvNeXtRegionAttentionFER(nn.Module):
 
         if self.use_region_slot_embed:
             self.pos_embed = nn.Parameter(
-                torch.randn(1, self.num_regions, self.embed_dim) * 0.02
+                torch.randn(1, self.num_output_regions, self.embed_dim) * 0.02
             )
         else:
             self.register_buffer(
                 "pos_embed",
-                torch.zeros(1, self.num_regions, self.embed_dim),
+                torch.zeros(1, self.num_output_regions, self.embed_dim),
             )
 
         classifier_input_dim = (
-            self.embed_dim * self.num_regions
+            self.embed_dim * self.num_output_regions
             if self.region_pooling == "concat"
             else self.embed_dim
         )
@@ -865,6 +892,7 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             "convnext_backbone.",
             "region_dict.",
             "alignment.",
+            "eye_fusion.",
             "visual_proj.",
             "transformer_encoder.",
             "classifier.",
@@ -962,6 +990,16 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             return encoded.reshape(encoded.size(0), -1)
         return encoded.mean(dim=1)
 
+    def _append_eye_fusion_token(self, region_features):
+        if self.eye_fusion is None:
+            return region_features
+
+        left_eye = region_features[:, self.eye_fusion_left_index, :]
+        right_eye = region_features[:, self.eye_fusion_right_index, :]
+        eye_pair = torch.cat((left_eye, right_eye), dim=-1)
+        eye_token = self.eye_fusion(eye_pair).unsqueeze(1)
+        return torch.cat((region_features, eye_token), dim=1)
+
     def _combine_logits(self, attention_logits, source_logits):
         if self.logit_fusion == "source":
             if source_logits is None:
@@ -1024,7 +1062,8 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         else:
             phi_sem, attn_weights = self.alignment(region_tokens, visual_features)
 
-        hyper_visual = phi_sem + self.pos_embed
+        hyper_visual = self._append_eye_fusion_token(phi_sem)
+        hyper_visual = hyper_visual + self.pos_embed
         if self.use_global_visual_bias:
             phi_visual = self.visual_proj(global_feat).unsqueeze(1)
             hyper_visual = hyper_visual + phi_visual
