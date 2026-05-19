@@ -29,3 +29,7 @@ training:
   visual_extractor_lr: 0.000005 # Learning rate nhỏ cho backbone sau khi rã đông
   epochs: 100
   patience: 20
+
+ddp:
+  sync_batchnorm: true
+  batch_size_is_global: true
