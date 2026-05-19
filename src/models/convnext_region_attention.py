@@ -676,9 +676,15 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             model_cfg.get("use_learnable_clip_region_tokens", False)
         )
         self.use_eye_fusion_token = bool(model_cfg.get("use_eye_fusion_token", False))
+        self.eye_fusion_mode = model_cfg.get("eye_fusion_mode", "post").lower()
         self.eye_fusion_left_index = int(model_cfg.get("eye_fusion_left_index", 0))
         self.eye_fusion_right_index = int(model_cfg.get("eye_fusion_right_index", 1))
         self.num_output_regions = self.num_regions + (1 if self.use_eye_fusion_token else 0)
+        self.num_region_tokens = (
+            self.num_output_regions
+            if self.use_eye_fusion_token and self.eye_fusion_mode == "mask_union"
+            else self.num_regions
+        )
 
         num_classes = int(data_cfg.get("num_classes", 7))
         if self.region_pooling not in ("mean", "concat"):
@@ -689,6 +695,8 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             raise ValueError("model.logit_fusion must be one of: attention, source, sum")
         if self.finetune_logit_fusion not in ("attention", "source", "sum"):
             raise ValueError("model.finetune_logit_fusion must be one of: attention, source, sum")
+        if self.eye_fusion_mode not in ("post", "mask_union"):
+            raise ValueError("model.eye_fusion_mode must be one of: post, mask_union")
         if self.use_eye_fusion_token:
             if not (0 <= self.eye_fusion_left_index < self.num_regions):
                 raise ValueError("model.eye_fusion_left_index is out of range.")
@@ -715,12 +723,21 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             )
 
         self.use_clip_dictionary = bool(model_cfg.get("use_clip_dictionary", True))
+        if (
+            self.use_eye_fusion_token
+            and self.eye_fusion_mode == "mask_union"
+            and self.use_clip_dictionary
+        ):
+            raise ValueError(
+                "model.eye_fusion_mode='mask_union' currently supports learned-only "
+                "region tokens. Set model.use_clip_dictionary: false."
+            )
         self.learned_region_dict = None
         self.clip_region_dict = None
         self.clip_region_gamma = None
         if self.use_learnable_clip_region_tokens:
             self.learned_region_dict = FacialRegionDictionary(
-                num_regions=self.num_regions,
+                num_regions=self.num_region_tokens,
                 embed_dim=self.embed_dim,
             )
             self.region_dict = self.learned_region_dict
@@ -735,7 +752,7 @@ class ConvNeXtRegionAttentionFER(nn.Module):
                 clip_model_name = model_cfg.get("clip_model_name", "openai/clip-vit-base-patch32")
                 try:
                     self.clip_region_dict = CLIPFacialRegionDictionary(
-                        num_regions=self.num_regions,
+                        num_regions=self.num_region_tokens,
                         embed_dim=self.embed_dim,
                         clip_model_name=clip_model_name,
                     )
@@ -758,11 +775,11 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             clip_model_name = model_cfg.get("clip_model_name", "openai/clip-vit-base-patch32")
             try:
                 self.region_dict = CLIPFacialRegionDictionary(
-                    num_regions=self.num_regions,
+                    num_regions=self.num_region_tokens,
                     embed_dim=self.embed_dim,
                     clip_model_name=clip_model_name,
                 )
-                print(f"--> [ConvNeXtRegionAttention] CLIP text region tokens: K={self.num_regions}")
+                print(f"--> [ConvNeXtRegionAttention] CLIP text region tokens: K={self.num_region_tokens}")
             except Exception as exc:
                 if not bool(model_cfg.get("clip_fallback_to_learned", True)):
                     raise
@@ -771,15 +788,15 @@ class ConvNeXtRegionAttentionFER(nn.Module):
                     f"using learned region tokens instead. Reason: {exc}"
                 )
                 self.region_dict = FacialRegionDictionary(
-                    num_regions=self.num_regions,
+                    num_regions=self.num_region_tokens,
                     embed_dim=self.embed_dim,
                 )
         else:
             self.region_dict = FacialRegionDictionary(
-                num_regions=self.num_regions,
+                num_regions=self.num_region_tokens,
                 embed_dim=self.embed_dim,
             )
-            print(f"--> [ConvNeXtRegionAttention] Learned region tokens: K={self.num_regions}")
+            print(f"--> [ConvNeXtRegionAttention] Learned region tokens: K={self.num_region_tokens}")
 
         if self.mask_guided_attention:
             self.alignment = MaskGuidedCrossDimSemanticVisualAlignment(
@@ -802,7 +819,7 @@ class ConvNeXtRegionAttentionFER(nn.Module):
                 dropout=self.dropout_rate,
             )
 
-        if self.use_eye_fusion_token:
+        if self.use_eye_fusion_token and self.eye_fusion_mode == "post":
             self.eye_fusion = nn.Sequential(
                 nn.LayerNorm(self.embed_dim * 2),
                 nn.Linear(self.embed_dim * 2, self.embed_dim),
@@ -817,6 +834,12 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             )
         else:
             self.eye_fusion = None
+            if self.use_eye_fusion_token:
+                print(
+                    "--> [ConvNeXtRegionAttention] Eye-fusion mask-union token enabled: "
+                    f"indices=({self.eye_fusion_left_index}, {self.eye_fusion_right_index}), "
+                    f"K={self.num_regions}->{self.num_output_regions}"
+                )
 
         if self.use_global_visual_bias:
             self.visual_proj = nn.Sequential(
@@ -1000,6 +1023,19 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         eye_token = self.eye_fusion(eye_pair).unsqueeze(1)
         return torch.cat((region_features, eye_token), dim=1)
 
+    def _append_eye_union_mask(self, flat_masks):
+        if (
+            flat_masks is None
+            or not self.use_eye_fusion_token
+            or self.eye_fusion_mode != "mask_union"
+        ):
+            return flat_masks
+
+        left_eye_mask = flat_masks[:, self.eye_fusion_left_index, :]
+        right_eye_mask = flat_masks[:, self.eye_fusion_right_index, :]
+        eye_union_mask = torch.maximum(left_eye_mask, right_eye_mask).unsqueeze(1)
+        return torch.cat((flat_masks, eye_union_mask), dim=1)
+
     def _combine_logits(self, attention_logits, source_logits):
         if self.logit_fusion == "source":
             if source_logits is None:
@@ -1038,7 +1074,7 @@ class ConvNeXtRegionAttentionFER(nn.Module):
                 f"produces {visual_features.size(1)} visual tokens. "
                 "Make sure mask_size matches the ConvNeXt visual token grid."
             )
-        return flat_masks
+        return self._append_eye_union_mask(flat_masks)
 
     def forward(self, x, region_masks=None):
         batch_size = x.shape[0]
@@ -1062,7 +1098,11 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         else:
             phi_sem, attn_weights = self.alignment(region_tokens, visual_features)
 
-        hyper_visual = self._append_eye_fusion_token(phi_sem)
+        hyper_visual = (
+            self._append_eye_fusion_token(phi_sem)
+            if self.eye_fusion_mode == "post"
+            else phi_sem
+        )
         hyper_visual = hyper_visual + self.pos_embed
         if self.use_global_visual_bias:
             phi_visual = self.visual_proj(global_feat).unsqueeze(1)

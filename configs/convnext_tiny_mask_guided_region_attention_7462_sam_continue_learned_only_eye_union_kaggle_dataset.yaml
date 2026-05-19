@@ -1,0 +1,14 @@
+_base_: "convnext_tiny_mask_guided_region_attention_7462_sam_continue_learned_only_kaggle_dataset.yaml"
+
+# Variant A: create the eye-fusion token before cross-attention.
+# The model keeps the original 6 MediaPipe masks, then adds a 7th soft mask:
+#   eye_union_mask = max(left_eye_mask, right_eye_mask)
+#
+# Cross-attention therefore receives 7 region queries and 7 mask priors from
+# the start. This is the "max" eye-fusion variant.
+
+model:
+  use_eye_fusion_token: true
+  eye_fusion_mode: "mask_union"
+  eye_fusion_left_index: 0
+  eye_fusion_right_index: 1
