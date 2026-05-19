@@ -7,3 +7,7 @@ model:
   # still guide cross-attention.
   use_clip_dictionary: false
   use_learnable_clip_region_tokens: false
+  mask_attention_alpha: 0.4
+training:
+  epochs: 60
+  patience: 15
