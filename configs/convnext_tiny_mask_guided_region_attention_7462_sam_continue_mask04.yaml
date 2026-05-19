@@ -4,4 +4,4 @@ model:
   # Mask-strength ablation from the 75.01 recipe:
   # keep CLIP gamma=0.1 and all training settings unchanged, only make the
   # spatial mask prior slightly stronger.
-  mask_attention_alpha: 0.4
+  mask_attention_alpha: 0.5
