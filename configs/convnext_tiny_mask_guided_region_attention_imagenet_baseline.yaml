@@ -14,3 +14,18 @@ model:
   weights: "DEFAULT"
   checkpoint_path: null
   checkpoint_strict: false
+
+  # Đóng băng 5 epoch đầu để "làm nóng" Attention head, 
+  # sau đó BẮT BUỘC phải rã đông (unfreeze) backbone để nó học đặc trưng khuôn mặt.
+  freeze_backbone_epochs: 5
+  unfreeze_backbone: true
+  unfreeze_backbone_scope: "all"
+  freeze_unfrozen_batchnorm: true
+
+training:
+  optimizer: "adamw"
+  lr: 0.0001
+  finetune_lr: 0.00003
+  visual_extractor_lr: 0.000005 # Learning rate nhỏ cho backbone sau khi rã đông
+  epochs: 100
+  patience: 20
