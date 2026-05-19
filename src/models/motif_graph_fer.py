@@ -124,9 +124,9 @@ class MotifBackbone(nn.Module):
         x3 = self.layer3(x)
         x4 = self.layer4(x3)
         
-        # Downsample x3 để khớp không gian x4
-        x3_down = F.adaptive_avg_pool2d(x3, (6, 6))
-        x_combined = torch.cat([x3_down, x4], dim=1) # (B, 768, 6, 6)
+        # Downsample x3 để khớp không gian x4 một cách động (dynamic spatial matching)
+        x3_down = F.adaptive_avg_pool2d(x3, x4.shape[2:])
+        x_combined = torch.cat([x3_down, x4], dim=1) # (B, 768, H, W)
         
         x = self.residual_masking(x_combined)
         x = self.dim_reducer(x)
@@ -209,7 +209,7 @@ class GraphMotifModule(nn.Module):
     - Fully vectorized structure alignment using einsum
     - Interpretability via attention and activation maps
     """
-    def __init__(self, num_classes, motifs_per_class, K, C, top_k=None, rank=4):
+    def __init__(self, num_classes, motifs_per_class, K, C, top_k=None, rank=4, clip_embedding_path=None):
         super().__init__()
         self.num_classes = num_classes
         self.motifs_per_class = motifs_per_class
@@ -219,13 +219,35 @@ class GraphMotifModule(nn.Module):
         
         # 1. Motif Representation: (Classes, Motifs, K, Dim)
         self.motifs = nn.Parameter(torch.randn(num_classes, motifs_per_class, K, C)) 
-        # motifs là các mẫu con đồ thị học được, mỗi motif đại diện cho một cấu trúc đặc trưng có thể xuất hiện trong biểu cảm khuôn mặt, được tổ chức theo lớp và số lượng motif trên mỗi lớp
         nn.init.xavier_uniform_(self.motifs)
-        # Khởi tạo các motif bằng phương pháp Xavier để đảm bảo phân phối hợp lý của trọng số, giúp quá trình huấn luyện ổn định và hiệu quả hơn.
+        
+        # Vision-Language Grounding Setup
+        clip_embeds = None
+        if clip_embedding_path is not None and os.path.exists(clip_embedding_path):
+            try:
+                clip_embeds = torch.load(clip_embedding_path, map_location='cpu')
+            except Exception as e:
+                print(f"[WARNING] Could not load clip embeddings from {clip_embedding_path}: {e}")
+        
+        if clip_embeds is not None:
+            self.register_buffer('clip_au_embeds', clip_embeds) # (num_classes, motifs_per_class, 512)
+            self.text_projection = nn.Sequential(
+                nn.Linear(512, 256),
+                nn.GELU(),
+                nn.Linear(256, C),
+                nn.LayerNorm(C)
+            )
+            # Khởi tạo ban đầu cho self.motifs bằng projected text embeddings (expand sang K nodes)
+            with torch.no_grad():
+                proj_text = self.text_projection(clip_embeds) # (num_classes, motifs_per_class, C)
+                proj_text_expanded = proj_text.unsqueeze(2).expand(-1, -1, K, -1)
+                self.motifs.copy_(proj_text_expanded + 0.05 * torch.randn_like(self.motifs))
+        else:
+            self.register_buffer('clip_au_embeds', None)
+            self.text_projection = None
+            
         # 2. Factorized Motif Topology: (Classes, Motifs, K, Rank)
-        # Motif edges A = U @ U^T
         self.motif_low_rank = nn.Parameter(torch.randn(num_classes, motifs_per_class, K, rank))
-        # Khởi tạo ma trận low-rank để biểu diễn cấu trúc cạnh của motif, giúp giảm số lượng tham số và tăng khả năng tổng quát hóa của mô hình khi học các cấu trúc đồ thị phức tạp.
         nn.init.xavier_uniform_(self.motif_low_rank)
         
         # 3. Learnable weights for Node vs Edge similarity
@@ -234,7 +256,15 @@ class GraphMotifModule(nn.Module):
         
         # 4. Stability parameters
         self.temperature = nn.Parameter(torch.ones(1) * 0.1)
-        # Temperature parameter để điều chỉnh độ mềm của phân phối attention, giúp quá trình huấn luyện ổn định hơn và tránh overfitting vào các motif cụ thể.
+
+    def compute_vision_language_grounding_loss(self):
+        if self.clip_au_embeds is None or self.text_projection is None:
+            return torch.tensor(0.0, device=self.motifs.device)
+        proj_text = self.text_projection(self.clip_au_embeds.to(self.motifs.device))
+        motif_center = self.motifs.mean(dim=2)
+        sim = F.cosine_similarity(motif_center, proj_text, dim=-1)
+        return (1.0 - sim).mean()
+
     def compute_diversity_loss(self):
         """
         Orthogonality constraint for motifs.
@@ -372,12 +402,14 @@ class MotifGraphModel(nn.Module):
         
         self.register_buffer('grid_adj', self._generate_4x4_grid_adj())  # UPDATE: 4x4 grid
         
+        clip_embedding_path = config.get('clip_embedding_path', None)
         self.motif_module = GraphMotifModule(
             num_classes=self.num_classes,
             motifs_per_class=self.motifs_per_class,
             K=16, # UPDATE: 4x4 region nodes
             C=self.feat_dim,
-            top_k=self.top_k
+            top_k=self.top_k,
+            clip_embedding_path=clip_embedding_path
         )
         
         self.logit_scale = nn.Parameter(torch.ones(1) * 1.0)
@@ -622,6 +654,10 @@ class MotifGraphModel(nn.Module):
                     self._latest_targets
                 )
             aux_dict["motif_consistency"] = l_motif_consist
+            
+        # 5. Kích hoạt Vision-Language Grounding Loss
+        if hasattr(self.motif_module, 'compute_vision_language_grounding_loss'):
+            aux_dict["vision_language_grounding"] = self.motif_module.compute_vision_language_grounding_loss()
             
         return aux_dict
 

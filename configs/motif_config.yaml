@@ -34,3 +34,5 @@ training:
   scn_alpha: 1.0
   scn_rank_lambda: 0.5
   scn_margin: 0.5
+  clip_embedding_path: "/kaggle/input/datasets/pha1t2/clip-emotion/clip_au_embeddings.pt"
+  vision_language_grounding_weight: 0.1
