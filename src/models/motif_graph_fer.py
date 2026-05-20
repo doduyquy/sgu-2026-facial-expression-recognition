@@ -172,7 +172,7 @@ class GraphAttentionLayer(nn.Module):
         self.norm = nn.LayerNorm(out_dim)
 
     def forward(self, x, adj):
-        B, N, _ = x.shape
+        B, N, C = x.shape
         
         q = self.q_lin(x).view(B, N, self.heads, self.d_k).transpose(1, 2) 
         k = self.k_lin(x).view(B, N, self.heads, self.d_k).transpose(1, 2)
@@ -181,12 +181,32 @@ class GraphAttentionLayer(nn.Module):
         # (B, H, N, N)
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_k)
 
-        # Edge-aware bias + learnable gate per edge
-        x_i = x.unsqueeze(2).expand(B, N, N, -1)
-        x_j = x.unsqueeze(1).expand(B, N, N, -1)
-        edge_feat = torch.cat([x_i, x_j], dim=-1)
-        edge_gate = torch.sigmoid(self.edge_gate(edge_feat)).squeeze(-1) # (B, N, N)
-        edge_bias = self.edge_bias(edge_feat).squeeze(-1) # (B, N, N)
+        # Decomposed memory-efficient computation of edge_gate and edge_bias
+        # Deconstruct edge_gate[0] (nn.Linear(2 * C, C))
+        gate_fc1 = self.edge_gate[0]
+        gate_w_i = gate_fc1.weight[:, :C]
+        gate_w_j = gate_fc1.weight[:, C:]
+        gate_bias = gate_fc1.bias
+        
+        gate_feat_i = F.linear(x, gate_w_i) # (B, N, C)
+        gate_feat_j = F.linear(x, gate_w_j) # (B, N, C)
+        # Broadcast add to shape (B, N, N, C) without large concatenation
+        gate_h = gate_feat_i.unsqueeze(2) + gate_feat_j.unsqueeze(1) + gate_bias.view(1, 1, 1, -1)
+        gate_h = F.relu(gate_h)
+        edge_gate = torch.sigmoid(self.edge_gate[2](gate_h)).squeeze(-1) # (B, N, N)
+
+        # Deconstruct edge_bias[0] (nn.Linear(2 * C, C))
+        bias_fc1 = self.edge_bias[0]
+        bias_w_i = bias_fc1.weight[:, :C]
+        bias_w_j = bias_fc1.weight[:, C:]
+        bias_bias = bias_fc1.bias
+        
+        bias_feat_i = F.linear(x, bias_w_i) # (B, N, C)
+        bias_feat_j = F.linear(x, bias_w_j) # (B, N, C)
+        # Broadcast add to shape (B, N, N, C) without large concatenation
+        bias_h = bias_feat_i.unsqueeze(2) + bias_feat_j.unsqueeze(1) + bias_bias.view(1, 1, 1, -1)
+        bias_h = F.relu(bias_h)
+        edge_bias = self.edge_bias[2](bias_h).squeeze(-1) # (B, N, N)
 
         if adj is not None:
             edge_gate = edge_gate * adj
