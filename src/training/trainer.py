@@ -202,6 +202,15 @@ class Trainer:
         return tuple(clean_items), tuple(masked_items)
 
     def _supervised_loss_from_outputs(self, outputs, labels):
+        def aux_classification_weight():
+            model_cfg = self.config.get('model', {})
+            if 'cnn_aux_loss_weight' in model_cfg:
+                return float(model_cfg.get('cnn_aux_loss_weight', 0.0))
+            if 'coarse_aux_loss_weight' in model_cfg:
+                return float(model_cfg.get('coarse_aux_loss_weight', 0.0))
+            prior_cfg = model_cfg.get('emotion_region_prior', {})
+            return float(prior_cfg.get('coarse_aux_loss_weight', 0.0))
+
         if isinstance(outputs, tuple):
             if (
                 len(outputs) == 4
@@ -214,7 +223,7 @@ class Trainer:
                 main_loss = self._classification_loss(logits, labels)
                 ortho_weight = self.config.get('model', {}).get('ortho_loss_weight', 0.1)
                 prior_cfg = self.config.get('model', {}).get('emotion_region_prior', {})
-                coarse_weight = float(prior_cfg.get('coarse_aux_loss_weight', 0.0))
+                coarse_weight = aux_classification_weight()
                 prior_weight = float(prior_cfg.get('prior_alignment_loss_weight', 0.0))
                 coarse_aux_loss = self._classification_loss(coarse_logits, labels)
                 prior_alignment_loss = self._prior_alignment_loss(region_importance, labels)
@@ -234,8 +243,7 @@ class Trainer:
                 logits, ortho_loss, coarse_logits = outputs
                 main_loss = self._classification_loss(logits, labels)
                 ortho_weight = self.config.get('model', {}).get('ortho_loss_weight', 0.1)
-                prior_cfg = self.config.get('model', {}).get('emotion_region_prior', {})
-                coarse_weight = float(prior_cfg.get('coarse_aux_loss_weight', 0.0))
+                coarse_weight = aux_classification_weight()
                 coarse_aux_loss = self._classification_loss(coarse_logits, labels)
                 loss = main_loss + ortho_weight * ortho_loss
                 if coarse_weight > 0.0:

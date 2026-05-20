@@ -1,0 +1,69 @@
+_base_: "../convnext_tiny_mask_guided_region_attention_imagenet_stable.yaml"
+
+# Clean one-run Kaggle recipe:
+# ImageNet ConvNeXt -> mask-guided region-attention final logits.
+# A small CNN auxiliary classifier is used only during training to help the
+# backbone learn FER features; it is not fused into validation/test logits.
+#
+# Kaggle Add Input layout:
+# - fer13-split contains train.csv, val.csv, test.csv
+# - mediapipe-mask-datasets-35887 contains merged_mediapipe_region_masks/{train,val,test}
+# This branch is clean: no FER checkpoint is loaded.
+
+paths:
+  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
+
+model:
+  pretrained: true
+  weights: "DEFAULT"
+  checkpoint_path: null
+  checkpoint_strict: false
+
+  mask_dir: "/kaggle/input/datasets/lhongphuc2/mediapipe-mask-datasets-35887/merged_mediapipe_region_masks"
+
+  use_source_classifier: false
+  logit_fusion: "attention"
+  finetune_logit_fusion: "attention"
+  source_logit_weight: 0.0
+  attention_logit_weight: 1.0
+
+  # Keep the old global-context behavior, but do not concatenate global
+  # features into the final classifier. The auxiliary CNN head gets its own
+  # supervised loss during training only.
+  use_global_visual_bias: true
+  use_global_feature_concat: false
+  use_cnn_aux_loss: true
+  cnn_aux_loss_weight: 0.2
+  cnn_aux_hidden_dim: 512
+  cnn_aux_dropout: 0.25
+
+  freeze_backbone_epochs: 8
+  unfreeze_backbone: true
+  unfreeze_backbone_scope: "all"
+  freeze_unfrozen_batchnorm: true
+
+  classifier_dropout1: 0.45
+  classifier_dropout2: 0.35
+  ortho_loss_weight: 0.003
+  mask_attention_alpha: 0.3
+  mask_floor: 0.05
+
+data:
+  mask_dir: "/kaggle/input/datasets/lhongphuc2/mediapipe-mask-datasets-35887/merged_mediapipe_region_masks"
+
+training:
+  # Start with AdamW for this new clean ablation. SAM is slower and should be a
+  # follow-up only after this auxiliary-loss recipe proves stable.
+  optimizer: "adamw"
+  lr: 0.00008
+  finetune_lr: 0.00002
+  visual_extractor_lr: 0.000001
+  weight_decay: 0.03
+
+  scheduler: "reduce_lr_on_plateau"
+  lr_factor: 0.5
+  lr_patience: 3
+  epochs: 80
+  patience: 15
+  use_amp: false
+

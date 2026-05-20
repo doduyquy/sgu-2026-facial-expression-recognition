@@ -656,6 +656,7 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         self.use_region_slot_embed = bool(model_cfg.get("use_region_slot_embed", True))
         self.use_global_visual_bias = bool(model_cfg.get("use_global_visual_bias", True))
         self.use_global_feature_concat = bool(model_cfg.get("use_global_feature_concat", False))
+        self.use_cnn_aux_loss = bool(model_cfg.get("use_cnn_aux_loss", False))
         self.fusion_type = model_cfg.get("fusion_type", "transformer")
         self.region_pooling = model_cfg.get("region_pooling", "concat").lower()
         self.classifier_hidden_dim = int(model_cfg.get("classifier_hidden_dim", 1024))
@@ -903,6 +904,23 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             nn.Dropout(float(model_cfg.get("classifier_dropout2", 0.2))),
             nn.Linear(self.classifier_hidden_dim, num_classes),
         )
+        if self.use_cnn_aux_loss:
+            aux_hidden_dim = int(model_cfg.get("cnn_aux_hidden_dim", self.classifier_hidden_dim))
+            aux_dropout = float(model_cfg.get("cnn_aux_dropout", 0.25))
+            self.cnn_aux_classifier = nn.Sequential(
+                nn.LayerNorm(self.visual_dim),
+                nn.Dropout(aux_dropout),
+                nn.Linear(self.visual_dim, aux_hidden_dim),
+                nn.GELU(),
+                nn.Dropout(aux_dropout),
+                nn.Linear(aux_hidden_dim, num_classes),
+            )
+            print(
+                "--> [ConvNeXtRegionAttention] CNN auxiliary classifier enabled: "
+                f"hidden_dim={aux_hidden_dim}, dropout={aux_dropout}"
+            )
+        else:
+            self.cnn_aux_classifier = None
 
         checkpoint_path = model_cfg.get("checkpoint_path")
         if checkpoint_path:
@@ -922,6 +940,7 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             "alignment.",
             "eye_fusion.",
             "visual_proj.",
+            "cnn_aux_classifier.",
             "transformer_encoder.",
             "classifier.",
             "visual_pos_embed",
@@ -1122,6 +1141,11 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         if self.use_global_feature_concat:
             pooled = torch.cat((pooled, global_context), dim=-1)
         attention_logits = self.classifier(pooled)
+        cnn_aux_logits = (
+            self.cnn_aux_classifier(global_feat)
+            if self.cnn_aux_classifier is not None
+            else None
+        )
 
         source_logits = None
         if self.logit_fusion in ("source", "sum"):
@@ -1138,6 +1162,8 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             aux_loss = off_diag_sim.mean()
 
         if self.training:
+            if cnn_aux_logits is not None:
+                return logits, aux_loss, cnn_aux_logits
             return logits, aux_loss
 
         if self.return_attn:
