@@ -1,0 +1,48 @@
+_base_: "convnext_tiny_mask_guided_region_attention_imagenet_module.yaml"
+
+# Single-run ImageNet -> FER2013 joint fine-tuning.
+# This trains the mask-guided region head first, then opens ConvNeXt inside the
+# same run so the CNN features and the proposed region-attention branch adapt
+# together.
+
+model:
+  pretrained: true
+  weights: "DEFAULT"
+  checkpoint_path: null
+  checkpoint_strict: false
+
+  # Shorter warm-up than the stable ablation. The goal is not to keep ConvNeXt
+  # almost frozen, but to fine-tune CNN + mask-guided method in one run.
+  freeze_backbone_epochs: 3
+  unfreeze_backbone: true
+  unfreeze_backbone_scope: "all"
+  freeze_unfrozen_batchnorm: true
+
+  # Pure local-token path: ConvNeXt gives only the final 7x7 feature map, then
+  # the mask-guided region module owns the prediction. No pooled global feature
+  # is concatenated or added as a bias.
+  use_source_classifier: false
+  logit_fusion: "attention"
+  finetune_logit_fusion: "attention"
+  source_logit_weight: 0.0
+  attention_logit_weight: 1.0
+  use_global_visual_bias: false
+  use_global_feature_concat: false
+  classifier_hidden_dim: 512
+  classifier_dropout1: 0.40
+  classifier_dropout2: 0.30
+  ortho_loss_weight: 0.003
+
+training:
+  optimizer: "adamw"
+  lr: 0.00008
+  finetune_lr: 0.00003
+  visual_extractor_lr: 0.000003
+  weight_decay: 0.03
+
+  scheduler: "reduce_lr_on_plateau"
+  lr_factor: 0.5
+  lr_patience: 3
+  epochs: 60
+  patience: 12
+  use_amp: false
