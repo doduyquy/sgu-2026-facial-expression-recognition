@@ -608,15 +608,37 @@ class MotifGraphModel(nn.Module):
         # Handle TenCrop input: (B, 10, C, H, W)
         if x.dim() == 5:
             B, T, C, H, W = x.shape
-            x = x.view(B * T, C, H, W)
-            # Recursive call to handle all crops (expand targets to match B*T)
-            if targets is not None:
-                targets_expanded = targets.unsqueeze(1).expand(-1, T).reshape(-1)
-                logits = self.forward(x, targets=targets_expanded)
-            else:
-                logits = self.forward(x) 
-            # Average predictions across all 10 crops
-            return logits.view(B, T, -1).mean(dim=1)
+            logits_list = []
+            aux_losses_list = []
+            
+            # Reset crop-specific aux losses field to avoid infinite recursion
+            self._latest_aux_losses = None
+            
+            for t in range(T):
+                crop_x = x[:, t] # (B, C, H, W)
+                if targets is not None:
+                    logits_t = self.forward(crop_x, targets=targets)
+                else:
+                    logits_t = self.forward(crop_x)
+                logits_list.append(logits_t.unsqueeze(1))
+                
+                # Fetch auxiliary losses for this specific crop
+                crop_aux = self.get_aux_losses()
+                aux_losses_list.append(crop_aux)
+                
+            logits = torch.cat(logits_list, dim=1) # (B, T, num_classes)
+            
+            # Average auxiliary losses across all 10 crops
+            avg_aux = {}
+            if len(aux_losses_list) > 0:
+                for k in aux_losses_list[0].keys():
+                    try:
+                        avg_aux[k] = torch.stack([aux[k] for aux in aux_losses_list]).mean()
+                    except Exception:
+                        pass
+            self._latest_aux_losses = avg_aux
+            
+            return logits.mean(dim=1)
 
         B = x.shape[0]
         
@@ -732,6 +754,9 @@ class MotifGraphModel(nn.Module):
         return adj
 
     def get_aux_losses(self):
+        if hasattr(self, '_latest_aux_losses') and self._latest_aux_losses is not None:
+            return self._latest_aux_losses
+            
         if not hasattr(self, '_latest_scores') or self._latest_scores is None:
             return {}
             
