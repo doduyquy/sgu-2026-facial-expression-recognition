@@ -28,6 +28,15 @@ model:
   attention_logit_weight: 1.0
   use_global_visual_bias: false
   use_global_feature_concat: false
+
+  # From ImageNet, the region tokens are otherwise fully random. Keep a small
+  # CLIP semantic prior and let gamma adapt during training.
+  use_clip_dictionary: true
+  use_learnable_clip_region_tokens: true
+  clip_region_gamma_init: 0.1
+  clip_region_gamma_learnable: true
+  clip_fallback_to_learned: true
+
   classifier_hidden_dim: 512
   classifier_dropout1: 0.40
   classifier_dropout2: 0.30
@@ -43,6 +52,6 @@ training:
   scheduler: "reduce_lr_on_plateau"
   lr_factor: 0.5
   lr_patience: 3
-  epochs: 60
-  patience: 12
+  epochs: 80
+  patience: 15
   use_amp: false
