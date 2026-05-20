@@ -1,0 +1,42 @@
+_base_: "convnext_tiny_mask_guided_region_attention_imagenet_baseline.yaml"
+
+# Stable ImageNet-only training recipe for the proposed mask-guided
+# region-attention method. This keeps the clean ablation contract:
+# ImageNet ConvNeXt-Tiny only, no FER checkpoint initialization.
+
+model:
+  pretrained: true
+  weights: "DEFAULT"
+  checkpoint_path: null
+  checkpoint_strict: false
+
+  # Let the new attention head settle before touching the ImageNet backbone.
+  freeze_backbone_epochs: 8
+  unfreeze_backbone: true
+  unfreeze_backbone_scope: "all"
+  freeze_unfrozen_batchnorm: true
+
+  # The previous ImageNet run overfit after unfreezing; use stronger
+  # classifier regularization and a lighter orthogonality penalty.
+  classifier_dropout1: 0.45
+  classifier_dropout2: 0.35
+  ortho_loss_weight: 0.003
+  mask_attention_alpha: 0.3
+
+training:
+  optimizer: "adamw"
+  lr: 0.00008
+  finetune_lr: 0.00002
+  visual_extractor_lr: 0.000001
+  weight_decay: 0.03
+
+  scheduler: "reduce_lr_on_plateau"
+  lr_factor: 0.5
+  lr_patience: 3
+  epochs: 80
+  patience: 15
+  use_amp: false
+
+ddp:
+  sync_batchnorm: true
+  batch_size_is_global: true

@@ -1,0 +1,13 @@
+_base_: "convnext_tiny_mask_guided_region_attention_imagenet_stable.yaml"
+
+# Kaggle counterpart of the stable ImageNet-only method run.
+# No FER checkpoint is loaded; only ImageNet ConvNeXt-Tiny weights are used.
+
+paths:
+  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
+
+model:
+  mask_dir: "/kaggle/input/datasets/lhongphuc2/mediapipe-mask-datasets-35887/merged_mediapipe_region_masks"
+
+data:
+  mask_dir: "/kaggle/input/datasets/lhongphuc2/mediapipe-mask-datasets-35887/merged_mediapipe_region_masks"
