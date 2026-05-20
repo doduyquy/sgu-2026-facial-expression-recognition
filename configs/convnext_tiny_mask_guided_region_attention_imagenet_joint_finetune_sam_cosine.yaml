@@ -1,0 +1,23 @@
+_base_: "convnext_tiny_mask_guided_region_attention_imagenet_joint_finetune.yaml"
+
+# Best-style ImageNet end-to-end run:
+# same clean ImageNet -> local-token -> mask-guided module path, but use
+# SAM + cosine like the strongest 75.01 branch.
+
+training:
+  optimizer: "sam"
+  base_optimizer: "adamw"
+  sam_rho: 0.03
+  sam_adaptive: false
+
+  # Slightly gentler than the 75.01 checkpoint-seeded run because this starts
+  # from ImageNet, not an FER-trained ConvNeXt.
+  lr: 0.00006
+  finetune_lr: 0.00002
+  visual_extractor_lr: 0.000002
+  weight_decay: 0.02
+
+  scheduler: "cosine"
+  epochs: 80
+  patience: 15
+  use_amp: false
