@@ -1,0 +1,18 @@
+_base_: "../convnext_aux_cnn_one_run/kaggle_aux_cnn.yaml"
+
+# Scenario B:
+# Keep the clean ImageNet-only aux-CNN recipe, but initialize each facial
+# region token with CLIP text semantics plus a learnable correction.
+#
+# This is still not logits fusion:
+# - final validation/test logits come from the region-attention classifier
+# - the CNN auxiliary head is supervised only during training
+# - no FER checkpoint is loaded
+
+model:
+  use_clip_dictionary: true
+  use_learnable_clip_region_tokens: true
+  clip_region_gamma_init: 0.1
+  clip_region_gamma_learnable: true
+  clip_fallback_to_learned: false
+  clip_model_name: "openai/clip-vit-base-patch32"
