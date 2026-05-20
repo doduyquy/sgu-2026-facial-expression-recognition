@@ -1,0 +1,11 @@
+_base_: "convnext_tiny_mask_guided_region_attention_imagenet_stable.yaml"
+
+# ImageNet-only module config.
+# ConvNeXt-Tiny starts from torchvision ImageNet DEFAULT weights and no FER
+# checkpoint is loaded before mask-guided region-attention training.
+
+model:
+  pretrained: true
+  weights: "DEFAULT"
+  checkpoint_path: null
+  checkpoint_strict: false
