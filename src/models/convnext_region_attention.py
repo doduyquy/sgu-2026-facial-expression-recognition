@@ -655,6 +655,7 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         self.use_visual_pos_embed = bool(model_cfg.get("use_visual_pos_embed", True))
         self.use_region_slot_embed = bool(model_cfg.get("use_region_slot_embed", True))
         self.use_global_visual_bias = bool(model_cfg.get("use_global_visual_bias", True))
+        self.use_global_feature_concat = bool(model_cfg.get("use_global_feature_concat", False))
         self.fusion_type = model_cfg.get("fusion_type", "transformer")
         self.region_pooling = model_cfg.get("region_pooling", "concat").lower()
         self.classifier_hidden_dim = int(model_cfg.get("classifier_hidden_dim", 1024))
@@ -841,7 +842,7 @@ class ConvNeXtRegionAttentionFER(nn.Module):
                     f"K={self.num_regions}->{self.num_output_regions}"
                 )
 
-        if self.use_global_visual_bias:
+        if self.use_global_visual_bias or self.use_global_feature_concat:
             self.visual_proj = nn.Sequential(
                 nn.LayerNorm(self.visual_dim),
                 nn.Linear(self.visual_dim, self.embed_dim),
@@ -849,6 +850,8 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             )
         else:
             self.visual_proj = None
+        if self.use_global_feature_concat:
+            print("--> [ConvNeXtRegionAttention] Global feature concat enabled.")
 
         if self.fusion_type == "subgraph":
             self.transformer_encoder = nn.Sequential(*[
@@ -890,6 +893,8 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             if self.region_pooling == "concat"
             else self.embed_dim
         )
+        if self.use_global_feature_concat:
+            classifier_input_dim += self.embed_dim
         self.classifier = nn.Sequential(
             nn.LayerNorm(classifier_input_dim),
             nn.Dropout(float(model_cfg.get("classifier_dropout1", 0.3))),
@@ -1104,12 +1109,18 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             else phi_sem
         )
         hyper_visual = hyper_visual + self.pos_embed
+        global_context = (
+            self.visual_proj(global_feat)
+            if (self.use_global_visual_bias or self.use_global_feature_concat)
+            else None
+        )
         if self.use_global_visual_bias:
-            phi_visual = self.visual_proj(global_feat).unsqueeze(1)
-            hyper_visual = hyper_visual + phi_visual
+            hyper_visual = hyper_visual + global_context.unsqueeze(1)
 
         encoded = self.transformer_encoder(hyper_visual)
         pooled = self._pool_region_features(encoded)
+        if self.use_global_feature_concat:
+            pooled = torch.cat((pooled, global_context), dim=-1)
         attention_logits = self.classifier(pooled)
 
         source_logits = None

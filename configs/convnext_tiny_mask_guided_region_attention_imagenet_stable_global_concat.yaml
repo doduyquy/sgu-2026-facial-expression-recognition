@@ -1,0 +1,18 @@
+_base_: "convnext_tiny_mask_guided_region_attention_imagenet_stable.yaml"
+
+# ImageNet-only method ablation with an explicit global-face feature path.
+# The classifier receives concat(region_features, projected_global_feature)
+# while the existing global visual bias path is kept enabled.
+
+model:
+  use_global_feature_concat: true
+  classifier_hidden_dim: 768
+
+training:
+  # Slightly lower head LR because the classifier now receives a larger input.
+  lr: 0.00006
+  finetune_lr: 0.000015
+  visual_extractor_lr: 0.000001
+  weight_decay: 0.03
+  epochs: 80
+  patience: 15
