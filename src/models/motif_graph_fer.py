@@ -133,9 +133,9 @@ class MotifBackbone(nn.Module):
         x3 = self.layer3(x)
         x4 = self.layer4(x3)
         
-        # Downsample x3 dynamically to match x4 spatial size
-        x3_down = F.adaptive_avg_pool2d(x3, x4.shape[2:])
-        x_combined = torch.cat([x3_down, x4], dim=1) # (B, 768, H, W)
+        # Upsample layer4 (6x6) to match layer3 (12x12) spatial size
+        x4_up = F.interpolate(x4, size=x3.shape[2:], mode='bilinear', align_corners=False)
+        x_combined = torch.cat([x3, x4_up], dim=1) # (B, 768, 12, 12)
         
         x = self.residual_masking(x_combined)
         x = self.dim_reducer(x)
@@ -503,16 +503,18 @@ class MotifGraphModel(nn.Module):
             au_tau=au_tau
         )
         
-        self.logit_scale = nn.Parameter(torch.ones(1) * 1.0)
+        self.logit_scale = nn.Parameter(torch.ones(1) * arc_s)
         self.alpha = nn.Parameter(torch.ones(1) * 0.5)
         
         self.cand_query = nn.Parameter(torch.randn(1, 1, self.num_classes))
         nn.init.xavier_uniform_(self.cand_query)
 
+        motif_margin = float(config.get('motif_margin', 0.4)) if 'motif_margin' in config else float(config.get('training', {}).get('motif_margin', 0.4))
         self.motif_consistency_loss = MotifConsistencyLoss(
             num_classes=self.num_classes,
             motifs_per_class=self.motifs_per_class,
-            tau=self.temperature
+            tau=self.temperature,
+            margin=motif_margin
         )
 
     def _extract_deformable_subgraphs(self, feat_map, H, W, node_feats):

@@ -3,17 +3,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class SymmetricCrossEntropy(nn.Module):
-    def __init__(self, alpha=1.0, beta=1.0, num_classes=7, label_smoothing=0.0):
+    def __init__(self, alpha=1.0, beta=1.0, num_classes=7, label_smoothing=0.0, weight=None):
         super().__init__()
         self.alpha = alpha
         self.beta = beta
         self.num_classes = num_classes
         self.label_smoothing = label_smoothing
+        self.weight = weight
 
     def forward(self, pred, labels):
         # pred: (B, num_classes), labels: (B,)
         # Standard Cross Entropy (ce)
-        ce = F.cross_entropy(pred, labels, label_smoothing=self.label_smoothing)
+        ce = F.cross_entropy(pred, labels, weight=self.weight, label_smoothing=self.label_smoothing)
 
         # Reverse Cross Entropy (rce)
         pred_softmax = F.softmax(pred, dim=1)
@@ -25,7 +26,11 @@ class SymmetricCrossEntropy(nn.Module):
             one_hot = one_hot * (1 - self.label_smoothing) + self.label_smoothing / self.num_classes
         one_hot = torch.clamp(one_hot, min=1e-4, max=1.0)
         
-        rce = (-1.0 * torch.sum(pred_softmax * torch.log(one_hot), dim=1)).mean()
+        rce_per_sample = -1.0 * torch.sum(pred_softmax * torch.log(one_hot), dim=1)
+        if self.weight is not None:
+            rce = (rce_per_sample * self.weight[labels]).sum() / self.weight[labels].sum()
+        else:
+            rce = rce_per_sample.mean()
 
         return self.alpha * ce + self.beta * rce
 
@@ -106,7 +111,8 @@ def build_loss(config, class_weights=None):
         num_classes = config['model'].get('num_classes', 7)
         loss = SymmetricCrossEntropy(
             alpha=sce_alpha, beta=sce_beta, 
-            num_classes=num_classes, label_smoothing=label_smoothing
+            num_classes=num_classes, label_smoothing=label_smoothing,
+            weight=class_weights
         )
 
     elif loss_name == 'focal':
@@ -152,7 +158,8 @@ def build_loss(config, class_weights=None):
             num_classes = config['model'].get('num_classes', 7)
             ce_loss = SymmetricCrossEntropy(
                 alpha=sce_alpha, beta=sce_beta, 
-                num_classes=num_classes, label_smoothing=label_smoothing
+                num_classes=num_classes, label_smoothing=label_smoothing,
+                weight=class_weights
             )
         else:
             label_smoothing = config['training'].get('label_smoothing', 0.0)
