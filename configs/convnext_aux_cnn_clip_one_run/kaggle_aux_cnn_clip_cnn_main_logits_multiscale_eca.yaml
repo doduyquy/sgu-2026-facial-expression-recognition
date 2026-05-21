@@ -1,0 +1,26 @@
+_base_: "kaggle_aux_cnn_clip_cnn_main_logits_multiscale_se.yaml"
+
+# ECA follow-up after the multi-scale SE run reached:
+#   best val ~= 0.7373, test ~= 74.25%
+#
+# Keep the same base:
+# - ImageNet ConvNeXt-Tiny
+# - CNN-main logits: 0.8 * cnn_aux_logits + 0.2 * region_logits
+# - CLIP + learnable region tokens
+# - stage3/stage4 multi-scale fusion
+#
+# Change only the channel attention:
+# - SE -> ECA, fewer parameters
+# - lower residual gate strength
+# - lower visual extractor LR after unfreeze
+
+model:
+  multiscale_se_type: "eca"
+  multiscale_eca_kernel_size: 3
+
+  # Make the feature modulation gentler than the SE run.
+  multiscale_se_gamma_init: 0.05
+  multiscale_fusion_gamma_init: 0.05
+
+training:
+  visual_extractor_lr: 0.000004
