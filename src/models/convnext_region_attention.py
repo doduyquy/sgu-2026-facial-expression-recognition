@@ -656,7 +656,6 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         self.use_region_slot_embed = bool(model_cfg.get("use_region_slot_embed", True))
         self.use_global_visual_bias = bool(model_cfg.get("use_global_visual_bias", True))
         self.use_global_feature_concat = bool(model_cfg.get("use_global_feature_concat", False))
-        self.use_cnn_aux_loss = bool(model_cfg.get("use_cnn_aux_loss", False))
         self.fusion_type = model_cfg.get("fusion_type", "transformer")
         self.region_pooling = model_cfg.get("region_pooling", "concat").lower()
         self.classifier_hidden_dim = int(model_cfg.get("classifier_hidden_dim", 1024))
@@ -665,6 +664,16 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         self.finetune_logit_fusion = model_cfg.get("finetune_logit_fusion", self.logit_fusion)
         self.attention_logit_weight = float(model_cfg.get("attention_logit_weight", 1.0))
         self.source_logit_weight = float(model_cfg.get("source_logit_weight", 1.0))
+        self.cnn_aux_logit_weight = float(model_cfg.get("cnn_aux_logit_weight", 0.2))
+        self.use_cnn_aux_loss = bool(model_cfg.get("use_cnn_aux_loss", False))
+        self.use_cnn_aux_logits = bool(
+            model_cfg.get(
+                "use_cnn_aux_logits",
+                self.logit_fusion in ("cnn_aux", "cnn_aux_sum")
+                or self.finetune_logit_fusion in ("cnn_aux", "cnn_aux_sum"),
+            )
+        )
+        self.use_cnn_aux_classifier = self.use_cnn_aux_loss or self.use_cnn_aux_logits
         self.freeze_epochs = int(model_cfg.get("freeze_backbone_epochs", 0))
         self.unfreeze_backbone = bool(model_cfg.get("unfreeze_backbone", False))
         self.unfreeze_backbone_scope = model_cfg.get("unfreeze_backbone_scope", "all").lower()
@@ -693,10 +702,17 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             raise ValueError("model.region_pooling must be one of: mean, concat")
         if self.ortho_loss_type not in ("mean_offdiag", "squared_offdiag"):
             raise ValueError("model.ortho_loss_type must be one of: mean_offdiag, squared_offdiag")
-        if self.logit_fusion not in ("attention", "source", "sum"):
-            raise ValueError("model.logit_fusion must be one of: attention, source, sum")
-        if self.finetune_logit_fusion not in ("attention", "source", "sum"):
-            raise ValueError("model.finetune_logit_fusion must be one of: attention, source, sum")
+        valid_logit_fusions = ("attention", "source", "sum", "cnn_aux", "cnn_aux_sum")
+        if self.logit_fusion not in valid_logit_fusions:
+            raise ValueError(
+                "model.logit_fusion must be one of: "
+                + ", ".join(valid_logit_fusions)
+            )
+        if self.finetune_logit_fusion not in valid_logit_fusions:
+            raise ValueError(
+                "model.finetune_logit_fusion must be one of: "
+                + ", ".join(valid_logit_fusions)
+            )
         if self.eye_fusion_mode not in ("post", "mask_union"):
             raise ValueError("model.eye_fusion_mode must be one of: post, mask_union")
         if self.use_eye_fusion_token:
@@ -904,7 +920,7 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             nn.Dropout(float(model_cfg.get("classifier_dropout2", 0.2))),
             nn.Linear(self.classifier_hidden_dim, num_classes),
         )
-        if self.use_cnn_aux_loss:
+        if self.use_cnn_aux_classifier:
             aux_hidden_dim = int(model_cfg.get("cnn_aux_hidden_dim", self.classifier_hidden_dim))
             aux_dropout = float(model_cfg.get("cnn_aux_dropout", 0.25))
             self.cnn_aux_classifier = nn.Sequential(
@@ -917,7 +933,9 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             )
             print(
                 "--> [ConvNeXtRegionAttention] CNN auxiliary classifier enabled: "
-                f"hidden_dim={aux_hidden_dim}, dropout={aux_dropout}"
+                f"hidden_dim={aux_hidden_dim}, dropout={aux_dropout}, "
+                f"use_loss={self.use_cnn_aux_loss}, use_logits={self.use_cnn_aux_logits}, "
+                f"logit_weight={self.cnn_aux_logit_weight}"
             )
         else:
             self.cnn_aux_classifier = None
@@ -1060,7 +1078,7 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         eye_union_mask = torch.maximum(left_eye_mask, right_eye_mask).unsqueeze(1)
         return torch.cat((flat_masks, eye_union_mask), dim=1)
 
-    def _combine_logits(self, attention_logits, source_logits):
+    def _combine_logits(self, attention_logits, source_logits=None, cnn_aux_logits=None):
         if self.logit_fusion == "source":
             if source_logits is None:
                 raise RuntimeError("logit_fusion='source' needs a checkpoint classifier.")
@@ -1070,6 +1088,19 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             return (
                 self.attention_logit_weight * attention_logits
                 + self.source_logit_weight * source_logits
+            )
+
+        if self.logit_fusion == "cnn_aux":
+            if cnn_aux_logits is None:
+                raise RuntimeError("logit_fusion='cnn_aux' needs model.use_cnn_aux_logits: true.")
+            return cnn_aux_logits
+
+        if self.logit_fusion == "cnn_aux_sum":
+            if cnn_aux_logits is None:
+                raise RuntimeError("logit_fusion='cnn_aux_sum' needs model.use_cnn_aux_logits: true.")
+            return (
+                self.attention_logit_weight * attention_logits
+                + self.cnn_aux_logit_weight * cnn_aux_logits
             )
 
         return attention_logits
@@ -1150,7 +1181,7 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         source_logits = None
         if self.logit_fusion in ("source", "sum"):
             source_logits = self.convnext_backbone.source_logits(pooled_map)
-        logits = self._combine_logits(attention_logits, source_logits)
+        logits = self._combine_logits(attention_logits, source_logits, cnn_aux_logits)
 
         attn_norm = F.normalize(attn_weights, p=2, dim=-1)
         sim = torch.bmm(attn_norm, attn_norm.transpose(1, 2))

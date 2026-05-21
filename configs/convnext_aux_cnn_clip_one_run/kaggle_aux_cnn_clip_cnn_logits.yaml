@@ -1,0 +1,22 @@
+_base_: "kaggle_aux_cnn_clip.yaml"
+
+# ImageNet-pretrained reusable line:
+# ConvNeXt ImageNet backbone -> mask-guided CLIP/learnable region attention
+# plus a lightweight CNN auxiliary logit correction.
+#
+# This stays checkpoint-free and dataset-portable:
+# - no FER checkpoint is loaded
+# - no source classifier from an old FER model is required
+# - the CNN auxiliary classifier is trained from the same ImageNet backbone
+
+model:
+  use_cnn_aux_loss: true
+  use_cnn_aux_logits: true
+  cnn_aux_loss_weight: 0.3
+
+  # Final logits = attention_logits + 0.2 * cnn_aux_logits.
+  # Keep the CNN branch as a small global correction, not the main decision.
+  logit_fusion: "cnn_aux_sum"
+  finetune_logit_fusion: "cnn_aux_sum"
+  attention_logit_weight: 1.0
+  cnn_aux_logit_weight: 0.2
