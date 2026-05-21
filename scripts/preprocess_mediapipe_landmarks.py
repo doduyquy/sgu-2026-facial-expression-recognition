@@ -43,6 +43,7 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 import pandas as pd
+from urllib.request import urlretrieve
 
 try:
     import mediapipe as mp
@@ -92,9 +93,73 @@ def parse_args():
 def import_face_mesh():
     if hasattr(mp, "solutions") and hasattr(mp.solutions, "face_mesh"):
         return mp.solutions.face_mesh
-    from mediapipe.python.solutions import face_mesh
 
-    return face_mesh
+    try:
+        from mediapipe.tasks import python as mp_python
+        from mediapipe.tasks.python import vision
+    except Exception as exc:
+        raise ImportError(
+            "MediaPipe FaceMesh legacy API is unavailable and the Tasks API could not be imported. "
+            "Install a compatible mediapipe build or provide the legacy solutions.face_mesh API."
+        ) from exc
+
+    if not hasattr(vision, "FaceLandmarker"):
+        raise ImportError(
+            "MediaPipe Tasks API is present, but FaceLandmarker is unavailable in this environment."
+        )
+
+    return SimpleNamespace(FaceMesh=TasksFaceMeshAdapter, _mp_python=mp_python, _vision=vision)
+
+
+class TasksFaceMeshAdapter:
+    """Compatibility wrapper for MediaPipe Tasks FaceLandmarker.
+
+    It exposes the same .process(...) and .close() methods as the legacy FaceMesh
+    solution so the rest of this script can stay unchanged.
+    """
+
+    FACE_LANDMARKER_MODEL_URL = (
+        "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
+        "face_landmarker/float16/latest/face_landmarker.task"
+    )
+
+    def __init__(self, static_image_mode=True, max_num_faces=1, refine_landmarks=False, min_detection_confidence=0.5):
+        del static_image_mode, refine_landmarks
+        import mediapipe as mp_runtime
+        from mediapipe.tasks import python as mp_python
+        from mediapipe.tasks.python import vision
+
+        self.mp = mp_runtime
+        self.model_path = Path(DEFAULT_OUTPUT_DIR) / "assets" / "face_landmarker.task"
+        self.model_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if not self.model_path.exists():
+            print(f"--> Downloading FaceLandmarker model to {self.model_path}")
+            urlretrieve(self.FACE_LANDMARKER_MODEL_URL, self.model_path)
+
+        options = vision.FaceLandmarkerOptions(
+            base_options=mp_python.BaseOptions(model_asset_path=str(self.model_path)),
+            running_mode=vision.RunningMode.IMAGE,
+            num_faces=int(max_num_faces),
+            min_face_detection_confidence=float(min_detection_confidence),
+            min_face_presence_confidence=float(min_detection_confidence),
+            min_tracking_confidence=float(min_detection_confidence),
+            output_face_blendshapes=False,
+            output_facial_transformation_matrixes=False,
+        )
+        self.landmarker = vision.FaceLandmarker.create_from_options(options)
+
+    def process(self, image):
+        image = np.ascontiguousarray(np.asarray(image, dtype=np.uint8))
+        mp_image = self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=image)
+        result = self.landmarker.detect(mp_image)
+        if not result.face_landmarks:
+            return SimpleNamespace(multi_face_landmarks=None)
+        face = SimpleNamespace(landmark=result.face_landmarks[0])
+        return SimpleNamespace(multi_face_landmarks=[face])
+
+    def close(self):
+        self.landmarker.close()
 
 
 def build_face_mesh(min_detection_confidence=MIN_DETECTION_CONFIDENCE):
