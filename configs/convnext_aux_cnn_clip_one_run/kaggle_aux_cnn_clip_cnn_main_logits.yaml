@@ -1,0 +1,62 @@
+_base_: "kaggle_aux_cnn_clip.yaml"
+
+# Max-score attempt for the clean ImageNet-pretrained line.
+#
+# Goal:
+# - start from ConvNeXt-Tiny ImageNet DEFAULT
+# - do not load any FER checkpoint
+# - make the CNN global head the main decision path
+# - use mask-guided CLIP/learnable region attention as a correction signal
+#
+# Final logits:
+#   final_logits = 0.8 * cnn_aux_logits + 0.2 * region_attention_logits
+
+model:
+  use_cnn_aux_loss: true
+  use_cnn_aux_logits: true
+
+  # CNN is now the main branch, so train it more directly.
+  cnn_aux_loss_weight: 0.4
+  cnn_aux_hidden_dim: 768
+  cnn_aux_dropout: 0.2
+
+  logit_fusion: "cnn_aux_sum"
+  finetune_logit_fusion: "cnn_aux_sum"
+  attention_logit_weight: 0.2
+  cnn_aux_logit_weight: 0.8
+
+  # Adapt the ImageNet backbone earlier than the stable attention-only run.
+  freeze_backbone_epochs: 4
+  unfreeze_backbone: true
+  unfreeze_backbone_scope: "all"
+  freeze_unfrozen_batchnorm: true
+
+  # Lighter region-head regularization because this branch is no longer asked
+  # to carry the full classifier alone.
+  classifier_dropout1: 0.35
+  classifier_dropout2: 0.25
+  ortho_loss_weight: 0.002
+
+data:
+  # SAM uses two forward/backward passes, so keep batch smaller for Kaggle T4.
+  batch_size: 16
+  num_workers: 2
+
+training:
+  optimizer: "sam"
+  base_optimizer: "adamw"
+  sam_rho: 0.03
+  sam_adaptive: false
+
+  lr: 0.0002
+  finetune_lr: 0.00008
+  visual_extractor_lr: 0.000008
+  weight_decay: 0.02
+
+  scheduler: "cosine"
+  epochs: 70
+  patience: 15
+  label_smoothing: 0.05
+  grad_clip_norm: 1.0
+  skip_nonfinite_batches: true
+  use_amp: false
