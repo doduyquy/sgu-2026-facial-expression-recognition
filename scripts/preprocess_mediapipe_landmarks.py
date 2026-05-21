@@ -3,8 +3,8 @@ Research-grade MediaPipe semantic region extraction for FER2013.
 
 Per sample output:
     {
-        "masks": (6, 48, 48),
-        "bboxes": (6, 4),
+        "masks": (9, 48, 48),
+        "bboxes": (9, 4),
         "landmarks": (468, 2),
         "success": bool,
         "fallback_used": bool,
@@ -12,11 +12,14 @@ Per sample output:
 
 Regions:
     0 -> forehead
-    1 -> left_eye
-    2 -> right_eye
-    3 -> nose
-    4 -> mouth
-    5 -> cheek
+    1 -> left_eyebrow
+    2 -> right_eyebrow
+    3 -> glabella
+    4 -> left_eye
+    5 -> right_eye
+    6 -> nose
+    7 -> left_mouth_corner
+    8 -> right_mouth_corner
 
 Features:
     - Upscale 48 -> 256
@@ -56,14 +59,27 @@ except ImportError as exc:
 
 REGION_GROUPS = {
     "forehead": [10, 67, 69, 104, 108, 109, 151, 297, 299, 332, 337, 338],
+    "left_eyebrow": [46, 52, 53, 55, 65, 66, 70, 105, 107],
+    "right_eyebrow": [276, 282, 283, 285, 295, 296, 300, 334, 336],
+    "glabella": [9, 55, 65, 107, 285, 295, 336],
     "left_eye": [33, 133, 144, 145, 153, 154, 155, 157, 158, 159, 160, 161, 163],
     "right_eye": [263, 362, 373, 374, 380, 381, 382, 384, 385, 386, 387, 388, 390],
     "nose": [1, 2, 4, 5, 6, 19, 94, 98, 168, 195, 197, 327],
-    "mouth": [13, 14, 17, 37, 39, 40, 61, 78, 81, 82, 84, 87, 88, 91, 95, 146, 178, 181, 185, 191, 267, 269, 270, 291, 308, 311, 312, 314, 317, 318, 321, 324, 375, 402, 405, 409, 415],
-    "cheek": [50, 101, 118, 205, 206, 207, 280, 330, 347, 425, 426],
+    "left_mouth_corner": [61, 146, 91, 181, 84, 17],
+    "right_mouth_corner": [291, 375, 321, 405, 314, 17],
 }
 
-REGION_ORDER = ["forehead", "left_eye", "right_eye", "nose", "mouth", "cheek"]
+REGION_ORDER = [
+    "forehead",
+    "left_eyebrow",
+    "right_eyebrow",
+    "glabella",
+    "left_eye",
+    "right_eye",
+    "nose",
+    "left_mouth_corner",
+    "right_mouth_corner",
+]
 
 DEFAULT_DATA_DIR = "dataset/fer13-split"
 DEFAULT_OUTPUT_DIR = "dataset/semantic_masks"
@@ -286,11 +302,14 @@ def build_region_masks(landmark_points):
 def fallback_template_masks():
     masks = np.zeros((len(REGION_ORDER), MASK_SIZE, MASK_SIZE), dtype=SAVE_DTYPE)
     masks[0, 0:10, 12:36] = 1.0
-    masks[1, 10:20, 6:20] = 1.0
-    masks[2, 10:20, 28:42] = 1.0
-    masks[3, 18:32, 18:30] = 1.0
-    masks[4, 30:42, 12:36] = 1.0
-    masks[5, 18:38, 4:44] = 1.0
+    masks[1, 8:16, 6:18] = 1.0
+    masks[2, 8:16, 30:42] = 1.0
+    masks[3, 10:18, 18:30] = 1.0
+    masks[4, 12:24, 6:20] = 1.0
+    masks[5, 12:24, 28:42] = 1.0
+    masks[6, 18:32, 18:30] = 1.0
+    masks[7, 30:42, 10:24] = 1.0
+    masks[8, 30:42, 24:38] = 1.0
     return masks
 
 
@@ -337,6 +356,9 @@ def visualize(gray, masks, save_path):
         (190, 115, 255),
         (255, 86, 97),
         (96, 204, 112),
+        (255, 170, 60),
+        (170, 120, 255),
+        (80, 180, 255),
     ]
     for region_index, color in enumerate(colors):
         mask = cv2.resize(masks[region_index].astype(np.float32), (48, 48), interpolation=cv2.INTER_LINEAR)
