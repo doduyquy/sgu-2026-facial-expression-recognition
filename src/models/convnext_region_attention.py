@@ -355,6 +355,150 @@ class SwinLocalRefiner(nn.Module):
         return self.blocks(feat_map)
 
 
+class ChannelGate(nn.Module):
+    """SE/ECA channel gate with an optional residual multiplier."""
+
+    def __init__(
+        self,
+        channels,
+        attention_type="se",
+        reduction=16,
+        eca_kernel_size=3,
+        gate_mode="residual",
+        gamma_init=0.1,
+        gamma_learnable=True,
+    ):
+        super().__init__()
+        self.channels = int(channels)
+        self.attention_type = attention_type.lower()
+        self.gate_mode = gate_mode.lower()
+        if self.gate_mode not in ("residual", "sigmoid"):
+            raise ValueError("multiscale_se_gate_mode must be 'residual' or 'sigmoid'.")
+
+        if self.attention_type == "se":
+            hidden_dim = max(self.channels // max(int(reduction), 1), 4)
+            self.attn = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Conv2d(self.channels, hidden_dim, kernel_size=1),
+                nn.GELU(),
+                nn.Conv2d(hidden_dim, self.channels, kernel_size=1),
+            )
+        elif self.attention_type == "eca":
+            kernel_size = max(int(eca_kernel_size), 1)
+            if kernel_size % 2 == 0:
+                kernel_size += 1
+            self.avg_pool = nn.AdaptiveAvgPool2d(1)
+            self.attn = nn.Conv1d(
+                1,
+                1,
+                kernel_size=kernel_size,
+                padding=kernel_size // 2,
+                bias=False,
+            )
+        else:
+            raise ValueError("multiscale_se_type must be 'se' or 'eca'.")
+
+        gamma = torch.tensor(float(gamma_init), dtype=torch.float32)
+        if gamma_learnable:
+            self.gamma = nn.Parameter(gamma)
+        else:
+            self.register_buffer("gamma", gamma)
+
+    def _weights(self, x):
+        if self.attention_type == "se":
+            return torch.sigmoid(self.attn(x))
+
+        pooled = self.avg_pool(x).squeeze(-1).transpose(1, 2)
+        weights = self.attn(pooled).transpose(1, 2).unsqueeze(-1)
+        return torch.sigmoid(weights)
+
+    def forward(self, x):
+        weights = self._weights(x)
+        if self.gate_mode == "sigmoid":
+            return x * weights
+
+        gamma = self.gamma.to(device=x.device, dtype=x.dtype)
+        gate = 2.0 * weights - 1.0
+        return x * (1.0 + gamma * gate)
+
+
+class ConvNeXtMultiScaleSEFusion(nn.Module):
+    """Fuse ConvNeXt stage3 and stage4 maps before tokenization."""
+
+    def __init__(self, model_cfg, out_channels):
+        super().__init__()
+        self.stage3_channels = int(model_cfg.get("multiscale_stage3_channels", 384))
+        self.stage4_channels = int(model_cfg.get("multiscale_stage4_channels", out_channels))
+        self.out_channels = int(out_channels)
+        attention_type = model_cfg.get("multiscale_se_type", "se")
+        gate_mode = model_cfg.get("multiscale_se_gate_mode", "residual")
+        gamma_init = float(model_cfg.get("multiscale_se_gamma_init", 0.1))
+        gamma_learnable = bool(model_cfg.get("multiscale_se_gamma_learnable", True))
+        reduction = int(model_cfg.get("multiscale_se_reduction", 16))
+        eca_kernel_size = int(model_cfg.get("multiscale_eca_kernel_size", 3))
+
+        self.stage3_gate = ChannelGate(
+            self.stage3_channels,
+            attention_type=attention_type,
+            reduction=reduction,
+            eca_kernel_size=eca_kernel_size,
+            gate_mode=gate_mode,
+            gamma_init=gamma_init,
+            gamma_learnable=gamma_learnable,
+        )
+        self.stage4_gate = ChannelGate(
+            self.stage4_channels,
+            attention_type=attention_type,
+            reduction=reduction,
+            eca_kernel_size=eca_kernel_size,
+            gate_mode=gate_mode,
+            gamma_init=gamma_init,
+            gamma_learnable=gamma_learnable,
+        )
+
+        dropout = float(model_cfg.get("multiscale_fusion_dropout", 0.0))
+        self.fusion = nn.Sequential(
+            nn.Conv2d(
+                self.stage3_channels + self.stage4_channels,
+                self.out_channels,
+                kernel_size=1,
+                bias=False,
+            ),
+            nn.GroupNorm(1, self.out_channels),
+            nn.GELU(),
+            nn.Dropout2d(dropout) if dropout > 0.0 else nn.Identity(),
+        )
+        self.fusion_residual = bool(model_cfg.get("multiscale_fusion_residual", True))
+        fusion_gamma = torch.tensor(
+            float(model_cfg.get("multiscale_fusion_gamma_init", 0.1)),
+            dtype=torch.float32,
+        )
+        if bool(model_cfg.get("multiscale_fusion_gamma_learnable", True)):
+            self.fusion_gamma = nn.Parameter(fusion_gamma)
+        else:
+            self.register_buffer("fusion_gamma", fusion_gamma)
+
+    def forward(self, stage3, stage4):
+        if stage3.size(1) != self.stage3_channels:
+            raise ValueError(
+                f"Expected stage3 channels={self.stage3_channels}, got {stage3.size(1)}."
+            )
+        if stage4.size(1) != self.stage4_channels:
+            raise ValueError(
+                f"Expected stage4 channels={self.stage4_channels}, got {stage4.size(1)}."
+            )
+
+        stage3_enhanced = self.stage3_gate(stage3)
+        stage4_enhanced = self.stage4_gate(stage4)
+        stage3_down = F.adaptive_avg_pool2d(stage3_enhanced, stage4_enhanced.shape[-2:])
+        fused = self.fusion(torch.cat((stage3_down, stage4_enhanced), dim=1))
+        if not self.fusion_residual:
+            return fused
+
+        gamma = self.fusion_gamma.to(device=stage4_enhanced.device, dtype=stage4_enhanced.dtype)
+        return stage4_enhanced + gamma * fused
+
+
 class ConvNeXtSpatialTokenizer(nn.Module):
     """ConvNeXt ImageNet features -> local visual tokens for region attention."""
 
@@ -396,6 +540,23 @@ class ConvNeXtSpatialTokenizer(nn.Module):
         self.use_swin_local_refiner = bool(
             model_cfg.get("use_swin_local_refiner", False)
         )
+        self.use_multiscale_se_fusion = bool(
+            model_cfg.get("use_multiscale_se_fusion", False)
+        )
+        self.multiscale_stage3_index = int(model_cfg.get("multiscale_stage3_index", 5))
+        self.multiscale_stage4_index = int(
+            model_cfg.get(
+                "multiscale_stage4_index",
+                len(self.backbone.features) - 1,
+            )
+        )
+        if self.use_multiscale_se_fusion:
+            self.multiscale_fusion = ConvNeXtMultiScaleSEFusion(
+                model_cfg,
+                out_channels=self.feature_dim,
+            )
+        else:
+            self.multiscale_fusion = None
         if self.use_swin_local_refiner:
             self.swin_refiner = SwinLocalRefiner(
                 dim=self.feature_dim,
@@ -434,6 +595,12 @@ class ConvNeXtSpatialTokenizer(nn.Module):
             print(
                 "--> [ConvNeXtTokenizer] Swin local refiner enabled before "
                 "local-token flattening."
+            )
+        if self.use_multiscale_se_fusion:
+            print(
+                "--> [ConvNeXtTokenizer] Multi-scale SE fusion enabled: "
+                f"stage3_index={self.multiscale_stage3_index}, "
+                f"stage4_index={self.multiscale_stage4_index}"
             )
 
     def _resolve_weights(self, model_cfg):
@@ -535,8 +702,34 @@ class ConvNeXtSpatialTokenizer(nn.Module):
             nn.init.kaiming_normal_(new_conv.weight, mode="fan_out", nonlinearity="relu")
         self._set_child(first_conv_parent, first_conv_name, new_conv)
 
+    def _forward_multiscale_features(self, x):
+        stage3 = None
+        stage4 = None
+        feat = x
+        for index, layer in enumerate(self.backbone.features):
+            feat = layer(feat)
+            if index == self.multiscale_stage3_index:
+                stage3 = feat
+            if index == self.multiscale_stage4_index:
+                stage4 = feat
+
+        if stage3 is None:
+            raise RuntimeError(
+                "Could not capture ConvNeXt stage3 feature. "
+                "Check model.multiscale_stage3_index."
+            )
+        if stage4 is None:
+            raise RuntimeError(
+                "Could not capture ConvNeXt stage4 feature. "
+                "Check model.multiscale_stage4_index."
+            )
+        return self.multiscale_fusion(stage3, stage4)
+
     def forward(self, x):
-        feat_map = self.backbone.features(x)
+        if self.use_multiscale_se_fusion:
+            feat_map = self._forward_multiscale_features(x)
+        else:
+            feat_map = self.backbone.features(x)
         token_map = self.token_pool(feat_map)
         token_map = self.swin_refiner(token_map)
         visual_tokens = token_map.flatten(2).transpose(1, 2)

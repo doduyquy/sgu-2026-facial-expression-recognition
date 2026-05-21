@@ -1,0 +1,44 @@
+_base_: "kaggle_aux_cnn_clip_cnn_main_logits.yaml"
+
+# Multi-scale SE ablation requested from:
+# configs/convnext_aux_cnn_clip_one_run/kaggle_aux_cnn_clip_cnn_main_logits.yaml
+#
+# Keeps the same clean ImageNet-only recipe:
+# - ConvNeXt-Tiny DEFAULT weights
+# - CLIP + learnable region tokens
+# - CNN-main logits: 0.8 * cnn_aux_logits + 0.2 * region_logits
+#
+# Only added variable:
+# - stage3 [B,384,14,14] and stage4 [B,768,7,7] get channel SE gates
+# - stage3 is downsampled to 7x7
+# - concat(stage3, stage4) is fused by 1x1 conv back to [B,768,7,7]
+
+model:
+  use_multiscale_se_fusion: true
+
+  # Torchvision ConvNeXt-Tiny features:
+  # index 5 -> stage3 output [B,384,14,14]
+  # index 7 -> stage4 output [B,768,7,7]
+  multiscale_stage3_index: 5
+  multiscale_stage4_index: 7
+  multiscale_stage3_channels: 384
+  multiscale_stage4_channels: 768
+
+  # Use true SE for this ablation. The implementation also supports "eca",
+  # but this file follows the requested SE-style GAP -> sigmoid gate.
+  multiscale_se_type: "se"
+  multiscale_se_reduction: 16
+
+  # Residual gate keeps the branch close to the original ConvNeXt features:
+  # x_enhanced = x * (1 + gamma * (2 * sigmoid(se(x)) - 1))
+  # This is safer than x * sigmoid(se(x)), which can halve activations at init.
+  multiscale_se_gate_mode: "residual"
+  multiscale_se_gamma_init: 0.1
+  multiscale_se_gamma_learnable: true
+
+  # 1x1 fusion is also residual:
+  # out = stage4_enhanced + gamma * conv1x1(concat(stage3_down, stage4_enhanced))
+  multiscale_fusion_residual: true
+  multiscale_fusion_gamma_init: 0.1
+  multiscale_fusion_gamma_learnable: true
+  multiscale_fusion_dropout: 0.0
