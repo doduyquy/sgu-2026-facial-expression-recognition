@@ -1,0 +1,17 @@
+_base_: "kaggle_aux_cnn_clip_cnn_main_logits.yaml"
+
+# Variant of the 0.8-CNN main branch:
+# CNN logits use concat(avg-pooled ConvNeXt feature, max-pooled ConvNeXt feature)
+# before the auxiliary MLP.
+#
+# Final logits stay:
+#   final_logits = 0.8 * logits_cnn_avgmax + 0.2 * logits_region
+
+model:
+  cnn_aux_pooling: "avgmax"
+
+  # The CNN branch is the main path and now receives richer avg+max features,
+  # so give its auxiliary CE a small extra push without letting it dominate.
+  cnn_aux_loss_weight: 0.5
+  cnn_aux_hidden_dim: 768
+  cnn_aux_dropout: 0.25

@@ -541,8 +541,10 @@ class ConvNeXtSpatialTokenizer(nn.Module):
         token_map = self.swin_refiner(token_map)
         visual_tokens = token_map.flatten(2).transpose(1, 2)
         pooled_map = F.adaptive_avg_pool2d(feat_map, 1)
+        max_pooled_map = F.adaptive_max_pool2d(feat_map, 1)
         global_feat = torch.flatten(pooled_map, 1)
-        return visual_tokens, global_feat, pooled_map
+        global_max_feat = torch.flatten(max_pooled_map, 1)
+        return visual_tokens, global_feat, pooled_map, global_max_feat
 
     def source_logits(self, pooled_map):
         if self.source_classifier is None:
@@ -665,6 +667,7 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         self.attention_logit_weight = float(model_cfg.get("attention_logit_weight", 1.0))
         self.source_logit_weight = float(model_cfg.get("source_logit_weight", 1.0))
         self.cnn_aux_logit_weight = float(model_cfg.get("cnn_aux_logit_weight", 0.2))
+        self.cnn_aux_pooling = model_cfg.get("cnn_aux_pooling", "avg").lower()
         self.use_cnn_aux_loss = bool(model_cfg.get("use_cnn_aux_loss", False))
         self.use_cnn_aux_logits = bool(
             model_cfg.get(
@@ -702,6 +705,8 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             raise ValueError("model.region_pooling must be one of: mean, concat")
         if self.ortho_loss_type not in ("mean_offdiag", "squared_offdiag"):
             raise ValueError("model.ortho_loss_type must be one of: mean_offdiag, squared_offdiag")
+        if self.cnn_aux_pooling not in ("avg", "avgmax"):
+            raise ValueError("model.cnn_aux_pooling must be one of: avg, avgmax")
         valid_logit_fusions = ("attention", "source", "sum", "cnn_aux", "cnn_aux_sum")
         if self.logit_fusion not in valid_logit_fusions:
             raise ValueError(
@@ -923,16 +928,18 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         if self.use_cnn_aux_classifier:
             aux_hidden_dim = int(model_cfg.get("cnn_aux_hidden_dim", self.classifier_hidden_dim))
             aux_dropout = float(model_cfg.get("cnn_aux_dropout", 0.25))
+            aux_input_dim = self.visual_dim * 2 if self.cnn_aux_pooling == "avgmax" else self.visual_dim
             self.cnn_aux_classifier = nn.Sequential(
-                nn.LayerNorm(self.visual_dim),
+                nn.LayerNorm(aux_input_dim),
                 nn.Dropout(aux_dropout),
-                nn.Linear(self.visual_dim, aux_hidden_dim),
+                nn.Linear(aux_input_dim, aux_hidden_dim),
                 nn.GELU(),
                 nn.Dropout(aux_dropout),
                 nn.Linear(aux_hidden_dim, num_classes),
             )
             print(
                 "--> [ConvNeXtRegionAttention] CNN auxiliary classifier enabled: "
+                f"pooling={self.cnn_aux_pooling}, input_dim={aux_input_dim}, "
                 f"hidden_dim={aux_hidden_dim}, dropout={aux_dropout}, "
                 f"use_loss={self.use_cnn_aux_loss}, use_logits={self.use_cnn_aux_logits}, "
                 f"logit_weight={self.cnn_aux_logit_weight}"
@@ -1105,6 +1112,13 @@ class ConvNeXtRegionAttentionFER(nn.Module):
 
         return attention_logits
 
+    def _cnn_aux_features(self, global_feat, global_max_feat=None):
+        if self.cnn_aux_pooling == "avg":
+            return global_feat
+        if global_max_feat is None:
+            raise RuntimeError("cnn_aux_pooling='avgmax' needs max-pooled ConvNeXt features.")
+        return torch.cat((global_feat, global_max_feat), dim=-1)
+
     def _region_tokens(self, batch_size):
         if not self.use_learnable_clip_region_tokens:
             return self.region_dict(batch_size)
@@ -1133,7 +1147,12 @@ class ConvNeXtRegionAttentionFER(nn.Module):
 
     def forward(self, x, region_masks=None):
         batch_size = x.shape[0]
-        visual_features, global_feat, pooled_map = self.convnext_backbone(x)
+        backbone_outputs = self.convnext_backbone(x)
+        if len(backbone_outputs) == 3:
+            visual_features, global_feat, pooled_map = backbone_outputs
+            global_max_feat = None
+        else:
+            visual_features, global_feat, pooled_map, global_max_feat = backbone_outputs
         if visual_features.size(1) != self.visual_pos_embed.size(1):
             raise ValueError(
                 f"visual_pos_embed expects {self.visual_pos_embed.size(1)} tokens, "
@@ -1172,8 +1191,9 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         if self.use_global_feature_concat:
             pooled = torch.cat((pooled, global_context), dim=-1)
         attention_logits = self.classifier(pooled)
+        cnn_aux_feat = self._cnn_aux_features(global_feat, global_max_feat)
         cnn_aux_logits = (
-            self.cnn_aux_classifier(global_feat)
+            self.cnn_aux_classifier(cnn_aux_feat)
             if self.cnn_aux_classifier is not None
             else None
         )
