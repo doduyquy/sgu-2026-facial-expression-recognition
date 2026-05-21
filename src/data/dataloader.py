@@ -16,10 +16,35 @@ def build_dataloader(config, data_path):
     trans_val = build_transform(config, "val")
     trans_test = build_transform(config, "test")
 
+    use_semantic_masks = bool(config.get('data', {}).get('use_semantic_masks', False))
+    semantic_masks_dir = config.get('data', {}).get('semantic_masks_dir')
+    num_regions = int(config.get('model', {}).get('num_regions', 9))
+
+    if semantic_masks_dir and not os.path.isabs(semantic_masks_dir):
+        semantic_masks_dir = os.path.join(os.path.dirname(data_path), semantic_masks_dir)
+
     # build dataset
-    data_train = FER2013(data_path=data_path, split="train", transforms=trans_train)
-    data_val = FER2013(data_path=data_path, split="val", transforms=trans_val)
-    data_test = FER2013(data_path=data_path, split="test", transforms=trans_test)
+    data_train = FER2013(
+        data_path=data_path,
+        split="train",
+        transforms=trans_train,
+        semantic_masks_dir=semantic_masks_dir if use_semantic_masks else None,
+        num_regions=num_regions,
+    )
+    data_val = FER2013(
+        data_path=data_path,
+        split="val",
+        transforms=trans_val,
+        semantic_masks_dir=semantic_masks_dir if use_semantic_masks else None,
+        num_regions=num_regions,
+    )
+    data_test = FER2013(
+        data_path=data_path,
+        split="test",
+        transforms=trans_test,
+        semantic_masks_dir=semantic_masks_dir if use_semantic_masks else None,
+        num_regions=num_regions,
+    )
 
     # batch the dataset
     train_loader = DataLoader(

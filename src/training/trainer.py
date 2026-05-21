@@ -63,6 +63,22 @@ class Trainer:
             return outputs[0]
         return outputs
 
+    def _unpack_batch(self, batch):
+        if isinstance(batch, (list, tuple)):
+            if len(batch) == 2:
+                images, labels = batch
+                return images, labels, None
+            if len(batch) == 3:
+                images = batch[0]
+                if getattr(batch[1], 'ndim', 0) == 3 and getattr(batch[2], 'ndim', 0) == 1:
+                    bboxes, labels = batch[1], batch[2]
+                elif getattr(batch[1], 'ndim', 0) == 1 and getattr(batch[2], 'ndim', 0) == 3:
+                    labels, bboxes = batch[1], batch[2]
+                else:
+                    labels, bboxes = batch[1], batch[2]
+                return images, labels, bboxes
+        return batch, None, None
+
     def _extract_aux_losses(self, outputs):
         if isinstance(outputs, dict):
             aux = outputs.get("aux_losses", None)
@@ -141,8 +157,12 @@ class Trainer:
 
         _scn_acc = {"scn_weight_mean": [], "scn_conf_mean": [], "scn_rank_loss": []}
 
-        for images, labels in self.train_loader:
-            images, labels = images.to(self.device), labels.to(self.device)
+        for batch in self.train_loader:
+            images, labels, bboxes = self._unpack_batch(batch)
+            images = images.to(self.device)
+            labels = labels.to(self.device)
+            if bboxes is not None:
+                bboxes = bboxes.to(self.device)
             self.optimizer.zero_grad()
 
             mixup_active = bool(getattr(self, '_runtime_use_mixup', False)) and self.model.training
@@ -157,7 +177,11 @@ class Trainer:
                 labels_a = labels
                 labels_b = labels[perm]
 
-            if hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
+            loss_mode = self.config.get('training', {}).get('loss', 'cross_entropy')
+
+            if bboxes is not None:
+                outputs = self.model(images, bboxes)
+            elif hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
                 outputs = self.model(images, targets=labels)
             else:
                 outputs = self.model(images)
@@ -170,6 +194,9 @@ class Trainer:
                     cls_loss = lam * F.cross_entropy(logits, labels_a) + (1.0 - lam) * F.cross_entropy(logits, labels_b)
                 except Exception:
                     cls_loss = self._base_criterion(logits, labels)
+            elif loss_mode == 'semantic_roi_graph' and hasattr(self.model, 'compute_losses'):
+                loss_dict = self.model.compute_losses(outputs, labels)
+                cls_loss = loss_dict["loss"]
             else:
                 if runtime_use_scn and getattr(self, '_current_epoch', 0) >= getattr(self, 'scn_warmup_epochs', 0):
                     try:
@@ -256,16 +283,28 @@ class Trainer:
         w_contrastive = getattr(self, '_runtime_au_contrastive_weight', self.au_contrastive_weight)
 
         with torch.no_grad():
-            for images, labels in self.val_loader:
-                images, labels = images.to(self.device), labels.to(self.device)
+            for batch in self.val_loader:
+                images, labels, bboxes = self._unpack_batch(batch)
+                images = images.to(self.device)
+                labels = labels.to(self.device)
+                if bboxes is not None:
+                    bboxes = bboxes.to(self.device)
 
-                if hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
+                loss_mode = self.config.get('training', {}).get('loss', 'cross_entropy')
+
+                if bboxes is not None:
+                    outputs = eval_model(images, bboxes)
+                elif hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
                     outputs = eval_model(images, targets=labels)
                 else:
                     outputs = eval_model(images)
                 
                 logits = self._extract_logits(outputs)
-                cls_loss = self.criterion(logits, labels)
+                if loss_mode == 'semantic_roi_graph' and hasattr(eval_model, 'compute_losses'):
+                    loss_dict = eval_model.compute_losses(outputs, labels)
+                    cls_loss = loss_dict["loss"]
+                else:
+                    cls_loss = self.criterion(logits, labels)
                 
                 loss = cls_loss
                 aux_losses = self._extract_aux_losses(outputs)

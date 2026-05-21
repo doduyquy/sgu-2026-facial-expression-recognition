@@ -202,6 +202,13 @@ def build_loss(config, class_weights=None):
             div_weight=config['training'].get('motif_div_weight', 0.1)
         )
 
+    elif loss_name == 'semantic_roi_graph':
+        label_smoothing = config['training'].get('label_smoothing', 0.0)
+        if class_weights is not None:
+            loss = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
+        else:
+            loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+
     else: 
         raise ValueError(f"\n[!!!] Not support {loss_name} loss!\n")
 
