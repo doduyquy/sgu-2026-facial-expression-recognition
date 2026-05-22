@@ -154,6 +154,8 @@ class Trainer:
         corrects = 0
         total = 0
         self._latest_scn_logs = None
+        # Accumulate per-component loss values for epoch-level WandB logging
+        self._latest_loss_components: dict = {}
 
         # Fetch scheduled weights for this phase
         w_div = getattr(self, '_runtime_motif_diversity_weight', self.motif_diversity_weight)
@@ -163,6 +165,7 @@ class Trainer:
         w_contrastive = getattr(self, '_runtime_au_contrastive_weight', self.au_contrastive_weight)
 
         _scn_acc = {"scn_weight_mean": [], "scn_conf_mean": [], "scn_rank_loss": []}
+        _component_accum: dict = {}
 
         for batch in self.train_loader:
             unpacked = self._unpack_batch(batch)
@@ -225,6 +228,10 @@ class Trainer:
                 class_weights = getattr(self._base_criterion, 'weight', None)
                 loss_dict = compute_semantic_roi_graph_losses(self.model, outputs, labels, class_weights=class_weights)
                 cls_loss = loss_dict["loss"]
+                # Accumulate component values for later WandB logging
+                for _k, _v in loss_dict.items():
+                    if _k != "loss" and torch.is_tensor(_v):
+                        _component_accum.setdefault(_k, []).append(float(_v.item()))
             else:
                 if runtime_use_scn and getattr(self, '_current_epoch', 0) >= getattr(self, 'scn_warmup_epochs', 0):
                     try:
@@ -305,7 +312,40 @@ class Trainer:
         except Exception:
             self._latest_scn_logs = None
 
+        # Average the per-component loss values
+        self._latest_loss_components = {
+            k: float(sum(v) / len(v)) for k, v in _component_accum.items() if len(v) > 0
+        }
+
         return epoch_loss, epoch_acc
+
+    @staticmethod
+    def _compute_metrics(all_preds, all_labels, num_classes: int = 7):
+        """Return macro-F1, balanced accuracy, per-class recall, per-class F1."""
+        try:
+            from sklearn.metrics import (
+                f1_score, balanced_accuracy_score, recall_score,
+            )
+            macro_f1 = float(f1_score(all_labels, all_preds, average="macro", zero_division=0))
+            bal_acc = float(balanced_accuracy_score(all_labels, all_preds))
+            per_recall = recall_score(all_labels, all_preds, average=None, zero_division=0, labels=list(range(num_classes))).tolist()
+            per_f1 = f1_score(all_labels, all_preds, average=None, zero_division=0, labels=list(range(num_classes))).tolist()
+        except ImportError:
+            # Fallback: pure numpy/torch
+            all_preds_t = np.array(all_preds)
+            all_labels_t = np.array(all_labels)
+            per_recall, per_f1 = [], []
+            for c in range(num_classes):
+                tp = ((all_preds_t == c) & (all_labels_t == c)).sum()
+                fp = ((all_preds_t == c) & (all_labels_t != c)).sum()
+                fn = ((all_preds_t != c) & (all_labels_t == c)).sum()
+                rec = tp / (tp + fn + 1e-8)
+                prec = tp / (tp + fp + 1e-8)
+                per_recall.append(float(rec))
+                per_f1.append(float(2 * prec * rec / (prec + rec + 1e-8)))
+            macro_f1 = float(np.mean(per_f1))
+            bal_acc = float(np.mean(per_recall))
+        return macro_f1, bal_acc, per_recall, per_f1
 
     def validate(self):
         eval_model = getattr(self, 'ema_model', self.model)
@@ -313,7 +353,10 @@ class Trainer:
 
         running_loss = 0.0
         corrects = 0
+        corrects_motif = 0
+        corrects_fused = 0
         total = 0
+        all_preds, all_preds_motif, all_preds_fused, all_labels = [], [], [], []
 
         # Fetch scheduled weights for validation
         w_div = getattr(self, '_runtime_motif_diversity_weight', self.motif_diversity_weight)
@@ -355,22 +398,20 @@ class Trainer:
                     outputs = eval_model(images, targets=labels)
                 else:
                     outputs = eval_model(images)
-                
+
                 logits = self._extract_logits(outputs)
                 if logits is None:
                     raise ValueError("Model outputs do not contain 'logits'. When returning a dict from forward(), include a 'logits' key with classification scores.")
                 if loss_mode == 'semantic_roi_graph':
-                    loss_dict = compute_semantic_roi_graph_losses(eval_model, outputs, labels)
+                    class_weights = getattr(self._base_criterion, 'weight', None)
+                    loss_dict = compute_semantic_roi_graph_losses(eval_model, outputs, labels, class_weights=class_weights)
                     cls_loss = loss_dict["loss"]
                 else:
                     cls_loss = self.criterion(logits, labels)
-                
+
                 loss = cls_loss
                 aux_losses = self._extract_aux_losses(outputs)
 
-                # Bug 3 fix: mirror the skip_aux guard from train_one_epoch() so that
-                # validate() does not double-count losses already included by
-                # compute_semantic_roi_graph_losses() when loss_mode == 'semantic_roi_graph'.
                 if loss_mode == 'semantic_roi_graph':
                     skip_aux = {"motif_diversity", "motif_consistency", "au_contrastive"}
                 else:
@@ -399,9 +440,48 @@ class Trainer:
                 _, preds = torch.max(logits, dim=1)
                 corrects += torch.sum(preds == labels.data)
                 total += labels.size(0)
+                all_preds.extend(preds.cpu().tolist())
+                all_labels.extend(labels.cpu().tolist())
+
+                # Branch-level accuracy
+                if isinstance(outputs, dict):
+                    lm = outputs.get("logits_motif")
+                    lf = outputs.get("logits_fused")
+                    if lm is not None:
+                        pm = torch.max(lm, dim=1)[1]
+                        corrects_motif += torch.sum(pm == labels.data)
+                        all_preds_motif.extend(pm.cpu().tolist())
+                    if lf is not None:
+                        pf = torch.max(lf, dim=1)[1]
+                        corrects_fused += torch.sum(pf == labels.data)
+                        all_preds_fused.extend(pf.cpu().tolist())
 
         epoch_loss = running_loss / total
         epoch_acc = corrects.double() / total
+
+        # Extended metrics
+        num_classes = self.config.get('model', {}).get('num_classes', 7)
+        macro_f1, bal_acc, per_recall, per_f1 = self._compute_metrics(all_preds, all_labels, num_classes)
+
+        self._latest_val_metrics = {
+            "Val/Accuracy_Final": float(epoch_acc),
+            "Val/MacroF1_Final": macro_f1,
+            "Val/BalancedAccuracy": bal_acc,
+        }
+        for i, (r, f) in enumerate(zip(per_recall, per_f1)):
+            self._latest_val_metrics[f"Val/Recall_Class{i}"] = r
+            self._latest_val_metrics[f"Val/F1_Class{i}"] = f
+
+        if all_preds_motif:
+            mf1_m, _, _, _ = self._compute_metrics(all_preds_motif, all_labels, num_classes)
+            acc_m = float(corrects_motif.double() / total)
+            self._latest_val_metrics["Val/Accuracy_Motif"] = acc_m
+            self._latest_val_metrics["Val/MacroF1_Motif"] = mf1_m
+        if all_preds_fused:
+            mf1_f, _, _, _ = self._compute_metrics(all_preds_fused, all_labels, num_classes)
+            acc_f = float(corrects_fused.double() / total)
+            self._latest_val_metrics["Val/Accuracy_Fused"] = acc_f
+            self._latest_val_metrics["Val/MacroF1_Fused"] = mf1_f
 
         return epoch_loss, epoch_acc
 
@@ -413,6 +493,7 @@ class Trainer:
 
         best_val_loss = float("inf")
         best_val_acc = 0.0
+        best_selection_score = 0.0
         patience_counter = 0
         all_train_loss = []
         all_val_loss = []
@@ -472,28 +553,54 @@ class Trainer:
             )
 
             if self.use_wandb:
-                log_metrics({
+                wandb_metrics = {
                     "Epoch": ep + 1,
                     "Train/Loss": train_loss,
                     "Train/Accuracy": train_acc,
                     "Val/Loss": val_loss,
                     "Val/Accuracy": val_acc,
                     "Learning_Rate": self.optimizer.param_groups[0]['lr']
-                }, epoch=ep)
+                }
+                # Branch-level & extended val metrics
+                for _mk, _mv in getattr(self, '_latest_val_metrics', {}).items():
+                    wandb_metrics[_mk] = _mv
+                # Per-component loss averages
+                loss_component_map = {
+                    "loss_ce": "Loss/CE",
+                    "loss_micro_motif_diversity": "Loss/MicroDiversity",
+                    "loss_macro_motif_diversity": "Loss/MacroDiversity",
+                    "loss_contrastive": "Loss/RegionContrastive",
+                    "loss_semantic_consistency": "Loss/SemanticConsistency",
+                    "loss_program_diversity": "Loss/ProgramDiversity",
+                    "loss_semantic_disentanglement": "Loss/Disentanglement",
+                    "loss_region_coordination": "Loss/RegionCoordination",
+                    "loss_topology_alignment": "Loss/TopologyAlignment",
+                    "loss_program_sparsity": "Loss/ProgramSparsity",
+                }
+                for _lk, _lname in loss_component_map.items():
+                    if _lk in getattr(self, '_latest_loss_components', {}):
+                        wandb_metrics[_lname] = self._latest_loss_components[_lk]
+                log_metrics(wandb_metrics, epoch=ep)
                 if getattr(self, '_latest_scn_logs', None) is not None:
                     try:
                         log_metrics(self._latest_scn_logs, epoch=ep)
                     except Exception:
                         pass
 
+            # Calculate a selection score that balances accuracy and macro F1
+            # to prevent the model from ignoring difficult minority classes
+            val_macro_f1 = getattr(self, '_latest_val_metrics', {}).get("Val/MacroF1_Final", 0.0)
+            selection_score = 0.5 * (val_acc.item() if hasattr(val_acc, 'item') else float(val_acc)) + 0.5 * val_macro_f1
+
             if self.scheduler is not None:
                 if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                    # mode='max' — track val_acc, not val_loss
-                    self.scheduler.step(val_acc)
+                    # mode='max' — track selection_score, not just val_loss or pure acc
+                    self.scheduler.step(selection_score)
                 else:
                     self.scheduler.step()
 
-            if val_acc > best_val_acc:
+            if selection_score > best_selection_score:
+                best_selection_score = selection_score
                 best_val_acc = val_acc
                 patience_counter = 0
                 save_state_dict = self.ema_model.module.state_dict() if hasattr(self, 'ema_model') else self.model.state_dict()
@@ -502,12 +609,13 @@ class Trainer:
                     "optimizer_state_dict": self.optimizer.state_dict(),
                     "epoch": ep,
                     "val_acc": val_acc.item() if hasattr(val_acc, 'item') else val_acc,
+                    "selection_score": selection_score,
                     "val_loss": val_loss
                 }, self.path_save_ckpt)
-                print(f"\t--- Save best Accuracy at ep {ep+1}, val_acc: {val_acc:.4f}, path: {self.path_save_ckpt} ---")
+                print(f"\t--- Save best Score at ep {ep+1}, val_acc: {val_acc:.4f}, score: {selection_score:.4f}, path: {self.path_save_ckpt} ---")
             else:
                 patience_counter += 1
-                print(f"\t-!- No accuracy improvement: {patience_counter}/{self.patience}")
+                print(f"\t-!- No score improvement: {patience_counter}/{self.patience}")
                 if patience_counter >= self.patience:
                     print(f"\t-_- Early stopping triggered at ep={ep+1}")
                     break

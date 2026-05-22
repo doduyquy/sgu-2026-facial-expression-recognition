@@ -828,7 +828,9 @@ class SemanticROIGraphFER(nn.Module):
             nn.GELU(),
         )
 
-        self.semantic_structure_gate = nn.Parameter(torch.tensor(0.2))
+        # Per-class gate: each emotion class learns its own graph-vs-global balance.
+        # Init with -0.5 → sigmoid(-0.5) ≈ 0.38, slightly below 0.5 to favour the graph branch early.
+        self.semantic_structure_gate = nn.Parameter(torch.full((config.num_classes,), -0.5))
 
         # Backward-compatible aliases for older checkpoints and callers.
         self.macro_motif_bank = self.semantic_program_bank
@@ -844,6 +846,16 @@ class SemanticROIGraphFER(nn.Module):
             nn.Sigmoid(),
         )
         self.region_dropout_prob = 0.05
+
+    def load_state_dict(self, state_dict, strict=True):
+        """Backward-compatible: upgrade scalar semantic_structure_gate from old checkpoints."""
+        key = "semantic_structure_gate"
+        if key in state_dict:
+            old = state_dict[key]
+            if old.ndim == 0 or old.numel() == 1:
+                state_dict = dict(state_dict)  # don't mutate the original
+                state_dict[key] = old.detach().view(1).expand(self.config.num_classes).clone()
+        return super().load_state_dict(state_dict, strict=strict)
 
     def _canonical_bboxes(self, batch_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
         boxes = SemanticRoiAlign._canonical_region_boxes(self.config.bbox_input_size, device, dtype)
@@ -909,14 +921,62 @@ class SemanticROIGraphFER(nn.Module):
         region_mask: Optional[torch.Tensor] = None,
         region_confidence: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
-        # Support TenCrop batches from val/test: (B, 10, C, H, W).
-        # Semantic boxes are defined in the original face frame, so keep the
-        # center crop, which is the least disruptive spatial choice here.
+        """Public forward: dispatches to TTA or single-image path."""
         if image.dim() == 5:
-            # Fix 4: TenCrop produces [tl, tr, bl, br, center, ...flips].
-            # Center is always at index 4; image.size(1)//2 = 5 (wrong: flipped tl).
-            image = image[:, 4]
+            return self._forward_tta(image, bboxes, region_mask, region_confidence)
+        return self._forward_single(image, bboxes, region_mask, region_confidence)
 
+    def _forward_tta(
+        self,
+        image: torch.Tensor,
+        bboxes: Optional[torch.Tensor] = None,
+        region_mask: Optional[torch.Tensor] = None,
+        region_confidence: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """TTA path: image is (B, T, C, H, W); averages logits over T crops."""
+        B, T, C, H, W = image.shape
+        # Flatten crops into batch dimension
+        flat_image = image.reshape(B * T, C, H, W)
+
+        # Expand bbox / mask tensors from (B, R, *) -> (B*T, R, *)
+        flat_bboxes = None
+        if bboxes is not None:
+            flat_bboxes = bboxes.unsqueeze(1).expand(B, T, -1, -1).reshape(B * T, bboxes.size(1), bboxes.size(2))
+        flat_region_mask = None
+        if region_mask is not None:
+            flat_region_mask = region_mask.unsqueeze(1).expand(B, T, -1).reshape(B * T, region_mask.size(1))
+        flat_region_confidence = None
+        if region_confidence is not None:
+            flat_region_confidence = region_confidence.unsqueeze(1).expand(B, T, -1).reshape(B * T, region_confidence.size(1))
+
+        outputs = self._forward_single(flat_image, flat_bboxes, flat_region_mask, flat_region_confidence)
+
+        # Average the classification scores over T crops
+        _avg_keys = ("logits", "logits_motif", "logits_fused", "semantic_program_scores")
+        for key in _avg_keys:
+            if key in outputs and torch.is_tensor(outputs[key]):
+                x = outputs[key]
+                if x.size(0) == B * T:
+                    outputs[key] = x.reshape(B, T, *x.shape[1:]).mean(dim=1)
+
+        # For non-averaged keys that still have B*T batch size, keep center-crop (index 4)
+        center_idx = 4 if T > 4 else T // 2
+        for key, val in outputs.items():
+            if key in _avg_keys:
+                continue
+            if torch.is_tensor(val) and val.dim() >= 1 and val.size(0) == B * T:
+                outputs[key] = val.reshape(B, T, *val.shape[1:])[:, center_idx]
+
+        return outputs
+
+    def _forward_single(
+        self,
+        image: torch.Tensor,
+        bboxes: Optional[torch.Tensor] = None,
+        region_mask: Optional[torch.Tensor] = None,
+        region_confidence: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """Core forward for a regular (B, C, H, W) batch."""
         # image: (B, 1, 48, 48) -> expand to 3 channels for ResNet
         if image.shape[1] == 1:
             image = image.repeat(1, 3, 1, 1)
@@ -946,7 +1006,6 @@ class SemanticROIGraphFER(nn.Module):
 
         roi_nodes = self.roi_align(feature_map, bboxes)
         micro_node_features, region_embeddings = self.micro_reasoner(roi_nodes)
-        # Fix 3: region_proj removed — micro_reasoner already outputs at feature_dim.
 
         missing_token = self.missing_region_token.view(1, 1, -1)
         region_valid_mask = region_mask.unsqueeze(-1) > 0
@@ -959,9 +1018,6 @@ class SemanticROIGraphFER(nn.Module):
         semantic_state_tokens = self.semantic_state_encoder(region_embeddings)
         micro_motif_bank = self.micro_motif_bank()
         micro_motif_attention, semantic_motif_tokens = self.micro_motif_matcher(semantic_state_tokens, micro_motif_bank)
-
-        # Fix 5: Correct reasoning order — local pairwise interaction first,
-        # then higher-order cross-region composition, then hyperedge reasoning.
 
         # Step 1: Pairwise region interaction (local semantic coordination).
         interaction_states, semantic_interaction_tensor, semantic_interaction_gates = self.semantic_interaction_block(
@@ -1015,12 +1071,11 @@ class SemanticROIGraphFER(nn.Module):
         semantic_program_routing_entropy = semantic_program_outputs["routing_entropy"]
 
         global_semantic_context = self.global_context(feature_map)
-        # Bug 1 fix: fused_latent combines semantic_latent + global context.
-        # logits_fused is the proper global branch; logits_motif is the graph branch.
         fused_latent = self.global_fusion(torch.cat([semantic_latent_embedding, global_semantic_context], dim=-1))
         logits_fused = self.semantic_classifier(fused_latent)
 
-        structure_gate = torch.sigmoid(self.semantic_structure_gate)
+        # Per-class gate: shape (1, num_classes) — each emotion learns its own balance
+        structure_gate = torch.sigmoid(self.semantic_structure_gate).view(1, -1)
         logits_motif = semantic_program_scores
         logits = logits_motif + structure_gate * logits_fused
 
@@ -1028,6 +1083,7 @@ class SemanticROIGraphFER(nn.Module):
             "logits": logits,
             "logits_motif": logits_motif,
             "logits_fused": logits_fused,
+            "structure_gate": structure_gate,
             "micro_node_features": micro_node_features,
             "micro_motif_attention": micro_motif_attention,
             "region_motif_tokens": semantic_motif_tokens,
