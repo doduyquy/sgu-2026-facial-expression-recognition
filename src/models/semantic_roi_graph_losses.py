@@ -447,16 +447,23 @@ def compute_semantic_roi_graph_losses(
     macro_diversity_loss = macro_motif_diversity_loss(base_model.semantic_program_bank)
     contrastive_source = semantic_states if semantic_states is not None else semantic_latent
     contrastive_region_mask = region_mask if contrastive_source is not None and contrastive_source.dim() == 3 else None
-    contrastive_loss = region_supervised_contrastive_loss(
-        contrastive_source,
-        labels,
-        temperature=temperature,
-        region_mask=contrastive_region_mask,
-    )
+    # Warn 4 fix: guard against both semantic_states and semantic_latent being None.
+    if contrastive_source is not None:
+        contrastive_loss = region_supervised_contrastive_loss(
+            contrastive_source,
+            labels,
+            temperature=temperature,
+            region_mask=contrastive_region_mask,
+        )
+    else:
+        contrastive_loss = torch.tensor(0.0, device=labels.device)
     semantic_consistency = semantic_consistency_loss(semantic_states, labels, region_mask=region_mask)
     compositional_loss = compositional_program_consistency_loss(program_scores, labels)
     disentanglement_loss = semantic_disentanglement_loss(semantic_states, region_mask=region_mask)
     coordination_loss = region_coordination_regularization(routing_weights, interaction_gates, region_mask=region_mask)
+    # Bug 4 note: `interaction_gates` (B, R, R) from SemanticInteractionBlock IS the
+    # observed pairwise region coordination topology. Passing it as `predicted_topology`
+    # to compare against the learnable program topology prototypes is intentional.
     topology_loss = topology_alignment_loss(interaction_gates, program_topology, labels, program_attention=program_attention)
     composition_contrastive_loss = region_composition_contrastive_loss(cross_region_tokens, labels, region_mask=region_mask, temperature=temperature)
     use_entropy = bool(training_cfg.get("use_entropy_sparsity", False))

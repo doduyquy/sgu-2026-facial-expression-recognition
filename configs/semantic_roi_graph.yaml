@@ -4,8 +4,9 @@ model:
   num_regions: 9
   roi_grid: 4
   feature_dim: 256
-  motif_per_class: 4
+  # micro_motifs_per_region: local motif templates per facial region
   micro_motifs_per_region: 8
+  # macro_motifs_per_class: semantic program slots per emotion class
   macro_motifs_per_class: 4
   use_pretrained: true
   backbone_out_size: 12
@@ -13,17 +14,31 @@ model:
   micro_layers: 2
   macro_layers: 2
   attn_heads: 4
-  dropout: 0.1
+  dropout: 0.2    # increased from 0.1 to reduce overfitting (train-val gap ~12%)
   label_smoothing: 0.05
   relation_temperature: 0.07
-  # Semantic compositional model hyperparameters (added for new architecture)
+  # Semantic compositional model hyperparameters
   semantic_state_dim: 128
   semantic_latent_dim: 256
-  semantic_attn_heads: 4
+  semantic_attn_heads: 4      # must divide semantic_state_dim (128 / 4 = 32 ✓)
+  hyperedge_count: 4          # Fix 4: was missing, silently used dataclass default
   router_hidden_dim: 256
   cross_region_compositions: 8
-  programs_per_class: 4
-  program_dim: 128
+
+# Bug 2 fix: added required keys used by train.py
+seed:
+  random_seed: 42
+
+env:
+  platform: "local" # change to "kaggle" when running on Kaggle
+
+local:
+  data_path: "../dataset/fer13-split"
+  root_path: "../"
+
+kaggle:
+  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
+  root_path: "/kaggle/working/sgu-2026-facial-expression-recognition/"
 
 data:
   batch_size: 64
@@ -31,7 +46,7 @@ data:
   input_size: 48
   in_channels: 1
   use_semantic_masks: true
-  # Path to semantic mask folder. Use relative path inside repo for local runs
+  # Path to semantic mask folder. Use relative path inside repo for local runs.
   # e.g. dataset/semantic_masks which contains train/, val/, test/ subfolders.
   semantic_masks_dir: "/kaggle/input/datasets/pha1t2/maskfer2013/semantic_masks"
 
@@ -42,8 +57,8 @@ training:
   loss: "semantic_roi_graph"
   label_smoothing: 0.05
   scheduler: "cosine"
-  patience: 20
-  class_weight_mode: "sqrt_inverse"
+  patience: 30                 # increased: val_acc now drives early stopping (needs more room)
+  class_weight_mode: "inverse" # stronger weighting for Fear (39.8%) and Disgust (50.9%)
   use_class_weights: true
   # Loss weights for the semantic ROI graph model
   micro_motif_diversity_weight: 0.05
@@ -54,14 +69,14 @@ training:
   # New loss weights for semantic compositional program training
   semantic_consistency_weight: 0.1
   compositional_motif_weight: 0.1
-  semantic_disentanglement_weight: 0.01
+  semantic_disentanglement_weight: 0.005  # reduced from 0.01 — less regularization pressure
   region_coordination_weight: 0.1
   compositional_program_weight: 0.1
   topology_alignment_weight: 0.1
   region_composition_contrastive_weight: 0.1
-  program_sparsity_weight: 0.05
+  program_sparsity_weight: 0.01           # reduced from 0.05 — avoid over-sparsifying programs
   program_diversity_weight: 0.05
-  # Use entropy-based sparsity (True) to encourage load-balancing across hyperedges
+  # Use entropy-based sparsity (true) to encourage load-balancing across hyperedges
   use_entropy_sparsity: false
 
 logging:

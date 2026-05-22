@@ -1,44 +1,66 @@
 from torchvision.transforms import Compose
-from posixpath import split
-import torch 
+import torch
 from torchvision import transforms
 
-def build_transform(config, split="train") -> Compose: # train | val | test
-    """Build transform with TenCrop for test-time augmentation (val/test only)
-    
-    Args: 
-        config: for image size
-        split: train | val | test (transform for train is diff from val and test)
-    Return: 
-        compose: a transform compose
+
+def build_transform(config, split="train") -> Compose:
+    """Build transforms for train / val / test.
+
+    Fix 1: config key is 'input_size' (not 'image_size'). Falls back to
+            'image_size' for backward compatibility with older configs.
+    Fix 6: When semantic masks are used, TenCrop is incompatible because
+            bounding-box coordinates are defined in the original image space
+            and become invalid after any spatial crop. Simple resize is used
+            instead so that bbox coordinates stay correct.
+
+    Args:
+        config: full config dict
+        split: 'train' | 'val' | 'test'
+
+    Returns:
+        Compose transform pipeline
     """
-    image_size = config['data']['image_size']
+    # Fix 1: accept both key names
+    data_cfg = config.get('data', {})
+    image_size = data_cfg.get('input_size', data_cfg.get('image_size', 48))
     mu = 0.5
     st = 0.5
-    
+
+    use_semantic_masks = bool(data_cfg.get('use_semantic_masks', False))
+
     if split == "train":
-        # Standard augmentation for training (NO TenCrop - too slow)
         trans = transforms.Compose([
             transforms.RandomResizedCrop(image_size, scale=(0.8, 1.2)),
             transforms.RandomApply([transforms.RandomAffine(0, translate=(0.2, 0.2))], p=0.5),
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomApply([transforms.RandomRotation(10)], p=0.5),
             transforms.ToTensor(),
-            transforms.Normalize(mean=(mu,), std=(st,))
+            transforms.Normalize(mean=(mu,), std=(st,)),
         ])
     else:
-        # Test-time augmentation with TenCrop for val/test
-        # Resize to 56, then crop 10 patches of exactly 48x48 to match training dimensions
-        trans = transforms.Compose([
-            transforms.Resize((56, 56)),
-            transforms.TenCrop(48),
-            transforms.Lambda(lambda crops: torch.stack([
-                transforms.ToTensor()(crop) for crop in crops
-            ])),  # Convert to tensor: (10, 1, 40, 40)
-            transforms.Lambda(lambda tensors: torch.stack([
-                transforms.Normalize(mean=(mu,), std=(st,))(t) for t in tensors
-            ])),  # Normalize each crop: (10, 1, 40, 40)
-        ])
+        if use_semantic_masks:
+            # Fix 6: no TenCrop — semantic bbox coords are in original image space
+            # and would be wrong after any spatial crop. Simple resize preserves coords.
+            trans = transforms.Compose([
+                transforms.Resize((image_size, image_size)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=(mu,), std=(st,)),
+            ])
+        else:
+            # TenCrop TTA for models that do not use bounding boxes.
+            # Note: TenCrop order is [tl, tr, bl, br, center, ...flips].
+            # Center crop is at index 4, NOT image.size(1)//2 = 5.
+            larger = int(image_size * 56 / 48)
+            trans = transforms.Compose([
+                transforms.Resize((larger, larger)),
+                transforms.TenCrop(image_size),
+                transforms.Lambda(lambda crops: torch.stack(
+                    [transforms.ToTensor()(c) for c in crops]
+                )),
+                transforms.Lambda(lambda tensors: torch.stack(
+                    [transforms.Normalize(mean=(mu,), std=(st,))(t) for t in tensors]
+                )),
+            ])
 
     return trans
 

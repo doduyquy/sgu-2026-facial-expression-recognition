@@ -47,12 +47,13 @@ class SemanticRoiGraphConfig:
     motif_per_class: int = 4
     micro_motifs_per_region: int = 8
     macro_motifs_per_class: int = 4
-    cross_region_compositions: int = 4
-    semantic_state_dim: int = 9
-    semantic_latent_dim: int = 128
-    semantic_attn_heads: int = 3
+    # Bug 5 fix: defaults now match semantic_roi_graph.yaml
+    cross_region_compositions: int = 8   # was 4
+    semantic_state_dim: int = 128         # was 9 — must be divisible by semantic_attn_heads
+    semantic_latent_dim: int = 256        # was 128
+    semantic_attn_heads: int = 4          # was 3 — must divide semantic_state_dim
     hyperedge_count: int = 4
-    router_hidden_dim: int = 64
+    router_hidden_dim: int = 256          # was 64
     use_pretrained: bool = True
     backbone_out_size: int = 12
     bbox_input_size: int = 48
@@ -87,6 +88,9 @@ class SemanticBackbone(nn.Module):
             self.output_layer = nn.Sequential(self.layer1, self.layer2, self.layer3)
             self.out_channels = 256
             self.use_layer4 = False
+            # Free layer4 — not used in forward, but would waste ~8MB GPU memory
+            # if kept as a registered submodule with its pretrained weights.
+            del self.layer4
         elif feature_dim == 512:
             self.output_layer = nn.Sequential(self.layer1, self.layer2, self.layer3, self.layer4)
             self.out_channels = 512
@@ -332,7 +336,10 @@ class SemanticStateEncoder(nn.Module):
     def forward(self, region_embeddings: torch.Tensor) -> torch.Tensor:
         raw_state = self.proj(region_embeddings)
         gate = self.gate(region_embeddings)
-        semantic_state = self.norm(raw_state * gate + raw_state)
+        # Fix 2: pure gating — gate actually controls information flow.
+        # Original `raw_state * gate + raw_state` = `raw_state * (gate + 1)`,
+        # making the Sigmoid gate a mere scaling factor with no off-switch.
+        semantic_state = self.norm(raw_state * gate)
         return semantic_state
 
 
@@ -714,7 +721,8 @@ class SemanticROIGraphFER(nn.Module):
             dropout=config.dropout,
         )
 
-        self.region_proj = nn.Linear(config.feature_dim, config.feature_dim)
+        # Fix 3: region_proj (feature_dim→feature_dim) removed — a same-dimension
+        # linear projection adds no representational capacity and wastes ~65K params.
         self.semantic_state_encoder = SemanticStateEncoder(
             input_dim=config.feature_dim,
             state_dim=config.semantic_state_dim,
@@ -875,7 +883,9 @@ class SemanticROIGraphFER(nn.Module):
         # Semantic boxes are defined in the original face frame, so keep the
         # center crop, which is the least disruptive spatial choice here.
         if image.dim() == 5:
-            image = image[:, image.size(1) // 2]
+            # Fix 4: TenCrop produces [tl, tr, bl, br, center, ...flips].
+            # Center is always at index 4; image.size(1)//2 = 5 (wrong: flipped tl).
+            image = image[:, 4]
 
         # image: (B, 1, 48, 48) -> expand to 3 channels for ResNet
         if image.shape[1] == 1:
@@ -906,7 +916,7 @@ class SemanticROIGraphFER(nn.Module):
 
         roi_nodes = self.roi_align(feature_map, bboxes)
         micro_node_features, region_embeddings = self.micro_reasoner(roi_nodes)
-        region_embeddings = self.region_proj(region_embeddings)
+        # Fix 3: region_proj removed — micro_reasoner already outputs at feature_dim.
 
         missing_token = self.missing_region_token.view(1, 1, -1)
         region_valid_mask = region_mask.unsqueeze(-1) > 0
@@ -920,8 +930,17 @@ class SemanticROIGraphFER(nn.Module):
         micro_motif_bank = self.micro_motif_bank()
         micro_motif_attention, semantic_motif_tokens = self.micro_motif_matcher(semantic_state_tokens, micro_motif_bank)
 
-        cross_region_outputs = self.cross_region_composition_graph(
+        # Fix 5: Correct reasoning order — local pairwise interaction first,
+        # then higher-order cross-region composition, then hyperedge reasoning.
+
+        # Step 1: Pairwise region interaction (local semantic coordination).
+        interaction_states, semantic_interaction_tensor, semantic_interaction_gates = self.semantic_interaction_block(
             semantic_motif_tokens,
+        )
+
+        # Step 2: Higher-order cross-region composition on interaction-enriched states.
+        cross_region_outputs = self.cross_region_composition_graph(
+            interaction_states,
             region_mask=region_mask,
             region_confidence=region_confidence,
         )
@@ -931,15 +950,12 @@ class SemanticROIGraphFER(nn.Module):
         cross_region_pair_scores = cross_region_outputs["pair_scores"]
         cross_region_pair_attention = cross_region_outputs["pair_attention"]
 
+        # Step 3: Enrich interaction states with higher-order composition context.
         composition_summary = cross_region_tokens.mean(dim=1, keepdim=True)
-        compositional_input = semantic_motif_tokens + composition_summary.expand_as(semantic_motif_tokens)
-
-        interaction_states, semantic_interaction_tensor, semantic_interaction_gates = self.semantic_interaction_block(
-            compositional_input,
-        )
+        hypergraph_input = interaction_states + composition_summary.expand_as(interaction_states)
 
         compositional_outputs = self.semantic_compositional_reasoner(
-            interaction_states,
+            hypergraph_input,
             region_mask=region_mask,
             region_confidence=region_confidence,
         )
@@ -968,13 +984,14 @@ class SemanticROIGraphFER(nn.Module):
         semantic_program_routing_entropy = semantic_program_outputs["routing_entropy"]
 
         global_semantic_context = self.global_context(feature_map)
+        # Bug 1 fix: fused_latent combines semantic_latent + global context.
+        # logits_fused is the proper global branch; logits_motif is the graph branch.
         fused_latent = self.global_fusion(torch.cat([semantic_latent_embedding, global_semantic_context], dim=-1))
-        logits = self.semantic_classifier(fused_latent)
+        logits_fused = self.semantic_classifier(fused_latent)
 
         structure_gate = torch.sigmoid(self.semantic_structure_gate)
         logits_motif = semantic_program_scores
-        logits_global = self.semantic_classifier(global_semantic_context)
-        logits = logits_motif + structure_gate * logits_global
+        logits = logits_motif + structure_gate * logits_fused
 
         return {
             "logits": logits,

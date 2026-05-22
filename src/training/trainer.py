@@ -366,19 +366,29 @@ class Trainer:
                 
                 loss = cls_loss
                 aux_losses = self._extract_aux_losses(outputs)
-                
-                if "motif_diversity" in aux_losses:
+
+                # Bug 3 fix: mirror the skip_aux guard from train_one_epoch() so that
+                # validate() does not double-count losses already included by
+                # compute_semantic_roi_graph_losses() when loss_mode == 'semantic_roi_graph'.
+                if loss_mode == 'semantic_roi_graph':
+                    skip_aux = {"motif_diversity", "motif_consistency", "au_contrastive"}
+                else:
+                    skip_aux = set()
+
+                if "motif_diversity" in aux_losses and "motif_diversity" not in skip_aux:
                     loss = loss + w_div * aux_losses["motif_diversity"]
-                if "motif_consistency" in aux_losses:
+                if "motif_consistency" in aux_losses and "motif_consistency" not in skip_aux:
                     loss = loss + w_consist * aux_losses["motif_consistency"]
-                if "attn_entropy" in aux_losses:
+                if "attn_entropy" in aux_losses and "attn_entropy" not in skip_aux:
                     loss = loss + w_ent * aux_losses["attn_entropy"]
-                if "offset_reg" in aux_losses:
+                if "offset_reg" in aux_losses and "offset_reg" not in skip_aux:
                     loss = loss + w_off * aux_losses["offset_reg"]
-                if "au_contrastive" in aux_losses:
+                if "au_contrastive" in aux_losses and "au_contrastive" not in skip_aux:
                     loss = loss + w_contrastive * aux_losses["au_contrastive"]
 
                 for k, v in aux_losses.items():
+                    if k in skip_aux:
+                        continue
                     if k not in ["motif_diversity", "motif_consistency", "attn_entropy", "offset_reg", "au_contrastive"]:
                         w_other = self.config.get('training', {}).get(f'{k}_weight', 0.1)
                         loss = loss + float(w_other) * v
@@ -483,6 +493,7 @@ class Trainer:
 
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
+                patience_counter = 0
                 save_state_dict = self.ema_model.module.state_dict() if hasattr(self, 'ema_model') else self.model.state_dict()
                 torch.save({
                     "model_state_dict": save_state_dict,
@@ -492,17 +503,17 @@ class Trainer:
                     "val_loss": val_loss
                 }, self.path_save_ckpt)
                 print(f"\t--- Save best Accuracy at ep {ep+1}, val_acc: {val_acc:.4f}, path: {self.path_save_ckpt} ---")
-
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                patience_counter = 0
-                print(f"\t--- Best Loss updated: {val_loss:.4f} ---")
             else:
                 patience_counter += 1
-                print(f"\t-!- No loss improvement: {patience_counter}/{self.patience}")
+                print(f"\t-!- No accuracy improvement: {patience_counter}/{self.patience}")
                 if patience_counter >= self.patience:
                     print(f"\t-_- Early stopping triggered at ep={ep+1}")
                     break
+
+            # Log val_loss for monitoring (no longer used for early stopping)
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                print(f"\t    [info] Best val_loss updated: {val_loss:.4f}")
 
         return all_train_loss, all_val_loss
 
