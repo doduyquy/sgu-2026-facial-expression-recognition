@@ -19,10 +19,45 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> Non
 
     os.makedirs(save_dir, exist_ok=True)
     with torch.no_grad():
-        for images, labels in tqdm(test_loader, desc="Evaluate test set..."):
-            images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            _, preds = torch.max(outputs, 1)
+        for batch in tqdm(test_loader, desc="Evaluate test set..."):
+            # Support DataLoader returning (images, labels) or (images, labels, bboxes)
+            # or (images, labels, bboxes, semantic_meta)
+            semantic_meta = None
+            if isinstance(batch, (list, tuple)):
+                if len(batch) == 4:
+                    images, labels, bboxes, semantic_meta = batch
+                elif len(batch) == 3:
+                    images, labels, bboxes = batch
+                else:
+                    images, labels = batch[:2]
+            else:
+                images, labels = batch
+
+            images = images.to(device)
+            labels = labels.to(device)
+
+            # If bounding boxes are present, forward with them. If semantic_meta
+            # contains region-level masks/confidences, pass them through to the model
+            if 'bboxes' in locals() and bboxes is not None:
+                bboxes = bboxes.to(device)
+                if isinstance(semantic_meta, dict) and "region_mask" in semantic_meta:
+                    region_mask = semantic_meta["region_mask"].to(device)
+                    region_confidence = semantic_meta.get("region_confidence", None)
+                    if region_confidence is not None:
+                        region_confidence = region_confidence.to(device)
+                    outputs = model(
+                        images,
+                        bboxes,
+                        region_mask=region_mask,
+                        region_confidence=region_confidence,
+                    )
+                else:
+                    outputs = model(images, bboxes)
+            else:
+                outputs = model(images)
+
+            logits = outputs["logits"] if isinstance(outputs, dict) else (outputs[0] if isinstance(outputs, (list, tuple)) else outputs)
+            _, preds = torch.max(logits, 1)
             
             imgs_cpu = images.cpu()
             labels_cpu = labels.cpu().numpy()

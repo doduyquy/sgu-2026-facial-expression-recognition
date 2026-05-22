@@ -22,14 +22,32 @@ import torch.nn.functional as F
 import torchvision
 from torchvision.ops import roi_align
 
+# Loss helpers moved to src/models/semantic_roi_graph_losses.py
+
+DEFAULT_SEMANTIC_REGIONS = (
+    "forehead",
+    "left_eyebrow",
+    "right_eyebrow",
+    "glabella",
+    "left_eye",
+    "right_eye",
+    "nose",
+    "left_mouth_corner",
+    "right_mouth_corner",
+)
+
 
 @dataclass
 class SemanticRoiGraphConfig:
+    name: str = "semantic_roi_graph_fer"
     num_classes: int = 7
     num_regions: int = 9
+    name: str = "semantic_roi_graph_fer"
     roi_grid: int = 4
     feature_dim: int = 256
     motif_per_class: int = 4
+    micro_motifs_per_region: int = 8
+    macro_motifs_per_class: int = 4
     use_pretrained: bool = True
     backbone_out_size: int = 12
     bbox_input_size: int = 48
@@ -38,6 +56,8 @@ class SemanticRoiGraphConfig:
     attn_heads: int = 4
     dropout: float = 0.1
     label_smoothing: float = 0.0
+    relation_temperature: float = 0.07
+    region_confidence_threshold: float = 0.3
 
 
 class SemanticBackbone(nn.Module):
@@ -86,31 +106,78 @@ class SemanticRoiAlign(nn.Module):
         self.bbox_input_size = int(bbox_input_size)
         self.feature_out_size = int(feature_out_size)
 
+    @staticmethod
+    def _canonical_region_boxes(bbox_input_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        """Fallback semantic ROIs for 9 regions in 48x48 space."""
+        boxes = torch.tensor(
+            [
+                [8, 0, 40, 10],   # forehead
+                [5, 8, 18, 18],   # left_eyebrow
+                [30, 8, 43, 18],  # right_eyebrow
+                [18, 12, 30, 22], # glabella
+                [6, 16, 20, 30],  # left_eye
+                [28, 16, 42, 30], # right_eye
+                [14, 20, 34, 38], # nose
+                [8, 30, 22, 43],  # left_mouth_corner
+                [26, 30, 40, 43], # right_mouth_corner
+            ],
+            device=device,
+            dtype=dtype,
+        )
+        scale = float(bbox_input_size) / 48.0
+        return boxes * scale
+
+    def validate_bboxes(self, bboxes: torch.Tensor) -> torch.Tensor:
+        """Clamp and repair invalid bbox coordinates while preserving batch/region count."""
+        bboxes = bboxes.float().clone()
+        bboxes[..., 0::2] = bboxes[..., 0::2].clamp(0.0, float(self.bbox_input_size - 1))
+        bboxes[..., 1::2] = bboxes[..., 1::2].clamp(0.0, float(self.bbox_input_size - 1))
+
+        x1 = torch.minimum(bboxes[..., 0], bboxes[..., 2])
+        y1 = torch.minimum(bboxes[..., 1], bboxes[..., 3])
+        x2 = torch.maximum(bboxes[..., 0], bboxes[..., 2])
+        y2 = torch.maximum(bboxes[..., 1], bboxes[..., 3])
+
+        x2 = torch.maximum(x2, x1 + 2.0)
+        y2 = torch.maximum(y2, y1 + 2.0)
+
+        x2 = torch.clamp(x2, max=float(self.bbox_input_size - 1))
+        y2 = torch.clamp(y2, max=float(self.bbox_input_size - 1))
+        x1 = torch.clamp(x1, max=float(self.bbox_input_size - 3))
+        y1 = torch.clamp(y1, max=float(self.bbox_input_size - 3))
+
+        repaired = torch.stack([x1, y1, x2, y2], dim=-1)
+        too_small = ((repaired[..., 2] - repaired[..., 0]) < 2.0) | ((repaired[..., 3] - repaired[..., 1]) < 2.0)
+        if too_small.any():
+            repaired[too_small] = self._canonical_region_boxes(self.bbox_input_size, repaired.device, repaired.dtype)[None, :, :].expand_as(repaired)[too_small]
+        return repaired
+
     def forward(self, feature_map: torch.Tensor, bboxes: torch.Tensor) -> torch.Tensor:
         # feature_map: (B, C, H, W)
         # bboxes: (B, R, 4) in image coords (0..bbox_input_size-1)
-        b, _, h, w = feature_map.shape
-        scale = float(self.feature_out_size) / float(self.bbox_input_size)
+        b, _, h, _ = feature_map.shape
+        if bboxes.dim() != 3 or bboxes.size(-1) != 4:
+            raise ValueError("bboxes must have shape (B, R, 4)")
 
-        bboxes = bboxes.float().clone()
-        bboxes[..., 0::2] = bboxes[..., 0::2] * scale
-        bboxes[..., 1::2] = bboxes[..., 1::2] * scale
+        batch_size, num_regions, _ = bboxes.shape
+        if batch_size != b:
+            raise ValueError(f"bboxes batch {batch_size} does not match feature_map batch {b}")
 
-        bboxes[..., 0::2] = bboxes[..., 0::2].clamp(0.0, float(w - 1))
-        bboxes[..., 1::2] = bboxes[..., 1::2].clamp(0.0, float(h - 1))
+        bboxes = self.validate_bboxes(bboxes)
 
-        rois = []
-        for batch_index in range(b):
-            roi = bboxes[batch_index]
-            batch_col = torch.full((roi.shape[0], 1), float(batch_index), device=roi.device)
-            rois.append(torch.cat([batch_col, roi], dim=1))
-        rois = torch.cat(rois, dim=0)
+        batch_indices = torch.arange(b, device=bboxes.device, dtype=bboxes.dtype).view(b, 1, 1)
+        batch_indices = batch_indices.expand(b, num_regions, 1)
+        rois = torch.cat([batch_indices, bboxes], dim=-1).reshape(-1, 5)
+
+        # ROIAlign expects a single spatial_scale that maps input-image coordinates
+        # to feature-map coordinates. For 48x48 inputs and 12x12 feature maps, this is 0.25.
+        spatial_scale = float(h) / float(self.bbox_input_size)
 
         roi_features = roi_align(
             feature_map,
             rois,
             output_size=(self.roi_grid, self.roi_grid),
-            spatial_scale=1.0,
+            spatial_scale=spatial_scale,
             sampling_ratio=2,
             aligned=True,
         )
@@ -121,12 +188,23 @@ class SemanticRoiAlign(nn.Module):
 
 
 class GATBlock(nn.Module):
-    """Multi-head graph attention with learnable adjacency bias."""
+    """Multi-head graph attention with learnable adjacency bias and locality prior."""
 
-    def __init__(self, dim: int, heads: int = 4, dropout: float = 0.1, num_nodes: Optional[int] = None):
+    def __init__(
+        self,
+        dim: int,
+        heads: int = 4,
+        dropout: float = 0.1,
+        num_nodes: Optional[int] = None,
+        use_locality: bool = False,
+    ):
         super().__init__()
+        if dim % heads != 0:
+            raise ValueError("dim must be divisible by heads")
+
         self.dim = dim
         self.heads = heads
+        self.head_dim = dim // heads
         self.dropout = nn.Dropout(dropout)
         self.q_proj = nn.Linear(dim, dim)
         self.k_proj = nn.Linear(dim, dim)
@@ -136,17 +214,51 @@ class GATBlock(nn.Module):
         self.adj_bias = None
         if num_nodes is not None:
             self.adj_bias = nn.Parameter(torch.zeros(1, 1, num_nodes, num_nodes))
+            nn.init.normal_(self.adj_bias, mean=0.0, std=0.01)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        self.locality_bias = None
+        if use_locality and num_nodes is not None:
+            side = int(num_nodes ** 0.5)
+            if side * side == num_nodes:
+                coords_1d = torch.arange(side, dtype=torch.float32)
+                grid_y, grid_x = torch.meshgrid(coords_1d, coords_1d, indexing="ij")
+                coords = torch.stack([grid_y, grid_x], dim=-1).reshape(-1, 2)
+            else:
+                coords = torch.arange(num_nodes, dtype=torch.float32).unsqueeze(-1)
+            dist = torch.cdist(coords, coords)
+            dist = dist / (dist.max().clamp(min=1e-6))
+            self.register_buffer("locality_bias", -dist.unsqueeze(0).unsqueeze(0), persistent=False)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        edge_prior: Optional[torch.Tensor] = None,
+        attn_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         # x: (B, N, D)
         b, n, d = x.shape
-        q = self.q_proj(x).view(b, n, self.heads, d // self.heads).transpose(1, 2)
-        k = self.k_proj(x).view(b, n, self.heads, d // self.heads).transpose(1, 2)
-        v = self.v_proj(x).view(b, n, self.heads, d // self.heads).transpose(1, 2)
+        q = self.q_proj(x).view(b, n, self.heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(x).view(b, n, self.heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(x).view(b, n, self.heads, self.head_dim).transpose(1, 2)
 
-        attn = torch.einsum("bhid,bhjd->bhij", q, k) / (d // self.heads) ** 0.5
+        attn = torch.einsum("bhid,bhjd->bhij", q, k) / (self.head_dim ** 0.5)
         if self.adj_bias is not None:
             attn = attn + self.adj_bias
+        if self.locality_bias is not None:
+            attn = attn + self.locality_bias
+        if edge_prior is not None:
+            if edge_prior.dim() == 2:
+                edge_prior = edge_prior.unsqueeze(0)
+            if edge_prior.size(0) == 1 and b > 1:
+                edge_prior = edge_prior.expand(b, -1, -1)
+            edge_prior = edge_prior.clamp_min(1e-6)
+            attn = attn + torch.log(edge_prior).unsqueeze(1)
+        if attn_mask is not None:
+            if attn_mask.dim() == 2:
+                attn_mask = attn_mask.unsqueeze(1).unsqueeze(2)
+            elif attn_mask.dim() == 3:
+                attn_mask = attn_mask.unsqueeze(1)
+            attn = attn.masked_fill(attn_mask == 0, -1e9)
         attn = F.softmax(attn, dim=-1)
         attn = self.dropout(attn)
 
@@ -203,15 +315,69 @@ class MacroGraphReasoner(nn.Module):
         ])
         self.norms = nn.ModuleList([nn.LayerNorm(dim) for _ in range(layers)])
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        adj: Optional[torch.Tensor] = None,
+        region_confidence: Optional[torch.Tensor] = None,
+        region_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         # x: (B, R, D)
+        if region_confidence is not None:
+            x = x * region_confidence.unsqueeze(-1)
         for layer, norm in zip(self.layers, self.norms):
-            x = x + layer(norm(x))
+            x = x + layer(norm(x), edge_prior=adj, attn_mask=region_mask)
         return x
 
 
-class SemanticMotifBank(nn.Module):
-    """Learnable motifs per class."""
+class MicroMotifBank(nn.Module):
+    """Learnable micro motifs per semantic region."""
+
+    def __init__(self, num_regions: int, motifs_per_region: int, dim: int):
+        super().__init__()
+        self.num_regions = num_regions
+        self.motifs_per_region = motifs_per_region
+        self.dim = dim
+        self.motifs = nn.Parameter(torch.randn(num_regions, motifs_per_region, dim) * 0.02)
+
+    def forward(self) -> torch.Tensor:
+        return self.motifs
+
+
+class MicroMotifMatcher(nn.Module):
+    """Match region embeddings to region-specific micro motifs."""
+
+    def __init__(self, num_regions: int, motifs_per_region: int, dim: int, temperature: float = 0.07):
+        super().__init__()
+        self.num_regions = num_regions
+        self.motifs_per_region = motifs_per_region
+        self.dim = dim
+        self.temperature = float(temperature)
+        self.token_proj = nn.Sequential(
+            nn.Linear(dim, dim),
+            nn.LayerNorm(dim),
+            nn.GELU(),
+        )
+        self.fusion_gate = nn.Parameter(torch.tensor(0.5))
+
+    def forward(self, region_embeddings: torch.Tensor, motif_bank: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        # region_embeddings: (B, R, D)
+        # motif_bank: (R, K, D)
+        region_norm = F.normalize(region_embeddings, dim=-1)
+        bank_norm = F.normalize(motif_bank, dim=-1)
+
+        sim = torch.einsum("brd,rkd->brk", region_norm, bank_norm) / self.temperature
+        attn = F.softmax(sim, dim=-1)
+        tokens = torch.einsum("brk,rkd->brd", attn, motif_bank)
+        tokens = self.token_proj(tokens)
+
+        gate = torch.sigmoid(self.fusion_gate)
+        region_motif_tokens = region_embeddings + gate * tokens
+        return attn, region_motif_tokens
+
+
+class MacroMotifBank(nn.Module):
+    """Learnable macro motifs per emotion class."""
 
     def __init__(self, num_classes: int, motifs_per_class: int, num_regions: int, dim: int):
         super().__init__()
@@ -221,23 +387,24 @@ class SemanticMotifBank(nn.Module):
         return self.motifs
 
 
-class SemanticMotifMatcher(nn.Module):
-    """Match macro graph embeddings to motif bank using relation tensors."""
+class MacroMotifMatcher(nn.Module):
+    """Match macro graph embeddings to class-level topology motifs."""
 
-    def __init__(self, num_classes: int, motifs_per_class: int, num_regions: int, dim: int):
+    def __init__(self, num_classes: int, motifs_per_class: int, num_regions: int, dim: int, temperature: float = 0.07):
         super().__init__()
         self.num_classes = num_classes
         self.motifs_per_class = motifs_per_class
         self.num_regions = num_regions
         self.dim = dim
-        self.scale = dim ** -0.5
+        self.temperature = float(temperature)
 
-    def relation_matrix(self, embeddings: torch.Tensor) -> torch.Tensor:
+    @staticmethod
+    def relation_matrix(embeddings: torch.Tensor) -> torch.Tensor:
         # embeddings: (..., R, D) -> (..., R, R)
         embeddings = F.normalize(embeddings, dim=-1)
         return torch.einsum("...id,...jd->...ij", embeddings, embeddings)
 
-    def forward(self, macro_embeddings: torch.Tensor, motif_bank: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, macro_embeddings: torch.Tensor, motif_bank: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # macro_embeddings: (B, R, D)
         # motif_bank: (C, M, R, D)
         rel_macro = self.relation_matrix(macro_embeddings)  # (B, R, R)
@@ -246,10 +413,15 @@ class SemanticMotifMatcher(nn.Module):
         rel_macro_flat = F.normalize(rel_macro.reshape(rel_macro.shape[0], -1), dim=-1)
         rel_motif_flat = F.normalize(rel_motif.reshape(rel_motif.shape[0], rel_motif.shape[1], -1), dim=-1)
 
-        sim = torch.einsum("bd,cmd->bcm", rel_macro_flat, rel_motif_flat)
+        sim = torch.einsum("bd,cmd->bcm", rel_macro_flat, rel_motif_flat) / self.temperature
         attn = F.softmax(sim, dim=-1)
         logits_motif = (attn * sim).sum(dim=-1)
-        return logits_motif, attn
+        return logits_motif, attn, rel_macro
+
+
+# Backward-compatible aliases for older code paths.
+SemanticMotifBank = MacroMotifBank
+SemanticMotifMatcher = MacroMotifMatcher
 
 
 class SemanticROIGraphFER(nn.Module):
@@ -279,6 +451,18 @@ class SemanticROIGraphFER(nn.Module):
 
         self.region_proj = nn.Linear(config.feature_dim, config.feature_dim)
 
+        self.micro_motif_bank = MicroMotifBank(
+            num_regions=config.num_regions,
+            motifs_per_region=config.micro_motifs_per_region,
+            dim=config.feature_dim,
+        )
+        self.micro_motif_matcher = MicroMotifMatcher(
+            num_regions=config.num_regions,
+            motifs_per_region=config.micro_motifs_per_region,
+            dim=config.feature_dim,
+            temperature=config.relation_temperature,
+        )
+
         self.macro_reasoner = MacroGraphReasoner(
             dim=config.feature_dim,
             num_regions=config.num_regions,
@@ -287,18 +471,23 @@ class SemanticROIGraphFER(nn.Module):
             dropout=config.dropout,
         )
 
-        self.motif_bank = SemanticMotifBank(
+        self.macro_motif_bank = MacroMotifBank(
             num_classes=config.num_classes,
-            motifs_per_class=config.motif_per_class,
+            motifs_per_class=config.macro_motifs_per_class,
             num_regions=config.num_regions,
             dim=config.feature_dim,
         )
-        self.motif_matcher = SemanticMotifMatcher(
+        self.macro_motif_matcher = MacroMotifMatcher(
             num_classes=config.num_classes,
-            motifs_per_class=config.motif_per_class,
+            motifs_per_class=config.macro_motifs_per_class,
             num_regions=config.num_regions,
             dim=config.feature_dim,
+            temperature=config.relation_temperature,
         )
+
+        # Backward-compatible aliases for older checkpoints and callers.
+        self.motif_bank = self.macro_motif_bank
+        self.motif_matcher = self.macro_motif_matcher
 
         self.global_pool = nn.AdaptiveAvgPool2d(1)
         self.global_head = nn.Sequential(
@@ -309,20 +498,151 @@ class SemanticROIGraphFER(nn.Module):
         )
 
         self.alpha = nn.Parameter(torch.zeros(1))
+        self.edge_importance = nn.Parameter(torch.eye(config.num_regions))
+        nn.init.eye_(self.edge_importance)
+        self.missing_region_token = nn.Parameter(torch.randn(config.feature_dim) * 0.02)
+        self.region_reliability_predictor = nn.Sequential(
+            nn.Linear(config.feature_dim, config.feature_dim // 2),
+            nn.ReLU(inplace=True),
+            nn.Linear(config.feature_dim // 2, 1),
+            nn.Sigmoid(),
+        )
+        self.region_dropout_prob = 0.05
 
-    def forward(self, image: torch.Tensor, bboxes: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def _canonical_bboxes(self, batch_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        boxes = SemanticRoiAlign._canonical_region_boxes(self.config.bbox_input_size, device, dtype)
+        return boxes.unsqueeze(0).expand(batch_size, -1, -1).contiguous()
+
+    def _prepare_regions(
+        self,
+        bboxes: Optional[torch.Tensor],
+        batch_size: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return repaired boxes, region mask, confidence and invalid indices."""
+        if bboxes is None:
+            repaired = self._canonical_bboxes(batch_size, device, dtype)
+            region_mask = torch.ones(batch_size, self.config.num_regions, device=device, dtype=dtype)
+            region_confidence = torch.full_like(region_mask, 0.95)
+            invalid_indices = torch.empty((0, 2), device=device, dtype=torch.long)
+            return repaired, region_mask, region_confidence, invalid_indices
+
+        bboxes = bboxes.to(device=device, dtype=dtype)
+        if bboxes.dim() != 3 or bboxes.size(-1) != 4:
+            repaired = self._canonical_bboxes(batch_size, device, dtype)
+            region_mask = torch.zeros(batch_size, self.config.num_regions, device=device, dtype=dtype)
+            region_confidence = torch.zeros_like(region_mask)
+            invalid_indices = torch.nonzero(torch.ones_like(region_mask, dtype=torch.bool), as_tuple=False)
+            return repaired, region_mask, region_confidence, invalid_indices
+
+        valid_shape = bboxes.size(0) == batch_size and bboxes.size(1) == self.config.num_regions
+        if not valid_shape:
+            repaired = self._canonical_bboxes(batch_size, device, dtype)
+            region_mask = torch.zeros(batch_size, self.config.num_regions, device=device, dtype=dtype)
+            region_confidence = torch.zeros_like(region_mask)
+            invalid_indices = torch.nonzero(torch.ones_like(region_mask, dtype=torch.bool), as_tuple=False)
+            return repaired, region_mask, region_confidence, invalid_indices
+
+        finite_mask = torch.isfinite(bboxes).all(dim=-1)
+        x1 = bboxes[..., 0]
+        y1 = bboxes[..., 1]
+        x2 = bboxes[..., 2]
+        y2 = bboxes[..., 3]
+        size_mask = ((x2 - x1) >= 2.0) & ((y2 - y1) >= 2.0)
+        order_mask = (x2 > x1) & (y2 > y1)
+        region_mask = (finite_mask & size_mask & order_mask).to(dtype=dtype)
+
+        repaired = self.roi_align.validate_bboxes(bboxes)
+        canonical = self._canonical_bboxes(batch_size, device, dtype)
+        repaired = torch.where(region_mask.unsqueeze(-1).bool(), repaired, canonical)
+
+        width = (repaired[..., 2] - repaired[..., 0]).clamp(min=1.0)
+        height = (repaired[..., 3] - repaired[..., 1]).clamp(min=1.0)
+        area = (width * height) / float(self.config.bbox_input_size * self.config.bbox_input_size)
+        area_conf = area.clamp(0.0, 1.0)
+        region_confidence = torch.where(region_mask > 0, 0.5 + 0.5 * area_conf, torch.full_like(area_conf, 0.05))
+
+        invalid_indices = torch.nonzero(region_mask == 0, as_tuple=False)
+        return repaired, region_mask, region_confidence, invalid_indices
+
+    def forward(
+        self,
+        image: torch.Tensor,
+        bboxes: Optional[torch.Tensor] = None,
+        region_mask: Optional[torch.Tensor] = None,
+        region_confidence: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
         # image: (B, 1, 48, 48) -> expand to 3 channels for ResNet
         if image.shape[1] == 1:
             image = image.repeat(1, 3, 1, 1)
 
+        batch_size = image.size(0)
         feature_map = self.backbone(image)
-        roi_nodes = self.roi_align(feature_map, bboxes)
-        roi_nodes, region_embeddings = self.micro_reasoner(roi_nodes)
-        region_embeddings = self.region_proj(region_embeddings)
-        macro_embeddings = self.macro_reasoner(region_embeddings)
+        bboxes, computed_mask, computed_confidence, invalid_indices = self._prepare_regions(
+            bboxes,
+            batch_size=batch_size,
+            device=image.device,
+            dtype=image.dtype,
+        )
 
-        motif_bank = self.motif_bank()
-        logits_motif, motif_attention = self.motif_matcher(macro_embeddings, motif_bank)
+        if region_mask is None:
+            region_mask = computed_mask
+        else:
+            region_mask = region_mask.to(device=image.device, dtype=image.dtype)
+        if region_confidence is None:
+            region_confidence = computed_confidence
+        else:
+            region_confidence = region_confidence.to(device=image.device, dtype=image.dtype)
+
+        if self.training:
+            drop_mask = (torch.rand(batch_size, self.config.num_regions, device=image.device) > self.region_dropout_prob).to(image.dtype)
+            region_mask = region_mask * drop_mask
+            region_confidence = region_confidence * drop_mask
+
+        roi_nodes = self.roi_align(feature_map, bboxes)
+        micro_node_features, region_embeddings = self.micro_reasoner(roi_nodes)
+        region_embeddings = self.region_proj(region_embeddings)
+
+        missing_token = self.missing_region_token.view(1, 1, -1)
+        region_valid_mask = region_mask.unsqueeze(-1) > 0
+        region_embeddings = torch.where(region_valid_mask, region_embeddings, missing_token.expand_as(region_embeddings))
+
+        predicted_confidence = self.region_reliability_predictor(region_embeddings).squeeze(-1)
+        region_confidence = torch.clamp(0.5 * region_confidence + 0.5 * predicted_confidence, 0.0, 1.0)
+        region_confidence = region_confidence * region_mask
+
+        suppression_gate = (region_confidence > float(self.config.region_confidence_threshold)).float().unsqueeze(-1)
+        region_embeddings = (
+            suppression_gate * region_embeddings
+            + (1.0 - suppression_gate) * missing_token.expand_as(region_embeddings)
+        )
+
+        micro_motif_bank = self.micro_motif_bank()
+        micro_motif_attention, region_motif_tokens = self.micro_motif_matcher(region_embeddings, micro_motif_bank)
+        region_motif_tokens = (
+            suppression_gate * region_motif_tokens
+            + (1.0 - suppression_gate) * missing_token.expand_as(region_motif_tokens)
+        )
+
+        # Global facial prior: learnable symmetric adjacency over semantic regions.
+        # Symmetrize first, then sigmoid to map to [0, 1] as a soft prior.
+        adj_sym = (self.edge_importance + self.edge_importance.transpose(0, 1)) / 2.0
+        adj_prior = torch.sigmoid(adj_sym)
+        macro_adj = adj_prior.unsqueeze(0).expand(image.size(0), -1, -1)
+
+        macro_embeddings = self.macro_reasoner(
+            region_motif_tokens,
+            adj=macro_adj,
+            region_confidence=region_confidence,
+            region_mask=region_mask,
+        )
+
+        macro_motif_bank = self.macro_motif_bank()
+        logits_motif, macro_motif_attention, topology_matrix = self.macro_motif_matcher(
+            macro_embeddings,
+            macro_motif_bank,
+        )
 
         pooled = self.global_pool(feature_map).flatten(1)
         logits_global = self.global_head(pooled)
@@ -334,79 +654,16 @@ class SemanticROIGraphFER(nn.Module):
             "logits": logits,
             "logits_motif": logits_motif,
             "logits_global": logits_global,
-            "motif_attention": motif_attention,
+            "micro_node_features": micro_node_features,
+            "micro_motif_attention": micro_motif_attention,
+            "region_motif_tokens": region_motif_tokens,
             "region_embeddings": region_embeddings,
+            "region_mask": region_mask,
+            "region_confidence": region_confidence,
+            "invalid_region_indices": invalid_indices,
             "macro_embeddings": macro_embeddings,
+            "macro_motif_attention": macro_motif_attention,
+            "topology_matrix": topology_matrix,
+            "micro_motif_bank": micro_motif_bank,
+            "macro_motif_bank": macro_motif_bank,
         }
-
-    def compute_losses(
-        self,
-        outputs: Dict[str, torch.Tensor],
-        labels: torch.Tensor,
-        temperature: float = 0.07,
-        contrastive_weight: float = 0.1,
-        diversity_weight: float = 0.05,
-        consistency_weight: float = 0.1,
-    ) -> Dict[str, torch.Tensor]:
-        logits = outputs["logits"]
-        ce_loss = F.cross_entropy(logits, labels, label_smoothing=self.config.label_smoothing)
-
-        diversity_loss = self.motif_diversity_loss()
-        contrastive_loss = self.supervised_contrastive_loss(outputs["macro_embeddings"], labels, temperature=temperature)
-        consistency_loss = self.region_consistency_loss(outputs["region_embeddings"], labels)
-
-        total = ce_loss
-        total = total + diversity_weight * diversity_loss
-        total = total + contrastive_weight * contrastive_loss
-        total = total + consistency_weight * consistency_loss
-
-        return {
-            "loss": total,
-            "loss_ce": ce_loss,
-            "loss_motif_diversity": diversity_loss,
-            "loss_contrastive": contrastive_loss,
-            "loss_region_consistency": consistency_loss,
-        }
-
-    def motif_diversity_loss(self) -> torch.Tensor:
-        motifs = self.motif_bank()  # (C, M, R, D)
-        c, m, r, d = motifs.shape
-        motifs = motifs.view(c, m, r * d)
-        motifs = F.normalize(motifs, dim=-1)
-        sim = torch.einsum("cmd,cnd->cmn", motifs, motifs)
-        identity = torch.eye(m, device=sim.device).unsqueeze(0)
-        off_diag = sim * (1.0 - identity)
-        return (off_diag ** 2).mean()
-
-    def supervised_contrastive_loss(self, embeddings: torch.Tensor, labels: torch.Tensor, temperature: float = 0.07) -> torch.Tensor:
-        # embeddings: (B, R, D) -> pooled
-        pooled = embeddings.mean(dim=1)
-        pooled = F.normalize(pooled, dim=-1)
-        sim = torch.matmul(pooled, pooled.t()) / temperature
-        labels = labels.view(-1, 1)
-        mask = torch.eq(labels, labels.T).float()
-
-        logits_mask = torch.ones_like(mask) - torch.eye(mask.shape[0], device=mask.device)
-        mask = mask * logits_mask
-
-        exp_sim = torch.exp(sim) * logits_mask
-        log_prob = sim - torch.log(exp_sim.sum(dim=1, keepdim=True) + 1e-8)
-        mean_log_prob_pos = (mask * log_prob).sum(dim=1) / (mask.sum(dim=1) + 1e-8)
-        return -mean_log_prob_pos.mean()
-
-    def region_consistency_loss(self, region_embeddings: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        # region_embeddings: (B, R, D)
-        labels = labels.view(-1)
-        loss = 0.0
-        count = 0
-        for cls in labels.unique():
-            mask = labels == cls
-            if mask.sum() < 2:
-                continue
-            cls_embeddings = region_embeddings[mask]
-            mean = cls_embeddings.mean(dim=0, keepdim=True)
-            loss = loss + ((cls_embeddings - mean) ** 2).mean()
-            count += 1
-        if count == 0:
-            return torch.tensor(0.0, device=region_embeddings.device)
-        return loss / count

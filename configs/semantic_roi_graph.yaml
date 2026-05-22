@@ -5,6 +5,8 @@ model:
   roi_grid: 4
   feature_dim: 256
   motif_per_class: 4
+  micro_motifs_per_region: 8
+  macro_motifs_per_class: 4
   use_pretrained: true
   backbone_out_size: 12
   bbox_input_size: 48
@@ -13,6 +15,7 @@ model:
   attn_heads: 4
   dropout: 0.1
   label_smoothing: 0.05
+  relation_temperature: 0.07
 
 data:
   batch_size: 64
@@ -20,11 +23,12 @@ data:
   input_size: 48
   in_channels: 1
   use_semantic_masks: true
-  # For Kaggle, point this to your generated semantic mask folder
-  semantic_masks_dir: "/kaggle/working/semantic_masks"
+  # Path to semantic mask folder. Use relative path inside repo for local runs
+  # e.g. dataset/semantic_masks which contains train/, val/, test/ subfolders.
+  semantic_masks_dir: "/kaggle/input/datasets/pha1t2/maskfer2013/semantic_masks"
 
 training:
-  epochs: 120
+  epochs: 1000
   lr: 0.0003
   weight_decay: 0.0005
   loss: "semantic_roi_graph"
@@ -34,9 +38,11 @@ training:
   class_weight_mode: "sqrt_inverse"
   use_class_weights: true
   # Loss weights for the semantic ROI graph model
-  motif_diversity_weight: 0.05
-  au_contrastive_weight: 0.1
-  region_consistency_weight: 0.1
+  micro_motif_diversity_weight: 0.05
+  macro_motif_diversity_weight: 0.05
+  region_contrastive_weight: 0.1
+  relation_consistency_weight: 0.1
+  topology_reg_weight: 0.01
 
 logging:
   use_wandb: true

@@ -16,8 +16,15 @@ __pycache__/
 
 # IDE
 .vscode/
-
-
+# Python env
+.venv/
+venv/
+env/
+semantic_masks/
+*.npz
+*.pth
+*.pt
+*.ckpt
 
 # Q, misc
 zmisc

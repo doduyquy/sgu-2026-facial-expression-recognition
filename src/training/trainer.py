@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from datetime import datetime
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from src.utils.logger_wandb import init_wandb, log_image_to_wandb, log_metrics
+from src.models.semantic_roi_graph_losses import compute_semantic_roi_graph_losses
 
 
 class Trainer:
@@ -77,6 +78,12 @@ class Trainer:
                 else:
                     labels, bboxes = batch[1], batch[2]
                 return images, labels, bboxes
+            if len(batch) == 4:
+                images = batch[0]
+                labels = batch[1]
+                bboxes = batch[2]
+                semantic_meta = batch[3]
+                return images, labels, bboxes, semantic_meta
         return batch, None, None
 
     def _extract_aux_losses(self, outputs):
@@ -158,7 +165,12 @@ class Trainer:
         _scn_acc = {"scn_weight_mean": [], "scn_conf_mean": [], "scn_rank_loss": []}
 
         for batch in self.train_loader:
-            images, labels, bboxes = self._unpack_batch(batch)
+            unpacked = self._unpack_batch(batch)
+            if len(unpacked) == 4:
+                images, labels, bboxes, semantic_meta = unpacked
+            else:
+                images, labels, bboxes = unpacked
+                semantic_meta = None
             images = images.to(self.device)
             labels = labels.to(self.device)
             if bboxes is not None:
@@ -180,12 +192,26 @@ class Trainer:
             loss_mode = self.config.get('training', {}).get('loss', 'cross_entropy')
 
             if bboxes is not None:
-                outputs = self.model(images, bboxes)
+                if isinstance(semantic_meta, dict) and "region_mask" in semantic_meta:
+                    region_mask = semantic_meta["region_mask"].to(self.device)
+                    region_confidence = semantic_meta.get("region_confidence", None)
+                    if region_confidence is not None:
+                        region_confidence = region_confidence.to(self.device)
+                    outputs = self.model(
+                        images,
+                        bboxes,
+                        region_mask=region_mask,
+                        region_confidence=region_confidence,
+                    )
+                else:
+                    outputs = self.model(images, bboxes)
             elif hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
                 outputs = self.model(images, targets=labels)
             else:
                 outputs = self.model(images)
             logits = self._extract_logits(outputs)
+            if logits is None:
+                raise ValueError("Model outputs do not contain 'logits'. When returning a dict from forward(), include a 'logits' key with classification scores.")
 
             runtime_use_scn = getattr(self, '_runtime_use_scn', self.use_scn)
 
@@ -194,8 +220,9 @@ class Trainer:
                     cls_loss = lam * F.cross_entropy(logits, labels_a) + (1.0 - lam) * F.cross_entropy(logits, labels_b)
                 except Exception:
                     cls_loss = self._base_criterion(logits, labels)
-            elif loss_mode == 'semantic_roi_graph' and hasattr(self.model, 'compute_losses'):
-                loss_dict = self.model.compute_losses(outputs, labels)
+            elif loss_mode == 'semantic_roi_graph':
+                # Use the standalone loss function that reads weights from config
+                loss_dict = compute_semantic_roi_graph_losses(self.model, outputs, labels)
                 cls_loss = loss_dict["loss"]
             else:
                 if runtime_use_scn and getattr(self, '_current_epoch', 0) >= getattr(self, 'scn_warmup_epochs', 0):
@@ -213,20 +240,32 @@ class Trainer:
 
             # Extract and add scheduled motif losses
             aux_losses = self._extract_aux_losses(outputs)
-            
-            if "motif_diversity" in aux_losses:
+
+            # When using the dedicated semantic ROI graph loss (model.compute_losses()),
+            # the model already computes and weights motif/contrastive/consistency components.
+            # Avoid adding those auxiliary motif losses again from `outputs` to prevent
+            # double-counting. Still allow other auxiliary regularizers (e.g. attn_entropy,
+            # offset_reg) if present.
+            if loss_mode == 'semantic_roi_graph':
+                skip_aux = {"motif_diversity", "motif_consistency", "au_contrastive"}
+            else:
+                skip_aux = set()
+
+            if "motif_diversity" in aux_losses and "motif_diversity" not in skip_aux:
                 loss = loss + w_div * aux_losses["motif_diversity"]
-            if "motif_consistency" in aux_losses:
+            if "motif_consistency" in aux_losses and "motif_consistency" not in skip_aux:
                 loss = loss + w_consist * aux_losses["motif_consistency"]
-            if "attn_entropy" in aux_losses:
+            if "attn_entropy" in aux_losses and "attn_entropy" not in skip_aux:
                 loss = loss + w_ent * aux_losses["attn_entropy"]
-            if "offset_reg" in aux_losses:
+            if "offset_reg" in aux_losses and "offset_reg" not in skip_aux:
                 loss = loss + w_off * aux_losses["offset_reg"]
-            if "au_contrastive" in aux_losses:
+            if "au_contrastive" in aux_losses and "au_contrastive" not in skip_aux:
                 loss = loss + w_contrastive * aux_losses["au_contrastive"]
 
             # Fallback for other unrecognized auxiliary losses
             for k, v in aux_losses.items():
+                if k in skip_aux:
+                    continue
                 if k not in ["motif_diversity", "motif_consistency", "attn_entropy", "offset_reg", "au_contrastive"]:
                     w_other = self.config.get('training', {}).get(f'{k}_weight', 0.1)
                     loss = loss + float(w_other) * v
@@ -284,7 +323,12 @@ class Trainer:
 
         with torch.no_grad():
             for batch in self.val_loader:
-                images, labels, bboxes = self._unpack_batch(batch)
+                unpacked = self._unpack_batch(batch)
+                if len(unpacked) == 4:
+                    images, labels, bboxes, semantic_meta = unpacked
+                else:
+                    images, labels, bboxes = unpacked
+                    semantic_meta = None
                 images = images.to(self.device)
                 labels = labels.to(self.device)
                 if bboxes is not None:
@@ -293,15 +337,29 @@ class Trainer:
                 loss_mode = self.config.get('training', {}).get('loss', 'cross_entropy')
 
                 if bboxes is not None:
-                    outputs = eval_model(images, bboxes)
+                    if isinstance(semantic_meta, dict) and "region_mask" in semantic_meta:
+                        region_mask = semantic_meta["region_mask"].to(self.device)
+                        region_confidence = semantic_meta.get("region_confidence", None)
+                        if region_confidence is not None:
+                            region_confidence = region_confidence.to(self.device)
+                        outputs = eval_model(
+                            images,
+                            bboxes,
+                            region_mask=region_mask,
+                            region_confidence=region_confidence,
+                        )
+                    else:
+                        outputs = eval_model(images, bboxes)
                 elif hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
                     outputs = eval_model(images, targets=labels)
                 else:
                     outputs = eval_model(images)
                 
                 logits = self._extract_logits(outputs)
-                if loss_mode == 'semantic_roi_graph' and hasattr(eval_model, 'compute_losses'):
-                    loss_dict = eval_model.compute_losses(outputs, labels)
+                if logits is None:
+                    raise ValueError("Model outputs do not contain 'logits'. When returning a dict from forward(), include a 'logits' key with classification scores.")
+                if loss_mode == 'semantic_roi_graph':
+                    loss_dict = compute_semantic_roi_graph_losses(eval_model, outputs, labels)
                     cls_loss = loss_dict["loss"]
                 else:
                     cls_loss = self.criterion(logits, labels)
