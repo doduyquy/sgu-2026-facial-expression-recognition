@@ -222,7 +222,8 @@ class Trainer:
                     cls_loss = self._base_criterion(logits, labels)
             elif loss_mode == 'semantic_roi_graph':
                 # Use the standalone loss function that reads weights from config
-                loss_dict = compute_semantic_roi_graph_losses(self.model, outputs, labels)
+                class_weights = getattr(self._base_criterion, 'weight', None)
+                loss_dict = compute_semantic_roi_graph_losses(self.model, outputs, labels, class_weights=class_weights)
                 cls_loss = loss_dict["loss"]
             else:
                 if runtime_use_scn and getattr(self, '_current_epoch', 0) >= getattr(self, 'scn_warmup_epochs', 0):

@@ -25,7 +25,7 @@ def _unwrap_model(model):
 def _get_training_cfg(model) -> Dict:
     try:
         base_model = _unwrap_model(model)
-        return dict(getattr(base_model, "config", {}).get("training", {}))
+        return getattr(base_model, "training_cfg", {})
     except Exception:
         return {}
 
@@ -350,6 +350,7 @@ def compute_semantic_roi_graph_losses(
     model,
     outputs: Dict[str, torch.Tensor],
     labels: torch.Tensor,
+    class_weights: torch.Tensor | None = None,
     temperature: float | None = None,
     region_contrastive_weight: float | None = None,
     micro_diversity_weight: float | None = None,
@@ -421,9 +422,9 @@ def compute_semantic_roi_graph_losses(
 
     label_smoothing = float(training_cfg.get("label_smoothing", 0.0))
     try:
-        ce_loss = F.cross_entropy(logits, labels, label_smoothing=label_smoothing)
+        ce_loss = F.cross_entropy(logits, labels, label_smoothing=label_smoothing, weight=class_weights)
     except TypeError:
-        ce_loss = F.cross_entropy(logits, labels)
+        ce_loss = F.cross_entropy(logits, labels, weight=class_weights)
 
     base_model = _unwrap_model(model)
 

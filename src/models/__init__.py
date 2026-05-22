@@ -17,7 +17,9 @@ def get_model(name, config):
         allowed_keys = set(SemanticRoiGraphConfig.__annotations__.keys())
         model_cfg = {key: value for key, value in model_cfg.items() if key in allowed_keys}
         cfg = SemanticRoiGraphConfig(**model_cfg)
-        return SemanticROIGraphFER(cfg)
+        model = SemanticROIGraphFER(cfg)
+        model.training_cfg = config.get('training', {})
+        return model
     else:
         raise ValueError(
             f"Model '{name}' not found. "
