@@ -996,7 +996,7 @@ class SemanticROIGraphFER(nn.Module):
         return {
             "logits": logits,
             "logits_motif": logits_motif,
-            "logits_global": logits_global,
+            "logits_fused": logits_fused,
             "micro_node_features": micro_node_features,
             "micro_motif_attention": micro_motif_attention,
             "region_motif_tokens": semantic_motif_tokens,
