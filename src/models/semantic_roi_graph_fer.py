@@ -654,10 +654,9 @@ class SemanticProgramExecutor(nn.Module):
             topology_sim = torch.ones_like(region_sim)
 
         # 3. Compute valid composition similarity
-        if region_mask is not None:
-            composition_summary = (cross_region_tokens * region_mask.unsqueeze(-1)).sum(dim=1) / region_mask.sum(dim=-1, keepdim=True).clamp_min(1.0)
-        else:
-            composition_summary = cross_region_tokens.mean(dim=1)
+        # cross_region_tokens has shape (B, num_compositions, D) where num_compositions is 8.
+        # It's already robust to region_mask because the attention that produces it masks invalid pairs.
+        composition_summary = cross_region_tokens.mean(dim=1)
         composition_summary = self.program_summary_proj(composition_summary)
         
         program_summary = self.program_summary_proj(program_bank.mean(dim=2))
