@@ -1,0 +1,16 @@
+_base_: "kaggle_aux_cnn_clip_cnn_main_logits.yaml"
+
+# Same CNN-main mask-guided CLIP region-attention structure as:
+# configs/convnext_aux_cnn_clip_one_run/kaggle_aux_cnn_clip_cnn_main_logits.yaml
+#
+# Only intended architecture change:
+# - ConvNeXt-Tiny ImageNet DEFAULT backbone -> ConvNeXt-Small ImageNet DEFAULT backbone
+#
+# Final logits stay unchanged:
+#   final_logits = 0.8 * cnn_aux_logits + 0.2 * region_attention_logits
+
+model:
+  arch: "convnext_small"
+  pretrained: true
+  weights: "DEFAULT"
+  checkpoint_path: null
