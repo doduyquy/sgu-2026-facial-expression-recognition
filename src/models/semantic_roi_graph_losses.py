@@ -16,9 +16,14 @@ import torch
 import torch.nn.functional as F
 
 
+def _unwrap_model(model):
+    return getattr(model, "module", model)
+
+
 def _get_training_cfg(model) -> Dict:
     try:
-        return dict(getattr(model, "config", {}).get("training", {}))
+        base_model = _unwrap_model(model)
+        return dict(getattr(base_model, "config", {}).get("training", {}))
     except Exception:
         return {}
 
@@ -197,8 +202,10 @@ def compute_semantic_roi_graph_losses(
     except TypeError:
         ce_loss = F.cross_entropy(logits, labels)
 
-    micro_diversity_loss = micro_motif_diversity_loss(model.micro_motif_bank)
-    macro_diversity_loss = macro_motif_diversity_loss(model.macro_motif_bank)
+    base_model = _unwrap_model(model)
+
+    micro_diversity_loss = micro_motif_diversity_loss(base_model.micro_motif_bank)
+    macro_diversity_loss = macro_motif_diversity_loss(base_model.macro_motif_bank)
     contrastive_loss = region_supervised_contrastive_loss(
         outputs.get("macro_embeddings"),
         labels,
@@ -207,7 +214,7 @@ def compute_semantic_roi_graph_losses(
     )
     topology_matrix = outputs.get("topology_matrix")
     if topology_matrix is None:
-        topology_matrix = model.macro_motif_matcher.relation_matrix(outputs.get("macro_embeddings"))
+        topology_matrix = base_model.macro_motif_matcher.relation_matrix(outputs.get("macro_embeddings"))
 
     consistency_loss = relation_consistency_loss(
         topology_matrix,
