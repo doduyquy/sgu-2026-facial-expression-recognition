@@ -1,0 +1,13 @@
+_base_: "convnext_tiny_mask_guided_region_attention_7462_sam_continue_kaggle_dataset.yaml"
+
+# Same training recipe as the 75.01 family:
+# convnext_tiny_mask_guided_region_attention_7462_sam_continue_kaggle_dataset.yaml
+#
+# Only changed input:
+# - use the newer train/val/test merged MediaPipe fallback mask dataset.
+
+model:
+  mask_dir: "/kaggle/input/datasets/lhngphc/mask-train-val-test-fallback/merged_mediapipe_region_masks"
+
+data:
+  mask_dir: "/kaggle/input/datasets/lhngphc/mask-train-val-test-fallback/merged_mediapipe_region_masks"
