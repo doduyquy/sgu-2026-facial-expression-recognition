@@ -407,12 +407,18 @@ class SemanticInteractionBlock(nn.Module):
         )
         self.norm = nn.LayerNorm(state_dim)
 
-    def forward(self, semantic_states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, semantic_states: torch.Tensor, region_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         b, r, s = semantic_states.shape
         left = semantic_states.unsqueeze(2).expand(b, r, r, s)
         right = semantic_states.unsqueeze(1).expand(b, r, r, s)
         pair_input = torch.cat([left, right, left - right, left * right], dim=-1)
         gates = self.edge_gate(pair_input).squeeze(-1)
+        
+        # Computational fix: Mask out invalid regions from interaction
+        if region_mask is not None:
+            pair_mask = region_mask.unsqueeze(-1) * region_mask.unsqueeze(-2)
+            gates = gates * pair_mask
+
         messages = self.edge_message(pair_input)
         interaction_tensor = gates.unsqueeze(-1) * messages
         interaction_summary = interaction_tensor.sum(dim=2) / (gates.sum(dim=2, keepdim=True) + 1e-6)
@@ -625,22 +631,47 @@ class SemanticProgramExecutor(nn.Module):
         state_norm = F.normalize(semantic_states, dim=-1)
         program_norm = F.normalize(program_bank, dim=-1)
 
-        region_scores = torch.einsum("brd,cmrd->bcmr", state_norm, program_norm) / self.temperature
+        # 1. Compute valid region similarity
+        region_sims = torch.einsum("brd,cmrd->bcmr", state_norm, program_norm)
         if region_mask is not None:
-            region_scores = region_scores * region_mask.unsqueeze(1).unsqueeze(1)
-        region_score = region_scores.mean(dim=-1)
+            valid_mask = region_mask.unsqueeze(1).unsqueeze(1)
+            region_sims = region_sims * valid_mask
+            region_sim = region_sims.sum(dim=-1) / valid_mask.sum(dim=-1).clamp_min(1.0)
+        else:
+            region_sim = region_sims.mean(dim=-1)
 
+        # 2. Compute valid topology similarity (1.0 - MSE)
         if interaction_gates is not None:
             observed_topology = interaction_gates.unsqueeze(1).unsqueeze(1)
-            topology_score = -((observed_topology - program_topology.unsqueeze(0)) ** 2).mean(dim=(-1, -2))
+            topology_mse = (observed_topology - program_topology.unsqueeze(0)) ** 2
+            if region_mask is not None:
+                pair_mask = (region_mask.unsqueeze(-1) * region_mask.unsqueeze(-2)).unsqueeze(1).unsqueeze(1)
+                topology_mse = topology_mse * pair_mask
+                topology_sim = 1.0 - (topology_mse.sum(dim=(-1, -2)) / pair_mask.sum(dim=(-1, -2)).clamp_min(1.0))
+            else:
+                topology_sim = 1.0 - topology_mse.mean(dim=(-1, -2))
         else:
-            topology_score = torch.zeros_like(region_score)
+            topology_sim = torch.ones_like(region_sim)
 
-        composition_summary = self.program_summary_proj(cross_region_tokens.mean(dim=1))
+        # 3. Compute valid composition similarity
+        if region_mask is not None:
+            composition_summary = (cross_region_tokens * region_mask.unsqueeze(-1)).sum(dim=1) / region_mask.sum(dim=-1, keepdim=True).clamp_min(1.0)
+        else:
+            composition_summary = cross_region_tokens.mean(dim=1)
+        composition_summary = self.program_summary_proj(composition_summary)
+        
         program_summary = self.program_summary_proj(program_bank.mean(dim=2))
-        composition_score = torch.einsum("bd,cmd->bcm", F.normalize(composition_summary, dim=-1), F.normalize(program_summary, dim=-1)) / self.temperature
+        composition_sim = torch.einsum("bd,cmd->bcm", F.normalize(composition_summary, dim=-1), F.normalize(program_summary, dim=-1))
 
-        compatibility = region_score + 0.5 * topology_score + 0.25 * composition_score
+        # Combine raw similarities first, THEN scale by temperature (fixes topology being ignored)
+        total_sim = region_sim + 0.5 * topology_sim + 0.25 * composition_sim
+        compatibility = total_sim / self.temperature
+        
+        # Save pre-temperature scaled versions for auxiliary loss logging consistency
+        region_score = region_sim / self.temperature
+        topology_score = topology_sim / self.temperature
+        composition_score = composition_sim / self.temperature
+
         program_attention = F.softmax(compatibility, dim=-1)
         class_scores = torch.logsumexp(compatibility, dim=-1)
         program_tokens = torch.einsum("bcm,cmd->bcd", program_attention, program_summary)
@@ -936,6 +967,7 @@ class SemanticROIGraphFER(nn.Module):
         # Step 1: Pairwise region interaction (local semantic coordination).
         interaction_states, semantic_interaction_tensor, semantic_interaction_gates = self.semantic_interaction_block(
             semantic_motif_tokens,
+            region_mask=region_mask,
         )
 
         # Step 2: Higher-order cross-region composition on interaction-enriched states.
