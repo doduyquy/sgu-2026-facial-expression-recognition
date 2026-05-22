@@ -54,7 +54,7 @@ training:
   weight_decay: 0.02
 
   scheduler: "cosine"
-  epochs: 70
+  epochs: 71
   patience: 15
   label_smoothing: 0.05
   grad_clip_norm: 1.0
