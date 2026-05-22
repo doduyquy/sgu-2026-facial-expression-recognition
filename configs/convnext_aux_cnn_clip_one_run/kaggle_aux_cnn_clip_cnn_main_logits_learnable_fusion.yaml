@@ -10,14 +10,14 @@ _base_: "kaggle_aux_cnn_clip_cnn_main_logits.yaml"
 #   final_logits = cnn_weight * cnn_aux_logits
 #                + (1 - cnn_weight) * region_attention_logits
 #
-# The bounds keep the CNN branch as the anchor while still letting the region
-# branch prove whether it helps.
+# The bounds allow the model to move either way while still preventing one
+# branch from becoming exactly zero.
 
 model:
   learnable_logit_fusion: true
-  learnable_logit_fusion_init: 0.8
-  learnable_logit_fusion_min: 0.6
-  learnable_logit_fusion_max: 0.95
+  learnable_logit_fusion_init: 0.5
+  learnable_logit_fusion_min: 0.1
+  learnable_logit_fusion_max: 0.9
 
   # Keep these as the fixed-fusion fallback and as readable documentation of
   # the old trained value.
