@@ -42,12 +42,17 @@ class SemanticRoiGraphConfig:
     name: str = "semantic_roi_graph_fer"
     num_classes: int = 7
     num_regions: int = 9
-    name: str = "semantic_roi_graph_fer"
     roi_grid: int = 4
     feature_dim: int = 256
     motif_per_class: int = 4
     micro_motifs_per_region: int = 8
     macro_motifs_per_class: int = 4
+    cross_region_compositions: int = 4
+    semantic_state_dim: int = 9
+    semantic_latent_dim: int = 128
+    semantic_attn_heads: int = 3
+    hyperedge_count: int = 4
+    router_hidden_dim: int = 64
     use_pretrained: bool = True
     backbone_out_size: int = 12
     bbox_input_size: int = 48
@@ -305,127 +310,387 @@ class MicroGraphReasoner(nn.Module):
         return x, pooled
 
 
-class MacroGraphReasoner(nn.Module):
-    """Inter-region reasoning across semantic nodes."""
+class SemanticStateEncoder(nn.Module):
+    """Project region embeddings into interpretable semantic facial state space."""
 
-    def __init__(self, dim: int, num_regions: int, layers: int = 2, heads: int = 4, dropout: float = 0.1):
+    def __init__(self, input_dim: int, state_dim: int, hidden_dim: Optional[int] = None, dropout: float = 0.1):
         super().__init__()
-        self.layers = nn.ModuleList([
-            GATBlock(dim, heads=heads, dropout=dropout, num_nodes=num_regions) for _ in range(layers)
-        ])
-        self.norms = nn.ModuleList([nn.LayerNorm(dim) for _ in range(layers)])
+        hidden_dim = hidden_dim or max(input_dim // 2, state_dim * 2)
+        self.state_dim = state_dim
+        self.proj = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, state_dim),
+        )
+        self.gate = nn.Sequential(
+            nn.Linear(input_dim, state_dim),
+            nn.Sigmoid(),
+        )
+        self.norm = nn.LayerNorm(state_dim)
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        adj: Optional[torch.Tensor] = None,
-        region_confidence: Optional[torch.Tensor] = None,
-        region_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        # x: (B, R, D)
-        if region_confidence is not None:
-            x = x * region_confidence.unsqueeze(-1)
-        for layer, norm in zip(self.layers, self.norms):
-            x = x + layer(norm(x), edge_prior=adj, attn_mask=region_mask)
-        return x
+    def forward(self, region_embeddings: torch.Tensor) -> torch.Tensor:
+        raw_state = self.proj(region_embeddings)
+        gate = self.gate(region_embeddings)
+        semantic_state = self.norm(raw_state * gate + raw_state)
+        return semantic_state
 
 
-class MicroMotifBank(nn.Module):
-    """Learnable micro motifs per semantic region."""
+class MicroSemanticMotifBank(nn.Module):
+    """Learnable local semantic motifs in semantic state space."""
 
-    def __init__(self, num_regions: int, motifs_per_region: int, dim: int):
+    def __init__(self, num_regions: int, motifs_per_region: int, state_dim: int):
         super().__init__()
         self.num_regions = num_regions
         self.motifs_per_region = motifs_per_region
-        self.dim = dim
-        self.motifs = nn.Parameter(torch.randn(num_regions, motifs_per_region, dim) * 0.02)
+        self.state_dim = state_dim
+        self.motifs = nn.Parameter(torch.randn(num_regions, motifs_per_region, state_dim) * 0.02)
 
     def forward(self) -> torch.Tensor:
         return self.motifs
 
 
-class MicroMotifMatcher(nn.Module):
-    """Match region embeddings to region-specific micro motifs."""
+class MicroSemanticMotifMatcher(nn.Module):
+    """Match semantic region states to interpretable local semantic motifs."""
 
-    def __init__(self, num_regions: int, motifs_per_region: int, dim: int, temperature: float = 0.07):
+    def __init__(self, num_regions: int, motifs_per_region: int, state_dim: int, temperature: float = 0.07):
         super().__init__()
         self.num_regions = num_regions
         self.motifs_per_region = motifs_per_region
-        self.dim = dim
+        self.state_dim = state_dim
         self.temperature = float(temperature)
         self.token_proj = nn.Sequential(
-            nn.Linear(dim, dim),
-            nn.LayerNorm(dim),
+            nn.Linear(state_dim, state_dim),
+            nn.LayerNorm(state_dim),
             nn.GELU(),
         )
         self.fusion_gate = nn.Parameter(torch.tensor(0.5))
 
-    def forward(self, region_embeddings: torch.Tensor, motif_bank: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        # region_embeddings: (B, R, D)
-        # motif_bank: (R, K, D)
-        region_norm = F.normalize(region_embeddings, dim=-1)
+    def forward(self, semantic_states: torch.Tensor, motif_bank: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        state_norm = F.normalize(semantic_states, dim=-1)
         bank_norm = F.normalize(motif_bank, dim=-1)
-
-        sim = torch.einsum("brd,rkd->brk", region_norm, bank_norm) / self.temperature
+        sim = torch.einsum("brs,rks->brk", state_norm, bank_norm) / self.temperature
         attn = F.softmax(sim, dim=-1)
-        tokens = torch.einsum("brk,rkd->brd", attn, motif_bank)
+        tokens = torch.einsum("brk,rks->brs", attn, motif_bank)
         tokens = self.token_proj(tokens)
-
         gate = torch.sigmoid(self.fusion_gate)
-        region_motif_tokens = region_embeddings + gate * tokens
-        return attn, region_motif_tokens
+        semantic_tokens = semantic_states + gate * tokens
+        return attn, semantic_tokens
 
 
-class MacroMotifBank(nn.Module):
-    """Learnable macro motifs per emotion class."""
+class SemanticInteractionBlock(nn.Module):
+    """Learned semantic interaction reasoning for pairwise facial coordination."""
 
-    def __init__(self, num_classes: int, motifs_per_class: int, num_regions: int, dim: int):
+    def __init__(self, state_dim: int, hidden_dim: Optional[int] = None, dropout: float = 0.1):
         super().__init__()
-        self.motifs = nn.Parameter(torch.randn(num_classes, motifs_per_class, num_regions, dim) * 0.02)
+        hidden_dim = hidden_dim or max(state_dim * 2, 32)
+        pair_input_dim = state_dim * 4
+        self.edge_gate = nn.Sequential(
+            nn.Linear(pair_input_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 1),
+            nn.Sigmoid(),
+        )
+        self.edge_message = nn.Sequential(
+            nn.Linear(pair_input_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, state_dim),
+        )
+        self.norm = nn.LayerNorm(state_dim)
 
-    def forward(self) -> torch.Tensor:
-        return self.motifs
+    def forward(self, semantic_states: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        b, r, s = semantic_states.shape
+        left = semantic_states.unsqueeze(2).expand(b, r, r, s)
+        right = semantic_states.unsqueeze(1).expand(b, r, r, s)
+        pair_input = torch.cat([left, right, left - right, left * right], dim=-1)
+        gates = self.edge_gate(pair_input).squeeze(-1)
+        messages = self.edge_message(pair_input)
+        interaction_tensor = gates.unsqueeze(-1) * messages
+        interaction_summary = interaction_tensor.sum(dim=2) / (gates.sum(dim=2, keepdim=True) + 1e-6)
+        updated_states = self.norm(semantic_states + interaction_summary)
+        return updated_states, interaction_tensor, gates
 
 
-class MacroMotifMatcher(nn.Module):
-    """Match macro graph embeddings to class-level topology motifs."""
+class CrossRegionCompositionGraph(nn.Module):
+    """Learn higher-order semantic compositions across facial regions."""
 
-    def __init__(self, num_classes: int, motifs_per_class: int, num_regions: int, dim: int, temperature: float = 0.07):
+    def __init__(
+        self,
+        state_dim: int,
+        num_compositions: int,
+        attn_heads: int = 3,
+        hidden_dim: Optional[int] = None,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        if state_dim % attn_heads != 0:
+            raise ValueError("state_dim must be divisible by attn_heads")
+
+        hidden_dim = hidden_dim or max(state_dim * 2, 32)
+        self.num_compositions = num_compositions
+        self.composition_queries = nn.Parameter(torch.randn(num_compositions, state_dim) * 0.02)
+        self.pair_encoder = nn.Sequential(
+            nn.Linear(state_dim * 4, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, state_dim),
+        )
+        self.pair_router = nn.Sequential(
+            nn.Linear(state_dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 1),
+        )
+        self.composition_attn = nn.MultiheadAttention(state_dim, attn_heads, dropout=dropout, batch_first=True)
+        self.composition_norm = nn.LayerNorm(state_dim)
+
+    def forward(
+        self,
+        semantic_states: torch.Tensor,
+        region_mask: Optional[torch.Tensor] = None,
+        region_confidence: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        b, r, d = semantic_states.shape
+        tokens = semantic_states
+        if region_confidence is not None:
+            tokens = tokens * region_confidence.unsqueeze(-1)
+
+        left = tokens.unsqueeze(2).expand(b, r, r, d)
+        right = tokens.unsqueeze(1).expand(b, r, r, d)
+        pair_input = torch.cat([left, right, left - right, left * right], dim=-1)
+        pair_tokens = self.pair_encoder(pair_input)
+        pair_scores = self.pair_router(pair_tokens).squeeze(-1)
+
+        if region_mask is not None:
+            pair_mask = region_mask.unsqueeze(-1) * region_mask.unsqueeze(-2)
+            pair_scores = pair_scores.masked_fill(pair_mask <= 0, -1e9)
+
+        pair_attention = F.softmax(pair_scores.reshape(b, -1), dim=-1).reshape(b, r, r)
+        pair_sequence = pair_tokens.reshape(b, r * r, d)
+
+        composition_queries = self.composition_queries.unsqueeze(0).expand(b, -1, -1)
+        cross_region_tokens, composition_attn = self.composition_attn(
+            composition_queries,
+            pair_sequence,
+            pair_sequence,
+            need_weights=True,
+            average_attn_weights=False,
+        )
+        cross_region_tokens = self.composition_norm(cross_region_tokens)
+
+        return {
+            "cross_region_tokens": cross_region_tokens,
+            "composition_attn": composition_attn,
+            "pair_tokens": pair_tokens,
+            "pair_scores": pair_scores,
+            "pair_attention": pair_attention,
+        }
+
+
+class SemanticHypergraphReasoner(nn.Module):
+    """Compose multi-region semantic programs with learned hyperedge routing."""
+
+    def __init__(self, state_dim: int, latent_dim: int, hyperedge_count: int, attn_heads: int, router_hidden_dim: int, dropout: float = 0.1):
+        super().__init__()
+        if state_dim % attn_heads != 0:
+            raise ValueError("state_dim must be divisible by semantic_attn_heads")
+
+        self.hyperedge_count = hyperedge_count
+        self.hyperedge_queries = nn.Parameter(torch.randn(hyperedge_count, state_dim) * 0.02)
+        self.hyperedge_attn = nn.MultiheadAttention(state_dim, attn_heads, dropout=dropout, batch_first=True)
+        self.region_back_attn = nn.MultiheadAttention(state_dim, attn_heads, dropout=dropout, batch_first=True)
+        self.router = nn.Sequential(
+            nn.Linear(state_dim, router_hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(router_hidden_dim, 1),
+        )
+        self.latent_projector = nn.Sequential(
+            nn.Linear(state_dim * 2, latent_dim),
+            nn.LayerNorm(latent_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(latent_dim, latent_dim),
+        )
+        self.latent_norm = nn.LayerNorm(latent_dim)
+
+    def forward(
+        self,
+        semantic_states: torch.Tensor,
+        region_mask: Optional[torch.Tensor] = None,
+        region_confidence: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        tokens = semantic_states
+        if region_confidence is not None:
+            tokens = tokens * region_confidence.unsqueeze(-1)
+
+        key_padding_mask = None
+        if region_mask is not None:
+            key_padding_mask = region_mask <= 0
+
+        batch_size = tokens.size(0)
+        hyper_queries = self.hyperedge_queries.unsqueeze(0).expand(batch_size, -1, -1)
+        hyperedge_tokens, hyperedge_attn = self.hyperedge_attn(
+            hyper_queries,
+            tokens,
+            tokens,
+            key_padding_mask=key_padding_mask,
+            need_weights=True,
+            average_attn_weights=False,
+        )
+        region_context, region_back_attn = self.region_back_attn(
+            tokens,
+            hyperedge_tokens,
+            hyperedge_tokens,
+            need_weights=True,
+            average_attn_weights=False,
+        )
+
+        composed_states = tokens + region_context
+        routing_logits = self.router(composed_states).squeeze(-1)
+        if region_mask is not None:
+            routing_logits = routing_logits.masked_fill(region_mask <= 0, -1e9)
+        routing_weights = F.softmax(routing_logits, dim=1)
+        if region_mask is not None:
+            routing_weights = routing_weights * region_mask
+            routing_weights = routing_weights / routing_weights.sum(dim=1, keepdim=True).clamp_min(1e-6)
+
+        pooled_state = torch.sum(routing_weights.unsqueeze(-1) * composed_states, dim=1)
+        hyper_summary = hyperedge_tokens.mean(dim=1)
+        emotion_latent = self.latent_projector(torch.cat([pooled_state, hyper_summary], dim=-1))
+        emotion_latent = self.latent_norm(emotion_latent)
+
+        return {
+            "composed_states": composed_states,
+            "hyperedge_tokens": hyperedge_tokens,
+            "hyperedge_attn": hyperedge_attn,
+            "region_back_attn": region_back_attn,
+            "routing_logits": routing_logits,
+            "routing_weights": routing_weights,
+            "emotion_latent": emotion_latent,
+        }
+
+
+class SemanticCompositionalProgramBank(nn.Module):
+    """Learn structured semantic facial programs and their topology."""
+
+    def __init__(self, num_classes: int, programs_per_class: int, num_regions: int, state_dim: int):
         super().__init__()
         self.num_classes = num_classes
-        self.motifs_per_class = motifs_per_class
+        self.programs_per_class = programs_per_class
         self.num_regions = num_regions
-        self.dim = dim
+        self.state_dim = state_dim
+        self.programs = nn.Parameter(torch.randn(num_classes, programs_per_class, num_regions, state_dim) * 0.02)
+        self.topology_logits = nn.Parameter(torch.randn(num_classes, programs_per_class, num_regions, num_regions) * 0.02)
+
+    def forward(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self.programs, torch.sigmoid(self.topology_logits)
+
+
+class SemanticProgramExecutor(nn.Module):
+    """Execute semantic facial programs against observed region states."""
+
+    def __init__(self, num_classes: int, programs_per_class: int, num_regions: int, state_dim: int, temperature: float = 0.07):
+        super().__init__()
+        self.num_classes = num_classes
+        self.programs_per_class = programs_per_class
+        self.num_regions = num_regions
+        self.state_dim = state_dim
         self.temperature = float(temperature)
+        self.program_summary_proj = nn.Sequential(
+            nn.Linear(state_dim, state_dim),
+            nn.LayerNorm(state_dim),
+            nn.GELU(),
+        )
 
-    @staticmethod
-    def relation_matrix(embeddings: torch.Tensor) -> torch.Tensor:
-        # embeddings: (..., R, D) -> (..., R, R)
-        embeddings = F.normalize(embeddings, dim=-1)
-        return torch.einsum("...id,...jd->...ij", embeddings, embeddings)
+    def forward(
+        self,
+        semantic_states: torch.Tensor,
+        cross_region_tokens: torch.Tensor,
+        program_bank: torch.Tensor,
+        program_topology: torch.Tensor,
+        region_mask: Optional[torch.Tensor] = None,
+        interaction_gates: Optional[torch.Tensor] = None,
+        routing_weights: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        state_norm = F.normalize(semantic_states, dim=-1)
+        program_norm = F.normalize(program_bank, dim=-1)
 
-    def forward(self, macro_embeddings: torch.Tensor, motif_bank: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        # macro_embeddings: (B, R, D)
-        # motif_bank: (C, M, R, D)
-        rel_macro = self.relation_matrix(macro_embeddings)  # (B, R, R)
-        rel_motif = self.relation_matrix(motif_bank)  # (C, M, R, R)
+        region_scores = torch.einsum("brd,cmrd->bcmr", state_norm, program_norm) / self.temperature
+        if region_mask is not None:
+            region_scores = region_scores * region_mask.unsqueeze(1).unsqueeze(1)
+        region_score = region_scores.mean(dim=-1)
 
-        rel_macro_flat = F.normalize(rel_macro.reshape(rel_macro.shape[0], -1), dim=-1)
-        rel_motif_flat = F.normalize(rel_motif.reshape(rel_motif.shape[0], rel_motif.shape[1], -1), dim=-1)
+        if interaction_gates is not None:
+            observed_topology = interaction_gates.unsqueeze(1).unsqueeze(1)
+            topology_score = -((observed_topology - program_topology.unsqueeze(0)) ** 2).mean(dim=(-1, -2))
+        else:
+            topology_score = torch.zeros_like(region_score)
 
-        sim = torch.einsum("bd,cmd->bcm", rel_macro_flat, rel_motif_flat) / self.temperature
-        attn = F.softmax(sim, dim=-1)
-        logits_motif = (attn * sim).sum(dim=-1)
-        return logits_motif, attn, rel_macro
+        composition_summary = self.program_summary_proj(cross_region_tokens.mean(dim=1))
+        program_summary = self.program_summary_proj(program_bank.mean(dim=2))
+        composition_score = torch.einsum("bd,cmd->bcm", F.normalize(composition_summary, dim=-1), F.normalize(program_summary, dim=-1)) / self.temperature
+
+        compatibility = region_score + 0.5 * topology_score + 0.25 * composition_score
+        program_attention = F.softmax(compatibility, dim=-1)
+        class_scores = torch.logsumexp(compatibility, dim=-1)
+        program_tokens = torch.einsum("bcm,cmd->bcd", program_attention, program_summary)
+
+        if routing_weights is not None:
+            routing_entropy = -(routing_weights.clamp_min(1e-6) * routing_weights.clamp_min(1e-6).log()).sum(dim=-1)
+        else:
+            routing_entropy = torch.zeros(semantic_states.size(0), device=semantic_states.device)
+
+        return {
+            "program_scores": class_scores,
+            "program_attention": program_attention,
+            "program_tokens": program_tokens,
+            "compatibility": compatibility,
+            "region_score": region_score,
+            "topology_score": topology_score,
+            "composition_score": composition_score,
+            "routing_entropy": routing_entropy,
+        }
 
 
-# Backward-compatible aliases for older code paths.
-SemanticMotifBank = MacroMotifBank
-SemanticMotifMatcher = MacroMotifMatcher
+# Backward-compatible aliases for callers and checkpoints.
+MacroSemanticProgramBank = SemanticCompositionalProgramBank
+MacroSemanticProgramMatcher = SemanticProgramExecutor
+MacroMotifBank = SemanticCompositionalProgramBank
+MacroMotifMatcher = SemanticProgramExecutor
+SemanticMotifBank = SemanticCompositionalProgramBank
+SemanticMotifMatcher = SemanticProgramExecutor
+
+
+class SemanticEmotionClassifier(nn.Module):
+    """Classify emotion from semantic latent facial representation."""
+
+    def __init__(self, latent_dim: int, num_classes: int, dropout: float = 0.1):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(latent_dim, latent_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(latent_dim, num_classes),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+# Backward-compatible aliases for callers and checkpoints.
+MicroMotifBank = MicroSemanticMotifBank
+MicroMotifMatcher = MicroSemanticMotifMatcher
+MacroMotifBank = MacroSemanticProgramBank
+MacroMotifMatcher = MacroSemanticProgramMatcher
+SemanticMotifBank = MacroSemanticProgramBank
+SemanticMotifMatcher = MacroSemanticProgramMatcher
 
 
 class SemanticROIGraphFER(nn.Module):
-    """End-to-end semantic ROI graph FER model without ArcFace."""
+    """End-to-end semantic compositional facial reasoning model."""
 
     def __init__(self, config: SemanticRoiGraphConfig):
         super().__init__()
@@ -450,56 +715,89 @@ class SemanticROIGraphFER(nn.Module):
         )
 
         self.region_proj = nn.Linear(config.feature_dim, config.feature_dim)
-
-        self.micro_motif_bank = MicroMotifBank(
-            num_regions=config.num_regions,
-            motifs_per_region=config.micro_motifs_per_region,
-            dim=config.feature_dim,
+        self.semantic_state_encoder = SemanticStateEncoder(
+            input_dim=config.feature_dim,
+            state_dim=config.semantic_state_dim,
+            hidden_dim=max(config.feature_dim // 2, config.semantic_state_dim * 2),
+            dropout=config.dropout,
         )
-        self.micro_motif_matcher = MicroMotifMatcher(
-            num_regions=config.num_regions,
-            motifs_per_region=config.micro_motifs_per_region,
-            dim=config.feature_dim,
-            temperature=config.relation_temperature,
-        )
-
-        self.macro_reasoner = MacroGraphReasoner(
-            dim=config.feature_dim,
-            num_regions=config.num_regions,
-            layers=config.macro_layers,
-            heads=config.attn_heads,
+        self.semantic_interaction_block = SemanticInteractionBlock(
+            state_dim=config.semantic_state_dim,
+            hidden_dim=max(config.semantic_state_dim * 2, 32),
             dropout=config.dropout,
         )
 
-        self.macro_motif_bank = MacroMotifBank(
-            num_classes=config.num_classes,
-            motifs_per_class=config.macro_motifs_per_class,
+        self.micro_motif_bank = MicroSemanticMotifBank(
             num_regions=config.num_regions,
-            dim=config.feature_dim,
+            motifs_per_region=config.micro_motifs_per_region,
+            state_dim=config.semantic_state_dim,
         )
-        self.macro_motif_matcher = MacroMotifMatcher(
-            num_classes=config.num_classes,
-            motifs_per_class=config.macro_motifs_per_class,
+        self.micro_motif_matcher = MicroSemanticMotifMatcher(
             num_regions=config.num_regions,
-            dim=config.feature_dim,
+            motifs_per_region=config.micro_motifs_per_region,
+            state_dim=config.semantic_state_dim,
             temperature=config.relation_temperature,
         )
 
-        # Backward-compatible aliases for older checkpoints and callers.
-        self.motif_bank = self.macro_motif_bank
-        self.motif_matcher = self.macro_motif_matcher
-
-        self.global_pool = nn.AdaptiveAvgPool2d(1)
-        self.global_head = nn.Sequential(
-            nn.Linear(config.feature_dim, config.feature_dim),
-            nn.ReLU(inplace=True),
-            nn.Dropout(config.dropout),
-            nn.Linear(config.feature_dim, config.num_classes),
+        self.semantic_compositional_reasoner = SemanticHypergraphReasoner(
+            state_dim=config.semantic_state_dim,
+            latent_dim=config.semantic_latent_dim,
+            hyperedge_count=config.hyperedge_count,
+            attn_heads=config.semantic_attn_heads,
+            router_hidden_dim=config.router_hidden_dim,
+            dropout=config.dropout,
         )
 
-        self.alpha = nn.Parameter(torch.zeros(1))
-        self.edge_importance = nn.Parameter(torch.eye(config.num_regions))
-        nn.init.eye_(self.edge_importance)
+        self.cross_region_composition_graph = CrossRegionCompositionGraph(
+            state_dim=config.semantic_state_dim,
+            num_compositions=config.cross_region_compositions,
+            attn_heads=config.semantic_attn_heads,
+            hidden_dim=max(config.semantic_state_dim * 2, 32),
+            dropout=config.dropout,
+        )
+
+        self.semantic_program_bank = SemanticCompositionalProgramBank(
+            num_classes=config.num_classes,
+            programs_per_class=config.macro_motifs_per_class,
+            num_regions=config.num_regions,
+            state_dim=config.semantic_state_dim,
+        )
+        self.semantic_program_executor = SemanticProgramExecutor(
+            num_classes=config.num_classes,
+            programs_per_class=config.macro_motifs_per_class,
+            num_regions=config.num_regions,
+            state_dim=config.semantic_state_dim,
+            temperature=config.relation_temperature,
+        )
+
+        self.semantic_classifier = SemanticEmotionClassifier(
+            latent_dim=config.semantic_latent_dim,
+            num_classes=config.num_classes,
+            dropout=config.dropout,
+        )
+
+        self.global_context = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(1),
+            nn.Linear(config.feature_dim, config.semantic_latent_dim),
+            nn.GELU(),
+            nn.Dropout(config.dropout),
+        )
+
+        self.global_fusion = nn.Sequential(
+            nn.Linear(config.semantic_latent_dim * 2, config.semantic_latent_dim),
+            nn.LayerNorm(config.semantic_latent_dim),
+            nn.GELU(),
+        )
+
+        self.semantic_structure_gate = nn.Parameter(torch.tensor(0.2))
+
+        # Backward-compatible aliases for older checkpoints and callers.
+        self.macro_motif_bank = self.semantic_program_bank
+        self.macro_motif_matcher = self.semantic_program_executor
+        self.motif_bank = self.semantic_program_bank
+        self.motif_matcher = self.semantic_program_executor
+
         self.missing_region_token = nn.Parameter(torch.randn(config.feature_dim) * 0.02)
         self.region_reliability_predictor = nn.Sequential(
             nn.Linear(config.feature_dim, config.feature_dim // 2),
@@ -618,43 +916,65 @@ class SemanticROIGraphFER(nn.Module):
         region_confidence = torch.clamp(0.5 * region_confidence + 0.5 * predicted_confidence, 0.0, 1.0)
         region_confidence = region_confidence * region_mask
 
-        suppression_gate = (region_confidence > float(self.config.region_confidence_threshold)).float().unsqueeze(-1)
-        region_embeddings = (
-            suppression_gate * region_embeddings
-            + (1.0 - suppression_gate) * missing_token.expand_as(region_embeddings)
-        )
-
+        semantic_state_tokens = self.semantic_state_encoder(region_embeddings)
         micro_motif_bank = self.micro_motif_bank()
-        micro_motif_attention, region_motif_tokens = self.micro_motif_matcher(region_embeddings, micro_motif_bank)
-        region_motif_tokens = (
-            suppression_gate * region_motif_tokens
-            + (1.0 - suppression_gate) * missing_token.expand_as(region_motif_tokens)
-        )
+        micro_motif_attention, semantic_motif_tokens = self.micro_motif_matcher(semantic_state_tokens, micro_motif_bank)
 
-        # Global facial prior: learnable symmetric adjacency over semantic regions.
-        # Symmetrize first, then sigmoid to map to [0, 1] as a soft prior.
-        adj_sym = (self.edge_importance + self.edge_importance.transpose(0, 1)) / 2.0
-        adj_prior = torch.sigmoid(adj_sym)
-        macro_adj = adj_prior.unsqueeze(0).expand(image.size(0), -1, -1)
-
-        macro_embeddings = self.macro_reasoner(
-            region_motif_tokens,
-            adj=macro_adj,
-            region_confidence=region_confidence,
+        cross_region_outputs = self.cross_region_composition_graph(
+            semantic_motif_tokens,
             region_mask=region_mask,
+            region_confidence=region_confidence,
+        )
+        cross_region_tokens = cross_region_outputs["cross_region_tokens"]
+        cross_region_attention = cross_region_outputs["composition_attn"]
+        cross_region_pair_tokens = cross_region_outputs["pair_tokens"]
+        cross_region_pair_scores = cross_region_outputs["pair_scores"]
+        cross_region_pair_attention = cross_region_outputs["pair_attention"]
+
+        composition_summary = cross_region_tokens.mean(dim=1, keepdim=True)
+        compositional_input = semantic_motif_tokens + composition_summary.expand_as(semantic_motif_tokens)
+
+        interaction_states, semantic_interaction_tensor, semantic_interaction_gates = self.semantic_interaction_block(
+            compositional_input,
         )
 
-        macro_motif_bank = self.macro_motif_bank()
-        logits_motif, macro_motif_attention, topology_matrix = self.macro_motif_matcher(
-            macro_embeddings,
-            macro_motif_bank,
+        compositional_outputs = self.semantic_compositional_reasoner(
+            interaction_states,
+            region_mask=region_mask,
+            region_confidence=region_confidence,
         )
+        composed_states = compositional_outputs["composed_states"]
+        hyperedge_tokens = compositional_outputs["hyperedge_tokens"]
+        routing_weights = compositional_outputs["routing_weights"]
+        semantic_latent_embedding = compositional_outputs["emotion_latent"]
 
-        pooled = self.global_pool(feature_map).flatten(1)
-        logits_global = self.global_head(pooled)
+        semantic_program_bank, semantic_program_topology = self.semantic_program_bank()
+        semantic_program_outputs = self.semantic_program_executor(
+            composed_states,
+            cross_region_tokens,
+            semantic_program_bank,
+            semantic_program_topology,
+            region_mask=region_mask,
+            interaction_gates=semantic_interaction_gates,
+            routing_weights=routing_weights,
+        )
+        semantic_program_scores = semantic_program_outputs["program_scores"]
+        semantic_program_attention = semantic_program_outputs["program_attention"]
+        semantic_program_tokens = semantic_program_outputs["program_tokens"]
+        semantic_program_compatibility = semantic_program_outputs["compatibility"]
+        semantic_program_region_scores = semantic_program_outputs["region_score"]
+        semantic_program_topology_scores = semantic_program_outputs["topology_score"]
+        semantic_program_composition_scores = semantic_program_outputs["composition_score"]
+        semantic_program_routing_entropy = semantic_program_outputs["routing_entropy"]
 
-        fusion_weight = torch.sigmoid(self.alpha)
-        logits = logits_motif + fusion_weight * logits_global
+        global_semantic_context = self.global_context(feature_map)
+        fused_latent = self.global_fusion(torch.cat([semantic_latent_embedding, global_semantic_context], dim=-1))
+        logits = self.semantic_classifier(fused_latent)
+
+        structure_gate = torch.sigmoid(self.semantic_structure_gate)
+        logits_motif = semantic_program_scores
+        logits_global = self.semantic_classifier(global_semantic_context)
+        logits = logits_motif + structure_gate * logits_global
 
         return {
             "logits": logits,
@@ -662,14 +982,39 @@ class SemanticROIGraphFER(nn.Module):
             "logits_global": logits_global,
             "micro_node_features": micro_node_features,
             "micro_motif_attention": micro_motif_attention,
-            "region_motif_tokens": region_motif_tokens,
+            "region_motif_tokens": semantic_motif_tokens,
             "region_embeddings": region_embeddings,
+            "semantic_state_tokens": semantic_state_tokens,
+            "semantic_motif_tokens": semantic_motif_tokens,
+            "cross_region_tokens": cross_region_tokens,
+            "cross_region_attention": cross_region_attention,
+            "cross_region_pair_tokens": cross_region_pair_tokens,
+            "cross_region_pair_scores": cross_region_pair_scores,
+            "cross_region_pair_attention": cross_region_pair_attention,
+            "semantic_interaction_tensor": semantic_interaction_tensor,
+            "semantic_interaction_gates": semantic_interaction_gates,
+            "semantic_routing_weights": routing_weights,
+            "hyperedge_tokens": hyperedge_tokens,
+            "semantic_program_scores": semantic_program_scores,
+            "semantic_program_attention": semantic_program_attention,
+            "semantic_program_tokens": semantic_program_tokens,
+            "semantic_program_compatibility": semantic_program_compatibility,
+            "semantic_program_region_scores": semantic_program_region_scores,
+            "semantic_program_topology_scores": semantic_program_topology_scores,
+            "semantic_program_composition_scores": semantic_program_composition_scores,
+            "semantic_program_routing_entropy": semantic_program_routing_entropy,
+            "semantic_program_bank": semantic_program_bank,
+            "semantic_program_topology": semantic_program_topology,
+            "semantic_latent_embedding": semantic_latent_embedding,
+            "fused_latent_embedding": fused_latent,
             "region_mask": region_mask,
             "region_confidence": region_confidence,
             "invalid_region_indices": invalid_indices,
-            "macro_embeddings": macro_embeddings,
-            "macro_motif_attention": macro_motif_attention,
-            "topology_matrix": topology_matrix,
+            "macro_embeddings": composed_states,
+            "macro_motif_attention": semantic_program_attention,
             "micro_motif_bank": micro_motif_bank,
-            "macro_motif_bank": macro_motif_bank,
+            "macro_motif_bank": semantic_program_bank,
+            "aux_losses": {
+                "semantic_consistency": semantic_motif_tokens.new_tensor(0.0),
+            },
         }

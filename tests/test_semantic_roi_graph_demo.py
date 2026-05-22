@@ -8,7 +8,7 @@ from src.models.semantic_roi_graph_losses import compute_semantic_roi_graph_loss
 
 
 def test_forward_shapes():
-    config = SemanticRoiGraphConfig(num_classes=7, num_regions=9, roi_grid=4, feature_dim=256)
+    config = SemanticRoiGraphConfig(num_classes=7, num_regions=9, roi_grid=4, feature_dim=256, use_pretrained=False)
     model = SemanticROIGraphFER(config)
     images = torch.randn(2, 1, 48, 48)
     bboxes = torch.tensor(
@@ -25,7 +25,11 @@ def test_forward_shapes():
     assert outputs["logits_global"].shape == (2, 7)
     assert outputs["micro_motif_attention"].shape[0] == 2
     assert outputs["region_embeddings"].shape[1] == 9
-    assert outputs["macro_embeddings"].shape[1] == 9
+    assert outputs["semantic_state_tokens"].shape == (2, 9, 9)
+    assert outputs["cross_region_tokens"].shape == (2, 4, 9)
+    assert outputs["semantic_program_scores"].shape == (2, 7)
+    assert outputs["semantic_latent_embedding"].shape == (2, 128)
+    assert outputs["semantic_program_topology"].shape == (7, 4, 9, 9)
 
 
 def test_forward_handles_tencrop_batches():
@@ -43,7 +47,9 @@ def test_forward_handles_tencrop_batches():
     outputs = model(images, bboxes)
 
     assert outputs["logits"].shape == (2, 7)
-    assert outputs["region_embeddings"].shape == (2, 9, 256)
+    assert outputs["semantic_state_tokens"].shape == (2, 9, 9)
+    assert outputs["semantic_interaction_tensor"].shape == (2, 9, 9, 9)
+    assert outputs["cross_region_pair_scores"].shape == (2, 9, 9)
 
 
 def test_semantic_losses_support_averaged_model_wrapper():
@@ -65,3 +71,11 @@ def test_semantic_losses_support_averaged_model_wrapper():
 
     assert "loss" in loss_dict
     assert torch.isfinite(loss_dict["loss"])
+    assert "loss_semantic_consistency" in loss_dict
+    assert "loss_compositional_motif_consistency" in loss_dict
+    assert "loss_semantic_disentanglement" in loss_dict
+    assert "loss_compositional_program_consistency" in loss_dict
+    assert "loss_topology_alignment" in loss_dict
+    assert "loss_region_composition_contrastive" in loss_dict
+    assert "loss_program_sparsity" in loss_dict
+    assert "loss_program_diversity" in loss_dict

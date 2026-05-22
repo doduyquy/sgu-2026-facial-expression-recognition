@@ -1,0 +1,728 @@
+TÀI LIỆU MÔ TẢ PIPELINE SEMANTIC ROI GRAPH FER
+
+Phiên bản tài liệu này mô tả pipeline hiện tại của mô hình semantic ROI graph FER trong repository, tập trung vào:
+- luồng dữ liệu từ dataset đến model
+- shape tensor ở từng bước
+- mục tiêu của từng module
+- cách loss và trainer phối hợp với model
+
+Các ký hiệu shape dùng trong tài liệu:
+- B: batch size
+- C: số kênh ảnh đầu vào sau khi xử lý
+- H, W: chiều cao và chiều rộng ảnh
+- R: số vùng ngữ nghĩa, hiện tại = 9
+- G: roi_grid, hiện tại = 4
+- K: số motif trên mỗi vùng/cụm
+- D: feature_dim, hiện tại = 256
+- N: số class cảm xúc, hiện tại = 7
+
+
+1. MỤC TIÊU TỔNG THỂ CỦA PIPELINE
+
+Pipeline này không chỉ phân loại cảm xúc từ ảnh mặt 48x48, mà còn cố gắng mô hình hóa cấu trúc ngữ nghĩa của khuôn mặt theo hai tầng:
+- Tầng micro: học đặc trưng chi tiết bên trong từng vùng ngữ nghĩa như trán, mắt, mũi, khóe miệng.
+- Tầng macro: học quan hệ giữa các vùng để nắm được topology biểu cảm toàn khuôn mặt.
+
+Kết quả cuối cùng là một mô hình lai gồm:
+- nhánh ROI graph semantic để khai thác cấu trúc mặt
+- nhánh global CNN để giữ thông tin toàn cục
+- cơ chế fusion để kết hợp hai nguồn dự đoán
+
+
+2. DỮ LIỆU ĐẦU VÀO VÀ LUỒNG DỮ LIỆU
+
+2.1. Dataset FER2013
+
+File chính: src/data/dataset.py
+
+Mỗi sample được đọc từ CSV và chuyển thành:
+- ảnh xám 48x48
+- label cảm xúc
+- bbox semantic nếu bật semantic masks
+
+Shape đầu ra từ __getitem__:
+- nếu không dùng semantic masks:
+  - image: PIL Image hoặc tensor sau transform
+  - label: scalar int
+
+- nếu dùng semantic masks:
+  - image: tensor ảnh
+  - label: scalar int
+  - bboxes: (R, 4)
+  - semantic_meta: dict chứa region_mask và region_confidence
+
+2.2. Transform train
+
+File chính: src/data/transforms.py
+
+Train transform:
+- RandomResizedCrop(image_size)
+- RandomAffine(translate)
+- RandomHorizontalFlip
+- RandomRotation
+- ToTensor
+- Normalize
+
+Shape sau train transform:
+- ảnh đầu vào grayscale 48x48
+- output tensor: (1, 48, 48)
+
+Khi DataLoader ghép batch:
+- images: (B, 1, 48, 48)
+
+2.3. Transform val/test
+
+Val/test dùng TenCrop:
+- Resize((56, 56))
+- TenCrop(48)
+- chuyển từng crop sang tensor
+- stack 10 crop lại
+
+Shape sau transform:
+- mỗi sample: (10, 1, 48, 48)
+
+Khi DataLoader ghép batch:
+- images: (B, 10, 1, 48, 48)
+
+Ý nghĩa:
+- train chỉ dùng một ảnh/crop
+- val/test dùng 10 crop để tăng độ ổn định dự đoán
+
+Lưu ý quan trọng:
+- semantic ROI graph model hiện tại xử lý đầu vào 5D bằng cách lấy crop trung tâm trước backbone
+- tức là (B, 10, 1, 48, 48) sẽ được rút về (B, 1, 48, 48)
+
+2.4. Bboxes semantic
+
+Nếu bật semantic masks:
+- bboxes: (B, R, 4)
+- với R = 9
+- mỗi bbox có dạng [x1, y1, x2, y2]
+
+semantic_meta chứa:
+- region_mask: (R,) hoặc sau collate thành (B, R)
+- region_confidence: (R,) hoặc sau collate thành (B, R)
+
+Mục tiêu:
+- xác định vùng nào hợp lệ
+- vùng nào không đáng tin sẽ bị giảm trọng số hoặc thay bằng token thiếu
+
+
+3. DATALOADER VÀ UNPACK BATCH
+
+File chính: src/data/dataloader.py và src/training/trainer.py
+
+Trainer._unpack_batch hỗ trợ các dạng:
+- (images, labels)
+- (images, labels, bboxes)
+- (images, labels, bboxes, semantic_meta)
+
+Trong nhánh semantic ROI graph:
+- images được đưa vào model
+- labels được dùng cho classification loss
+- bboxes được đưa vào ROIAlign
+- semantic_meta nếu có thì cấp region_mask và region_confidence
+
+Shape điển hình trong train/val:
+- images: (B, 1, 48, 48) hoặc (B, 10, 1, 48, 48) ở val/test
+- labels: (B,)
+- bboxes: (B, 9, 4)
+- region_mask: (B, 9)
+- region_confidence: (B, 9)
+
+
+4. MÔ HÌNH TỔNG QUÁT
+
+File chính: src/models/semantic_roi_graph_fer.py
+
+Mô hình gồm các khối sau:
+- SemanticBackbone
+- SemanticRoiAlign
+- MicroGraphReasoner
+- MicroMotifBank
+- MicroMotifMatcher
+- MacroGraphReasoner
+- MacroMotifBank
+- MacroMotifMatcher
+- Global branch
+- Fusion logic
+
+Mục tiêu chung:
+- backbone trích feature map không gian
+- ROIAlign cắt feature theo từng vùng mặt
+- micro reasoner xử lý nội bộ từng vùng
+- motif banks cung cấp prototype học được
+- macro reasoner học quan hệ giữa vùng
+- global branch giữ tín hiệu toàn ảnh
+- fusion kết hợp global + motif branch để ra logits cuối
+
+
+5. SEMANTICBACKBONE
+
+Mục tiêu module:
+- dùng ResNet18 như encoder chính
+- giữ độ phân giải không gian cao để ROIAlign có đủ chi tiết cho vùng mặt nhỏ
+
+Input:
+- image: (B, 1, 48, 48)
+
+Xử lý:
+- nếu image có 1 kênh, repeat thành 3 kênh
+- đầu vào backbone thực tế: (B, 3, 48, 48)
+
+Output:
+- feature_map: (B, D, 12, 12) khi feature_dim = 256
+- hoặc (B, 512, 12, 12) trong cấu hình 512
+
+Trong cấu hình hiện tại thường dùng:
+- feature_dim = 256
+- output: (B, 256, 12, 12)
+
+Ý nghĩa:
+- nén ảnh mặt thành feature map giàu ngữ cảnh nhưng vẫn còn cấu trúc không gian
+- 12x12 là đủ để ROIAlign cắt theo vùng ngữ nghĩa
+
+
+6. SEMANTICROIALIGN
+
+Mục tiêu module:
+- cắt feature map theo từng bbox semantic
+- biến mỗi vùng mặt thành một tập token không gian nhỏ
+
+Input:
+- feature_map: (B, D, 12, 12)
+- bboxes: (B, R, 4)
+
+Với:
+- R = 9
+- roi_grid = 4
+
+Output:
+- roi_features: (B, R, G*G, D)
+- với G = 4, nên G*G = 16
+- output thực tế: (B, 9, 16, 256)
+
+Ý nghĩa từng chiều:
+- B: batch
+- R: số vùng semantic
+- 16: số token không gian lấy từ mỗi vùng
+- D: feature channel của backbone
+
+Mục tiêu:
+- thay vì nén mỗi vùng thành một vector ngay lập tức, giữ lại các token con trong vùng để micro reasoning hoạt động tốt hơn
+
+Xử lý bbox:
+- bbox được clamp và sửa nếu đảo tọa độ hoặc quá nhỏ
+- bbox không hợp lệ được thay bằng hộp canonical
+
+Lưu ý:
+- spatial_scale được tính từ feature_map height / bbox_input_size
+- với bbox_input_size = 48 và feature_map 12x12, spatial_scale = 0.25
+
+
+7. MICROGRAPHREASONER
+
+Mục tiêu module:
+- mô hình hóa quan hệ nội bộ trong từng vùng semantic
+- học phụ thuộc giữa các token con trong cùng một vùng
+
+Input:
+- x: (B, R, N, D)
+- trong đó:
+  - R = 9
+  - N = 16
+  - D = 256
+
+Quy trình:
+1. reshape từ (B, R, N, D) -> (B*R, N, D)
+2. chạy nhiều GATBlock trên từng vùng độc lập
+3. gated pooling để gom token trong mỗi vùng
+
+Output:
+- micro_node_features: (B, R, N, D)
+- pooled region_embeddings: (B, R, D)
+
+Ý nghĩa:
+- micro_node_features giữ toàn bộ token sau reasoning
+- region_embeddings là đại diện gọn của từng vùng
+
+GATBlock trong micro reasoner:
+- attention giữa N token trong cùng một vùng
+- dùng q/k/v projection
+- có thể có adjacency bias và locality bias nếu được cấu hình
+
+GatedPooling:
+- tính trọng số gating cho từng token
+- pool có trọng số để lấy vector vùng
+
+
+8. REGION_PROJ
+
+Mục tiêu module:
+- chiếu region_embeddings về cùng không gian feature để chuẩn bị cho motif matching và macro reasoning
+
+Input:
+- region_embeddings: (B, R, D)
+
+Output:
+- vẫn là (B, R, D)
+
+Vai trò:
+- đây là một lớp linear đơn giản, nhưng rất quan trọng để tinh chỉnh biểu diễn vùng trước khi so khớp motif
+
+
+9. MISSING_REGION_TOKEN VÀ REGION RELIABILITY
+
+Mục tiêu:
+- xử lý vùng không hợp lệ hoặc vùng có độ tin cậy thấp
+
+missing_region_token:
+- một vector học được có shape: (D,)
+
+Khi áp dụng:
+- broadcast thành (1, 1, D)
+- dùng để thay thế region_embeddings của vùng không tin cậy
+
+region_reliability_predictor:
+- nhận region_embeddings: (B, R, D)
+- output confidence: (B, R, 1)
+- squeeze thành (B, R)
+
+region_confidence cuối cùng:
+- kết hợp confidence suy ra từ bbox và confidence dự đoán từ embedding
+- sau đó clamp về [0, 1]
+
+Mục tiêu:
+- vùng nào kém tin cậy sẽ bị giảm ảnh hưởng trong reasoning sau đó
+
+
+10. MICROMOTIFBANK
+
+Mục tiêu module:
+- lưu các motif vi mô học được riêng cho từng vùng semantic
+
+Shape của bank:
+- motifs: (R, K, D)
+- với:
+  - R = 9
+  - K = micro_motifs_per_region = 8
+  - D = 256
+
+Output forward:
+- trả về chính tensor motifs
+
+Ý nghĩa:
+- mỗi vùng có 8 prototype motif khác nhau
+- ví dụ vùng mắt có thể học các motif tương ứng co giãn mí, mở mắt, nhíu mày gần mắt, v.v.
+
+
+11. MICROMOTIFMATCHER
+
+Mục tiêu module:
+- so khớp embedding của từng vùng với bank motif vi mô của chính vùng đó
+- trộn thông tin motif vào region embedding
+
+Input:
+- region_embeddings: (B, R, D)
+- motif_bank: (R, K, D)
+
+Các bước:
+1. normalize region_embeddings và motif_bank
+2. tính similarity: (B, R, K)
+3. softmax theo K
+4. tạo token motif:
+   - tokens: (B, R, D)
+5. token_proj qua linear + LayerNorm + GELU
+6. fusion gate học được
+
+Output:
+- attn: (B, R, K)
+- region_motif_tokens: (B, R, D)
+
+Ý nghĩa:
+- attn cho biết vùng nào đang chọn motif nào
+- region_motif_tokens là embedding đã được enrich bằng prototype motif
+
+
+12. EDGE_IMPORTANCE VÀ ADJACENCY PRIOR
+
+Mục tiêu module:
+- học cấu trúc kết nối giữa các vùng semantic
+
+edge_importance:
+- tham số học được có shape: (R, R)
+
+Xử lý:
+- symmetrize: (E + E^T) / 2
+- sigmoid để đưa về [0, 1]
+- mở rộng batch thành (B, R, R)
+
+Ý nghĩa:
+- đây là soft prior cho quan hệ giữa các vùng mặt
+- ví dụ mắt trái và mắt phải có thể có kết nối mạnh
+
+
+13. MACROGRAPHREASONER
+
+Mục tiêu module:
+- reasoning giữa các vùng semantic ở mức toàn mặt
+- học tương quan giữa trán, mắt, mũi, miệng, v.v.
+
+Input:
+- x: (B, R, D)
+- adj: (B, R, R) hoặc None
+- region_confidence: (B, R)
+- region_mask: (B, R)
+
+Quy trình:
+1. nếu có region_confidence, nhân vào x theo từng vùng
+2. chạy một hoặc nhiều GATBlock trên graph vùng
+3. áp dụng attention mask nếu region nào bị vô hiệu
+
+Output:
+- macro_embeddings: (B, R, D)
+
+Ý nghĩa:
+- đây là tầng học topology biểu cảm toàn khuôn mặt
+- macro embeddings mang thông tin quan hệ liên vùng chứ không chỉ đặc trưng cục bộ
+
+
+14. MACROMOTIFBANK
+
+Mục tiêu module:
+- lưu prototype topology ở mức class
+
+Shape:
+- motifs: (N, M, R, D)
+- với:
+  - N = 7 class cảm xúc
+  - M = macro_motifs_per_class = 4
+  - R = 9
+  - D = 256
+
+Ý nghĩa:
+- mỗi class có nhiều motif topology khác nhau
+- ví dụ class happy có một số topology đặc trưng khác với sad hoặc angry
+
+
+15. MACROMOTIFMATCHER
+
+Mục tiêu module:
+- so khớp topology của mẫu hiện tại với các topology prototype theo class
+
+Input:
+- macro_embeddings: (B, R, D)
+- motif_bank: (N, M, R, D)
+
+Các bước chính:
+1. relation_matrix trên macro_embeddings
+   - output rel_macro: (B, R, R)
+2. relation_matrix trên motif_bank
+   - output rel_motif: (N, M, R, R)
+3. flatten và normalize quan hệ
+4. tính similarity giữa relation hiện tại và relation motif
+5. softmax theo motif M
+
+Output:
+- logits_motif: (B, N)
+- attn: (B, N, M)
+- topology_matrix: (B, R, R)
+
+Ý nghĩa:
+- logits_motif là điểm số từ nhánh motif topology
+- topology_matrix dùng cho các loss consistency/regularization
+
+Điểm đáng chú ý:
+- nhánh này không dùng ArcFace
+- bản chất là phân loại dựa trên topology relation giữa các vùng
+
+
+16. GLOBAL BRANCH
+
+Mục tiêu module:
+- giữ tín hiệu toàn cục của khuôn mặt, tránh phụ thuộc quá mạnh vào graph branch
+
+Input:
+- feature_map: (B, D, 12, 12)
+
+Xử lý:
+- AdaptiveAvgPool2d(1)
+- flatten
+
+Shape sau pool:
+- pooled: (B, D)
+
+Global head:
+- Linear(D -> D)
+- ReLU
+- Dropout
+- Linear(D -> N)
+
+Output:
+- logits_global: (B, N)
+
+Ý nghĩa:
+- đây là đường dự đoán toàn ảnh
+- giúp model vẫn ổn định nếu semantic regions bị nhiễu hoặc thiếu
+
+
+17. FUSION LOGIC
+
+Mục tiêu:
+- kết hợp dự đoán từ motif branch và global branch
+
+Tham số:
+- alpha: scalar learnable parameter
+- fusion_weight = sigmoid(alpha)
+
+Kết hợp:
+- logits = logits_motif + fusion_weight * logits_global
+
+Shape:
+- logits_motif: (B, N)
+- logits_global: (B, N)
+- logits: (B, N)
+
+Ý nghĩa:
+- nếu fusion_weight lớn, global branch có ảnh hưởng mạnh hơn
+- nếu fusion_weight nhỏ, motif branch chi phối hơn
+- đây là cơ chế cân bằng linh hoạt, không cố định trọng số
+
+
+18. XỬ LÝ TEN CROP TRONG MODEL
+
+Trong forward của SemanticROIGraphFER:
+- nếu image.dim() == 5
+- tức shape đầu vào là (B, 10, C, H, W)
+- model chọn crop trung tâm:
+  - image = image[:, image.size(1) // 2]
+
+Sau đó image trở thành:
+- (B, C, H, W)
+
+Mục tiêu:
+- tránh lỗi conv2d
+- giữ pipeline val/test hoạt động với TenCrop
+- dùng crop trung tâm làm lựa chọn ít phá vỡ nhất cho ROI semantic
+
+
+19. OUTPUT DICTIONARY CỦA MODEL
+
+Forward trả về dict với các key chính:
+
+- logits: (B, N)
+- logits_motif: (B, N)
+- logits_global: (B, N)
+- micro_node_features: (B, R, 16, D)
+- micro_motif_attention: (B, R, K)
+- region_motif_tokens: (B, R, D)
+- region_embeddings: (B, R, D)
+- region_mask: (B, R)
+- region_confidence: (B, R)
+- invalid_region_indices: (num_invalid, 2)
+- macro_embeddings: (B, R, D)
+- macro_motif_attention: (B, N, M)
+- topology_matrix: (B, R, R)
+- micro_motif_bank: (R, K, D)
+- macro_motif_bank: (N, M, R, D)
+
+Ý nghĩa:
+- trainer và loss helper dùng các key này để tính các loss phụ
+- các tensor này cũng rất hữu ích khi debug hoặc visualize
+
+
+20. LOSS PIPELINE
+
+File chính: src/models/semantic_roi_graph_losses.py
+
+Loss chính gồm:
+
+20.1. Cross-entropy classification loss
+
+- input: logits (B, N)
+- label: (B,)
+- output: scalar
+
+20.2. Micro motif diversity loss
+
+- input: micro_motif_bank = (R, K, D)
+- mục tiêu: các motif trong cùng vùng không được giống nhau quá mức
+
+20.3. Macro motif diversity loss
+
+- input: macro_motif_bank = (N, M, R, D)
+- mục tiêu: motif topology ở cùng class phải đa dạng
+
+20.4. Region supervised contrastive loss
+
+- input: macro_embeddings = (B, R, D)
+- region_mask = (B, R)
+- mục tiêu: mẫu cùng class có embedding vùng gần nhau hơn
+
+20.5. Relation consistency loss
+
+- input: topology_matrix = (B, R, R)
+- mục tiêu: topology của mẫu cùng class nên ổn định hơn
+
+20.6. Topology regularization loss
+
+- input: topology_matrix = (B, R, R)
+- mục tiêu: tránh topology quá nhiễu hoặc quá lệch
+
+Tổng loss:
+- total = CE + w1 * micro_diversity + w2 * macro_diversity + w3 * contrastive + w4 * consistency + w5 * topology_reg
+
+Output loss dict:
+- loss: scalar tổng
+- loss_ce
+- loss_micro_motif_diversity
+- loss_macro_motif_diversity
+- loss_motif_diversity
+- loss_contrastive
+- loss_relation_consistency
+- loss_region_consistency
+- loss_topology_reg
+
+
+21. TÍCH HỢP VỚI TRAINER
+
+File chính: src/training/trainer.py
+
+Nhánh semantic_roi_graph trong train/validate làm như sau:
+1. lấy batch từ DataLoader
+2. tách images, labels, bboxes, semantic_meta
+3. chuyển lên device
+4. gọi model(images, bboxes, region_mask, region_confidence)
+5. lấy logits từ outputs
+6. nếu loss_mode == semantic_roi_graph thì dùng compute_semantic_roi_graph_losses
+7. cộng thêm các auxiliary loss nếu có
+
+Điểm quan trọng:
+- trainer có EMA wrapper: AveragedModel
+- helper loss hiện đã unwrap model thật bên trong EMA wrapper để truy cập motif banks
+
+Mục tiêu của trainer:
+- không chỉ tối ưu classification accuracy
+- mà còn giữ các regularizer motif/topology chạy đúng trọng số
+
+
+22. CÁC SHAPE ĐIỂN HÌNH THEO DÒNG CHẢY
+
+22.1. Train batch
+
+- images: (B, 1, 48, 48)
+- bboxes: (B, 9, 4)
+- region_mask: (B, 9)
+- region_confidence: (B, 9)
+
+22.2. Backbone
+
+- input: (B, 3, 48, 48)
+- output: (B, 256, 12, 12)
+
+22.3. ROIAlign
+
+- input feature_map: (B, 256, 12, 12)
+- input bboxes: (B, 9, 4)
+- output roi_nodes: (B, 9, 16, 256)
+
+22.4. Micro reasoning
+
+- input: (B, 9, 16, 256)
+- output micro_node_features: (B, 9, 16, 256)
+- output region_embeddings: (B, 9, 256)
+
+22.5. Micro motif matching
+
+- bank: (9, 8, 256)
+- attention: (B, 9, 8)
+- tokens: (B, 9, 256)
+
+22.6. Macro reasoning
+
+- input: (B, 9, 256)
+- output macro_embeddings: (B, 9, 256)
+
+22.7. Macro motif matching
+
+- bank: (7, 4, 9, 256)
+- attention: (B, 7, 4)
+- topology_matrix: (B, 9, 9)
+- logits_motif: (B, 7)
+
+22.8. Global branch
+
+- pooled: (B, 256)
+- logits_global: (B, 7)
+
+22.9. Final fusion
+
+- logits: (B, 7)
+
+
+23. MỤC TIÊU CỦA TỪNG MODULE
+
+23.1. SemanticBackbone
+- tạo feature map giàu ngữ cảnh từ ảnh mặt
+
+23.2. SemanticRoiAlign
+- cắt đặc trưng theo vùng ngữ nghĩa
+
+23.3. MicroGraphReasoner
+- học cấu trúc chi tiết trong từng vùng
+
+23.4. MicroMotifBank
+- lưu prototype vi mô cho từng vùng
+
+23.5. MicroMotifMatcher
+- gán embedding vùng vào các motif vi mô phù hợp
+
+23.6. MacroGraphReasoner
+- mô hình hóa quan hệ giữa các vùng mặt
+
+23.7. MacroMotifBank
+- lưu prototype topology theo class
+
+23.8. MacroMotifMatcher
+- so khớp topology hiện tại với topology prototype
+
+23.9. Global branch
+- bảo toàn thông tin toàn cục của ảnh
+
+23.10. Fusion
+- kết hợp hai nguồn dự đoán để ra logits cuối
+
+23.11. Loss helper
+- ép motif và topology học có cấu trúc, không chỉ tối ưu nhãn
+
+
+24. GHI CHÚ DEBUG NHANH
+
+Nếu gặp lỗi shape, kiểm tra theo thứ tự sau:
+1. ảnh có đang là (B, 1, 48, 48) không
+2. nếu là TenCrop, ảnh val/test có thành (B, 10, 1, 48, 48) không
+3. bboxes có đúng (B, 9, 4) không
+4. ROIAlign có nhận feature_map 4D không
+5. region_mask và region_confidence có cùng batch size với ảnh không
+6. outputs có key logits, macro_embeddings, topology_matrix không
+
+Nếu lỗi liên quan EMA:
+- nhớ rằng loss helper cần đọc model thật bên trong `AveragedModel.module`
+
+
+25. TÓM TẮT RẤT NGẮN
+
+Pipeline này đi từ:
+- ảnh mặt 48x48
+-> backbone 256x12x12
+-> ROIAlign theo 9 vùng
+-> micro reasoning theo từng vùng
+-> micro motif matching
+-> macro reasoning trên graph vùng
+-> macro motif matching theo class
+-> global branch song song
+-> fusion logits cuối
+
+Mục tiêu tổng thể:
+- phân loại cảm xúc
+- đồng thời học biểu diễn có cấu trúc theo vùng mặt và topology liên vùng
