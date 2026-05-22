@@ -487,7 +487,8 @@ class Trainer:
 
             if self.scheduler is not None:
                 if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                    self.scheduler.step(val_loss)
+                    # mode='max' — track val_acc, not val_loss
+                    self.scheduler.step(val_acc)
                 else:
                     self.scheduler.step()
 

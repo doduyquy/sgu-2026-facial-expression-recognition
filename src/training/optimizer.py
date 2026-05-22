@@ -39,14 +39,13 @@ def build_scheduler(optimizer, config):
         return None
 
     elif scheduler_name == 'reduce_lr_on_plateau':
-        # reduce when val loss stopping reduce
-        factor = float(config['training'].get('lr_factor', 0.5)) 
-        patience = int(config['training'].get('lr_patience', 3)) 
-        print(f"--> [Scheduler] ReduceLROnPlateau (factor={factor}, patience={patience})")
-        
+        factor = float(config['training'].get('lr_factor', 0.5))
+        patience = int(config['training'].get('lr_patience', 5))
+        # mode='max' because we track val_acc (higher is better)
+        print(f"--> [Scheduler] ReduceLROnPlateau (mode=max, factor={factor}, patience={patience})")
         return lr_scheduler.ReduceLROnPlateau(
             optimizer,
-            mode='min',
+            mode='max',
             factor=factor,
             patience=patience,
         )
