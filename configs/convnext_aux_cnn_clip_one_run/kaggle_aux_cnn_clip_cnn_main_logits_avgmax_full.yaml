@@ -1,0 +1,141 @@
+_base_: "../base.yaml"
+
+# Full one-file config for the avg+max CNN-logits branch.
+#
+# Main CNN path:
+#   ConvNeXt feature map [B, 768, 7, 7]
+#   -> adaptive avgpool [B, 768]
+#   -> adaptive maxpool [B, 768]
+#   -> concat [B, 1536]
+#   -> MLP
+#   -> logits_cnn
+#
+# Final logits:
+#   final_logits = 0.8 * logits_cnn + 0.2 * region_attention_logits
+#
+# This is still the clean ImageNet-only line:
+# - ConvNeXt-Tiny starts from ImageNet DEFAULT weights
+# - checkpoint_path stays null
+# - CLIP/learnable region tokens stay enabled as the region correction branch
+
+paths:
+  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
+
+data:
+  name: "fer13-split"
+  num_classes: 7
+  image_size: 224
+  batch_size: 16
+  num_workers: 2
+  channels: 3
+  mean: [0.5]
+  std: [0.5]
+  normalize: true
+  use_clean_filter: false
+  mask_dir: "/kaggle/input/datasets/lhongphuc2/mediapipe-mask-datasets-35887/merged_mediapipe_region_masks"
+
+model:
+  name: "convnext_tiny_mask_guided_region_attention"
+  arch: "convnext_tiny"
+  pretrained: true
+  weights: "DEFAULT"
+  checkpoint_path: null
+  checkpoint_strict: false
+
+  head_type: "mlp"
+  head_hidden_dim: 512
+  head_dropout: 0.35
+
+  use_source_classifier: false
+  source_logit_weight: 0.0
+
+  embed_dim: 384
+  num_heads: 4
+  num_regions: 6
+  num_encoder_layers: 2
+  transformer_dropout: 0.25
+  pool_visual_tokens: false
+  token_grid_size: 7
+  use_visual_pos_embed: true
+  use_region_slot_embed: true
+  use_global_visual_bias: true
+  use_global_feature_concat: false
+  fusion_type: "transformer"
+  region_pooling: "concat"
+  classifier_hidden_dim: 512
+  classifier_dropout1: 0.35
+  classifier_dropout2: 0.25
+
+  mask_guided_attention: true
+  mask_attention_alpha: 0.3
+  mask_floor: 0.05
+  mask_dir: "/kaggle/input/datasets/lhongphuc2/mediapipe-mask-datasets-35887/merged_mediapipe_region_masks"
+
+  use_clip_dictionary: true
+  use_learnable_clip_region_tokens: true
+  clip_model_name: "openai/clip-vit-base-patch32"
+  clip_region_gamma_init: 0.1
+  clip_region_gamma_learnable: true
+  clip_fallback_to_learned: false
+
+  use_cnn_aux_loss: true
+  use_cnn_aux_logits: true
+  cnn_aux_pooling: "avgmax"
+  cnn_aux_loss_weight: 0.5
+  cnn_aux_hidden_dim: 768
+  cnn_aux_dropout: 0.25
+
+  logit_fusion: "cnn_aux_sum"
+  finetune_logit_fusion: "cnn_aux_sum"
+  attention_logit_weight: 0.2
+  cnn_aux_logit_weight: 0.8
+
+  freeze_backbone_epochs: 4
+  unfreeze_backbone: true
+  unfreeze_backbone_scope: "all"
+  freeze_unfrozen_batchnorm: true
+
+  ortho_loss_type: "squared_offdiag"
+  ortho_loss_weight: 0.002
+  use_swin_local_refiner: false
+
+training:
+  loss: "cross_entropy"
+  optimizer: "sam"
+  base_optimizer: "adamw"
+  sam_rho: 0.03
+  sam_adaptive: false
+
+  lr: 0.0002
+  finetune_lr: 0.00008
+  visual_extractor_lr: 0.000008
+  weight_decay: 0.02
+
+  scheduler: "cosine"
+  epochs: 71
+  patience: 15
+  monitor: "val_accuracy"
+  label_smoothing: 0.05
+  grad_clip_norm: 1.0
+  skip_nonfinite_batches: true
+  use_class_weights: false
+  use_amp: false
+
+logging:
+  use_wandb: true
+  wandb_entity: "phucga15062005"
+  wandb_project: "FER2013"
+  project_name: "FER2013"
+
+env:
+  platform: "kaggle"
+
+kaggle:
+  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
+  root_path: "/kaggle/working/sgu-2026-facial-expression-recognition"
+
+ddp:
+  sync_batchnorm: true
+  batch_size_is_global: true
+  find_unused_parameters: false
+  broadcast_buffers: true

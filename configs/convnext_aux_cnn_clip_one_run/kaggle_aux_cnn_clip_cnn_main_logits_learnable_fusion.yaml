@@ -1,0 +1,25 @@
+_base_: "kaggle_aux_cnn_clip_cnn_main_logits.yaml"
+
+# Learnable final-logit fusion ablation.
+#
+# Same method as kaggle_aux_cnn_clip_cnn_main_logits.yaml, but instead of
+# fixing final_logits = 0.8 * cnn_aux_logits + 0.2 * region_logits, learn one
+# scalar CNN weight during training:
+#
+#   cnn_weight = min_w + (max_w - min_w) * sigmoid(alpha)
+#   final_logits = cnn_weight * cnn_aux_logits
+#                + (1 - cnn_weight) * region_attention_logits
+#
+# The bounds keep the CNN branch as the anchor while still letting the region
+# branch prove whether it helps.
+
+model:
+  learnable_logit_fusion: true
+  learnable_logit_fusion_init: 0.8
+  learnable_logit_fusion_min: 0.6
+  learnable_logit_fusion_max: 0.95
+
+  # Keep these as the fixed-fusion fallback and as readable documentation of
+  # the old trained value.
+  attention_logit_weight: 0.2
+  cnn_aux_logit_weight: 0.8
