@@ -116,8 +116,14 @@ def semantic_program_sparsity_loss(
     program_attention: torch.Tensor | None = None,
     routing_weights: torch.Tensor | None = None,
     cross_region_attention: torch.Tensor | None = None,
+    mode: str = "l1",
 ) -> torch.Tensor:
-    """Encourage sparse activation of semantic programs and region routing."""
+    """Sparsity / load-balance loss for programs and routing.
+
+    Args:
+        mode: 'l1' to use L1 sparsity (encourages sparse activations),
+              'entropy' to use entropy-maximization (encourage balanced use).
+    """
     losses = []
 
     def _entropy(attn: torch.Tensor) -> torch.Tensor:
@@ -126,16 +132,19 @@ def semantic_program_sparsity_loss(
         denom = torch.log(torch.tensor(float(attn.size(-1)), device=attn.device)).clamp_min(1e-6)
         return (entropy / denom).mean()
 
+    def _l1(attn: torch.Tensor) -> torch.Tensor:
+        return attn.abs().mean()
+
     if program_attention is not None:
-        losses.append(_entropy(program_attention))
+        losses.append(program_attention)
     if routing_weights is not None:
-        losses.append(_entropy(routing_weights))
+        losses.append(routing_weights)
     if cross_region_attention is not None:
         if cross_region_attention.dim() == 4:
             attn = cross_region_attention.mean(dim=1)
         else:
             attn = cross_region_attention
-        losses.append(_entropy(attn))
+        losses.append(attn)
 
     if not losses:
         if program_attention is not None:
@@ -148,7 +157,14 @@ def semantic_program_sparsity_loss(
             device = torch.device("cpu")
         return torch.tensor(0.0, device=device)
 
-    return sum(losses) / float(len(losses))
+    if mode == "entropy":
+        vals = [_entropy(x) for x in losses]
+        # We want to MAXIMIZE entropy to encourage load balancing.
+        # Return negative entropy so that minimizing loss increases entropy.
+        return -sum(vals) / float(len(vals))
+    else:
+        vals = [_l1(x) for x in losses]
+        return sum(vals) / float(len(vals))
 
 
 def program_diversity_loss(program_bank) -> torch.Tensor:
@@ -443,7 +459,14 @@ def compute_semantic_roi_graph_losses(
     coordination_loss = region_coordination_regularization(routing_weights, interaction_gates, region_mask=region_mask)
     topology_loss = topology_alignment_loss(interaction_gates, program_topology, labels, program_attention=program_attention)
     composition_contrastive_loss = region_composition_contrastive_loss(cross_region_tokens, labels, region_mask=region_mask, temperature=temperature)
-    sparsity_loss = semantic_program_sparsity_loss(program_attention=program_attention, routing_weights=routing_weights, cross_region_attention=cross_region_attention)
+    use_entropy = bool(training_cfg.get("use_entropy_sparsity", False))
+    sparsity_mode = "entropy" if use_entropy else "l1"
+    sparsity_loss = semantic_program_sparsity_loss(
+        program_attention=program_attention,
+        routing_weights=routing_weights,
+        cross_region_attention=cross_region_attention,
+        mode=sparsity_mode,
+    )
     diversity_loss = program_diversity_loss(base_model.semantic_program_bank)
 
     total = ce_loss

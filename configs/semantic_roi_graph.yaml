@@ -16,6 +16,14 @@ model:
   dropout: 0.1
   label_smoothing: 0.05
   relation_temperature: 0.07
+  # Semantic compositional model hyperparameters (added for new architecture)
+  semantic_state_dim: 128
+  semantic_latent_dim: 256
+  semantic_attn_heads: 4
+  router_hidden_dim: 256
+  cross_region_compositions: 8
+  programs_per_class: 4
+  program_dim: 128
 
 data:
   batch_size: 64
@@ -43,6 +51,18 @@ training:
   region_contrastive_weight: 0.1
   relation_consistency_weight: 0.1
   topology_reg_weight: 0.01
+  # New loss weights for semantic compositional program training
+  semantic_consistency_weight: 0.1
+  compositional_motif_weight: 0.1
+  semantic_disentanglement_weight: 0.01
+  region_coordination_weight: 0.1
+  compositional_program_weight: 0.1
+  topology_alignment_weight: 0.1
+  region_composition_contrastive_weight: 0.1
+  program_sparsity_weight: 0.05
+  program_diversity_weight: 0.05
+  # Use entropy-based sparsity (True) to encourage load-balancing across hyperedges
+  use_entropy_sparsity: false
 
 logging:
   use_wandb: true
