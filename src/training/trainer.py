@@ -571,6 +571,7 @@ class Trainer:
                     "loss_macro_motif_diversity": "Loss/MacroDiversity",
                     "loss_contrastive": "Loss/RegionContrastive",
                     "loss_semantic_consistency": "Loss/SemanticConsistency",
+                    "loss_compositional_program_consistency": "Loss/CompositionalProgram",
                     "loss_program_diversity": "Loss/ProgramDiversity",
                     "loss_semantic_disentanglement": "Loss/Disentanglement",
                     "loss_region_coordination": "Loss/RegionCoordination",

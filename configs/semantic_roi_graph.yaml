@@ -50,7 +50,7 @@ training:
   enable_macro_diversity: true
   enable_region_contrastive: false
   enable_semantic_consistency: true
-  enable_compositional_program: false
+  enable_compositional_program: true
   enable_semantic_disentanglement: false
   enable_region_coordination: false
   enable_topology_alignment: false
@@ -62,11 +62,11 @@ training:
   micro_motif_diversity_weight: 0.02
   macro_motif_diversity_weight: 0.02
   semantic_consistency_weight: 0.03
+  compositional_program_weight: 0.02
   program_diversity_weight: 0.01
 
   # Disabled weights (kept for reference / easy re-enable)
   region_contrastive_weight: 0.0
-  compositional_program_weight: 0.0
   semantic_disentanglement_weight: 0.0
   region_coordination_weight: 0.0
   topology_alignment_weight: 0.0
