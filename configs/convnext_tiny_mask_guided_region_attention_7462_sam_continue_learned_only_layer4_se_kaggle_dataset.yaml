@@ -1,0 +1,29 @@
+_base_: "convnext_tiny_mask_guided_region_attention_7462_sam_continue_learned_only_kaggle_dataset.yaml"
+
+# Layer4 SE ablation from the 75.12 learned-only branch:
+# convnext_tiny_mask_guided_region_attention_7462_sam_continue_learned_only_kaggle_dataset.yaml
+#
+# Same contract as the 75.12 run:
+# - load the ConvNeXt-Tiny 74.62 FER checkpoint as visual backbone
+# - use mask-guided region attention
+# - learned region tokens only
+# - no CLIP dictionary / no learned+CLIP mixing
+# - source classifier is not used in final logits
+# - SAM + cosine schedule
+#
+# Only intended change:
+# - apply a lightweight residual SE channel gate to the final ConvNeXt feature
+#   map [B, 768, 7, 7] before visual tokenization/global pooling.
+
+model:
+  use_layer4_se: true
+  layer4_se_channels: 768
+  layer4_se_type: "se"
+  layer4_se_reduction: 16
+
+  # Residual gate keeps this close to the original 74.62 backbone features:
+  # x_enhanced = x * (1 + gamma * (2 * sigmoid(se(x)) - 1))
+  layer4_se_gate_mode: "residual"
+  layer4_se_gamma_init: 0.1
+  layer4_se_gamma_learnable: true
+
