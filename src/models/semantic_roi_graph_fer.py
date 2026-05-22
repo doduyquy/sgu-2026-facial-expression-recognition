@@ -573,6 +573,12 @@ class SemanticROIGraphFER(nn.Module):
         region_mask: Optional[torch.Tensor] = None,
         region_confidence: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
+        # Support TenCrop batches from val/test: (B, 10, C, H, W).
+        # Semantic boxes are defined in the original face frame, so keep the
+        # center crop, which is the least disruptive spatial choice here.
+        if image.dim() == 5:
+            image = image[:, image.size(1) // 2]
+
         # image: (B, 1, 48, 48) -> expand to 3 channels for ResNet
         if image.shape[1] == 1:
             image = image.repeat(1, 3, 1, 1)
