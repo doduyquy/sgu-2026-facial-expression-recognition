@@ -540,15 +540,28 @@ def evaluate_logit_components(model, loader: DataLoader, device: torch.device, u
     }
 
 
-def result_from_logit_components(component_result: dict, cnn_weight: float) -> dict:
+def result_from_logit_components(
+    component_result: dict,
+    cnn_weight: float,
+    fusion_mode: str = "logit",
+) -> dict:
     cnn_weight = float(cnn_weight)
     region_weight = 1.0 - cnn_weight
-    logits = (
-        cnn_weight * component_result["cnn_aux_logits"]
-        + region_weight * component_result["attention_logits"]
-    )
-    logits_tensor = torch.from_numpy(logits)
-    probs = torch.softmax(logits_tensor, dim=1).numpy()
+    fusion_mode = fusion_mode.lower()
+
+    cnn_logits = component_result["cnn_aux_logits"]
+    region_logits = component_result["attention_logits"]
+    if fusion_mode == "logit":
+        logits = cnn_weight * cnn_logits + region_weight * region_logits
+        probs = torch.softmax(torch.from_numpy(logits), dim=1).numpy()
+    elif fusion_mode in ("prob", "softmax"):
+        cnn_probs = torch.softmax(torch.from_numpy(cnn_logits), dim=1).numpy()
+        region_probs = torch.softmax(torch.from_numpy(region_logits), dim=1).numpy()
+        probs = cnn_weight * cnn_probs + region_weight * region_probs
+        logits = np.log(np.clip(probs, 1e-12, 1.0))
+    else:
+        raise ValueError("fusion_mode must be 'logit' or 'prob'.")
+
     preds = probs.argmax(axis=1)
     return {
         "row_position": component_result["row_position"],
@@ -558,16 +571,26 @@ def result_from_logit_components(component_result: dict, cnn_weight: float) -> d
         "y_prob": probs,
         "y_logit": logits,
         "elapsed_seconds": component_result.get("elapsed_seconds", 0.0),
+        "fusion_mode": fusion_mode,
     }
 
 
-def sweep_logit_weights(component_result: dict, cnn_weights: Sequence[float]) -> pd.DataFrame:
+def sweep_logit_weights(
+    component_result: dict,
+    cnn_weights: Sequence[float],
+    fusion_mode: str = "logit",
+) -> pd.DataFrame:
     rows = []
     for cnn_weight in cnn_weights:
-        result = result_from_logit_components(component_result, cnn_weight)
+        result = result_from_logit_components(
+            component_result,
+            cnn_weight,
+            fusion_mode=fusion_mode,
+        )
         summary = metrics_dict(result)
         summary["cnn_weight"] = float(cnn_weight)
         summary["region_weight"] = float(1.0 - float(cnn_weight))
+        summary["fusion_mode"] = fusion_mode
         rows.append(summary)
     return pd.DataFrame(rows).sort_values(
         ["accuracy", "macro_f1", "weighted_f1"],

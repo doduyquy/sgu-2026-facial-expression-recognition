@@ -1,3 +1,4 @@
+import math
 import os
 
 import torch
@@ -505,6 +506,9 @@ class ConvNeXtSpatialTokenizer(nn.Module):
     _WEIGHT_ENUMS = {
         "convnext_tiny": "ConvNeXt_Tiny_Weights",
         "convnext_small": "ConvNeXt_Small_Weights",
+        "efficientnet_b3": "EfficientNet_B3_Weights",
+        "efficientnet_v2_s": "EfficientNet_V2_S_Weights",
+        "efficientnet_v2_m": "EfficientNet_V2_M_Weights",
     }
 
     def __init__(self, config, channels=3):
@@ -885,6 +889,12 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         self.attention_logit_weight = float(model_cfg.get("attention_logit_weight", 1.0))
         self.source_logit_weight = float(model_cfg.get("source_logit_weight", 1.0))
         self.cnn_aux_logit_weight = float(model_cfg.get("cnn_aux_logit_weight", 0.2))
+        self.learnable_logit_fusion = bool(model_cfg.get("learnable_logit_fusion", False))
+        self.learnable_logit_fusion_min = float(model_cfg.get("learnable_logit_fusion_min", 0.0))
+        self.learnable_logit_fusion_max = float(model_cfg.get("learnable_logit_fusion_max", 1.0))
+        self.learnable_logit_fusion_init = float(
+            model_cfg.get("learnable_logit_fusion_init", self.cnn_aux_logit_weight)
+        )
         self.cnn_aux_pooling = model_cfg.get("cnn_aux_pooling", "avg").lower()
         self.use_cnn_aux_loss = bool(model_cfg.get("use_cnn_aux_loss", False))
         self.use_cnn_aux_logits = bool(
@@ -935,6 +945,19 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             raise ValueError(
                 "model.finetune_logit_fusion must be one of: "
                 + ", ".join(valid_logit_fusions)
+            )
+        if not 0.0 <= self.learnable_logit_fusion_min < self.learnable_logit_fusion_max <= 1.0:
+            raise ValueError(
+                "model.learnable_logit_fusion_min/max must satisfy "
+                "0 <= min < max <= 1."
+            )
+        if self.learnable_logit_fusion and "cnn_aux_sum" not in {
+            self.logit_fusion,
+            self.finetune_logit_fusion,
+        }:
+            raise ValueError(
+                "model.learnable_logit_fusion only supports "
+                "logit_fusion='cnn_aux_sum'."
             )
         if self.eye_fusion_mode not in ("post", "mask_union"):
             raise ValueError("model.eye_fusion_mode must be one of: post, mask_union")
@@ -1143,6 +1166,24 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             nn.Dropout(float(model_cfg.get("classifier_dropout2", 0.2))),
             nn.Linear(self.classifier_hidden_dim, num_classes),
         )
+        if self.learnable_logit_fusion:
+            init_weight = min(
+                max(
+                    self.learnable_logit_fusion_init,
+                    self.learnable_logit_fusion_min,
+                ),
+                self.learnable_logit_fusion_max,
+            )
+            span = self.learnable_logit_fusion_max - self.learnable_logit_fusion_min
+            normalized_init = (init_weight - self.learnable_logit_fusion_min) / span
+            normalized_init = min(max(normalized_init, 1e-4), 1.0 - 1e-4)
+            alpha_init = math.log(normalized_init / (1.0 - normalized_init))
+            self.logit_fusion_alpha = nn.Parameter(
+                torch.tensor(alpha_init, dtype=torch.float32)
+            )
+        else:
+            self.register_parameter("logit_fusion_alpha", None)
+
         if self.use_cnn_aux_classifier:
             aux_hidden_dim = int(model_cfg.get("cnn_aux_hidden_dim", self.classifier_hidden_dim))
             aux_dropout = float(model_cfg.get("cnn_aux_dropout", 0.25))
@@ -1164,6 +1205,14 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             )
         else:
             self.cnn_aux_classifier = None
+        if self.learnable_logit_fusion:
+            print(
+                "--> [ConvNeXtRegionAttention] Learnable CNN/region logit "
+                "fusion enabled: "
+                f"cnn_init={self.current_cnn_logit_weight():.4f}, "
+                f"bounds=[{self.learnable_logit_fusion_min:.2f}, "
+                f"{self.learnable_logit_fusion_max:.2f}]"
+            )
 
         checkpoint_path = model_cfg.get("checkpoint_path")
         if checkpoint_path:
@@ -1303,6 +1352,26 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         eye_union_mask = torch.maximum(left_eye_mask, right_eye_mask).unsqueeze(1)
         return torch.cat((flat_masks, eye_union_mask), dim=1)
 
+    def _learnable_cnn_logit_weight(self):
+        if not self.learnable_logit_fusion:
+            return None
+
+        gate = torch.sigmoid(self.logit_fusion_alpha)
+        span = self.learnable_logit_fusion_max - self.learnable_logit_fusion_min
+        return self.learnable_logit_fusion_min + span * gate
+
+    def current_cnn_logit_weight(self):
+        if not self.learnable_logit_fusion:
+            return self.cnn_aux_logit_weight
+
+        with torch.no_grad():
+            return float(self._learnable_cnn_logit_weight().detach().cpu().item())
+
+    def current_region_logit_weight(self):
+        if not self.learnable_logit_fusion:
+            return self.attention_logit_weight
+        return 1.0 - self.current_cnn_logit_weight()
+
     def _combine_logits(self, attention_logits, source_logits=None, cnn_aux_logits=None):
         if self.logit_fusion == "source":
             if source_logits is None:
@@ -1323,6 +1392,13 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         if self.logit_fusion == "cnn_aux_sum":
             if cnn_aux_logits is None:
                 raise RuntimeError("logit_fusion='cnn_aux_sum' needs model.use_cnn_aux_logits: true.")
+            if self.learnable_logit_fusion:
+                cnn_weight = self._learnable_cnn_logit_weight().to(
+                    device=cnn_aux_logits.device,
+                    dtype=cnn_aux_logits.dtype,
+                )
+                region_weight = 1.0 - cnn_weight
+                return region_weight * attention_logits + cnn_weight * cnn_aux_logits
             return (
                 self.attention_logit_weight * attention_logits
                 + self.cnn_aux_logit_weight * cnn_aux_logits

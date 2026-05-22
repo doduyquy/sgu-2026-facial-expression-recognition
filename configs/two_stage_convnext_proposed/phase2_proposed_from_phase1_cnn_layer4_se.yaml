@@ -1,0 +1,17 @@
+_base_: "../convnext_aux_cnn_clip_one_run/kaggle_aux_cnn_clip_cnn_main_logits_layer4_se.yaml"
+
+# Optional phase 2 variant after the stable run.
+# Same two-stage setup as phase2_proposed_from_phase1_cnn_stable.yaml, but adds
+# the lightweight residual Layer4 SE gate inside the proposed model.
+# Set model.checkpoint_path to the same phase-1 CNN checkpoint before running.
+
+model:
+  name: "convnext_tiny_mask_guided_region_attention"
+  arch: "convnext_tiny"
+  pretrained: false
+  weights: null
+  checkpoint_path: null
+  checkpoint_strict: false
+
+logging:
+  use_wandb: false

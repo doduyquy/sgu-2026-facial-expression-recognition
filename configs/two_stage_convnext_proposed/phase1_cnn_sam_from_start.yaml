@@ -1,0 +1,19 @@
+_base_: "../convnext_tiny_fer2013_sam_cosine_from_start.yaml"
+
+# Phase 1 of the two-stage proposed workflow.
+#
+# Train a clean ConvNeXt-Tiny FER CNN from ImageNet DEFAULT weights and save the
+# best CNN checkpoint. Do not add SE/mask/region modules here, so this checkpoint
+# stays a clean backbone initializer for phase 2.
+
+model:
+  name: "convnext_tiny_fer2013"
+  arch: "convnext_tiny"
+  pretrained: true
+  weights: "DEFAULT"
+  checkpoint_path: null
+  checkpoint_strict: false
+
+training:
+  monitor: "val_accuracy"
+

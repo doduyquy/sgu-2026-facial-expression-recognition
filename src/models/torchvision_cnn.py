@@ -11,6 +11,7 @@ class TorchvisionCNNFER(nn.Module):
     _WEIGHT_ENUMS = {
         "convnext_tiny": "ConvNeXt_Tiny_Weights",
         "convnext_small": "ConvNeXt_Small_Weights",
+        "efficientnet_b3": "EfficientNet_B3_Weights",
         "efficientnet_v2_s": "EfficientNet_V2_S_Weights",
         "efficientnet_v2_m": "EfficientNet_V2_M_Weights",
         "regnet_y_8gf": "RegNet_Y_8GF_Weights",

@@ -131,6 +131,20 @@ class Trainer:
             metrics[f"{prefix}/Visual_Extractor"] = lrs[1]
         return metrics
 
+    def _logit_fusion_metric_dict(self):
+        base_model = self._unwrap_model()
+        if not getattr(base_model, "learnable_logit_fusion", False):
+            return {}
+        if not hasattr(base_model, "current_cnn_logit_weight"):
+            return {}
+
+        cnn_weight = float(base_model.current_cnn_logit_weight())
+        region_weight = float(base_model.current_region_logit_weight())
+        return {
+            "LogitFusion/CNN_Weight": cnn_weight,
+            "LogitFusion/Region_Weight": region_weight,
+        }
+
     def _classification_loss(self, logits, labels):
         if not self.use_confidence_soft_targets:
             return self.criterion(logits, labels)
@@ -670,6 +684,14 @@ class Trainer:
 
             all_train_loss.append(train_loss)
             all_val_loss.append(val_loss)
+            logit_fusion_metrics = self._logit_fusion_metric_dict()
+            logit_fusion_text = ""
+            if logit_fusion_metrics:
+                logit_fusion_text = (
+                    " - fusion_w: "
+                    f"cnn={logit_fusion_metrics['LogitFusion/CNN_Weight']:.4f}, "
+                    f"region={logit_fusion_metrics['LogitFusion/Region_Weight']:.4f}"
+                )
 
             if self.is_main_process:
                 print(
@@ -680,6 +702,7 @@ class Trainer:
                     f"prior_align: {train_prior_alignment_loss:.4f}) - "
                     f"accuracy: {train_acc_value:.4f} - "
                     f"val_loss: {val_loss:.4f} - val_accuracy: {val_acc_value:.4f}"
+                    f"{logit_fusion_text}"
                 )
 
             # lr scheduler
@@ -717,6 +740,7 @@ class Trainer:
                         "val_accuracy": val_acc_value,
                         "monitor": self.monitor,
                         "best_score": best_score,
+                        "logit_fusion_metrics": logit_fusion_metrics,
                     }, self.path_save_ckpt)
                     print(
                         f"\t--- Save best at ep {ep+1}, "
@@ -775,6 +799,7 @@ class Trainer:
                     "Training/Grad_Clip_Norm": float(self.grad_clip_norm or 0.0),
                     "Training/Skipped_Nonfinite_Batches": int(self.skipped_nonfinite_batches),
                 }
+                metrics.update(logit_fusion_metrics)
                 metrics.update(self._lr_metric_dict("Learning_Rate/Before_Scheduler", lr_before_scheduler))
                 metrics.update(self._lr_metric_dict("Learning_Rate/After_Scheduler", lr_after_scheduler))
                 log_metrics(metrics, epoch=ep)

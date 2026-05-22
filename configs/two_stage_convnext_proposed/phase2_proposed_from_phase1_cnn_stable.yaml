@@ -1,0 +1,23 @@
+_base_: "../convnext_aux_cnn_clip_one_run/kaggle_aux_cnn_clip_cnn_main_logits.yaml"
+
+# Phase 2 of the two-stage proposed workflow.
+#
+# After phase 1 finishes, set model.checkpoint_path below to the best CNN
+# checkpoint produced by phase 1, then run this config separately.
+#
+# Stable default:
+# - load only the ConvNeXt feature backbone from the phase-1 CNN checkpoint
+# - attach the mask-guided region/CLIP attention module
+# - keep CNN logits as the main decision path: 0.8 CNN + 0.2 region
+# - no Layer4 SE yet, so this is the clean first proposed run
+
+model:
+  name: "convnext_tiny_mask_guided_region_attention"
+  arch: "convnext_tiny"
+  pretrained: false
+  weights: null
+  checkpoint_path: null
+  checkpoint_strict: false
+
+logging:
+  use_wandb: false

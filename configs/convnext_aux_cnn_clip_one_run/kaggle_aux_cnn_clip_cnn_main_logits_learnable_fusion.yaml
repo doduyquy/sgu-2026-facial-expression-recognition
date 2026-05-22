@@ -23,3 +23,8 @@ model:
   # the old trained value.
   attention_logit_weight: 0.2
   cnn_aux_logit_weight: 0.8
+
+logging:
+  # Kaggle can kill a DDP run before epoch 1 if the W&B key/entity is rejected.
+  # Keep this ablation trainable even when W&B is not logged in.
+  use_wandb: false

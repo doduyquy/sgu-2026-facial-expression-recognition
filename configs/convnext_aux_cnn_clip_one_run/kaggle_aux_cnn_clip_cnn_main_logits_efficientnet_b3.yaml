@@ -1,0 +1,30 @@
+_base_: "kaggle_aux_cnn_clip_cnn_main_logits.yaml"
+
+# Backbone-swap ablation for the mask-guided CNN-main method.
+#
+# Keeps the method unchanged:
+# - CLIP + learnable region tokens
+# - mask-guided region attention
+# - CNN auxiliary logits as main decision path
+# - final_logits = 0.8 * cnn_aux_logits + 0.2 * region_attention_logits
+#
+# Only changes the visual backbone:
+# - ConvNeXt-Tiny -> EfficientNet-B3
+# - ImageNet DEFAULT weights
+# - no FER checkpoint
+
+model:
+  arch: "efficientnet_b3"
+  pretrained: true
+  weights: "DEFAULT"
+  checkpoint_path: null
+  checkpoint_strict: false
+
+  # EfficientNet-B3 outputs 1536-D global features. Keep the same method head
+  # shape policy; the model code infers visual_dim from the backbone classifier.
+  cnn_aux_hidden_dim: 768
+
+data:
+  # SAM runs two forward/backward passes. B3 is heavier than ConvNeXt-Tiny, so
+  # start at 12 for Kaggle T4 safety. Raise to 16 only if memory is comfortable.
+  batch_size: 12
