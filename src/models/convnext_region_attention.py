@@ -543,6 +543,12 @@ class ConvNeXtSpatialTokenizer(nn.Module):
         self.use_multiscale_se_fusion = bool(
             model_cfg.get("use_multiscale_se_fusion", False)
         )
+        self.use_layer4_se = bool(model_cfg.get("use_layer4_se", False))
+        if self.use_multiscale_se_fusion and self.use_layer4_se:
+            raise ValueError(
+                "use_layer4_se and use_multiscale_se_fusion are separate ablations; "
+                "enable only one of them."
+            )
         self.multiscale_stage3_index = int(model_cfg.get("multiscale_stage3_index", 5))
         self.multiscale_stage4_index = int(
             model_cfg.get(
@@ -557,6 +563,18 @@ class ConvNeXtSpatialTokenizer(nn.Module):
             )
         else:
             self.multiscale_fusion = None
+        if self.use_layer4_se:
+            self.layer4_se_gate = ChannelGate(
+                int(model_cfg.get("layer4_se_channels", self.feature_dim)),
+                attention_type=model_cfg.get("layer4_se_type", "se"),
+                reduction=int(model_cfg.get("layer4_se_reduction", 16)),
+                eca_kernel_size=int(model_cfg.get("layer4_eca_kernel_size", 3)),
+                gate_mode=model_cfg.get("layer4_se_gate_mode", "residual"),
+                gamma_init=float(model_cfg.get("layer4_se_gamma_init", 0.1)),
+                gamma_learnable=bool(model_cfg.get("layer4_se_gamma_learnable", True)),
+            )
+        else:
+            self.layer4_se_gate = None
         if self.use_swin_local_refiner:
             self.swin_refiner = SwinLocalRefiner(
                 dim=self.feature_dim,
@@ -601,6 +619,11 @@ class ConvNeXtSpatialTokenizer(nn.Module):
                 "--> [ConvNeXtTokenizer] Multi-scale SE fusion enabled: "
                 f"stage3_index={self.multiscale_stage3_index}, "
                 f"stage4_index={self.multiscale_stage4_index}"
+            )
+        if self.use_layer4_se:
+            print(
+                "--> [ConvNeXtTokenizer] Layer4 SE gate enabled: "
+                f"channels={self.feature_dim}"
             )
 
     def _resolve_weights(self, model_cfg):
@@ -730,6 +753,8 @@ class ConvNeXtSpatialTokenizer(nn.Module):
             feat_map = self._forward_multiscale_features(x)
         else:
             feat_map = self.backbone.features(x)
+            if self.layer4_se_gate is not None:
+                feat_map = self.layer4_se_gate(feat_map)
         token_map = self.token_pool(feat_map)
         token_map = self.swin_refiner(token_map)
         visual_tokens = token_map.flatten(2).transpose(1, 2)

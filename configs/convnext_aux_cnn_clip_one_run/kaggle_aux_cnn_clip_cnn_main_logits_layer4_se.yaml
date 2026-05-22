@@ -1,0 +1,25 @@
+_base_: "kaggle_aux_cnn_clip_cnn_main_logits.yaml"
+
+# Layer4-only SE ablation from:
+# configs/convnext_aux_cnn_clip_one_run/kaggle_aux_cnn_clip_cnn_main_logits.yaml
+#
+# Keeps the same clean ImageNet-only CNN-main + CLIP region-attention recipe:
+# - ConvNeXt-Tiny DEFAULT weights
+# - no FER checkpoint
+# - final_logits = 0.8 * cnn_aux_logits + 0.2 * region_attention_logits
+#
+# Only added variable:
+# - apply a residual SE channel gate to the final ConvNeXt feature map
+#   [B,768,7,7] before tokenization/global pooling.
+
+model:
+  use_layer4_se: true
+  layer4_se_channels: 768
+  layer4_se_type: "se"
+  layer4_se_reduction: 16
+
+  # Residual gate keeps this close to the original ImageNet feature map:
+  # x_enhanced = x * (1 + gamma * (2 * sigmoid(se(x)) - 1))
+  layer4_se_gate_mode: "residual"
+  layer4_se_gamma_init: 0.1
+  layer4_se_gamma_learnable: true
