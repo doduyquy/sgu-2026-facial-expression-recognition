@@ -477,18 +477,33 @@ def compute_semantic_roi_graph_losses(
     )
     diversity_loss = program_diversity_loss(base_model.semantic_program_bank)
 
+    # Per-component enable flags (default True = preserve legacy behaviour)
+    def _flag(name: str, default: bool = True) -> bool:
+        return bool(training_cfg.get(name, default))
+
     total = ce_loss
-    total = total + float(micro_diversity_weight) * micro_diversity_loss
-    total = total + float(macro_diversity_weight) * macro_diversity_loss
-    total = total + float(region_contrastive_weight) * contrastive_loss
-    total = total + float(semantic_consistency_weight) * semantic_consistency
-    total = total + float(compositional_program_weight) * compositional_loss
-    total = total + float(semantic_disentanglement_weight) * disentanglement_loss
-    total = total + float(region_coordination_weight) * coordination_loss
-    total = total + float(topology_alignment_weight) * topology_loss
-    total = total + float(region_composition_contrastive_weight) * composition_contrastive_loss
-    total = total + float(program_sparsity_weight) * sparsity_loss
-    total = total + float(program_diversity_weight) * diversity_loss
+    if _flag("enable_micro_diversity"):
+        total = total + float(micro_diversity_weight) * micro_diversity_loss
+    if _flag("enable_macro_diversity"):
+        total = total + float(macro_diversity_weight) * macro_diversity_loss
+    if _flag("enable_region_contrastive"):
+        total = total + float(region_contrastive_weight) * contrastive_loss
+    if _flag("enable_semantic_consistency"):
+        total = total + float(semantic_consistency_weight) * semantic_consistency
+    if _flag("enable_compositional_program"):
+        total = total + float(compositional_program_weight) * compositional_loss
+    if _flag("enable_semantic_disentanglement"):
+        total = total + float(semantic_disentanglement_weight) * disentanglement_loss
+    if _flag("enable_region_coordination"):
+        total = total + float(region_coordination_weight) * coordination_loss
+    if _flag("enable_topology_alignment"):
+        total = total + float(topology_alignment_weight) * topology_loss
+    if _flag("enable_region_composition_contrastive"):
+        total = total + float(region_composition_contrastive_weight) * composition_contrastive_loss
+    if _flag("enable_program_sparsity"):
+        total = total + float(program_sparsity_weight) * sparsity_loss
+    if _flag("enable_program_diversity"):
+        total = total + float(program_diversity_weight) * diversity_loss
     
     return {
         "loss": total,

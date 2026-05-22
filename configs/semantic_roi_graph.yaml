@@ -43,29 +43,36 @@ training:
   weight_decay: 0.001      # increased from 0.0005 — stronger L2 regularization
   loss: "semantic_roi_graph"
   label_smoothing: 0.05
-  scheduler: "reduce_lr_on_plateau"  # drops LR when val_acc plateaus (mode=max)
-  lr_factor: 0.5                      # multiply LR by 0.5 on plateau
-  lr_patience: 7                      # wait 7 epochs of no val_acc improvement before reducing LR
-  patience: 30                 # increased: val_acc now drives early stopping (needs more room)
-  class_weight_mode: "inverse" # stronger weighting for Fear (39.8%) and Disgust (50.9%)
-  use_class_weights: true
-  # Loss weights for the semantic ROI graph model
-  micro_motif_diversity_weight: 0.05
-  macro_motif_diversity_weight: 0.05
-  region_contrastive_weight: 0.1
-  relation_consistency_weight: 0.1
-  topology_reg_weight: 0.01
-  # New loss weights for semantic compositional program training
-  semantic_consistency_weight: 0.1
-  compositional_motif_weight: 0.1
-  semantic_disentanglement_weight: 0.005  # reduced from 0.01 — less regularization pressure
-  region_coordination_weight: 0.1
-  compositional_program_weight: 0.1
-  topology_alignment_weight: 0.1
-  region_composition_contrastive_weight: 0.1
-  program_sparsity_weight: 0.01           # reduced from 0.05 — avoid over-sparsifying programs
-  program_diversity_weight: 0.05
-  # Use entropy-based sparsity (true) to encourage load-balancing across hyperedges
+
+  # ── Loss enable flags (light preset) ──────────────────────────────────────
+  # Only 3 auxiliary losses are active. All others disabled to reduce overfit.
+  enable_micro_diversity: true
+  enable_macro_diversity: true
+  enable_region_contrastive: false
+  enable_semantic_consistency: true
+  enable_compositional_program: false
+  enable_semantic_disentanglement: false
+  enable_region_coordination: false
+  enable_topology_alignment: false
+  enable_region_composition_contrastive: false
+  enable_program_sparsity: false
+  enable_program_diversity: true
+
+  # ── Weights for enabled losses ─────────────────────────────────────────────
+  micro_motif_diversity_weight: 0.02
+  macro_motif_diversity_weight: 0.02
+  semantic_consistency_weight: 0.03
+  program_diversity_weight: 0.01
+
+  # Disabled weights (kept for reference / easy re-enable)
+  region_contrastive_weight: 0.0
+  compositional_program_weight: 0.0
+  semantic_disentanglement_weight: 0.0
+  region_coordination_weight: 0.0
+  topology_alignment_weight: 0.0
+  region_composition_contrastive_weight: 0.0
+  program_sparsity_weight: 0.0
+
   use_entropy_sparsity: false
 
 logging:
