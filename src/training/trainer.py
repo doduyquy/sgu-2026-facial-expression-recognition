@@ -573,6 +573,7 @@ class Trainer:
                     "loss_semantic_consistency": "Loss/SemanticConsistency",
                     "loss_compositional_program_consistency": "Loss/CompositionalProgram",
                     "loss_program_diversity": "Loss/ProgramDiversity",
+                    "loss_fused_aux_ce": "Loss/FusedAuxCE",
                     "loss_semantic_disentanglement": "Loss/Disentanglement",
                     "loss_region_coordination": "Loss/RegionCoordination",
                     "loss_topology_alignment": "Loss/TopologyAlignment",
@@ -611,9 +612,17 @@ class Trainer:
                     "epoch": ep,
                     "val_acc": val_acc.item() if hasattr(val_acc, 'item') else val_acc,
                     "selection_score": selection_score,
+                    "macro_f1": getattr(self, '_latest_val_metrics', {}).get("Val/MacroF1_Final", None),
+                    "balanced_accuracy": getattr(self, '_latest_val_metrics', {}).get("Val/BalancedAccuracy", None),
                     "val_loss": val_loss
                 }, self.path_save_ckpt)
-                print(f"\t--- Save best Score at ep {ep+1}, val_acc: {val_acc:.4f}, score: {selection_score:.4f}, path: {self.path_save_ckpt} ---")
+                print(
+                    f"\t--- Save best hybrid score at ep {ep+1}, "
+                    f"score: {selection_score:.4f}, "
+                    f"val_acc: {val_acc:.4f}, "
+                    f"macro_f1: {getattr(self, '_latest_val_metrics', {}).get('Val/MacroF1_Final', 0.0):.4f}, "
+                    f"path: {self.path_save_ckpt} ---"
+                )
             else:
                 patience_counter += 1
                 print(f"\t-!- No score improvement: {patience_counter}/{self.patience}")

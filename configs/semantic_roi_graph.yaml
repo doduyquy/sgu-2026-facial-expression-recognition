@@ -58,12 +58,16 @@ training:
   enable_program_sparsity: false
   enable_program_diversity: true
 
+  # New for Scenario C
+  enable_fused_aux_ce: true
+
   # ── Weights for enabled losses ─────────────────────────────────────────────
   micro_motif_diversity_weight: 0.02
   macro_motif_diversity_weight: 0.02
-  semantic_consistency_weight: 0.03
+  semantic_consistency_weight: 0.02
   compositional_program_weight: 0.02
   program_diversity_weight: 0.01
+  fused_aux_ce_weight: 0.05
 
   # Disabled weights (kept for reference / easy re-enable)
   region_contrastive_weight: 0.0

@@ -426,6 +426,17 @@ def compute_semantic_roi_graph_losses(
     except TypeError:
         ce_loss = F.cross_entropy(logits, labels, weight=class_weights)
 
+    logits_fused = outputs.get("logits_fused")
+    if logits_fused is not None:
+        try:
+            fused_ce_loss = F.cross_entropy(logits_fused, labels, label_smoothing=label_smoothing, weight=class_weights)
+        except TypeError:
+            fused_ce_loss = F.cross_entropy(logits_fused, labels, weight=class_weights)
+    else:
+        fused_ce_loss = torch.tensor(0.0, device=labels.device)
+    
+    fused_aux_ce_weight = float(training_cfg.get("fused_aux_ce_weight", 0.0))
+
     base_model = _unwrap_model(model)
 
     semantic_states = outputs.get("semantic_state_tokens")
@@ -504,6 +515,8 @@ def compute_semantic_roi_graph_losses(
         total = total + float(program_sparsity_weight) * sparsity_loss
     if _flag("enable_program_diversity"):
         total = total + float(program_diversity_weight) * diversity_loss
+    if _flag("enable_fused_aux_ce", False):
+        total = total + fused_aux_ce_weight * fused_ce_loss
     
     return {
         "loss": total,
@@ -524,4 +537,5 @@ def compute_semantic_roi_graph_losses(
         "loss_program_diversity": diversity_loss,
         "loss_region_coordination": coordination_loss,
         "loss_relation_consistency": coordination_loss,
+        "loss_fused_aux_ce": fused_ce_loss,
     }
