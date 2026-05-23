@@ -26,7 +26,7 @@ model:
   cross_region_compositions: 8
   programs_per_class: 4
   program_dim: 128
-  fusion_scale: 0.25
+  fusion_scale: 0.0
 
 data:
   batch_size: 64
@@ -59,16 +59,16 @@ training:
   enable_program_sparsity: false
   enable_program_diversity: true
 
-  # Scenario D: fused branch supervised weakly + scaled fusion
-  enable_fused_aux_ce: true
+  # Scenario E-base: fused branch disabled
+  enable_fused_aux_ce: false
 
   # ── Weights for enabled losses ─────────────────────────────────────────────
   micro_motif_diversity_weight: 0.02
   macro_motif_diversity_weight: 0.02
-  semantic_consistency_weight: 0.02
+  semantic_consistency_weight: 0.03
   compositional_program_weight: 0.02
   program_diversity_weight: 0.01
-  fused_aux_ce_weight: 0.01
+  fused_aux_ce_weight: 0.0
 
   # Disabled weights (kept for reference / easy re-enable)
   region_contrastive_weight: 0.0
