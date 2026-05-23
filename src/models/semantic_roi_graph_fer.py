@@ -64,6 +64,7 @@ class SemanticRoiGraphConfig:
     label_smoothing: float = 0.0
     relation_temperature: float = 0.07
     region_confidence_threshold: float = 0.3
+    fusion_scale: float = 0.25
 
 
 class SemanticBackbone(nn.Module):
@@ -831,6 +832,7 @@ class SemanticROIGraphFER(nn.Module):
         # Per-class gate: each emotion class learns its own graph-vs-global balance.
         # Init with -0.5 → sigmoid(-0.5) ≈ 0.38, slightly below 0.5 to favour the graph branch early.
         self.semantic_structure_gate = nn.Parameter(torch.full((config.num_classes,), -0.5))
+        self.fusion_scale = float(getattr(config, "fusion_scale", 0.25))
 
         # Backward-compatible aliases for older checkpoints and callers.
         self.macro_motif_bank = self.semantic_program_bank
@@ -1077,13 +1079,14 @@ class SemanticROIGraphFER(nn.Module):
         # Per-class gate: shape (1, num_classes) — each emotion learns its own balance
         structure_gate = torch.sigmoid(self.semantic_structure_gate).view(1, -1)
         logits_motif = semantic_program_scores
-        logits = logits_motif + structure_gate * logits_fused
+        logits = logits_motif + self.fusion_scale * structure_gate * logits_fused
 
         return {
             "logits": logits,
             "logits_motif": logits_motif,
             "logits_fused": logits_fused,
             "structure_gate": structure_gate,
+            "fusion_scale": logits.new_tensor(self.fusion_scale),
             "micro_node_features": micro_node_features,
             "micro_motif_attention": micro_motif_attention,
             "region_motif_tokens": semantic_motif_tokens,

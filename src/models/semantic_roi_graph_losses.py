@@ -426,7 +426,9 @@ def compute_semantic_roi_graph_losses(
     except TypeError:
         ce_loss = F.cross_entropy(logits, labels, weight=class_weights)
 
+    # Fused branch auxiliary CE (Scenario C/D)
     logits_fused = outputs.get("logits_fused")
+    fused_aux_ce_weight = float(training_cfg.get("fused_aux_ce_weight", 0.0))
     if logits_fused is not None:
         try:
             fused_ce_loss = F.cross_entropy(logits_fused, labels, label_smoothing=label_smoothing, weight=class_weights)
@@ -434,8 +436,6 @@ def compute_semantic_roi_graph_losses(
             fused_ce_loss = F.cross_entropy(logits_fused, labels, weight=class_weights)
     else:
         fused_ce_loss = torch.tensor(0.0, device=labels.device)
-    
-    fused_aux_ce_weight = float(training_cfg.get("fused_aux_ce_weight", 0.0))
 
     base_model = _unwrap_model(model)
 

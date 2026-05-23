@@ -232,6 +232,15 @@ class Trainer:
                 for _k, _v in loss_dict.items():
                     if _k != "loss" and torch.is_tensor(_v):
                         _component_accum.setdefault(_k, []).append(float(_v.item()))
+                # Log fusion gate / scale stats
+                _gate = outputs.get("structure_gate")
+                if _gate is not None:
+                    _component_accum.setdefault("_fusion_gate_mean", []).append(float(_gate.mean().detach().cpu()))
+                    _component_accum.setdefault("_fusion_gate_min", []).append(float(_gate.min().detach().cpu()))
+                    _component_accum.setdefault("_fusion_gate_max", []).append(float(_gate.max().detach().cpu()))
+                _fs = outputs.get("fusion_scale")
+                if _fs is not None:
+                    _component_accum.setdefault("_fusion_scale", []).append(float(_fs.detach().cpu()))
             else:
                 if runtime_use_scn and getattr(self, '_current_epoch', 0) >= getattr(self, 'scn_warmup_epochs', 0):
                     try:
@@ -493,7 +502,7 @@ class Trainer:
 
         best_val_loss = float("inf")
         best_val_acc = 0.0
-        best_selection_score = -float("inf")
+        best_selection_score = 0.0
         patience_counter = 0
         all_train_loss = []
         all_val_loss = []
@@ -582,6 +591,16 @@ class Trainer:
                 for _lk, _lname in loss_component_map.items():
                     if _lk in getattr(self, '_latest_loss_components', {}):
                         wandb_metrics[_lname] = self._latest_loss_components[_lk]
+                # Fusion gate / scale stats
+                _fusion_map = {
+                    "_fusion_gate_mean": "Fusion/GateMean",
+                    "_fusion_gate_min": "Fusion/GateMin",
+                    "_fusion_gate_max": "Fusion/GateMax",
+                    "_fusion_scale": "Fusion/Scale",
+                }
+                for _fk, _fn in _fusion_map.items():
+                    if _fk in getattr(self, '_latest_loss_components', {}):
+                        wandb_metrics[_fn] = self._latest_loss_components[_fk]
                 log_metrics(wandb_metrics, epoch=ep)
                 if getattr(self, '_latest_scn_logs', None) is not None:
                     try:
@@ -591,9 +610,8 @@ class Trainer:
 
             # Calculate a selection score that balances accuracy and macro F1
             # to prevent the model from ignoring difficult minority classes
-            val_acc_float = val_acc.item() if hasattr(val_acc, "item") else float(val_acc)
-            val_macro_f1 = getattr(self, "_latest_val_metrics", {}).get("Val/MacroF1_Final", val_acc_float)
-            selection_score = 0.5 * val_acc_float + 0.5 * val_macro_f1
+            val_macro_f1 = getattr(self, '_latest_val_metrics', {}).get("Val/MacroF1_Final", 0.0)
+            selection_score = 0.5 * (val_acc.item() if hasattr(val_acc, 'item') else float(val_acc)) + 0.5 * val_macro_f1
 
             if self.scheduler is not None:
                 if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
