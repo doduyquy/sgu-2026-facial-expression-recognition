@@ -493,7 +493,7 @@ class Trainer:
 
         best_val_loss = float("inf")
         best_val_acc = 0.0
-        best_selection_score = 0.0
+        best_selection_score = -float("inf")
         patience_counter = 0
         all_train_loss = []
         all_val_loss = []
@@ -591,8 +591,9 @@ class Trainer:
 
             # Calculate a selection score that balances accuracy and macro F1
             # to prevent the model from ignoring difficult minority classes
-            val_macro_f1 = getattr(self, '_latest_val_metrics', {}).get("Val/MacroF1_Final", 0.0)
-            selection_score = 0.5 * (val_acc.item() if hasattr(val_acc, 'item') else float(val_acc)) + 0.5 * val_macro_f1
+            val_acc_float = val_acc.item() if hasattr(val_acc, "item") else float(val_acc)
+            val_macro_f1 = getattr(self, "_latest_val_metrics", {}).get("Val/MacroF1_Final", val_acc_float)
+            selection_score = 0.5 * val_acc_float + 0.5 * val_macro_f1
 
             if self.scheduler is not None:
                 if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
