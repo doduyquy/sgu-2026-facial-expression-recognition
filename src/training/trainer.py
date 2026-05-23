@@ -502,7 +502,7 @@ class Trainer:
 
         best_val_loss = float("inf")
         best_val_acc = 0.0
-        best_selection_score = 0.0
+        best_selection_score = -float("inf")
         patience_counter = 0
         all_train_loss = []
         all_val_loss = []
