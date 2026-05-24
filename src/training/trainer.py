@@ -22,17 +22,7 @@ class Trainer:
         ls = float(config.get('training', {}).get('label_smoothing', 0.0)) if isinstance(config, dict) else 0.0
         if ls and isinstance(self._base_criterion, torch.nn.CrossEntropyLoss):
             try:
-                base_weight = getattr(self._base_criterion, 'weight', None)
-                if base_weight is not None:
-                    base_weight = base_weight.detach().clone()
                 self.criterion = torch.nn.CrossEntropyLoss(label_smoothing=ls)
-                if base_weight is not None:
-                    self.criterion = torch.nn.CrossEntropyLoss(
-                        weight=base_weight,
-                        label_smoothing=ls,
-                        reduction=self._base_criterion.reduction,
-                        ignore_index=self._base_criterion.ignore_index,
-                    )
                 self._base_criterion = self.criterion
             except Exception:
                 pass
@@ -65,16 +55,6 @@ class Trainer:
         self._runtime_use_scn = None
         self.mixup_alpha = float(config['training'].get('mixup_alpha', 0.2))
         self._runtime_use_mixup = False
-
-        self._initial_class_weight_metrics = {}
-        initial_class_weights = getattr(self._base_criterion, 'weight', None)
-        if initial_class_weights is not None:
-            final_class_weights = initial_class_weights.detach().clone().cpu().tolist()
-            print(f"[ClassWeights] final: {final_class_weights}")
-            self._initial_class_weight_metrics = {
-                f"ClassWeight/Class{i}": float(weight)
-                for i, weight in enumerate(final_class_weights)
-            }
 
     @staticmethod
     def _extract_logits(outputs):
@@ -519,11 +499,6 @@ class Trainer:
 
         if self.use_wandb:
             init_wandb(config=self.config, run_name=self.run_name)
-            if self._initial_class_weight_metrics:
-                try:
-                    log_metrics(self._initial_class_weight_metrics, epoch=0)
-                except Exception:
-                    pass
 
         best_val_loss = float("inf")
         best_val_acc = 0.0

@@ -2,46 +2,6 @@ import torch
 import torch.nn as nn 
 import torch.nn.functional as F
 
-
-def apply_class_weight_multiplier(class_weights, training_cfg, class_names=None):
-    if class_weights is None:
-        return None
-
-    if not training_cfg.get("use_class_weight_multiplier", False):
-        return class_weights
-
-    multipliers_cfg = training_cfg.get("class_weight_multiplier", None)
-    if not multipliers_cfg:
-        return class_weights
-
-    num_classes = int(class_weights.numel())
-    multipliers = torch.ones(
-        num_classes,
-        dtype=class_weights.dtype,
-        device=class_weights.device,
-    )
-
-    for k, v in multipliers_cfg.items():
-        idx = None
-
-        try:
-            idx_int = int(k)
-            if 0 <= idx_int < num_classes:
-                idx = idx_int
-        except Exception:
-            idx = None
-
-        if idx is None and class_names is not None:
-            if str(k) in class_names:
-                idx = class_names.index(str(k))
-
-        if idx is not None:
-            multipliers[idx] = float(v)
-
-    adjusted = class_weights * multipliers
-    adjusted = adjusted / adjusted.mean().clamp_min(1e-8)
-    return adjusted
-
 class SymmetricCrossEntropy(nn.Module):
     def __init__(self, alpha=1.0, beta=1.0, num_classes=7, label_smoothing=0.0, weight=None):
         super().__init__()

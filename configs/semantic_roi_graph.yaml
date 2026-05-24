@@ -61,23 +61,13 @@ training:
 
   # Scenario E-base: fused branch disabled
   enable_fused_aux_ce: false
-
-  # Scenario E2: disable class-weight multiplier
   use_class_weight_multiplier: false
-  class_weight_multiplier:
-    0: 1.00 # angry
-    1: 1.10 # disgust
-    2: 1.15 # fear
-    3: 1.00 # happy
-    4: 1.20 # sad
-    5: 1.00 # surprise
-    6: 1.00 # neutral
 
   # ── Weights for enabled losses ─────────────────────────────────────────────
   micro_motif_diversity_weight: 0.02
   macro_motif_diversity_weight: 0.02
-  semantic_consistency_weight: 0.02
-  compositional_program_weight: 0.02
+  semantic_consistency_weight: 0.03
+  compositional_program_weight: 0.03
   program_diversity_weight: 0.01
   fused_aux_ce_weight: 0.0
 

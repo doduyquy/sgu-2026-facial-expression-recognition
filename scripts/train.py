@@ -17,14 +17,13 @@ from src.utils.logger_wandb import init_wandb
 from src.data.dataloader import build_dataloader
 from src.models import get_model # in __init__ gfile
 from src.training.trainer import Trainer
-from src.training.losses import build_loss, apply_class_weight_multiplier
+from src.training.losses import build_loss
 from src.training.optimizer import build_optimizer
 from src.training.optimizer import build_scheduler
 from src.utils.checkpoint import load_checkpoints
 from src.evaluation.evaluator import evaluate_and_show
 from src.utils.logger_wandb import save_model_to_wandb
 from src.utils.data_stats import get_class_distribution # testing: class weight
-from src.data.emotions_dict import EMOTION_NAMES
 
 from datetime import datetime
 #-------------------------------------------------------------
@@ -67,9 +66,6 @@ def main():
     model = get_model(
         name=config['model']['name'],
         config=config)
-
-    base_model = getattr(model, "module", model)
-    base_model.training_cfg = config.get("training", {})
     
 
     # get class_distribution for class_weights (for testing)
@@ -95,13 +91,6 @@ def main():
 
         class_weights = class_weights / class_weights.sum()
         class_weights = class_weights.to(device)
-
-        class_weights = apply_class_weight_multiplier(
-            class_weights,
-            config.get('training', {}),
-            class_names=config.get('data', {}).get('class_names', EMOTION_NAMES),
-        )
-
         print(f"--- Class weight mode: {class_weight_mode}")
         print(f"--- Class weights: {class_weights}")
     else:
