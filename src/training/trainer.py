@@ -241,6 +241,16 @@ class Trainer:
                 _fs = outputs.get("fusion_scale")
                 if _fs is not None:
                     _component_accum.setdefault("_fusion_scale", []).append(float(_fs.detach().cpu()))
+                _calib_scale = outputs.get("program_logit_calibrator_scale")
+                if _calib_scale is not None:
+                    _component_accum.setdefault("_program_calib_scale", []).append(
+                        float(_calib_scale.detach().mean().cpu())
+                    )
+                _calib_delta = outputs.get("program_logit_delta")
+                if _calib_delta is not None:
+                    _component_accum.setdefault("_program_calib_delta_abs", []).append(
+                        float(_calib_delta.detach().abs().mean().cpu())
+                    )
             else:
                 if runtime_use_scn and getattr(self, '_current_epoch', 0) >= getattr(self, 'scn_warmup_epochs', 0):
                     try:
@@ -597,6 +607,8 @@ class Trainer:
                     "_fusion_gate_min": "Fusion/GateMin",
                     "_fusion_gate_max": "Fusion/GateMax",
                     "_fusion_scale": "Fusion/Scale",
+                    "_program_calib_scale": "ProgramCalib/Scale",
+                    "_program_calib_delta_abs": "ProgramCalib/DeltaAbsMean",
                 }
                 for _fk, _fn in _fusion_map.items():
                     if _fk in getattr(self, '_latest_loss_components', {}):

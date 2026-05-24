@@ -66,11 +66,6 @@ def main():
     model = get_model(
         name=config['model']['name'],
         config=config)
-
-    base_model = getattr(model, "module", model)
-    print("[G1] programs_per_class:", base_model.config.programs_per_class)
-    print("[G1] macro_motifs_per_class:", base_model.config.macro_motifs_per_class)
-    print("[G1] fusion_scale:", base_model.fusion_scale)
     
 
     # get class_distribution for class_weights (for testing)

@@ -27,6 +27,11 @@ model:
   programs_per_class: 4
   program_dim: 128
   fusion_scale: 0.0
+  # Scenario I: Program Logit Calibrator
+  enable_program_logit_calibrator: true
+  program_logit_calibrator_hidden_dim: 0
+  program_logit_calibrator_dropout: 0.0
+  program_logit_calibrator_init_scale: 0.10
 
 data:
   batch_size: 64
@@ -83,40 +88,3 @@ training:
 
 logging:
   use_wandb: true
-
-calibration:
-  enable_logit_bias: true
-  search_on: "val"
-  metric: "hybrid" # options: acc, macro_f1, balanced_acc, hybrid
-
-  # Search only classes involved in confusion
-  tune_classes:
-    - angry
-    - fear
-    - sad
-    - neutral
-
-  # Label order:
-  # 0 angry, 1 disgust, 2 fear, 3 happy, 4 sad, 5 surprise, 6 neutral
-  class_names:
-    - angry
-    - disgust
-    - fear
-    - happy
-    - sad
-    - surprise
-    - neutral
-
-  # Small grid to avoid overfitting validation
-  bias_grid:
-    angry: [-0.05, -0.025, 0.0, 0.025, 0.05]
-    fear: [-0.05, -0.025, 0.0, 0.025, 0.05]
-    sad: [-0.10, -0.075, -0.05, -0.025, 0.0, 0.025]
-    neutral: [-0.05, -0.025, 0.0, 0.025, 0.05, 0.075]
-
-  fixed_bias:
-    disgust: 0.0
-    happy: 0.0
-    surprise: 0.0
-
-  save_path: "calibration_logit_bias.json"

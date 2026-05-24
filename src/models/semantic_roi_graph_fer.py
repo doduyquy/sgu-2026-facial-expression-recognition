@@ -47,7 +47,6 @@ class SemanticRoiGraphConfig:
     motif_per_class: int = 4
     micro_motifs_per_region: int = 8
     macro_motifs_per_class: int = 4
-    programs_per_class: int = 4
     # Bug 5 fix: defaults now match semantic_roi_graph.yaml
     cross_region_compositions: int = 8   # was 4
     semantic_state_dim: int = 128         # was 9 — must be divisible by semantic_attn_heads
@@ -66,6 +65,75 @@ class SemanticRoiGraphConfig:
     relation_temperature: float = 0.07
     region_confidence_threshold: float = 0.3
     fusion_scale: float = 0.25
+    enable_program_logit_calibrator: bool = False
+    program_logit_calibrator_hidden_dim: int = 0
+    program_logit_calibrator_dropout: float = 0.0
+    program_logit_calibrator_init_scale: float = 0.10
+
+
+class ProgramLogitCalibrator(nn.Module):
+    """
+    Learnable class-logit calibration head for semantic program scores.
+
+    Input:
+        raw_logits: Tensor[B, C]
+
+    Output:
+        calibrated_logits: Tensor[B, C]
+        delta: Tensor[B, C]
+
+    Design:
+        calibrated_logits = raw_logits + scale * f(LayerNorm(raw_logits))
+
+    The residual scale is initialized small so the module starts close to identity.
+    """
+
+    def __init__(
+        self,
+        num_classes: int,
+        hidden_dim: int = 0,
+        dropout: float = 0.0,
+        init_scale: float = 0.10,
+    ):
+        super().__init__()
+        self.num_classes = num_classes
+        self.norm = nn.LayerNorm(num_classes)
+
+        if hidden_dim is not None and hidden_dim > 0:
+            self.net = nn.Sequential(
+                nn.Linear(num_classes, hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, num_classes),
+            )
+        else:
+            self.net = nn.Linear(num_classes, num_classes)
+
+        init_scale = float(init_scale)
+        init_scale = max(min(init_scale, 0.99), 1e-4)
+        raw = torch.logit(torch.tensor(init_scale, dtype=torch.float32))
+        self.raw_residual_scale = nn.Parameter(raw.clone().detach())
+
+        self._init_weights()
+
+    def _init_weights(self):
+        last_linear = None
+        for module in self.net.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                nn.init.zeros_(module.bias)
+                last_linear = module
+
+        if last_linear is not None:
+            nn.init.zeros_(last_linear.weight)
+            nn.init.zeros_(last_linear.bias)
+
+    def forward(self, raw_logits: torch.Tensor):
+        x = self.norm(raw_logits)
+        delta = self.net(x)
+        scale = torch.sigmoid(self.raw_residual_scale)
+        calibrated_logits = raw_logits + scale * delta
+        return calibrated_logits, delta, scale
 
 
 class SemanticBackbone(nn.Module):
@@ -798,13 +866,13 @@ class SemanticROIGraphFER(nn.Module):
 
         self.semantic_program_bank = SemanticCompositionalProgramBank(
             num_classes=config.num_classes,
-            programs_per_class=config.programs_per_class,
+            programs_per_class=config.macro_motifs_per_class,
             num_regions=config.num_regions,
             state_dim=config.semantic_state_dim,
         )
         self.semantic_program_executor = SemanticProgramExecutor(
             num_classes=config.num_classes,
-            programs_per_class=config.programs_per_class,
+            programs_per_class=config.macro_motifs_per_class,
             num_regions=config.num_regions,
             state_dim=config.semantic_state_dim,
             temperature=config.relation_temperature,
@@ -815,6 +883,24 @@ class SemanticROIGraphFER(nn.Module):
             num_classes=config.num_classes,
             dropout=config.dropout,
         )
+
+        self.enable_program_logit_calibrator = bool(
+            getattr(config, "enable_program_logit_calibrator", False)
+        )
+        if self.enable_program_logit_calibrator:
+            self.program_logit_calibrator = ProgramLogitCalibrator(
+                num_classes=config.num_classes,
+                hidden_dim=getattr(config, "program_logit_calibrator_hidden_dim", 0),
+                dropout=getattr(config, "program_logit_calibrator_dropout", 0.0),
+                init_scale=getattr(config, "program_logit_calibrator_init_scale", 0.10),
+            )
+            print(
+                "[Scenario I] ProgramLogitCalibrator enabled | "
+                f"hidden_dim={getattr(config, 'program_logit_calibrator_hidden_dim', 0)} | "
+                f"init_scale={getattr(config, 'program_logit_calibrator_init_scale', 0.10)}"
+            )
+        else:
+            self.program_logit_calibrator = None
 
         self.global_context = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
@@ -955,7 +1041,14 @@ class SemanticROIGraphFER(nn.Module):
         outputs = self._forward_single(flat_image, flat_bboxes, flat_region_mask, flat_region_confidence)
 
         # Average the classification scores over T crops
-        _avg_keys = ("logits", "logits_motif", "logits_fused", "semantic_program_scores")
+        _avg_keys = (
+            "logits",
+            "logits_motif",
+            "logits_motif_raw",
+            "logits_fused",
+            "semantic_program_scores",
+            "program_logit_delta",
+        )
         for key in _avg_keys:
             if key in outputs and torch.is_tensor(outputs[key]):
                 x = outputs[key]
@@ -1079,13 +1172,29 @@ class SemanticROIGraphFER(nn.Module):
 
         # Per-class gate: shape (1, num_classes) — each emotion learns its own balance
         structure_gate = torch.sigmoid(self.semantic_structure_gate).view(1, -1)
-        logits_motif = semantic_program_scores
+        logits_motif_raw = semantic_program_scores
+        if self.program_logit_calibrator is not None:
+            logits_motif, program_logit_delta, program_logit_calibrator_scale = (
+                self.program_logit_calibrator(logits_motif_raw)
+            )
+        else:
+            logits_motif = logits_motif_raw
+            program_logit_delta = torch.zeros_like(logits_motif_raw)
+            program_logit_calibrator_scale = torch.tensor(
+                0.0,
+                device=logits_motif_raw.device,
+                dtype=logits_motif_raw.dtype,
+            )
         logits = logits_motif + self.fusion_scale * structure_gate * logits_fused
 
         return {
             "logits": logits,
             "logits_motif": logits_motif,
+            "logits_motif_raw": logits_motif_raw,
             "logits_fused": logits_fused,
+            "program_logit_delta": program_logit_delta,
+            "program_logit_calibrator_scale": program_logit_calibrator_scale,
+            "program_logit_calibrator_enabled": self.enable_program_logit_calibrator,
             "structure_gate": structure_gate,
             "fusion_scale": logits.new_tensor(self.fusion_scale),
             "micro_node_features": micro_node_features,
