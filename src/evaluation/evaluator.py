@@ -7,7 +7,7 @@ from src.utils.logger_wandb import log_image_to_wandb
 from src.evaluation.metrics import compute_metrics, plot_confusion_matrix
 from src.utils.data_stats import get_class_distribution
 
-def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> None:
+def evaluate_and_show(model, test_loader, testset_path, device, save_dir, logit_bias=None, run_tag="raw") -> None:
     """Test set, 10 ảnh đoán đúng, 10 ảnh đoán sai và Visualize and log to wandb"""
     model.eval()
     
@@ -57,6 +57,9 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> Non
                 outputs = model(images)
 
             logits = outputs["logits"] if isinstance(outputs, dict) else (outputs[0] if isinstance(outputs, (list, tuple)) else outputs)
+            if logit_bias is not None:
+                bias = logit_bias.to(logits.device).view(1, -1)
+                logits = logits + bias
             _, preds = torch.max(logits, 1)
             
             imgs_cpu = images.cpu()
@@ -90,9 +93,9 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> Non
 
     # Plot Confusion Matrix
     class_distribution = get_class_distribution(testset_path)
-    cm_path = os.path.join(save_dir, "confusion_matrix.png")
+    cm_path = os.path.join(save_dir, f"confusion_matrix_{run_tag}.png")
     fig_cm = plot_confusion_matrix(all_trues, all_preds, class_distribution, acc, save_path=cm_path)
-    log_image_to_wandb("Evaluation/Confusion_Matrix", fig_cm)
+    log_image_to_wandb(f"Evaluation/Confusion_Matrix_{run_tag}", fig_cm)
 
 
     if len(correct_images) > 0:
