@@ -33,13 +33,14 @@ model:
   program_logit_calibrator_dropout: 0.0
   program_logit_calibrator_init_scale: 0.10
 
-  # Scenario J1: Structure-Aware Residual Head
+  # Scenario J1b: capped region-only structure-aware residual head
   enable_structure_aware_head: true
   structure_head_hidden_dim: 128
-  structure_head_dropout: 0.10
-  structure_head_init_scale: 0.05
+  structure_head_dropout: 0.15
+  structure_head_init_scale: 0.02
+  structure_head_max_scale: 0.10
   structure_head_use_region_context: true
-  structure_head_use_macro_context: true
+  structure_head_use_macro_context: false
 
 data:
   batch_size: 64

@@ -69,18 +69,19 @@ class SemanticRoiGraphConfig:
     program_logit_calibrator_hidden_dim: int = 0
     program_logit_calibrator_dropout: float = 0.0
     program_logit_calibrator_init_scale: float = 0.10
-    # Scenario J1: Structure-Aware Residual Head
+    # Scenario J1/J1b: Structure-Aware Residual Head
     enable_structure_aware_head: bool = False
     structure_head_hidden_dim: int = 128
     structure_head_dropout: float = 0.10
     structure_head_init_scale: float = 0.05
+    structure_head_max_scale: float = 0.10
     structure_head_use_region_context: bool = True
     structure_head_use_macro_context: bool = True
 
 
 class StructureAwareResidualHead(nn.Module):
     """
-    Structure-Aware Residual Head (Scenario J1).
+    Structure-Aware Residual Head (Scenario J1 / J1b).
 
     Inputs:
         program_logits: Tensor[B, C]
@@ -90,13 +91,15 @@ class StructureAwareResidualHead(nn.Module):
     Output:
         calibrated_logits: Tensor[B, C]
         delta: Tensor[B, C]
-        scale: scalar Tensor
+        scale: scalar Tensor  (always <= max_scale)
 
-    Design:
+    Design (J1b):
+        scale = max_scale * sigmoid(raw_residual_scale)  -- hard upper bound
         logits = program_logits + scale * delta
 
-    The scale starts small (init_scale) to avoid destroying the E-base
-    decision boundary on the first training steps.
+    J1 used plain sigmoid which could reach ~0.50 and over-corrected.
+    J1b caps scale at max_scale (default 0.10) so the head only makes
+    small corrections, preserving the E-base decision boundary.
     """
 
     def __init__(
@@ -106,13 +109,15 @@ class StructureAwareResidualHead(nn.Module):
         macro_dim: int = 0,
         hidden_dim: int = 128,
         dropout: float = 0.10,
-        init_scale: float = 0.05,
+        init_scale: float = 0.02,
+        max_scale: float = 0.10,
         use_region_context: bool = True,
         use_macro_context: bool = True,
     ):
         super().__init__()
 
         self.num_classes = num_classes
+        self.max_scale = float(max(max_scale, 1e-6))
         self.use_region_context = use_region_context
         self.use_macro_context = use_macro_context and macro_dim > 0
 
@@ -139,8 +144,11 @@ class StructureAwareResidualHead(nn.Module):
             nn.Linear(hidden_dim, num_classes),
         )
 
-        init_scale = max(min(float(init_scale), 0.99), 1e-4)
-        raw_scale = torch.logit(torch.tensor(init_scale, dtype=torch.float32))
+        # J1b: scale = max_scale * sigmoid(raw)
+        # So raw is initialised from the desired init_scale/max_scale ratio.
+        init_ratio = float(init_scale) / self.max_scale
+        init_ratio = max(min(init_ratio, 0.99), 1e-4)
+        raw_scale = torch.logit(torch.tensor(init_ratio, dtype=torch.float32))
         self.raw_residual_scale = nn.Parameter(raw_scale.clone().detach())
 
         self._init_weights()
@@ -188,7 +196,8 @@ class StructureAwareResidualHead(nn.Module):
 
         x = torch.cat(pieces, dim=-1)
         delta = self.mlp(x)
-        scale = torch.sigmoid(self.raw_residual_scale)
+        # J1b: hard cap — scale is strictly bounded by max_scale
+        scale = self.max_scale * torch.sigmoid(self.raw_residual_scale)
         logits = program_logits + scale * delta
         return logits, delta, scale
 
@@ -1039,17 +1048,20 @@ class SemanticROIGraphFER(nn.Module):
                 macro_dim=config.semantic_state_dim if _j1_use_macro else 0,
                 hidden_dim=getattr(config, "structure_head_hidden_dim", 128),
                 dropout=getattr(config, "structure_head_dropout", 0.10),
-                init_scale=getattr(config, "structure_head_init_scale", 0.05),
+                init_scale=getattr(config, "structure_head_init_scale", 0.02),
+                max_scale=getattr(config, "structure_head_max_scale", 0.10),
                 use_region_context=_j1_use_region,
                 use_macro_context=_j1_use_macro,
             )
             print(
-                "[Scenario J1] StructureAwareResidualHead enabled | "
+                "[Scenario J1b] StructureAwareResidualHead enabled | "
                 f"region_dim={config.feature_dim if _j1_use_region else 0} | "
                 f"macro_dim={config.semantic_state_dim if _j1_use_macro else 0} | "
                 f"hidden_dim={getattr(config, 'structure_head_hidden_dim', 128)} | "
                 f"dropout={getattr(config, 'structure_head_dropout', 0.10)} | "
-                f"init_scale={getattr(config, 'structure_head_init_scale', 0.05)}"
+                f"init_scale={getattr(config, 'structure_head_init_scale', 0.02)} | "
+                f"max_scale={getattr(config, 'structure_head_max_scale', 0.10)} | "
+                f"use_region={_j1_use_region} | use_macro={_j1_use_macro}"
             )
         else:
             self.structure_aware_head = None
@@ -1347,8 +1359,12 @@ class SemanticROIGraphFER(nn.Module):
 
         # region_tokens_for_head: [B, R, feature_dim=256]  — ROI region embeddings
         # macro_tokens_for_head:  [B, R, semantic_state_dim=128] — composed semantic states
+        # J1b: region-only context (macro disabled via YAML structure_head_use_macro_context=false)
         region_tokens_for_head = region_embeddings  # [B, 9, 256]
-        macro_tokens_for_head = composed_states      # [B, 9, 128]
+        macro_tokens_for_head = composed_states if (
+            self.structure_aware_head is not None
+            and self.structure_aware_head.use_macro_context
+        ) else None
 
         if self.structure_aware_head is not None:
             logits_motif, structure_head_delta, structure_head_scale = (
