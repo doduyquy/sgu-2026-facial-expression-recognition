@@ -47,6 +47,7 @@ class SemanticRoiGraphConfig:
     motif_per_class: int = 4
     micro_motifs_per_region: int = 8
     macro_motifs_per_class: int = 4
+    programs_per_class: int = 4
     # Bug 5 fix: defaults now match semantic_roi_graph.yaml
     cross_region_compositions: int = 8   # was 4
     semantic_state_dim: int = 128         # was 9 — must be divisible by semantic_attn_heads
@@ -797,13 +798,13 @@ class SemanticROIGraphFER(nn.Module):
 
         self.semantic_program_bank = SemanticCompositionalProgramBank(
             num_classes=config.num_classes,
-            programs_per_class=config.macro_motifs_per_class,
+            programs_per_class=config.programs_per_class,
             num_regions=config.num_regions,
             state_dim=config.semantic_state_dim,
         )
         self.semantic_program_executor = SemanticProgramExecutor(
             num_classes=config.num_classes,
-            programs_per_class=config.macro_motifs_per_class,
+            programs_per_class=config.programs_per_class,
             num_regions=config.num_regions,
             state_dim=config.semantic_state_dim,
             temperature=config.relation_temperature,

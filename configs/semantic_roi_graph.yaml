@@ -7,7 +7,7 @@ model:
   # micro_motifs_per_region: local motif templates per facial region
   micro_motifs_per_region: 8
   # macro_motifs_per_class: semantic program slots per emotion class
-  macro_motifs_per_class: 4
+  macro_motifs_per_class: 6
   use_pretrained: true
   backbone_out_size: 12
   bbox_input_size: 48
@@ -24,7 +24,8 @@ model:
   hyperedge_count: 4 # Fix 4: was missing, silently used dataclass default
   router_hidden_dim: 256
   cross_region_compositions: 8
-  programs_per_class: 4
+  # Scenario G1: increase semantic program capacity
+  programs_per_class: 6
   program_dim: 128
   fusion_scale: 0.0
 
@@ -67,7 +68,7 @@ training:
   micro_motif_diversity_weight: 0.02
   macro_motif_diversity_weight: 0.02
   semantic_consistency_weight: 0.03
-  compositional_program_weight: 0.03
+  compositional_program_weight: 0.02
   program_diversity_weight: 0.01
   fused_aux_ce_weight: 0.0
 
