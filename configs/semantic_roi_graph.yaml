@@ -26,8 +26,9 @@ model:
   cross_region_compositions: 8
   programs_per_class: 4
   program_dim: 128
-  # Task 1: Enable Global-Local Fusion branch (was 0.0 / E-base)
-  fusion_scale: 0.25
+  # Task 2: Increase fusion weight — global ResNet branch now contributes 50%
+  # to final logits (was 0.25). Helps backbone learn richer face-level features.
+  fusion_scale: 0.5
 
 data:
   batch_size: 64
@@ -61,13 +62,20 @@ training:
   enable_program_sparsity: false
   enable_program_diversity: true
 
+  # Task 1: WeightedRandomSampler — balances class distribution per batch.
+  # Fixes Supervised Contrastive Loss having too few positive pairs for Fear/Sad/Disgust.
+  # When true, shuffle is automatically disabled in build_dataloader.
+  use_weighted_sampler: true
+
   # Task 1: Fused branch — global context gets CE gradient → backbone learns richer features
   enable_fused_aux_ce: true
   fused_aux_ce_weight: 0.15   # mild: main CE stays dominant; 0.15 ≈ 15% of global branch
 
   # ── Weights for enabled losses ─────────────────────────────────────────────
   micro_motif_diversity_weight: 0.02
-  macro_motif_diversity_weight: 0.02
+  # Task 3: Halved macro diversity weight to give CE and contrastive more gradient budget.
+  # macro diversity was competing with the newly-enabled contrastive loss at 0.02.
+  macro_motif_diversity_weight: 0.01
   semantic_consistency_weight: 0.03
   compositional_program_weight: 0.02
   program_diversity_weight: 0.01
