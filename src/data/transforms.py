@@ -29,13 +29,13 @@ def build_transform(config, split="train") -> Compose:
     use_semantic_masks = bool(data_cfg.get('use_semantic_masks', False))
 
     if split == "train":
+        # ĐÃ SỬA: Chỉ giữ lại biến đổi màu sắc và lật ngang, tuyệt đối không dùng RandomErasing hay RandomAffine
         trans = transforms.Compose([
-            transforms.Resize((image_size, image_size)), # Bắt buộc dùng Resize để giữ nguyên tọa độ bboxes
-            transforms.RandomHorizontalFlip(p=0.5),      # Lật ngang an toàn cho khuôn mặt
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2), # Đổi ánh sáng thay vì đổi tọa độ
+            transforms.Resize((image_size, image_size)), 
+            transforms.RandomHorizontalFlip(p=0.5),      
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2), 
             transforms.ToTensor(),
             transforms.Normalize(mean=(mu,), std=(st,)),
-            transforms.RandomErasing(p=0.2, scale=(0.02, 0.1)) # Cutout (che một mảng đen) để ép mạng nhìn nhiều vùng khác nhau
         ])
     else:
         if use_semantic_masks:
@@ -63,8 +63,6 @@ def build_transform(config, split="train") -> Compose:
             ])
 
     return trans
-
-
 
 
 # With transfer learning: VGG hay ResNet:
