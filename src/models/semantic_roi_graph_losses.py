@@ -457,9 +457,21 @@ def compute_semantic_roi_graph_losses(
 
     micro_diversity_loss = micro_motif_diversity_loss(base_model.micro_motif_bank)
     macro_diversity_loss = macro_motif_diversity_loss(base_model.semantic_program_bank)
-    contrastive_source = semantic_states if semantic_states is not None else semantic_latent
-    contrastive_region_mask = region_mask if contrastive_source is not None and contrastive_source.dim() == 3 else None
-    # Warn 4 fix: guard against both semantic_states and semantic_latent being None.
+
+    # Task 2: Use semantic_latent_embedding [B, 256] as the primary contrastive source.
+    # Rationale: it is a pooled, hypergraph-reasoned 256-dim vector that encodes the full
+    # facial semantic state — much richer than mean-pooling raw 3D region tokens.
+    # Fear/Sad/Angry share similar micro-region patterns; the latent is the place to
+    # push those classes apart in embedding space.
+    contrastive_source = semantic_latent
+    if contrastive_source is None:
+        # Fallback to semantic state tokens (3D → mean-pooled by region_supervised_contrastive_loss)
+        contrastive_source = semantic_states
+    contrastive_region_mask = (
+        region_mask
+        if contrastive_source is not None and contrastive_source.dim() == 3
+        else None
+    )
     if contrastive_source is not None:
         contrastive_loss = region_supervised_contrastive_loss(
             contrastive_source,

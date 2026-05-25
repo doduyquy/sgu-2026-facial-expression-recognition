@@ -30,12 +30,28 @@ def build_transform(config, split="train") -> Compose:
 
     if split == "train":
         trans = transforms.Compose([
-            transforms.RandomResizedCrop(image_size, scale=(0.8, 1.2)),
-            transforms.RandomApply([transforms.RandomAffine(0, translate=(0.2, 0.2))], p=0.5),
+            # Fix: scale upper bound must be <= 1.0 in torchvision.
+            # (0.8, 1.2) caused upscale-before-crop which corrupts spatial coords.
+            # (0.85, 1.0) = slight random zoom-in only, bbox stays within image.
+            transforms.RandomResizedCrop(image_size, scale=(0.85, 1.0)),
             transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomApply([transforms.RandomRotation(10)], p=0.5),
+            # Fix: translate=(0.2, 0.2) → ±9.6px shift on 48px image.
+            # With fixed ROI bboxes, this makes "eye" bbox land on "forehead".
+            # Safe limit: translate=(0.04, 0.04) → ±2px, keeps bbox on correct region.
+            transforms.RandomApply([
+                transforms.RandomAffine(
+                    degrees=8,
+                    translate=(0.04, 0.04),  # ±2px on 48px — ROI-safe
+                )
+            ], p=0.4),
+            # Photometric augmentation — does not affect spatial coords at all.
+            transforms.RandomApply([
+                transforms.ColorJitter(brightness=0.3, contrast=0.3)
+            ], p=0.5),
             transforms.ToTensor(),
             transforms.Normalize(mean=(mu,), std=(st,)),
+            # Cutout: hide a tiny patch (<=8px) to prevent overfitting on single regions.
+            transforms.RandomErasing(p=0.25, scale=(0.01, 0.03), ratio=(0.5, 2.0), value=0),
         ])
     else:
         if use_semantic_masks:

@@ -14,33 +14,20 @@ model:
   micro_layers: 2
   macro_layers: 2
   attn_heads: 4
-  dropout: 0.25 # increased from 0.2 — train-val gap 14% needs more regularization
+  dropout: 0.25   # increased from 0.2 — train-val gap 14% needs more regularization
   label_smoothing: 0.05
   relation_temperature: 0.07
   # Semantic compositional model hyperparameters
   semantic_state_dim: 128
   semantic_latent_dim: 256
-  semantic_attn_heads: 4 # must divide semantic_state_dim (128 / 4 = 32 ✓)
-  hyperedge_count: 4 # Fix 4: was missing, silently used dataclass default
+  semantic_attn_heads: 4      # must divide semantic_state_dim (128 / 4 = 32 ✓)
+  hyperedge_count: 4          # Fix 4: was missing, silently used dataclass default
   router_hidden_dim: 256
   cross_region_compositions: 8
   programs_per_class: 4
   program_dim: 128
-  fusion_scale: 0.0
-  # Scenario I: Program Logit Calibrator
-  enable_program_logit_calibrator: false
-  program_logit_calibrator_hidden_dim: 0
-  program_logit_calibrator_dropout: 0.0
-  program_logit_calibrator_init_scale: 0.10
-
-  # Scenario J1b: capped region-only structure-aware residual head
-  enable_structure_aware_head: true
-  structure_head_hidden_dim: 128
-  structure_head_dropout: 0.15
-  structure_head_init_scale: 0.02
-  structure_head_max_scale: 0.10
-  structure_head_use_region_context: true
-  structure_head_use_macro_context: false
+  # Task 1: Enable Global-Local Fusion branch (was 0.0 / E-base)
+  fusion_scale: 0.25
 
 data:
   batch_size: 64
@@ -55,7 +42,7 @@ data:
 training:
   epochs: 1000
   lr: 0.0003
-  weight_decay: 0.001 # increased from 0.0005 — stronger L2 regularization
+  weight_decay: 0.001      # increased from 0.0005 — stronger L2 regularization
   loss: "semantic_roi_graph"
   label_smoothing: 0.05
 
@@ -63,7 +50,8 @@ training:
   # Only 3 auxiliary losses are active. All others disabled to reduce overfit.
   enable_micro_diversity: true
   enable_macro_diversity: true
-  enable_region_contrastive: false
+  # Task 2: Enable supervised contrastive loss on semantic latent embeddings
+  enable_region_contrastive: true
   enable_semantic_consistency: true
   enable_compositional_program: true
   enable_semantic_disentanglement: false
@@ -73,9 +61,9 @@ training:
   enable_program_sparsity: false
   enable_program_diversity: true
 
-  # Scenario E-base: fused branch disabled
-  enable_fused_aux_ce: false
-  use_class_weight_multiplier: false
+  # Task 1: Fused branch — global context gets CE gradient → backbone learns richer features
+  enable_fused_aux_ce: true
+  fused_aux_ce_weight: 0.15   # mild: main CE stays dominant; 0.15 ≈ 15% of global branch
 
   # ── Weights for enabled losses ─────────────────────────────────────────────
   micro_motif_diversity_weight: 0.02
@@ -83,10 +71,10 @@ training:
   semantic_consistency_weight: 0.03
   compositional_program_weight: 0.02
   program_diversity_weight: 0.01
-  fused_aux_ce_weight: 0.0
+  # fused_aux_ce_weight is defined above in the Task 1 block (0.15) — do not redeclare here
 
-  # Disabled weights (kept for reference / easy re-enable)
-  region_contrastive_weight: 0.0
+  # Task 2: Contrastive weight (enable flag is in the flag block above)
+  region_contrastive_weight: 0.05
   semantic_disentanglement_weight: 0.0
   region_coordination_weight: 0.0
   topology_alignment_weight: 0.0
@@ -97,3 +85,6 @@ training:
 
 logging:
   use_wandb: true
+  # Task 4: WandB routing — override here instead of hardcoding in logger_wandb.py
+  wandb_entity: "phucga15062005"
+  project_name: "FER2013-SemanticROI"

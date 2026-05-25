@@ -241,35 +241,6 @@ class Trainer:
                 _fs = outputs.get("fusion_scale")
                 if _fs is not None:
                     _component_accum.setdefault("_fusion_scale", []).append(float(_fs.detach().cpu()))
-                _calib_scale = outputs.get("program_logit_calibrator_scale")
-                if _calib_scale is not None:
-                    _component_accum.setdefault("_program_calib_scale", []).append(
-                        float(_calib_scale.detach().mean().cpu())
-                    )
-                _calib_delta = outputs.get("program_logit_delta")
-                if _calib_delta is not None:
-                    _component_accum.setdefault("_program_calib_delta_abs", []).append(
-                        float(_calib_delta.detach().abs().mean().cpu())
-                    )
-                # Scenario J1: Structure-Aware Residual Head monitoring
-                _sh_scale = outputs.get("structure_head_scale")
-                if _sh_scale is not None:
-                    _component_accum.setdefault("_structure_head_scale", []).append(
-                        float(_sh_scale.detach().float().mean().cpu())
-                        if torch.is_tensor(_sh_scale)
-                        else float(_sh_scale)
-                    )
-                _sh_delta = outputs.get("structure_head_delta")
-                if _sh_delta is not None:
-                    _component_accum.setdefault("_structure_head_delta_abs", []).append(
-                        float(_sh_delta.detach().abs().mean().cpu())
-                    )
-                _sh_raw = outputs.get("logits_program_raw")
-                _sh_lm = outputs.get("logits_motif")
-                if _sh_raw is not None and _sh_lm is not None:
-                    _component_accum.setdefault("_structure_head_raw_corrected_diff", []).append(
-                        float((_sh_lm.detach() - _sh_raw.detach()).abs().mean().cpu())
-                    )
             else:
                 if runtime_use_scn and getattr(self, '_current_epoch', 0) >= getattr(self, 'scn_warmup_epochs', 0):
                     try:
@@ -626,11 +597,6 @@ class Trainer:
                     "_fusion_gate_min": "Fusion/GateMin",
                     "_fusion_gate_max": "Fusion/GateMax",
                     "_fusion_scale": "Fusion/Scale",
-                    "_program_calib_scale": "ProgramCalib/Scale",
-                    "_program_calib_delta_abs": "ProgramCalib/DeltaAbsMean",
-                    "_structure_head_scale": "StructureHead/Scale",
-                    "_structure_head_delta_abs": "StructureHead/DeltaAbsMean",
-                    "_structure_head_raw_corrected_diff": "StructureHead/RawCorrectedDiff",
                 }
                 for _fk, _fn in _fusion_map.items():
                     if _fk in getattr(self, '_latest_loss_components', {}):

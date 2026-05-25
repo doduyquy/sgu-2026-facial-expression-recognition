@@ -65,206 +65,6 @@ class SemanticRoiGraphConfig:
     relation_temperature: float = 0.07
     region_confidence_threshold: float = 0.3
     fusion_scale: float = 0.25
-    enable_program_logit_calibrator: bool = False
-    program_logit_calibrator_hidden_dim: int = 0
-    program_logit_calibrator_dropout: float = 0.0
-    program_logit_calibrator_init_scale: float = 0.10
-    # Scenario J1/J1b: Structure-Aware Residual Head
-    enable_structure_aware_head: bool = False
-    structure_head_hidden_dim: int = 128
-    structure_head_dropout: float = 0.10
-    structure_head_init_scale: float = 0.05
-    structure_head_max_scale: float = 0.10
-    structure_head_use_region_context: bool = True
-    structure_head_use_macro_context: bool = True
-
-
-class StructureAwareResidualHead(nn.Module):
-    """
-    Structure-Aware Residual Head (Scenario J1 / J1b).
-
-    Inputs:
-        program_logits: Tensor[B, C]
-        region_tokens:  Tensor[B, R, region_dim] or None
-        macro_tokens:   Tensor[B, M, macro_dim] or None
-
-    Output:
-        calibrated_logits: Tensor[B, C]
-        delta: Tensor[B, C]
-        scale: scalar Tensor  (always <= max_scale)
-
-    Design (J1b):
-        scale = max_scale * sigmoid(raw_residual_scale)  -- hard upper bound
-        logits = program_logits + scale * delta
-
-    J1 used plain sigmoid which could reach ~0.50 and over-corrected.
-    J1b caps scale at max_scale (default 0.10) so the head only makes
-    small corrections, preserving the E-base decision boundary.
-    """
-
-    def __init__(
-        self,
-        num_classes: int,
-        region_dim: int,
-        macro_dim: int = 0,
-        hidden_dim: int = 128,
-        dropout: float = 0.10,
-        init_scale: float = 0.02,
-        max_scale: float = 0.10,
-        use_region_context: bool = True,
-        use_macro_context: bool = True,
-    ):
-        super().__init__()
-
-        self.num_classes = num_classes
-        self.max_scale = float(max(max_scale, 1e-6))
-        self.use_region_context = use_region_context
-        self.use_macro_context = use_macro_context and macro_dim > 0
-
-        input_dim = num_classes  # always include program logits
-        self.program_norm = nn.LayerNorm(num_classes)
-
-        if use_region_context and region_dim > 0:
-            self.region_norm = nn.LayerNorm(region_dim)
-            input_dim += region_dim
-        else:
-            self.region_norm = None
-            self.use_region_context = False
-
-        if self.use_macro_context:
-            self.macro_norm = nn.LayerNorm(macro_dim)
-            input_dim += macro_dim
-        else:
-            self.macro_norm = None
-
-        self.mlp = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, num_classes),
-        )
-
-        # J1b: scale = max_scale * sigmoid(raw)
-        # So raw is initialised from the desired init_scale/max_scale ratio.
-        init_ratio = float(init_scale) / self.max_scale
-        init_ratio = max(min(init_ratio, 0.99), 1e-4)
-        raw_scale = torch.logit(torch.tensor(init_ratio, dtype=torch.float32))
-        self.raw_residual_scale = nn.Parameter(raw_scale.clone().detach())
-
-        self._init_weights()
-
-    def _init_weights(self):
-        last_linear = None
-        for module in self.mlp.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                nn.init.zeros_(module.bias)
-                last_linear = module
-        # Start near identity: final correction initially zero.
-        if last_linear is not None:
-            nn.init.zeros_(last_linear.weight)
-            nn.init.zeros_(last_linear.bias)
-
-    @staticmethod
-    def _pool_tokens(tokens: torch.Tensor) -> torch.Tensor:
-        """Mean-pool over spatial/token dimension."""
-        if tokens.dim() == 2:
-            return tokens
-        if tokens.dim() == 3:
-            return tokens.mean(dim=1)
-        raise ValueError(f"Unsupported token shape for pooling: {tokens.shape}")
-
-    def forward(
-        self,
-        program_logits: torch.Tensor,
-        region_tokens: Optional[torch.Tensor] = None,
-        macro_tokens: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        pieces = [self.program_norm(program_logits)]
-
-        if self.use_region_context:
-            if region_tokens is None:
-                raise ValueError("region_tokens required when use_region_context=True")
-            region_context = self._pool_tokens(region_tokens)
-            pieces.append(self.region_norm(region_context))
-
-        if self.use_macro_context:
-            if macro_tokens is None:
-                raise ValueError("macro_tokens required when use_macro_context=True")
-            macro_context = self._pool_tokens(macro_tokens)
-            pieces.append(self.macro_norm(macro_context))
-
-        x = torch.cat(pieces, dim=-1)
-        delta = self.mlp(x)
-        # J1b: hard cap — scale is strictly bounded by max_scale
-        scale = self.max_scale * torch.sigmoid(self.raw_residual_scale)
-        logits = program_logits + scale * delta
-        return logits, delta, scale
-
-
-class ProgramLogitCalibrator(nn.Module):
-    """
-    Learnable class-logit calibration head for semantic program scores.
-
-    Input:
-        raw_logits: Tensor[B, C]
-
-    Output:
-        calibrated_logits: Tensor[B, C]
-        delta: Tensor[B, C]
-
-    Design:
-        calibrated_logits = raw_logits + scale * f(LayerNorm(raw_logits))
-
-    The residual scale is initialized small so the module starts close to identity.
-    """
-
-    def __init__(
-        self,
-        num_classes: int,
-        hidden_dim: int = 0,
-        dropout: float = 0.0,
-        init_scale: float = 0.10,
-    ):
-        super().__init__()
-        self.num_classes = num_classes
-        self.norm = nn.LayerNorm(num_classes)
-
-        if hidden_dim is not None and hidden_dim > 0:
-            self.net = nn.Sequential(
-                nn.Linear(num_classes, hidden_dim),
-                nn.GELU(),
-                nn.Dropout(dropout),
-                nn.Linear(hidden_dim, num_classes),
-            )
-        else:
-            self.net = nn.Linear(num_classes, num_classes)
-
-        init_scale = float(init_scale)
-        init_scale = max(min(init_scale, 0.99), 1e-4)
-        raw = torch.logit(torch.tensor(init_scale, dtype=torch.float32))
-        self.raw_residual_scale = nn.Parameter(raw.clone().detach())
-
-        self._init_weights()
-
-    def _init_weights(self):
-        last_linear = None
-        for module in self.net.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                nn.init.zeros_(module.bias)
-                last_linear = module
-
-        if last_linear is not None:
-            nn.init.zeros_(last_linear.weight)
-            nn.init.zeros_(last_linear.bias)
-
-    def forward(self, raw_logits: torch.Tensor):
-        x = self.norm(raw_logits)
-        delta = self.net(x)
-        scale = torch.sigmoid(self.raw_residual_scale)
-        calibrated_logits = raw_logits + scale * delta
-        return calibrated_logits, delta, scale
 
 
 class SemanticBackbone(nn.Module):
@@ -1015,57 +815,6 @@ class SemanticROIGraphFER(nn.Module):
             dropout=config.dropout,
         )
 
-        self.enable_program_logit_calibrator = bool(
-            getattr(config, "enable_program_logit_calibrator", False)
-        )
-        if self.enable_program_logit_calibrator:
-            self.program_logit_calibrator = ProgramLogitCalibrator(
-                num_classes=config.num_classes,
-                hidden_dim=getattr(config, "program_logit_calibrator_hidden_dim", 0),
-                dropout=getattr(config, "program_logit_calibrator_dropout", 0.0),
-                init_scale=getattr(config, "program_logit_calibrator_init_scale", 0.10),
-            )
-            print(
-                "[Scenario I] ProgramLogitCalibrator enabled | "
-                f"hidden_dim={getattr(config, 'program_logit_calibrator_hidden_dim', 0)} | "
-                f"init_scale={getattr(config, 'program_logit_calibrator_init_scale', 0.10)}"
-            )
-        else:
-            self.program_logit_calibrator = None
-
-        # Scenario J1: Structure-Aware Residual Head
-        # Region tokens come from region_embeddings: [B, R, feature_dim=256]
-        # Macro tokens come from composed_states:    [B, R, semantic_state_dim=128]
-        _j1_use_region = bool(getattr(config, "structure_head_use_region_context", True))
-        _j1_use_macro = bool(getattr(config, "structure_head_use_macro_context", True))
-        self.enable_structure_aware_head = bool(
-            getattr(config, "enable_structure_aware_head", False)
-        )
-        if self.enable_structure_aware_head:
-            self.structure_aware_head = StructureAwareResidualHead(
-                num_classes=config.num_classes,
-                region_dim=config.feature_dim if _j1_use_region else 0,
-                macro_dim=config.semantic_state_dim if _j1_use_macro else 0,
-                hidden_dim=getattr(config, "structure_head_hidden_dim", 128),
-                dropout=getattr(config, "structure_head_dropout", 0.10),
-                init_scale=getattr(config, "structure_head_init_scale", 0.02),
-                max_scale=getattr(config, "structure_head_max_scale", 0.10),
-                use_region_context=_j1_use_region,
-                use_macro_context=_j1_use_macro,
-            )
-            print(
-                "[Scenario J1b] StructureAwareResidualHead enabled | "
-                f"region_dim={config.feature_dim if _j1_use_region else 0} | "
-                f"macro_dim={config.semantic_state_dim if _j1_use_macro else 0} | "
-                f"hidden_dim={getattr(config, 'structure_head_hidden_dim', 128)} | "
-                f"dropout={getattr(config, 'structure_head_dropout', 0.10)} | "
-                f"init_scale={getattr(config, 'structure_head_init_scale', 0.02)} | "
-                f"max_scale={getattr(config, 'structure_head_max_scale', 0.10)} | "
-                f"use_region={_j1_use_region} | use_macro={_j1_use_macro}"
-            )
-        else:
-            self.structure_aware_head = None
-
         self.global_context = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(1),
@@ -1205,16 +954,7 @@ class SemanticROIGraphFER(nn.Module):
         outputs = self._forward_single(flat_image, flat_bboxes, flat_region_mask, flat_region_confidence)
 
         # Average the classification scores over T crops
-        _avg_keys = (
-            "logits",
-            "logits_motif",
-            "logits_motif_raw",
-            "logits_fused",
-            "semantic_program_scores",
-            "program_logit_delta",
-            "logits_program_raw",
-            "structure_head_delta",
-        )
+        _avg_keys = ("logits", "logits_motif", "logits_fused", "semantic_program_scores")
         for key in _avg_keys:
             if key in outputs and torch.is_tensor(outputs[key]):
                 x = outputs[key]
@@ -1338,62 +1078,13 @@ class SemanticROIGraphFER(nn.Module):
 
         # Per-class gate: shape (1, num_classes) — each emotion learns its own balance
         structure_gate = torch.sigmoid(self.semantic_structure_gate).view(1, -1)
-        logits_motif_raw = semantic_program_scores
-        if self.program_logit_calibrator is not None:
-            logits_motif, program_logit_delta, program_logit_calibrator_scale = (
-                self.program_logit_calibrator(logits_motif_raw)
-            )
-        else:
-            logits_motif = logits_motif_raw
-            program_logit_delta = torch.zeros_like(logits_motif_raw)
-            program_logit_calibrator_scale = torch.tensor(
-                0.0,
-                device=logits_motif_raw.device,
-                dtype=logits_motif_raw.dtype,
-            )
-
-        # ── Scenario J1: Structure-Aware Residual Head ─────────────────────────
-        # logits_program_raw: raw semantic program scores (before any correction)
-        # These are used by auxiliary losses and for debug comparison.
-        logits_program_raw = logits_motif_raw
-
-        # region_tokens_for_head: [B, R, feature_dim=256]  — ROI region embeddings
-        # macro_tokens_for_head:  [B, R, semantic_state_dim=128] — composed semantic states
-        # J1b: region-only context (macro disabled via YAML structure_head_use_macro_context=false)
-        region_tokens_for_head = region_embeddings  # [B, 9, 256]
-        macro_tokens_for_head = composed_states if (
-            self.structure_aware_head is not None
-            and self.structure_aware_head.use_macro_context
-        ) else None
-
-        if self.structure_aware_head is not None:
-            logits_motif, structure_head_delta, structure_head_scale = (
-                self.structure_aware_head(
-                    program_logits=logits_program_raw,
-                    region_tokens=region_tokens_for_head,
-                    macro_tokens=macro_tokens_for_head,
-                )
-            )
-        else:
-            # No structural residual correction — pass through
-            structure_head_delta = torch.zeros_like(logits_program_raw)
-            structure_head_scale = logits_program_raw.new_tensor(0.0)
-            # logits_motif is already set above by ProgramLogitCalibrator or identity
-
+        logits_motif = semantic_program_scores
         logits = logits_motif + self.fusion_scale * structure_gate * logits_fused
 
         return {
             "logits": logits,
             "logits_motif": logits_motif,
-            "logits_motif_raw": logits_motif_raw,
             "logits_fused": logits_fused,
-            "logits_program_raw": logits_program_raw,
-            "structure_head_delta": structure_head_delta,
-            "structure_head_scale": structure_head_scale,
-            "structure_head_enabled": self.enable_structure_aware_head,
-            "program_logit_delta": program_logit_delta,
-            "program_logit_calibrator_scale": program_logit_calibrator_scale,
-            "program_logit_calibrator_enabled": self.enable_program_logit_calibrator,
             "structure_gate": structure_gate,
             "fusion_scale": logits.new_tensor(self.fusion_scale),
             "micro_node_features": micro_node_features,
