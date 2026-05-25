@@ -30,12 +30,12 @@ def build_transform(config, split="train") -> Compose:
 
     if split == "train":
         trans = transforms.Compose([
-            transforms.RandomResizedCrop(image_size, scale=(0.8, 1.2)),
-            transforms.RandomApply([transforms.RandomAffine(0, translate=(0.2, 0.2))], p=0.5),
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomApply([transforms.RandomRotation(10)], p=0.5),
+            transforms.Resize((image_size, image_size)), # An toàn: Giữ nguyên tọa độ bboxes
+            transforms.RandomHorizontalFlip(p=0.5),      # Chấp nhận được vì khuôn mặt có tính đối xứng
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2), # Đổi ánh sáng thay vì tọa độ
             transforms.ToTensor(),
             transforms.Normalize(mean=(mu,), std=(st,)),
+            transforms.RandomErasing(p=0.2, scale=(0.02, 0.1), ratio=(0.5, 2.0), value=0) # Che khuất ngẫu nhiên (Cutout)
         ])
     else:
         if use_semantic_masks:
