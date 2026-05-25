@@ -22,9 +22,9 @@ model:
   semantic_state_dim: 128
   semantic_latent_dim: 256
   semantic_attn_heads: 4      # must divide semantic_state_dim (128 / 4 = 32 ✓)
-  hyperedge_count: 4          # Fix 4: was missing, silently used dataclass default
+  hyperedge_count: 3       # Fix 4: was missing, silently used dataclass default
   router_hidden_dim: 256
-  cross_region_compositions: 8
+  cross_region_compositions: 4
   programs_per_class: 4
   program_dim: 128
   fusion_scale: 0.0
