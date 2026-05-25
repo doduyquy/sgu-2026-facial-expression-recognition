@@ -515,6 +515,15 @@ class Trainer:
             self._current_epoch = ep
             progress = ep / max(self.epochs - 1, 1)
             
+            # [Thêm mới] Kích hoạt Sparse Routing (Top-K = 3) từ epoch 85 trở đi
+            # Để tránh sốc gradient ở giai đoạn đầu, model sẽ dùng Softmax thường (top_k=0)
+            # đến epoch 85 thì mới ép mô hình chỉ chú ý (attention) vào 3 motif quan trọng nhất.
+            current_top_k = 3 if ep >= 85 else 0
+            if hasattr(self.model, 'module') and hasattr(self.model.module, 'config'):
+                self.model.module.config.micro_motif_top_k = current_top_k
+            elif hasattr(self.model, 'config'):
+                self.model.config.micro_motif_top_k = current_top_k
+            
             set_progress = getattr(self.model, "set_training_progress", None)
             if callable(set_progress):
                 try:

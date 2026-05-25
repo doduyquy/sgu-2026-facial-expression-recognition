@@ -6,7 +6,7 @@ model:
   feature_dim: 256
   # micro_motifs_per_region: local motif templates per facial region
   micro_motifs_per_region: 8
-  micro_motif_top_k: 2  # [Thêm mới] Sparse Routing (Top-K) cho motif matcher
+  micro_motif_top_k: 0  # [Thêm mới] Sparse Routing (Top-K) cho motif matcher
   # macro_motifs_per_class: semantic program slots per emotion class
   macro_motifs_per_class: 4
   use_pretrained: true
