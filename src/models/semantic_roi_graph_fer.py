@@ -65,6 +65,7 @@ class SemanticRoiGraphConfig:
     relation_temperature: float = 0.07
     region_confidence_threshold: float = 0.3
     fusion_scale: float = 0.25
+    micro_motif_top_k: int = 0  # [Thêm mới] Tham số Top-K cho Sparse Routing
 
 
 class SemanticBackbone(nn.Module):
@@ -318,10 +319,14 @@ class MicroGraphReasoner(nn.Module):
 class SemanticStateEncoder(nn.Module):
     """Project region embeddings into interpretable semantic facial state space."""
 
-    def __init__(self, input_dim: int, state_dim: int, hidden_dim: Optional[int] = None, dropout: float = 0.1):
+    def __init__(self, input_dim: int, state_dim: int, num_regions: int, hidden_dim: Optional[int] = None, dropout: float = 0.1):
         super().__init__()
         hidden_dim = hidden_dim or max(input_dim // 2, state_dim * 2)
         self.state_dim = state_dim
+        
+        # [Thêm mới] Region Identity Embedding
+        self.region_identity_embedding = nn.Parameter(torch.randn(1, num_regions, state_dim) * 0.02)
+        
         self.proj = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.GELU(),
@@ -341,6 +346,10 @@ class SemanticStateEncoder(nn.Module):
         # Original `raw_state * gate + raw_state` = `raw_state * (gate + 1)`,
         # making the Sigmoid gate a mere scaling factor with no off-switch.
         semantic_state = self.norm(raw_state * gate)
+        
+        # [Thêm mới] Cộng Positional Encoding cho vùng ROI
+        semantic_state = semantic_state + self.region_identity_embedding
+        
         return semantic_state
 
 
@@ -374,11 +383,20 @@ class MicroSemanticMotifMatcher(nn.Module):
         )
         self.fusion_gate = nn.Parameter(torch.tensor(0.5))
 
-    def forward(self, semantic_states: torch.Tensor, motif_bank: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, semantic_states: torch.Tensor, motif_bank: torch.Tensor, top_k: int = 0) -> Tuple[torch.Tensor, torch.Tensor]:
         state_norm = F.normalize(semantic_states, dim=-1)
         bank_norm = F.normalize(motif_bank, dim=-1)
         sim = torch.einsum("brs,rks->brk", state_norm, bank_norm) / self.temperature
-        attn = F.softmax(sim, dim=-1)
+        
+        # [Thêm mới] Sparse Routing (Top-K)
+        if top_k > 0:
+            topk_vals, topk_indices = torch.topk(sim, top_k, dim=-1)
+            sparse_sim = torch.full_like(sim, float('-inf'))
+            sparse_sim.scatter_(-1, topk_indices, topk_vals)
+            attn = F.softmax(sparse_sim, dim=-1)
+        else:
+            attn = F.softmax(sim, dim=-1)
+            
         tokens = torch.einsum("brk,rks->brs", attn, motif_bank)
         tokens = self.token_proj(tokens)
         gate = torch.sigmoid(self.fusion_gate)
@@ -757,6 +775,8 @@ class SemanticROIGraphFER(nn.Module):
         self.semantic_state_encoder = SemanticStateEncoder(
             input_dim=config.feature_dim,
             state_dim=config.semantic_state_dim,
+            num_regions=config.num_regions,  # [Thêm mới]
+
             hidden_dim=max(config.feature_dim // 2, config.semantic_state_dim * 2),
             dropout=config.dropout,
         )
@@ -1019,7 +1039,11 @@ class SemanticROIGraphFER(nn.Module):
 
         semantic_state_tokens = self.semantic_state_encoder(region_embeddings)
         micro_motif_bank = self.micro_motif_bank()
-        micro_motif_attention, semantic_motif_tokens = self.micro_motif_matcher(semantic_state_tokens, micro_motif_bank)
+        micro_motif_attention, semantic_motif_tokens = self.micro_motif_matcher(
+            semantic_state_tokens, 
+            micro_motif_bank,
+            top_k=getattr(self.config, "micro_motif_top_k", 0)  # [Thêm mới]
+        )
 
         # Step 1: Pairwise region interaction (local semantic coordination).
         interaction_states, semantic_interaction_tensor, semantic_interaction_gates = self.semantic_interaction_block(
