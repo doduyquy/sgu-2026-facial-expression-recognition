@@ -6,7 +6,6 @@ model:
   feature_dim: 256
   # micro_motifs_per_region: local motif templates per facial region
   micro_motifs_per_region: 8
-  micro_motif_top_k: 0  # [Thêm mới] Sparse Routing (Top-K) cho motif matcher
   # macro_motifs_per_class: semantic program slots per emotion class
   macro_motifs_per_class: 4
   use_pretrained: true
@@ -22,9 +21,9 @@ model:
   semantic_state_dim: 128
   semantic_latent_dim: 256
   semantic_attn_heads: 4      # must divide semantic_state_dim (128 / 4 = 32 ✓)
-  hyperedge_count: 3       # Fix 4: was missing, silently used dataclass default
+  hyperedge_count: 4          # Fix 4: was missing, silently used dataclass default
   router_hidden_dim: 256
-  cross_region_compositions: 4
+  cross_region_compositions: 8
   programs_per_class: 4
   program_dim: 128
   fusion_scale: 0.0
