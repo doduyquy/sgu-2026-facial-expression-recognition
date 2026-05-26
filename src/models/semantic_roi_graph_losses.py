@@ -313,11 +313,14 @@ def region_supervised_contrastive_loss(
     region_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Supervised contrastive loss on pooled region embeddings."""
-    if region_mask is not None:
-        weights = region_mask.unsqueeze(-1).float()
-        pooled = (embeddings * weights).sum(dim=1) / (weights.sum(dim=1).clamp_min(1.0))
+    if embeddings.dim() == 3:
+        if region_mask is not None:
+            weights = region_mask.unsqueeze(-1).float()
+            pooled = (embeddings * weights).sum(dim=1) / (weights.sum(dim=1).clamp_min(1.0))
+        else:
+            pooled = embeddings.mean(dim=1)
     else:
-        pooled = embeddings.mean(dim=1)
+        pooled = embeddings
     pooled = F.normalize(pooled, dim=-1)
     sim = torch.matmul(pooled, pooled.t()) / float(temperature)
     labels = labels.view(-1, 1)
