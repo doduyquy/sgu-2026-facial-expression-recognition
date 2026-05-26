@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import pandas as pd
 import numpy as np
+import torch
 from torch.utils.data import Dataset
 from PIL import Image
 from src.data.emotions_dict import EMOTION_DICT
@@ -99,6 +100,35 @@ class FER2013(Dataset):
                 region_confidence = np.clip(0.5 + 0.5 * area, 0.0, 1.0).astype(np.float32)
             else:
                 region_confidence = (0.15 * region_mask).astype(np.float32)
+
+            # Synchronized Horizontal Flip for training bboxes and regions
+            if self.split == "train" and np.random.rand() < 0.5:
+                # 1. Flip image
+                if isinstance(image, torch.Tensor):
+                    image = torch.flip(image, dims=[-1])
+                else:
+                    image = image.transpose(Image.FLIP_LEFT_RIGHT) if hasattr(image, 'transpose') else np.flip(image, axis=-1)
+
+                # 2. Flip bboxes: x1_new = 47.0 - x2, x2_new = 47.0 - x1
+                flipped_bboxes = bboxes.copy()
+                flipped_bboxes[:, 0] = 47.0 - bboxes[:, 2]
+                flipped_bboxes[:, 2] = 47.0 - bboxes[:, 0]
+
+                # 3. Swap left/right symmetric regions
+                # 1 (left eyebrow) <-> 2 (right eyebrow)
+                # 4 (left eye) <-> 5 (right eye)
+                # 7 (left mouth corner) <-> 8 (right mouth corner)
+                swap_pairs = [(1, 2), (4, 5), (7, 8)]
+                for i, j in swap_pairs:
+                    tmp = flipped_bboxes[i].copy()
+                    flipped_bboxes[i] = flipped_bboxes[j]
+                    flipped_bboxes[j] = tmp
+
+                    # Swap region mask and confidence
+                    region_mask[i], region_mask[j] = region_mask[j], region_mask[i]
+                    region_confidence[i], region_confidence[j] = region_confidence[j], region_confidence[i]
+
+                bboxes = flipped_bboxes
 
             semantic_meta = {
                 "detect_success": np.array(detect_success, dtype=np.bool_),

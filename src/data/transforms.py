@@ -29,14 +29,23 @@ def build_transform(config, split="train") -> Compose:
     use_semantic_masks = bool(data_cfg.get('use_semantic_masks', False))
 
     if split == "train":
-        trans = transforms.Compose([
-            transforms.Resize((image_size, image_size)), # An toàn: Giữ nguyên tọa độ bboxes
-            transforms.RandomHorizontalFlip(p=0.5),      # Chấp nhận được vì khuôn mặt có tính đối xứng
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2), # Đổi ánh sáng thay vì tọa độ
-            transforms.ToTensor(),
-            transforms.Normalize(mean=(mu,), std=(st,)),
-            transforms.RandomErasing(p=0.2, scale=(0.02, 0.1), ratio=(0.5, 2.0), value=0) # Che khuất ngẫu nhiên (Cutout)
-        ])
+        if use_semantic_masks:
+            # Non-spatial augmentations to preserve bbox alignment.
+            # Horizontal flip is handled synchronously in the dataset.__getitem__ level.
+            trans = transforms.Compose([
+                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=(mu,), std=(st,)),
+            ])
+        else:
+            trans = transforms.Compose([
+                transforms.RandomResizedCrop(image_size, scale=(0.8, 1.2)),
+                transforms.RandomApply([transforms.RandomAffine(0, translate=(0.2, 0.2))], p=0.5),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.RandomApply([transforms.RandomRotation(10)], p=0.5),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=(mu,), std=(st,)),
+            ])
     else:
         if use_semantic_masks:
             # Fix 6: no TenCrop — semantic bbox coords are in original image space

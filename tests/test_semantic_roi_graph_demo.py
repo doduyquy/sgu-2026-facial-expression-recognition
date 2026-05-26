@@ -22,13 +22,13 @@ def test_forward_shapes():
 
     assert outputs["logits"].shape == (2, 7)
     assert outputs["logits_motif"].shape == (2, 7)
-    assert outputs["logits_global"].shape == (2, 7)
+    assert outputs["logits_fused"].shape == (2, 7)
     assert outputs["micro_motif_attention"].shape[0] == 2
     assert outputs["region_embeddings"].shape[1] == 9
-    assert outputs["semantic_state_tokens"].shape == (2, 9, 9)
-    assert outputs["cross_region_tokens"].shape == (2, 4, 9)
+    assert outputs["semantic_state_tokens"].shape == (2, 9, 128)
+    assert outputs["cross_region_tokens"].shape == (2, 8, 128)
     assert outputs["semantic_program_scores"].shape == (2, 7)
-    assert outputs["semantic_latent_embedding"].shape == (2, 128)
+    assert outputs["semantic_latent_embedding"].shape == (2, 256)
     assert outputs["semantic_program_topology"].shape == (7, 4, 9, 9)
 
 
@@ -47,8 +47,8 @@ def test_forward_handles_tencrop_batches():
     outputs = model(images, bboxes)
 
     assert outputs["logits"].shape == (2, 7)
-    assert outputs["semantic_state_tokens"].shape == (2, 9, 9)
-    assert outputs["semantic_interaction_tensor"].shape == (2, 9, 9, 9)
+    assert outputs["semantic_state_tokens"].shape == (2, 9, 128)
+    assert outputs["semantic_interaction_tensor"].shape == (2, 9, 9, 128)
     assert outputs["cross_region_pair_scores"].shape == (2, 9, 9)
 
 
