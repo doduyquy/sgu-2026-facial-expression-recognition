@@ -130,6 +130,60 @@ class FER2013(Dataset):
 
                 bboxes = flipped_bboxes
 
+            # Synchronized Random Affine (Rotation, Translation, Scale)
+            if self.split == "train" and np.random.rand() < 0.5:
+                angle_deg = np.random.uniform(-10.0, 10.0)
+                tx = np.random.uniform(-4.8, 4.8)  # up to 10% translation
+                ty = np.random.uniform(-4.8, 4.8)
+                scale = np.random.uniform(0.9, 1.1)
+
+                import torchvision.transforms.functional as TF
+                # TF.affine works on both PIL Image and Tensor
+                image = TF.affine(
+                    image,
+                    angle=angle_deg,
+                    translate=[int(tx), int(ty)],
+                    scale=scale,
+                    shear=0,
+                    interpolation=TF.InterpolationMode.BILINEAR
+                )
+
+                # Rotate, scale, translate bboxes
+                cx, cy = 23.5, 23.5  # center of 48x48 image
+                theta = np.radians(angle_deg)
+                cos_t = np.cos(theta)
+                sin_t = np.sin(theta)
+
+                new_bboxes = bboxes.copy()
+                for r in range(self.num_regions):
+                    if region_mask[r] == 0:
+                        continue
+                    x1, y1, x2, y2 = bboxes[r]
+                    # 4 corners
+                    corners = np.array([
+                        [x1, y1],
+                        [x2, y1],
+                        [x1, y2],
+                        [x2, y2]
+                    ])
+                    dx = corners[:, 0] - cx
+                    dy = corners[:, 1] - cy
+                    x_new = dx * scale * cos_t + dy * scale * sin_t + cx + tx
+                    y_new = -dx * scale * sin_t + dy * scale * cos_t + cy + ty
+                    
+                    x1_n = np.clip(np.min(x_new), 0.0, 47.0)
+                    y1_n = np.clip(np.min(y_new), 0.0, 47.0)
+                    x2_n = np.clip(np.max(x_new), 0.0, 47.0)
+                    y2_n = np.clip(np.max(y_new), 0.0, 47.0)
+
+                    # Invalidate if region becomes too small
+                    if (x2_n - x1_n < 2.0) or (y2_n - y1_n < 2.0):
+                        region_mask[r] = 0.0
+                        region_confidence[r] = 0.0
+                    else:
+                        new_bboxes[r] = [x1_n, y1_n, x2_n, y2_n]
+                bboxes = new_bboxes
+
             semantic_meta = {
                 "detect_success": np.array(detect_success, dtype=np.bool_),
                 "fallback_used": np.array(fallback_used, dtype=np.bool_),
