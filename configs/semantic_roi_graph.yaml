@@ -2,8 +2,8 @@ model:
   name: "semantic_roi_graph_fer"
   num_classes: 7
   num_regions: 9
-  roi_grid: 5
-  routing_topk: 5
+  roi_grid: 4
+  routing_topk: 0
   feature_dim: 256
   # micro_motifs_per_region: local motif templates per facial region
   micro_motifs_per_region: 8
@@ -82,7 +82,7 @@ training:
   region_composition_contrastive_weight: 0.0
   program_sparsity_weight: 0.02
 
-  use_entropy_sparsity: true
+  use_entropy_sparsity: false
 
 logging:
   use_wandb: true
