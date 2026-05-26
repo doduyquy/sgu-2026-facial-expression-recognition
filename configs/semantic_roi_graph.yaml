@@ -4,6 +4,7 @@ model:
   num_regions: 9
   roi_grid: 4
   routing_topk: 0
+  routing_temperature: 0.7
   feature_dim: 256
   # micro_motifs_per_region: local motif templates per facial region
   micro_motifs_per_region: 8
@@ -44,6 +45,7 @@ training:
   epochs: 1000
   lr: 0.0003
   weight_decay: 0.003      # increased from 0.001 to combat train-val-test gap
+  scheduler: "cosine"
   loss: "semantic_roi_graph"
   label_smoothing: 0.05
   class_weight_mode: "sqrt_inverse"
