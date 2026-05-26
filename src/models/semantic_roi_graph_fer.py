@@ -847,7 +847,7 @@ class SemanticROIGraphFER(nn.Module):
             nn.Linear(config.feature_dim // 2, 1),
             nn.Sigmoid(),
         )
-        self.region_dropout_prob = 0.05
+        self.region_dropout_prob = float(getattr(config, "region_dropout_prob", 0.05))
 
     def load_state_dict(self, state_dict, strict=True):
         """Backward-compatible: upgrade scalar semantic_structure_gate from old checkpoints."""
