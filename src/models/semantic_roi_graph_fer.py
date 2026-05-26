@@ -43,7 +43,6 @@ class SemanticRoiGraphConfig:
     num_classes: int = 7
     num_regions: int = 9
     roi_grid: int = 4
-    routing_topk: int = 0
     routing_temperature: float = 1.0
     feature_dim: int = 256
     motif_per_class: int = 4
@@ -508,13 +507,12 @@ class CrossRegionCompositionGraph(nn.Module):
 class SemanticHypergraphReasoner(nn.Module):
     """Compose multi-region semantic programs with learned hyperedge routing."""
 
-    def __init__(self, state_dim: int, latent_dim: int, hyperedge_count: int, attn_heads: int, router_hidden_dim: int, dropout: float = 0.1, routing_topk: int = 0, routing_temperature: float = 1.0):
+    def __init__(self, state_dim: int, latent_dim: int, hyperedge_count: int, attn_heads: int, router_hidden_dim: int, dropout: float = 0.1, routing_temperature: float = 1.0):
         super().__init__()
         if state_dim % attn_heads != 0:
             raise ValueError("state_dim must be divisible by semantic_attn_heads")
 
         self.hyperedge_count = hyperedge_count
-        self.routing_topk = routing_topk
         self.routing_temperature = routing_temperature
         self.hyperedge_queries = nn.Parameter(torch.randn(hyperedge_count, state_dim) * 0.02)
         self.hyperedge_attn = nn.MultiheadAttention(state_dim, attn_heads, dropout=dropout, batch_first=True)
@@ -570,14 +568,6 @@ class SemanticHypergraphReasoner(nn.Module):
         routing_logits = self.router(composed_states).squeeze(-1)
         if region_mask is not None:
             routing_logits = routing_logits.masked_fill(region_mask <= 0, -1e9)
-
-        # Apply Top-K routing if configured
-        routing_topk = self.routing_topk
-        if 0 < routing_topk < routing_logits.size(1):
-            topk_vals, topk_idx = torch.topk(routing_logits, k=routing_topk, dim=1)
-            topk_mask = torch.full_like(routing_logits, -1e9)
-            topk_mask.scatter_(1, topk_idx, 0.0)
-            routing_logits = routing_logits + topk_mask
 
         routing_weights = F.softmax(routing_logits / self.routing_temperature, dim=1)
         if region_mask is not None:
@@ -798,7 +788,6 @@ class SemanticROIGraphFER(nn.Module):
             attn_heads=config.semantic_attn_heads,
             router_hidden_dim=config.router_hidden_dim,
             dropout=config.dropout,
-            routing_topk=config.routing_topk,
             routing_temperature=config.routing_temperature,
         )
 

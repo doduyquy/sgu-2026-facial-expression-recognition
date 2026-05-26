@@ -3,7 +3,6 @@ model:
   num_classes: 7
   num_regions: 9
   roi_grid: 4
-  routing_topk: 0
   routing_temperature: 0.7
   feature_dim: 256
   # micro_motifs_per_region: local motif templates per facial region
