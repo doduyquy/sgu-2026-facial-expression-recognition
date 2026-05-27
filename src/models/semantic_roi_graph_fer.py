@@ -829,9 +829,16 @@ class SemanticROIGraphFER(nn.Module):
             nn.GELU(),
         )
 
-        # Per-class gate: each emotion class learns its own graph-vs-global balance.
-        # Init with -0.5 → sigmoid(-0.5) ≈ 0.38, slightly below 0.5 to favour the graph branch early.
-        self.semantic_structure_gate = nn.Parameter(torch.full((config.num_classes,), -0.5))
+        # Per-sample gate: predict graph-vs-global balance from fused features.
+        self.fusion_gate = nn.Sequential(
+            nn.Linear(config.semantic_latent_dim * 2, config.semantic_latent_dim),
+            nn.GELU(),
+            nn.Dropout(config.dropout),
+            nn.Linear(config.semantic_latent_dim, config.num_classes),
+        )
+        # Bias init keeps initial gate slightly below 0.5 to favor the graph branch early.
+        with torch.no_grad():
+            self.fusion_gate[-1].bias.fill_(-0.5)
         self.fusion_scale = float(getattr(config, "fusion_scale", 0.25))
 
         # Backward-compatible aliases for older checkpoints and callers.
@@ -850,14 +857,11 @@ class SemanticROIGraphFER(nn.Module):
         self.region_dropout_prob = float(getattr(config, "region_dropout_prob", 0.05))
 
     def load_state_dict(self, state_dict, strict=True):
-        """Backward-compatible: upgrade scalar semantic_structure_gate from old checkpoints."""
-        key = "semantic_structure_gate"
-        if key in state_dict:
-            old = state_dict[key]
-            if old.ndim == 0 or old.numel() == 1:
-                state_dict = dict(state_dict)  # don't mutate the original
-                state_dict[key] = old.detach().view(1).expand(self.config.num_classes).clone()
-        return super().load_state_dict(state_dict, strict=strict)
+        """Backward-compatible: ignore legacy semantic_structure_gate and allow new fusion_gate."""
+        state_dict = dict(state_dict)
+        if "semantic_structure_gate" in state_dict:
+            state_dict.pop("semantic_structure_gate")
+        return super().load_state_dict(state_dict, strict=False)
 
     def _canonical_bboxes(self, batch_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
         boxes = SemanticRoiAlign._canonical_region_boxes(self.config.bbox_input_size, device, dtype)
@@ -1131,8 +1135,9 @@ class SemanticROIGraphFER(nn.Module):
         fused_latent = self.global_fusion(torch.cat([semantic_latent_embedding, global_semantic_context], dim=-1))
         logits_fused = self.semantic_classifier(fused_latent)
 
-        # Per-class gate: shape (1, num_classes) — each emotion learns its own balance
-        structure_gate = torch.sigmoid(self.semantic_structure_gate).view(1, -1)
+        # Per-sample gate: shape (B, num_classes)
+        gate_input = torch.cat([semantic_latent_embedding, global_semantic_context], dim=-1)
+        structure_gate = torch.sigmoid(self.fusion_gate(gate_input))
         logits_motif = semantic_program_scores
         logits = logits_motif + self.fusion_scale * structure_gate * logits_fused
 

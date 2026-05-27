@@ -56,11 +56,11 @@ training:
   enable_semantic_consistency: true
   enable_compositional_program: true
   enable_semantic_disentanglement: false
-  enable_region_coordination: true
+  enable_region_coordination: false
   enable_topology_alignment: true
   enable_region_composition_contrastive: false
   enable_program_sparsity: True
-  enable_program_diversity: true
+  enable_program_diversity: false
 
   # Scenario E-base: fused branch disabled
   enable_fused_aux_ce: true
