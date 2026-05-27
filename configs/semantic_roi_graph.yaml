@@ -18,6 +18,7 @@ model:
   label_smoothing: 0.05
   region_dropout_prob: 0.1  # randomly drops 10% of facial regions during training for robust routing
   relation_temperature: 0.07
+  use_per_sample_gate: true
   # Semantic compositional model hyperparameters
   semantic_state_dim: 128
   semantic_latent_dim: 256
@@ -27,7 +28,7 @@ model:
   cross_region_compositions: 8
   programs_per_class: 4
   program_dim: 128
-  fusion_scale: 0.5
+  fusion_scale: 0.25
 
 data:
   batch_size: 64
@@ -47,9 +48,6 @@ training:
   label_smoothing: 0.05
   class_weight_mode: "sqrt_inverse"
   use_class_weights: true
-  ramp_aux_weights: true
-  ramp_start_epoch: 0
-  ramp_epochs: 30
 
   # ── Loss enable flags (light preset) ──────────────────────────────────────
   # Only 3 auxiliary losses are active. All others disabled to reduce overfit.
@@ -60,10 +58,10 @@ training:
   enable_compositional_program: true
   enable_semantic_disentanglement: false
   enable_region_coordination: false
-  enable_topology_alignment: true
+  enable_topology_alignment: false
   enable_region_composition_contrastive: false
   enable_program_sparsity: True
-  enable_program_diversity: false
+  enable_program_diversity: true
 
   # Scenario E-base: fused branch disabled
   enable_fused_aux_ce: true
@@ -74,13 +72,13 @@ training:
   semantic_consistency_weight: 0.03
   compositional_program_weight: 0.02
   program_diversity_weight: 0.01
-  fused_aux_ce_weight: 0.1
+  fused_aux_ce_weight: 0.05
 
   # Disabled weights (kept for reference / easy re-enable)
   region_contrastive_weight: 0.01
   semantic_disentanglement_weight: 0.0
-  region_coordination_weight: 0.005
-  topology_alignment_weight: 0.01
+  region_coordination_weight: 0.0
+  topology_alignment_weight: 0.0
   region_composition_contrastive_weight: 0.0
   program_sparsity_weight: 0.02
 

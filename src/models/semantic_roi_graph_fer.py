@@ -65,6 +65,7 @@ class SemanticRoiGraphConfig:
     relation_temperature: float = 0.07
     region_confidence_threshold: float = 0.3
     fusion_scale: float = 0.25
+    use_per_sample_gate: bool = False
 
 
 class SemanticBackbone(nn.Module):
@@ -829,17 +830,28 @@ class SemanticROIGraphFER(nn.Module):
             nn.GELU(),
         )
 
-        # Per-sample gate: predict graph-vs-global balance from fused features.
-        self.fusion_gate = nn.Sequential(
-            nn.Linear(config.semantic_latent_dim * 2, config.semantic_latent_dim),
-            nn.GELU(),
-            nn.Dropout(config.dropout),
-            nn.Linear(config.semantic_latent_dim, config.num_classes),
-        )
-        # Bias init keeps initial gate slightly below 0.5 to favor the graph branch early.
-        with torch.no_grad():
-            self.fusion_gate[-1].bias.fill_(-0.5)
+        # Fusion gate: support either per-class scalar gate (backward-compatible)
+        # or an optional per-sample MLP gate that predicts (B, num_classes) gates.
+        # Per-class gate initialization: -0.5 -> sigmoid(-0.5) ~= 0.38 (favours graph early)
+        self.semantic_structure_gate = nn.Parameter(torch.full((config.num_classes,), -0.5))
         self.fusion_scale = float(getattr(config, "fusion_scale", 0.25))
+
+        self.use_per_sample_gate = bool(getattr(config, "use_per_sample_gate", False))
+        if self.use_per_sample_gate:
+            hidden = max(getattr(config, "router_hidden_dim", 128), 64)
+            self.fusion_gate_mlp = nn.Sequential(
+                nn.Linear(config.semantic_latent_dim * 2, hidden),
+                nn.GELU(),
+                nn.LayerNorm(hidden),
+                nn.Linear(hidden, config.num_classes),
+            )
+            # initialize bias to slightly negative so sigmoid favors graph branch early
+            try:
+                nn.init.constant_(self.fusion_gate_mlp[-1].bias, -0.5)
+            except Exception:
+                pass
+        else:
+            self.fusion_gate_mlp = None
 
         # Backward-compatible aliases for older checkpoints and callers.
         self.macro_motif_bank = self.semantic_program_bank
@@ -857,11 +869,14 @@ class SemanticROIGraphFER(nn.Module):
         self.region_dropout_prob = float(getattr(config, "region_dropout_prob", 0.05))
 
     def load_state_dict(self, state_dict, strict=True):
-        """Backward-compatible: ignore legacy semantic_structure_gate and allow new fusion_gate."""
-        state_dict = dict(state_dict)
-        if "semantic_structure_gate" in state_dict:
-            state_dict.pop("semantic_structure_gate")
-        return super().load_state_dict(state_dict, strict=False)
+        """Backward-compatible: upgrade scalar semantic_structure_gate from old checkpoints."""
+        key = "semantic_structure_gate"
+        if key in state_dict:
+            old = state_dict[key]
+            if old.ndim == 0 or old.numel() == 1:
+                state_dict = dict(state_dict)  # don't mutate the original
+                state_dict[key] = old.detach().view(1).expand(self.config.num_classes).clone()
+        return super().load_state_dict(state_dict, strict=strict)
 
     def _canonical_bboxes(self, batch_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
         boxes = SemanticRoiAlign._canonical_region_boxes(self.config.bbox_input_size, device, dtype)
@@ -1135,10 +1150,15 @@ class SemanticROIGraphFER(nn.Module):
         fused_latent = self.global_fusion(torch.cat([semantic_latent_embedding, global_semantic_context], dim=-1))
         logits_fused = self.semantic_classifier(fused_latent)
 
-        # Per-sample gate: shape (B, num_classes)
-        gate_input = torch.cat([semantic_latent_embedding, global_semantic_context], dim=-1)
-        structure_gate = torch.sigmoid(self.fusion_gate(gate_input))
+        # Compute fusion gate. If per-sample MLP is present, predict (B, num_classes)
+        # else fall back to learned per-class gate (1, num_classes) for compatibility.
         logits_motif = semantic_program_scores
+        if getattr(self, 'fusion_gate_mlp', None) is not None:
+            gate_input = torch.cat([semantic_latent_embedding, fused_latent], dim=-1)
+            structure_gate = torch.sigmoid(self.fusion_gate_mlp(gate_input))
+        else:
+            structure_gate = torch.sigmoid(self.semantic_structure_gate).view(1, -1)
+
         logits = logits_motif + self.fusion_scale * structure_gate * logits_fused
 
         return {

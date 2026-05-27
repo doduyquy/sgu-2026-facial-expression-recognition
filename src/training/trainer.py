@@ -56,45 +56,6 @@ class Trainer:
         self.mixup_alpha = float(config['training'].get('mixup_alpha', 0.2))
         self._runtime_use_mixup = False
 
-        # Ramp-up config for auxiliary losses (semantic ROI graph)
-        self._base_training_cfg = dict(config.get('training', {}))
-        self._ramp_aux_weights = bool(self._base_training_cfg.get('ramp_aux_weights', True))
-        self._ramp_start_epoch = int(self._base_training_cfg.get('ramp_start_epoch', 0))
-        self._ramp_epochs = int(self._base_training_cfg.get('ramp_epochs', 30))
-
-    def _update_training_cfg_for_epoch(self, epoch: int) -> None:
-        if not self._ramp_aux_weights:
-            return
-
-        ramp_epochs = max(1, self._ramp_epochs)
-        if epoch < self._ramp_start_epoch:
-            factor = 0.0
-        else:
-            factor = min(1.0, float(epoch - self._ramp_start_epoch + 1) / float(ramp_epochs))
-
-        ramp_keys = [
-            "micro_motif_diversity_weight",
-            "macro_motif_diversity_weight",
-            "semantic_consistency_weight",
-            "compositional_program_weight",
-            "program_diversity_weight",
-            "region_contrastive_weight",
-            "region_coordination_weight",
-            "topology_alignment_weight",
-            "region_composition_contrastive_weight",
-            "semantic_disentanglement_weight",
-            "program_sparsity_weight",
-        ]
-
-        training_cfg = dict(self._base_training_cfg)
-        for key in ramp_keys:
-            if key in training_cfg:
-                training_cfg[key] = float(training_cfg[key]) * factor
-
-        self.model.training_cfg = training_cfg
-        if hasattr(self, 'ema_model') and hasattr(self.ema_model, 'module'):
-            self.ema_model.module.training_cfg = training_cfg
-
     @staticmethod
     def _extract_logits(outputs):
         if isinstance(outputs, dict):
@@ -553,9 +514,6 @@ class Trainer:
         for ep in range(self.epochs):
             self._current_epoch = ep
             progress = ep / max(self.epochs - 1, 1)
-
-            # Ramp-up auxiliary loss weights for semantic ROI graph
-            self._update_training_cfg_for_epoch(ep)
             
             set_progress = getattr(self.model, "set_training_progress", None)
             if callable(set_progress):
