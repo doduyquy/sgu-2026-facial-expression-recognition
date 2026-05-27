@@ -47,6 +47,9 @@ training:
   label_smoothing: 0.05
   class_weight_mode: "sqrt_inverse"
   use_class_weights: true
+  ramp_aux_weights: true
+  ramp_start_epoch: 0
+  ramp_epochs: 30
 
   # ── Loss enable flags (light preset) ──────────────────────────────────────
   # Only 3 auxiliary losses are active. All others disabled to reduce overfit.
