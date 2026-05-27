@@ -3,7 +3,6 @@ model:
   num_classes: 7
   num_regions: 9
   roi_grid: 4
-  routing_temperature: 0.7
   feature_dim: 256
   # micro_motifs_per_region: local motif templates per facial region
   micro_motifs_per_region: 8
@@ -28,7 +27,7 @@ model:
   cross_region_compositions: 8
   programs_per_class: 4
   program_dim: 128
-  fusion_scale: 0.25
+  fusion_scale: 0.5
 
 data:
   batch_size: 64
@@ -44,7 +43,6 @@ training:
   epochs: 1000
   lr: 0.0003
   weight_decay: 0.003      # increased from 0.001 to combat train-val-test gap
-  scheduler: "cosine"
   loss: "semantic_roi_graph"
   label_smoothing: 0.05
   class_weight_mode: "sqrt_inverse"
@@ -58,8 +56,8 @@ training:
   enable_semantic_consistency: true
   enable_compositional_program: true
   enable_semantic_disentanglement: false
-  enable_region_coordination: false
-  enable_topology_alignment: false
+  enable_region_coordination: true
+  enable_topology_alignment: true
   enable_region_composition_contrastive: false
   enable_program_sparsity: True
   enable_program_diversity: true
@@ -73,13 +71,13 @@ training:
   semantic_consistency_weight: 0.03
   compositional_program_weight: 0.02
   program_diversity_weight: 0.01
-  fused_aux_ce_weight: 0.05
+  fused_aux_ce_weight: 0.1
 
   # Disabled weights (kept for reference / easy re-enable)
   region_contrastive_weight: 0.01
   semantic_disentanglement_weight: 0.0
-  region_coordination_weight: 0.0
-  topology_alignment_weight: 0.0
+  region_coordination_weight: 0.005
+  topology_alignment_weight: 0.01
   region_composition_contrastive_weight: 0.0
   program_sparsity_weight: 0.02
 
