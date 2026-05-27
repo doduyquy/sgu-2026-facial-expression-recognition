@@ -65,13 +65,19 @@ class SemanticRoiGraphConfig:
     relation_temperature: float = 0.07
     region_confidence_threshold: float = 0.3
     fusion_scale: float = 0.25
+    use_layer4: bool = False
     use_per_sample_gate: bool = False
 
 
 class SemanticBackbone(nn.Module):
-    """ResNet18 backbone with high spatial resolution output."""
+    """ResNet18 backbone with high spatial resolution output.
 
-    def __init__(self, feature_dim: int = 256, use_pretrained: bool = True):
+    If `use_layer4` is True the backbone keeps ResNet layer4, producing 512 channels.
+    When the desired `feature_dim` is smaller (e.g., 256), a 1x1 projection reduces
+    the channels to `feature_dim` so the rest of the model keeps the same shape.
+    """
+
+    def __init__(self, feature_dim: int = 256, use_pretrained: bool = True, use_layer4: bool = False):
         super().__init__()
         weights = torchvision.models.ResNet18_Weights.DEFAULT if use_pretrained else None
         resnet = torchvision.models.resnet18(weights=weights)
@@ -79,6 +85,11 @@ class SemanticBackbone(nn.Module):
         # Keep high resolution by removing early downsampling.
         resnet.conv1.stride = (1, 1)
         resnet.maxpool = nn.Identity()
+        # NOTE: We modify conv1 stride and remove maxpool to keep high spatial
+        # resolution for tiny face crops. This changes the effective receptive
+        # field compared to original ImageNet training. If `use_pretrained` is
+        # True, weights will still load, but the backbone must be fine-tuned
+        # on the target dataset to adapt deeper layers to the new spatial scale.
 
         self.stem = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu)
         self.layer1 = resnet.layer1  # 48 -> 48
@@ -86,26 +97,77 @@ class SemanticBackbone(nn.Module):
         self.layer3 = resnet.layer3  # 24 -> 12
         self.layer4 = resnet.layer4  # 12 -> 6
 
-        if feature_dim == 256:
-            self.output_layer = nn.Sequential(self.layer1, self.layer2, self.layer3)
-            self.out_channels = 256
-            self.use_layer4 = False
-            # Free layer4 — not used in forward, but would waste ~8MB GPU memory
-            # if kept as a registered submodule with its pretrained weights.
-            del self.layer4
-        elif feature_dim == 512:
-            self.output_layer = nn.Sequential(self.layer1, self.layer2, self.layer3, self.layer4)
-            self.out_channels = 512
-            self.use_layer4 = True
+        # Keep layer1..layer3 for the main high-resolution feature (`x3`). Optionally
+        # compute `layer4` (`x4`) and fuse it back into `x3` after spatial upsampling.
+        self.use_layer4 = bool(use_layer4)
+        # natural channels from layer3 and layer4
+        self.channels_l3 = 256
+        self.channels_l4 = 512
+
+        # Projections to align channels when fusing.
+        # If using layer4 and target feature_dim == channels_l3, project x4->256.
+        if self.use_layer4 and feature_dim == self.channels_l3:
+            self.layer4_proj = nn.Conv2d(self.channels_l4, self.channels_l3, kernel_size=1)
+            nn.init.kaiming_normal_(self.layer4_proj.weight, nonlinearity='relu')
+            if self.layer4_proj.bias is not None:
+                nn.init.zeros_(self.layer4_proj.bias)
         else:
-            raise ValueError("feature_dim must be 256 or 512")
+            self.layer4_proj = None
+
+        # If using layer4 and feature_dim == channels_l4 (512), project x3->512
+        if self.use_layer4 and feature_dim == self.channels_l4:
+            self.l3_to_l4_proj = nn.Conv2d(self.channels_l3, self.channels_l4, kernel_size=1)
+            nn.init.kaiming_normal_(self.l3_to_l4_proj.weight, nonlinearity='relu')
+            if self.l3_to_l4_proj.bias is not None:
+                nn.init.zeros_(self.l3_to_l4_proj.bias)
+        else:
+            self.l3_to_l4_proj = None
+
+        # If final requested feature_dim doesn't match the fused channel size, add final 1x1 proj.
+        fused_natural = self.channels_l3
+        if self.use_layer4 and feature_dim == self.channels_l4:
+            fused_natural = self.channels_l4
+        if fused_natural != feature_dim:
+            self.channel_proj = nn.Conv2d(fused_natural, feature_dim, kernel_size=1)
+            nn.init.kaiming_normal_(self.channel_proj.weight, nonlinearity='relu')
+            if self.channel_proj.bias is not None:
+                nn.init.zeros_(self.channel_proj.bias)
+            self.out_channels = feature_dim
+        else:
+            self.channel_proj = None
+            self.out_channels = fused_natural
+
+        # Learnable scalar to weight layer4 contribution when fusing into layer3
+        if self.use_layer4:
+            self.layer4_scale = nn.Parameter(torch.tensor(0.5, dtype=torch.float32))
+        else:
+            self.layer4_scale = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.stem(x)
-        x = self.output_layer(x)
+        # compute layer1..layer3 outputs (high-res)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x3 = self.layer3(x)
+
         if self.use_layer4:
-            x = F.interpolate(x, size=(12, 12), mode="bilinear", align_corners=False)
-        return x
+            x4 = self.layer4(x3)
+            # upsample x4 to x3 spatial size
+            x4_up = F.interpolate(x4, size=(x3.size(2), x3.size(3)), mode='bilinear', align_corners=False)
+            # project channels if necessary to align
+            if self.layer4_proj is not None:
+                x4_up = self.layer4_proj(x4_up)
+            if self.l3_to_l4_proj is not None:
+                x3_proj = self.l3_to_l4_proj(x3)
+                fused = x3_proj + self.layer4_scale * x4_up
+            else:
+                fused = x3 + self.layer4_scale * x4_up
+        else:
+            fused = x3
+
+        if self.channel_proj is not None:
+            fused = self.channel_proj(fused)
+        return fused
 
 
 class SemanticRoiAlign(nn.Module):
@@ -738,6 +800,7 @@ class SemanticROIGraphFER(nn.Module):
         self.backbone = SemanticBackbone(
             feature_dim=config.feature_dim,
             use_pretrained=config.use_pretrained,
+            use_layer4=getattr(config, 'use_layer4', False),
         )
         self.roi_align = SemanticRoiAlign(
             roi_grid=config.roi_grid,
