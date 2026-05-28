@@ -148,6 +148,11 @@ class SemanticRoiAlign(nn.Module):
     def validate_bboxes(self, bboxes: torch.Tensor) -> torch.Tensor:
         """Clamp and repair invalid bbox coordinates while preserving batch/region count."""
         bboxes = bboxes.float().clone()
+        finite = torch.isfinite(bboxes).all(dim=-1, keepdim=True)
+        if not finite.all():
+            canonical = self._canonical_region_boxes(self.bbox_input_size, bboxes.device, bboxes.dtype)
+            canonical = canonical.unsqueeze(0).expand(bboxes.size(0), -1, -1)
+            bboxes = torch.where(finite, bboxes, canonical)
         bboxes[..., 0::2] = bboxes[..., 0::2].clamp(0.0, float(self.bbox_input_size - 1))
         bboxes[..., 1::2] = bboxes[..., 1::2].clamp(0.0, float(self.bbox_input_size - 1))
 
