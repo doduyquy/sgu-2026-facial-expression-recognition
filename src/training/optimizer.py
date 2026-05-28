@@ -6,20 +6,31 @@ def build_optimizer(model, config):
     opt_name = train_cfg.get('optimizer', 'adam').lower()
     lr = float(train_cfg.get('lr', train_cfg.get('learning_rate', 0.001)))
     weight_decay = float(train_cfg.get('weight_decay', 0.0001))
+    gate_lr_multiplier = float(train_cfg.get('gate_lr_multiplier', 3.0))
+    gate_weight_decay = float(train_cfg.get('gate_weight_decay', weight_decay))
 
     # Differential learning rate for transfer learning
     backbone_params = []
+    gate_params = []
     head_params = []
     for name, param in model.named_parameters():
-        # Backbone ResNet layers get standard LR. New heads/reducers get 10x LR.
-        if 'backbone' in name and 'dim_reducer' not in name and 'final_cbam' not in name:
+        # Backbone ResNet layers get standard LR.
+        # Gate/fusion parameters get their own LR group because they often need
+        # a different step size to avoid collapsing to a nearly constant gate.
+        if not param.requires_grad:
+            continue
+        if any(k in name for k in ["fusion_gate_mlp", "semantic_structure_gate", "layer4_scale"]):
+            gate_params.append(param)
+        # New heads/reducers get a slightly larger LR.
+        elif 'backbone' in name and 'dim_reducer' not in name and 'final_cbam' not in name:
             backbone_params.append(param)
         else:
             head_params.append(param)
             
     param_groups = [
         {'params': backbone_params, 'lr': lr},
-        {'params': head_params, 'lr': lr * 2.0}
+        {'params': head_params, 'lr': lr * 2.0},
+        {'params': gate_params, 'lr': lr * gate_lr_multiplier, 'weight_decay': gate_weight_decay},
     ]
 
     if opt_name == 'adam':

@@ -45,13 +45,16 @@ training:
   epochs: 1000
   lr: 0.0003
   weight_decay: 0.003      # increased from 0.001 to combat train-val-test gap
+  gate_lr_multiplier: 3.0
+  gate_weight_decay: 0.003
   loss: "semantic_roi_graph"
   label_smoothing: 0.05
   class_weight_mode: "sqrt_inverse"
   use_class_weights: true
 
-  # ── Loss enable flags (light preset) ──────────────────────────────────────
-  # Only 3 auxiliary losses are active. All others disabled to reduce overfit.
+  # ── Loss enable flags (noise-reduced preset) ──────────────────────────────
+  # Keep only the losses that were decreasing smoothly and remove the ones
+  # that were noisy / flat in recent runs.
   enable_micro_diversity: true
   enable_macro_diversity: true
   enable_region_contrastive: true
@@ -61,27 +64,27 @@ training:
   enable_region_coordination: false
   enable_topology_alignment: false
   enable_region_composition_contrastive: false
-  enable_program_sparsity: True
+  enable_program_sparsity: false
   enable_program_diversity: true
 
   # Scenario E-base: fused branch disabled
   enable_fused_aux_ce: true
 
   # ── Weights for enabled losses ─────────────────────────────────────────────
-  micro_motif_diversity_weight: 0.02
-  macro_motif_diversity_weight: 0.02
-  semantic_consistency_weight: 0.03
-  compositional_program_weight: 0.02
-  program_diversity_weight: 0.01
-  fused_aux_ce_weight: 0.05
+  micro_motif_diversity_weight: 0.01
+  macro_motif_diversity_weight: 0.01
+  semantic_consistency_weight: 0.02
+  compositional_program_weight: 0.01
+  program_diversity_weight: 0.005
+  fused_aux_ce_weight: 0.03
 
   # Disabled weights (kept for reference / easy re-enable)
-  region_contrastive_weight: 0.01
+  region_contrastive_weight: 0.005
   semantic_disentanglement_weight: 0.0
   region_coordination_weight: 0.0
   topology_alignment_weight: 0.0
   region_composition_contrastive_weight: 0.0
-  program_sparsity_weight: 0.02
+  program_sparsity_weight: 0.0
 
   use_entropy_sparsity: false
 
