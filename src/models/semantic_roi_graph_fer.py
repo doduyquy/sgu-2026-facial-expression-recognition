@@ -100,11 +100,10 @@ class SemanticBackbone(nn.Module):
             raise ValueError("feature_dim must be 256 or 512")
 
         self.out_channels = feature_dim
-        self.proj = nn.Sequential(
-            nn.Conv2d(backbone_channels, feature_dim, kernel_size=1, bias=False),
-            nn.BatchNorm2d(feature_dim),
-            nn.ReLU(inplace=True),
-        )
+        self.proj = nn.Conv2d(backbone_channels, feature_dim, kernel_size=1)
+        nn.init.kaiming_normal_(self.proj.weight, nonlinearity="linear")
+        if self.proj.bias is not None:
+            nn.init.zeros_(self.proj.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.stem(x)
@@ -678,6 +677,8 @@ class SemanticProgramExecutor(nn.Module):
 
         # Combine raw similarities first, THEN scale by temperature (fixes topology being ignored)
         total_sim = region_sim + 0.5 * topology_sim + 0.25 * composition_sim
+        if not torch.isfinite(total_sim).all():
+            total_sim = torch.nan_to_num(total_sim, neginf=-1e4, posinf=1e4)
         compatibility = total_sim / self.temperature
         
         # Save pre-temperature scaled versions for auxiliary loss logging consistency

@@ -41,8 +41,8 @@ data:
 
 training:
   epochs: 1000
-  lr: 0.0003
-  weight_decay: 0.003      # increased from 0.001 to combat train-val-test gap
+  lr: 0.00005
+  weight_decay: 0.01
   loss: "semantic_roi_graph"
   label_smoothing: 0.05
   class_weight_mode: "sqrt_inverse"

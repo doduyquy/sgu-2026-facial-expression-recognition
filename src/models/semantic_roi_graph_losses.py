@@ -330,6 +330,7 @@ def region_supervised_contrastive_loss(
     mask = mask * logits_mask
 
     sim = sim - sim.max(dim=1, keepdim=True)[0].detach()
+    sim = sim - sim.max(dim=1, keepdim=True)[0].detach()
     exp_sim = torch.exp(sim) * logits_mask
     log_prob = sim - torch.log(exp_sim.sum(dim=1, keepdim=True) + 1e-8)
     mean_log_prob_pos = (mask * log_prob).sum(dim=1) / (mask.sum(dim=1) + 1e-8)
