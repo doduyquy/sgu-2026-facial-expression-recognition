@@ -366,6 +366,7 @@ class Trainer:
         corrects_fused = 0
         total = 0
         all_preds, all_preds_motif, all_preds_fused, all_labels = [], [], [], []
+        non_finite_batches = 0
 
         # Fetch scheduled weights for validation
         w_div = getattr(self, '_runtime_motif_diversity_weight', self.motif_diversity_weight)
@@ -444,6 +445,11 @@ class Trainer:
                         w_other = self.config.get('training', {}).get(f'{k}_weight', 0.1)
                         loss = loss + float(w_other) * v
 
+                if not torch.isfinite(loss):
+                    non_finite_batches += 1
+                    print("\t    [warn] Non-finite val loss; skipping batch")
+                    continue
+
                 running_loss += loss.item() * images.size(0)
 
                 _, preds = torch.max(logits, dim=1)
@@ -464,6 +470,9 @@ class Trainer:
                         pf = torch.max(lf, dim=1)[1]
                         corrects_fused += torch.sum(pf == labels.data)
                         all_preds_fused.extend(pf.cpu().tolist())
+
+        if non_finite_batches > 0:
+            print(f"\t    [warn] Skipped {non_finite_batches} non-finite val batches")
 
         epoch_loss = running_loss / total
         epoch_acc = corrects.double() / total
