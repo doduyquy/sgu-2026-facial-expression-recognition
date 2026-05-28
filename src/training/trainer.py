@@ -474,6 +474,9 @@ class Trainer:
         if non_finite_batches > 0:
             print(f"\t    [warn] Skipped {non_finite_batches} non-finite val batches")
 
+        if total == 0:
+            return float("inf"), torch.tensor(0.0, device=self.device)
+
         epoch_loss = running_loss / total
         epoch_acc = corrects.double() / total
 
