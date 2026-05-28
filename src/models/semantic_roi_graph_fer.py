@@ -2,7 +2,7 @@
 Semantic ROI Graph FER model (2-tier: micro + macro) without ArcFace.
 
 This module implements:
-- SemanticBackbone (ResNet18-based, high-res feature map)
+- SemanticBackbone (ResNet101-based, high-res feature map)
 - SemanticRoIAlign (ROIAlign per region)
 - MicroGraphReasoner (intra-region graph attention + pooling)
 - MacroGraphReasoner (inter-region graph attention)
@@ -55,7 +55,6 @@ class SemanticRoiGraphConfig:
     hyperedge_count: int = 4
     router_hidden_dim: int = 256          # was 64
     use_pretrained: bool = True
-    backbone_name: str = "resnet18"
     backbone_out_size: int = 12
     bbox_input_size: int = 48
     micro_layers: int = 2
@@ -66,37 +65,19 @@ class SemanticRoiGraphConfig:
     relation_temperature: float = 0.07
     region_confidence_threshold: float = 0.3
     fusion_scale: float = 0.25
-    use_layer4: bool = False
-    use_per_sample_gate: bool = False
-    use_hypergraph: bool = True
 
 
 class SemanticBackbone(nn.Module):
-    """ResNet18 backbone with high spatial resolution output.
+    """ResNet101 backbone with high spatial resolution output."""
 
-    If `use_layer4` is True the backbone keeps ResNet layer4, producing 512 channels.
-    When the desired `feature_dim` is smaller (e.g., 256), a 1x1 projection reduces
-    the channels to `feature_dim` so the rest of the model keeps the same shape.
-    """
-
-    def __init__(self, feature_dim: int = 256, use_pretrained: bool = True, use_layer4: bool = False, backbone_name: str = "resnet18"):
+    def __init__(self, feature_dim: int = 256, use_pretrained: bool = True):
         super().__init__()
-        backbone_name = (backbone_name or "resnet18").lower()
-        if backbone_name == "resnet34":
-            weights = torchvision.models.ResNet34_Weights.DEFAULT if use_pretrained else None
-            resnet = torchvision.models.resnet34(weights=weights)
-        else:
-            weights = torchvision.models.ResNet18_Weights.DEFAULT if use_pretrained else None
-            resnet = torchvision.models.resnet18(weights=weights)
+        weights = torchvision.models.ResNet101_Weights.DEFAULT if use_pretrained else None
+        resnet = torchvision.models.resnet101(weights=weights)
 
         # Keep high resolution by removing early downsampling.
         resnet.conv1.stride = (1, 1)
         resnet.maxpool = nn.Identity()
-        # NOTE: We modify conv1 stride and remove maxpool to keep high spatial
-        # resolution for tiny face crops. This changes the effective receptive
-        # field compared to original ImageNet training. If `use_pretrained` is
-        # True, weights will still load, but the backbone must be fine-tuned
-        # on the target dataset to adapt deeper layers to the new spatial scale.
 
         self.stem = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu)
         self.layer1 = resnet.layer1  # 48 -> 48
@@ -104,77 +85,34 @@ class SemanticBackbone(nn.Module):
         self.layer3 = resnet.layer3  # 24 -> 12
         self.layer4 = resnet.layer4  # 12 -> 6
 
-        # Keep layer1..layer3 for the main high-resolution feature (`x3`). Optionally
-        # compute `layer4` (`x4`) and fuse it back into `x3` after spatial upsampling.
-        self.use_layer4 = bool(use_layer4)
-        # natural channels from layer3 and layer4
-        self.channels_l3 = 256
-        self.channels_l4 = 512
-
-        # Projections to align channels when fusing.
-        # If using layer4 and target feature_dim == channels_l3, project x4->256.
-        if self.use_layer4 and feature_dim == self.channels_l3:
-            self.layer4_proj = nn.Conv2d(self.channels_l4, self.channels_l3, kernel_size=1)
-            nn.init.kaiming_normal_(self.layer4_proj.weight, nonlinearity='relu')
-            if self.layer4_proj.bias is not None:
-                nn.init.zeros_(self.layer4_proj.bias)
+        if feature_dim == 256:
+            self.output_layer = nn.Sequential(self.layer1, self.layer2, self.layer3)
+            self.use_layer4 = False
+            backbone_channels = 1024
+            # Free layer4 — not used in forward, but would waste GPU memory
+            # if kept as a registered submodule with its pretrained weights.
+            del self.layer4
+        elif feature_dim == 512:
+            self.output_layer = nn.Sequential(self.layer1, self.layer2, self.layer3, self.layer4)
+            self.use_layer4 = True
+            backbone_channels = 2048
         else:
-            self.layer4_proj = None
+            raise ValueError("feature_dim must be 256 or 512")
 
-        # If using layer4 and feature_dim == channels_l4 (512), project x3->512
-        if self.use_layer4 and feature_dim == self.channels_l4:
-            self.l3_to_l4_proj = nn.Conv2d(self.channels_l3, self.channels_l4, kernel_size=1)
-            nn.init.kaiming_normal_(self.l3_to_l4_proj.weight, nonlinearity='relu')
-            if self.l3_to_l4_proj.bias is not None:
-                nn.init.zeros_(self.l3_to_l4_proj.bias)
-        else:
-            self.l3_to_l4_proj = None
-
-        # If final requested feature_dim doesn't match the fused channel size, add final 1x1 proj.
-        fused_natural = self.channels_l3
-        if self.use_layer4 and feature_dim == self.channels_l4:
-            fused_natural = self.channels_l4
-        if fused_natural != feature_dim:
-            self.channel_proj = nn.Conv2d(fused_natural, feature_dim, kernel_size=1)
-            nn.init.kaiming_normal_(self.channel_proj.weight, nonlinearity='relu')
-            if self.channel_proj.bias is not None:
-                nn.init.zeros_(self.channel_proj.bias)
-            self.out_channels = feature_dim
-        else:
-            self.channel_proj = None
-            self.out_channels = fused_natural
-
-        # Learnable scalar to weight layer4 contribution when fusing into layer3
-        if self.use_layer4:
-            self.layer4_scale = nn.Parameter(torch.tensor(0.5, dtype=torch.float32))
-        else:
-            self.layer4_scale = None
+        self.out_channels = feature_dim
+        self.proj = nn.Sequential(
+            nn.Conv2d(backbone_channels, feature_dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(feature_dim),
+            nn.ReLU(inplace=True),
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.stem(x)
-        # compute layer1..layer3 outputs (high-res)
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x3 = self.layer3(x)
-
+        x = self.output_layer(x)
         if self.use_layer4:
-            x4 = self.layer4(x3)
-            # upsample x4 to x3 spatial size
-            x4_up = F.interpolate(x4, size=(x3.size(2), x3.size(3)), mode='bilinear', align_corners=False)
-            # project channels if necessary to align
-            if self.layer4_proj is not None:
-                x4_up = self.layer4_proj(x4_up)
-            if self.l3_to_l4_proj is not None:
-                x3_proj = self.l3_to_l4_proj(x3)
-                fused = x3_proj + self.layer4_scale * x4_up
-            else:
-                fused = x3 + self.layer4_scale * x4_up
-        else:
-            fused = x3
-
-        if self.channel_proj is not None:
-            fused = self.channel_proj(fused)
-        return fused
+            x = F.interpolate(x, size=(12, 12), mode="bilinear", align_corners=False)
+        x = self.proj(x)
+        return x
 
 
 class SemanticRoiAlign(nn.Module):
@@ -683,9 +621,6 @@ class SemanticProgramExecutor(nn.Module):
         self.num_regions = num_regions
         self.state_dim = state_dim
         self.temperature = float(temperature)
-        # Learnable weights for topology/composition contributions
-        self.topology_scale = nn.Parameter(torch.tensor(0.5, dtype=torch.float32))
-        self.composition_scale = nn.Parameter(torch.tensor(0.25, dtype=torch.float32))
         self.program_summary_proj = nn.Sequential(
             nn.Linear(state_dim, state_dim),
             nn.LayerNorm(state_dim),
@@ -737,9 +672,7 @@ class SemanticProgramExecutor(nn.Module):
         composition_sim = torch.einsum("bd,cmd->bcm", F.normalize(composition_summary, dim=-1), F.normalize(program_summary, dim=-1))
 
         # Combine raw similarities first, THEN scale by temperature (fixes topology being ignored)
-        alpha = F.softplus(self.topology_scale)
-        beta = F.softplus(self.composition_scale)
-        total_sim = region_sim + alpha * topology_sim + beta * composition_sim
+        total_sim = region_sim + 0.5 * topology_sim + 0.25 * composition_sim
         compatibility = total_sim / self.temperature
         
         # Save pre-temperature scaled versions for auxiliary loss logging consistency
@@ -812,8 +745,6 @@ class SemanticROIGraphFER(nn.Module):
         self.backbone = SemanticBackbone(
             feature_dim=config.feature_dim,
             use_pretrained=config.use_pretrained,
-            use_layer4=getattr(config, 'use_layer4', False),
-            backbone_name=getattr(config, 'backbone_name', 'resnet18'),
         )
         self.roi_align = SemanticRoiAlign(
             roi_grid=config.roi_grid,
@@ -863,22 +794,6 @@ class SemanticROIGraphFER(nn.Module):
             router_hidden_dim=config.router_hidden_dim,
             dropout=config.dropout,
         )
-        self.use_hypergraph = bool(getattr(config, "use_hypergraph", True))
-        if not self.use_hypergraph:
-            self.region_router = nn.Sequential(
-                nn.Linear(config.semantic_state_dim, config.router_hidden_dim),
-                nn.GELU(),
-                nn.Dropout(config.dropout),
-                nn.Linear(config.router_hidden_dim, 1),
-            )
-            self.latent_projector = nn.Sequential(
-                nn.Linear(config.semantic_state_dim * 2, config.semantic_latent_dim),
-                nn.LayerNorm(config.semantic_latent_dim),
-                nn.GELU(),
-                nn.Dropout(config.dropout),
-                nn.Linear(config.semantic_latent_dim, config.semantic_latent_dim),
-            )
-            self.latent_norm = nn.LayerNorm(config.semantic_latent_dim)
 
         self.cross_region_composition_graph = CrossRegionCompositionGraph(
             state_dim=config.semantic_state_dim,
@@ -922,28 +837,10 @@ class SemanticROIGraphFER(nn.Module):
             nn.GELU(),
         )
 
-        # Fusion gate: support either per-class scalar gate (backward-compatible)
-        # or an optional per-sample MLP gate that predicts (B, num_classes) gates.
-        # Per-class gate initialization: -0.5 -> sigmoid(-0.5) ~= 0.38 (favours graph early)
+        # Per-class gate: each emotion class learns its own graph-vs-global balance.
+        # Init with -0.5 → sigmoid(-0.5) ≈ 0.38, slightly below 0.5 to favour the graph branch early.
         self.semantic_structure_gate = nn.Parameter(torch.full((config.num_classes,), -0.5))
         self.fusion_scale = float(getattr(config, "fusion_scale", 0.25))
-
-        self.use_per_sample_gate = bool(getattr(config, "use_per_sample_gate", False))
-        if self.use_per_sample_gate:
-            hidden = max(getattr(config, "router_hidden_dim", 128), 64)
-            self.fusion_gate_mlp = nn.Sequential(
-                nn.Linear(config.semantic_latent_dim * 2, hidden),
-                nn.GELU(),
-                nn.LayerNorm(hidden),
-                nn.Linear(hidden, config.num_classes),
-            )
-            # initialize bias to slightly negative so sigmoid favors graph branch early
-            try:
-                nn.init.constant_(self.fusion_gate_mlp[-1].bias, -0.5)
-            except Exception:
-                pass
-        else:
-            self.fusion_gate_mlp = None
 
         # Backward-compatible aliases for older checkpoints and callers.
         self.macro_motif_bank = self.semantic_program_bank
@@ -1209,34 +1106,15 @@ class SemanticROIGraphFER(nn.Module):
         composition_summary = cross_region_tokens.mean(dim=1, keepdim=True)
         hypergraph_input = interaction_states + composition_summary.expand_as(interaction_states)
 
-        if self.use_hypergraph:
-            compositional_outputs = self.semantic_compositional_reasoner(
-                hypergraph_input,
-                region_mask=region_mask,
-                region_confidence=region_confidence,
-            )
-            composed_states = compositional_outputs["composed_states"]
-            hyperedge_tokens = compositional_outputs["hyperedge_tokens"]
-            routing_weights = compositional_outputs["routing_weights"]
-            semantic_latent_embedding = compositional_outputs["emotion_latent"]
-        else:
-            composed_states = hypergraph_input
-            routing_logits = self.region_router(composed_states).squeeze(-1)
-            if region_mask is not None:
-                routing_logits = routing_logits.masked_fill(region_mask <= 0, -1e9)
-            routing_weights = F.softmax(routing_logits, dim=1)
-            if region_mask is not None:
-                routing_weights = routing_weights * region_mask
-                routing_weights = routing_weights / routing_weights.sum(dim=1, keepdim=True).clamp_min(1e-6)
-            pooled_state = torch.sum(routing_weights.unsqueeze(-1) * composed_states, dim=1)
-            hyper_summary = cross_region_tokens.mean(dim=1)
-            semantic_latent_embedding = self.latent_projector(torch.cat([pooled_state, hyper_summary], dim=-1))
-            semantic_latent_embedding = self.latent_norm(semantic_latent_embedding)
-            hyperedge_tokens = composed_states.new_zeros(
-                composed_states.size(0),
-                self.config.hyperedge_count,
-                self.config.semantic_state_dim,
-            )
+        compositional_outputs = self.semantic_compositional_reasoner(
+            hypergraph_input,
+            region_mask=region_mask,
+            region_confidence=region_confidence,
+        )
+        composed_states = compositional_outputs["composed_states"]
+        hyperedge_tokens = compositional_outputs["hyperedge_tokens"]
+        routing_weights = compositional_outputs["routing_weights"]
+        semantic_latent_embedding = compositional_outputs["emotion_latent"]
 
         semantic_program_bank, semantic_program_topology = self.semantic_program_bank()
         semantic_program_outputs = self.semantic_program_executor(
@@ -1261,15 +1139,9 @@ class SemanticROIGraphFER(nn.Module):
         fused_latent = self.global_fusion(torch.cat([semantic_latent_embedding, global_semantic_context], dim=-1))
         logits_fused = self.semantic_classifier(fused_latent)
 
-        # Compute fusion gate. If per-sample MLP is present, predict (B, num_classes)
-        # else fall back to learned per-class gate (1, num_classes) for compatibility.
+        # Per-class gate: shape (1, num_classes) — each emotion learns its own balance
+        structure_gate = torch.sigmoid(self.semantic_structure_gate).view(1, -1)
         logits_motif = semantic_program_scores
-        if getattr(self, 'fusion_gate_mlp', None) is not None:
-            gate_input = torch.cat([semantic_latent_embedding, fused_latent], dim=-1)
-            structure_gate = torch.sigmoid(self.fusion_gate_mlp(gate_input))
-        else:
-            structure_gate = torch.sigmoid(self.semantic_structure_gate).view(1, -1)
-
         logits = logits_motif + self.fusion_scale * structure_gate * logits_fused
 
         return {

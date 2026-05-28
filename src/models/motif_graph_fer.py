@@ -40,15 +40,15 @@ class SpatialResidualMasking(nn.Module):
 
 class MotifBackbone(nn.Module):
     """
-    Advanced Backbone with Pretrained ResNet18 for stronger feature extraction.
+    Advanced Backbone with Pretrained ResNet101 for stronger feature extraction.
     """
     def __init__(self, in_channels=1, feat_dim=128):
         super().__init__()
         import torchvision.models as models
         try:
-            resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+            resnet = models.resnet101(weights=models.ResNet101_Weights.DEFAULT)
         except Exception:
-            resnet = models.resnet18(pretrained=True)
+            resnet = models.resnet101(pretrained=True)
             
         # Keep original 3-channel pretrained conv1 but change stride to 1 to keep spatial size 6x6
         self.conv1 = resnet.conv1
@@ -63,13 +63,13 @@ class MotifBackbone(nn.Module):
         self.layer1 = resnet.layer1 # 48x48
         self.layer2 = resnet.layer2 # 24x24
         self.layer3 = resnet.layer3 # 12x12
-        self.layer4 = resnet.layer4 # 6x6, 512 channels
+        self.layer4 = resnet.layer4 # 6x6, 2048 channels
         
-        self.residual_masking = SpatialResidualMasking(768)
+        self.residual_masking = SpatialResidualMasking(3072)
         
         # Reduce dimension to expected feat_dim (128)
         self.dim_reducer = nn.Sequential(
-            nn.Conv2d(768, feat_dim, kernel_size=1, bias=False),
+            nn.Conv2d(3072, feat_dim, kernel_size=1, bias=False),
             nn.BatchNorm2d(feat_dim),
             nn.ReLU(inplace=True)
         )
@@ -135,7 +135,7 @@ class MotifBackbone(nn.Module):
         
         # Upsample layer4 (6x6) to match layer3 (12x12) spatial size
         x4_up = F.interpolate(x4, size=x3.shape[2:], mode='bilinear', align_corners=False)
-        x_combined = torch.cat([x3, x4_up], dim=1) # (B, 768, 12, 12)
+        x_combined = torch.cat([x3, x4_up], dim=1) # (B, 3072, 12, 12)
         
         x = self.residual_masking(x_combined)
         x = self.dim_reducer(x)

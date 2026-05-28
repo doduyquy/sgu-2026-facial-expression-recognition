@@ -59,36 +59,6 @@ def macro_motif_diversity_loss(motif_bank_fn) -> torch.Tensor:
     return (off_diag ** 2).mean()
 
 
-def motif_orthogonality_loss(micro_motif_bank_fn, macro_motif_bank_fn) -> torch.Tensor:
-    """Encourage orthogonal motif bases to prevent motif collapse."""
-    losses = []
-
-    micro = micro_motif_bank_fn()  # (R, K, D)
-    micro = F.normalize(micro, dim=-1)
-    micro = micro.reshape(-1, micro.size(-1))
-    if micro.size(0) > 1:
-        sim = micro @ micro.t()
-        identity = torch.eye(sim.size(0), device=sim.device)
-        losses.append(((sim - identity) ** 2).mean())
-
-    macro = macro_motif_bank_fn()
-    if isinstance(macro, tuple):
-        macro = macro[0]
-    if macro.dim() == 4:
-        macro = macro.reshape(macro.size(0) * macro.size(1), -1)
-    elif macro.dim() == 3:
-        macro = macro.reshape(macro.size(0) * macro.size(1), -1)
-    if macro.size(0) > 1:
-        macro = F.normalize(macro, dim=-1)
-        sim = macro @ macro.t()
-        identity = torch.eye(sim.size(0), device=sim.device)
-        losses.append(((sim - identity) ** 2).mean())
-
-    if not losses:
-        return torch.tensor(0.0, device=micro.device)
-    return sum(losses) / float(len(losses))
-
-
 def motif_diversity_loss(motif_bank_fn) -> torch.Tensor:
     """Backward-compatible alias for macro motif diversity."""
     motifs = motif_bank_fn()
@@ -399,7 +369,6 @@ def compute_semantic_roi_graph_losses(
     region_composition_contrastive_weight: float | None = None,
     program_sparsity_weight: float | None = None,
     program_diversity_weight: float | None = None,
-    motif_orthogonality_weight: float | None = None,
 ) -> Dict[str, torch.Tensor]:
     """
     Compute all losses for Semantic ROI Graph FER.
@@ -453,8 +422,6 @@ def compute_semantic_roi_graph_losses(
         program_sparsity_weight = float(training_cfg.get("program_sparsity_weight", 0.05))
     if program_diversity_weight is None:
         program_diversity_weight = float(training_cfg.get("program_diversity_weight", 0.05))
-    if motif_orthogonality_weight is None:
-        motif_orthogonality_weight = float(training_cfg.get("motif_orthogonality_weight", 0.0))
 
     label_smoothing = float(training_cfg.get("label_smoothing", 0.0))
     try:
@@ -523,7 +490,6 @@ def compute_semantic_roi_graph_losses(
         mode=sparsity_mode,
     )
     diversity_loss = program_diversity_loss(base_model.semantic_program_bank)
-    orth_loss = motif_orthogonality_loss(base_model.micro_motif_bank, base_model.semantic_program_bank)
 
     # Per-component enable flags (default True = preserve legacy behaviour)
     def _flag(name: str, default: bool = True) -> bool:
@@ -552,8 +518,6 @@ def compute_semantic_roi_graph_losses(
         total = total + float(program_sparsity_weight) * sparsity_loss
     if _flag("enable_program_diversity"):
         total = total + float(program_diversity_weight) * diversity_loss
-    if _flag("enable_motif_orthogonality"):
-        total = total + float(motif_orthogonality_weight) * orth_loss
     if _flag("enable_fused_aux_ce", False):
         total = total + fused_aux_ce_weight * fused_ce_loss
     
@@ -574,7 +538,6 @@ def compute_semantic_roi_graph_losses(
         "loss_region_composition_contrastive": composition_contrastive_loss,
         "loss_program_sparsity": sparsity_loss,
         "loss_program_diversity": diversity_loss,
-        "loss_motif_orthogonality": orth_loss,
         "loss_region_coordination": coordination_loss,
         "loss_relation_consistency": coordination_loss,
         "loss_fused_aux_ce": fused_ce_loss,
