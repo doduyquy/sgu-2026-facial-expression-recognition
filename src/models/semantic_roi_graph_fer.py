@@ -55,6 +55,7 @@ class SemanticRoiGraphConfig:
     hyperedge_count: int = 4
     router_hidden_dim: int = 256          # was 64
     use_pretrained: bool = True
+    backbone_name: str = "resnet18"
     backbone_out_size: int = 12
     bbox_input_size: int = 48
     micro_layers: int = 2
@@ -67,6 +68,7 @@ class SemanticRoiGraphConfig:
     fusion_scale: float = 0.25
     use_layer4: bool = False
     use_per_sample_gate: bool = False
+    use_hypergraph: bool = True
 
 
 class SemanticBackbone(nn.Module):
@@ -77,10 +79,15 @@ class SemanticBackbone(nn.Module):
     the channels to `feature_dim` so the rest of the model keeps the same shape.
     """
 
-    def __init__(self, feature_dim: int = 256, use_pretrained: bool = True, use_layer4: bool = False):
+    def __init__(self, feature_dim: int = 256, use_pretrained: bool = True, use_layer4: bool = False, backbone_name: str = "resnet18"):
         super().__init__()
-        weights = torchvision.models.ResNet18_Weights.DEFAULT if use_pretrained else None
-        resnet = torchvision.models.resnet18(weights=weights)
+        backbone_name = (backbone_name or "resnet18").lower()
+        if backbone_name == "resnet34":
+            weights = torchvision.models.ResNet34_Weights.DEFAULT if use_pretrained else None
+            resnet = torchvision.models.resnet34(weights=weights)
+        else:
+            weights = torchvision.models.ResNet18_Weights.DEFAULT if use_pretrained else None
+            resnet = torchvision.models.resnet18(weights=weights)
 
         # Keep high resolution by removing early downsampling.
         resnet.conv1.stride = (1, 1)
@@ -676,6 +683,9 @@ class SemanticProgramExecutor(nn.Module):
         self.num_regions = num_regions
         self.state_dim = state_dim
         self.temperature = float(temperature)
+        # Learnable weights for topology/composition contributions
+        self.topology_scale = nn.Parameter(torch.tensor(0.5, dtype=torch.float32))
+        self.composition_scale = nn.Parameter(torch.tensor(0.25, dtype=torch.float32))
         self.program_summary_proj = nn.Sequential(
             nn.Linear(state_dim, state_dim),
             nn.LayerNorm(state_dim),
@@ -727,7 +737,9 @@ class SemanticProgramExecutor(nn.Module):
         composition_sim = torch.einsum("bd,cmd->bcm", F.normalize(composition_summary, dim=-1), F.normalize(program_summary, dim=-1))
 
         # Combine raw similarities first, THEN scale by temperature (fixes topology being ignored)
-        total_sim = region_sim + 0.5 * topology_sim + 0.25 * composition_sim
+        alpha = F.softplus(self.topology_scale)
+        beta = F.softplus(self.composition_scale)
+        total_sim = region_sim + alpha * topology_sim + beta * composition_sim
         compatibility = total_sim / self.temperature
         
         # Save pre-temperature scaled versions for auxiliary loss logging consistency
@@ -801,6 +813,7 @@ class SemanticROIGraphFER(nn.Module):
             feature_dim=config.feature_dim,
             use_pretrained=config.use_pretrained,
             use_layer4=getattr(config, 'use_layer4', False),
+            backbone_name=getattr(config, 'backbone_name', 'resnet18'),
         )
         self.roi_align = SemanticRoiAlign(
             roi_grid=config.roi_grid,
@@ -850,6 +863,22 @@ class SemanticROIGraphFER(nn.Module):
             router_hidden_dim=config.router_hidden_dim,
             dropout=config.dropout,
         )
+        self.use_hypergraph = bool(getattr(config, "use_hypergraph", True))
+        if not self.use_hypergraph:
+            self.region_router = nn.Sequential(
+                nn.Linear(config.semantic_state_dim, config.router_hidden_dim),
+                nn.GELU(),
+                nn.Dropout(config.dropout),
+                nn.Linear(config.router_hidden_dim, 1),
+            )
+            self.latent_projector = nn.Sequential(
+                nn.Linear(config.semantic_state_dim * 2, config.semantic_latent_dim),
+                nn.LayerNorm(config.semantic_latent_dim),
+                nn.GELU(),
+                nn.Dropout(config.dropout),
+                nn.Linear(config.semantic_latent_dim, config.semantic_latent_dim),
+            )
+            self.latent_norm = nn.LayerNorm(config.semantic_latent_dim)
 
         self.cross_region_composition_graph = CrossRegionCompositionGraph(
             state_dim=config.semantic_state_dim,
@@ -1180,15 +1209,34 @@ class SemanticROIGraphFER(nn.Module):
         composition_summary = cross_region_tokens.mean(dim=1, keepdim=True)
         hypergraph_input = interaction_states + composition_summary.expand_as(interaction_states)
 
-        compositional_outputs = self.semantic_compositional_reasoner(
-            hypergraph_input,
-            region_mask=region_mask,
-            region_confidence=region_confidence,
-        )
-        composed_states = compositional_outputs["composed_states"]
-        hyperedge_tokens = compositional_outputs["hyperedge_tokens"]
-        routing_weights = compositional_outputs["routing_weights"]
-        semantic_latent_embedding = compositional_outputs["emotion_latent"]
+        if self.use_hypergraph:
+            compositional_outputs = self.semantic_compositional_reasoner(
+                hypergraph_input,
+                region_mask=region_mask,
+                region_confidence=region_confidence,
+            )
+            composed_states = compositional_outputs["composed_states"]
+            hyperedge_tokens = compositional_outputs["hyperedge_tokens"]
+            routing_weights = compositional_outputs["routing_weights"]
+            semantic_latent_embedding = compositional_outputs["emotion_latent"]
+        else:
+            composed_states = hypergraph_input
+            routing_logits = self.region_router(composed_states).squeeze(-1)
+            if region_mask is not None:
+                routing_logits = routing_logits.masked_fill(region_mask <= 0, -1e9)
+            routing_weights = F.softmax(routing_logits, dim=1)
+            if region_mask is not None:
+                routing_weights = routing_weights * region_mask
+                routing_weights = routing_weights / routing_weights.sum(dim=1, keepdim=True).clamp_min(1e-6)
+            pooled_state = torch.sum(routing_weights.unsqueeze(-1) * composed_states, dim=1)
+            hyper_summary = cross_region_tokens.mean(dim=1)
+            semantic_latent_embedding = self.latent_projector(torch.cat([pooled_state, hyper_summary], dim=-1))
+            semantic_latent_embedding = self.latent_norm(semantic_latent_embedding)
+            hyperedge_tokens = composed_states.new_zeros(
+                composed_states.size(0),
+                self.config.hyperedge_count,
+                self.config.semantic_state_dim,
+            )
 
         semantic_program_bank, semantic_program_topology = self.semantic_program_bank()
         semantic_program_outputs = self.semantic_program_executor(

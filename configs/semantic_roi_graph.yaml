@@ -2,13 +2,14 @@ model:
   name: "semantic_roi_graph_fer"
   num_classes: 7
   num_regions: 9
-  roi_grid: 4
+  roi_grid: 6
   feature_dim: 256
   # micro_motifs_per_region: local motif templates per facial region
   micro_motifs_per_region: 8
   # macro_motifs_per_class: semantic program slots per emotion class
   macro_motifs_per_class: 4
   use_pretrained: true
+  backbone_name: "resnet34"
   backbone_out_size: 12
   bbox_input_size: 48
   micro_layers: 2
@@ -20,6 +21,7 @@ model:
   relation_temperature: 0.07
   use_per_sample_gate: False
   use_layer4: true
+  use_hypergraph: false
   # Semantic compositional model hyperparameters
   semantic_state_dim: 128
   semantic_latent_dim: 256
@@ -66,6 +68,7 @@ training:
   enable_region_composition_contrastive: false
   enable_program_sparsity: false
   enable_program_diversity: true
+  enable_motif_orthogonality: true
 
   # Scenario E-base: fused branch disabled
   enable_fused_aux_ce: true
@@ -77,6 +80,7 @@ training:
   compositional_program_weight: 0.01
   program_diversity_weight: 0.005
   fused_aux_ce_weight: 0.03
+  motif_orthogonality_weight: 0.01
 
   # Disabled weights (kept for reference / easy re-enable)
   region_contrastive_weight: 0.005
