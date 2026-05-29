@@ -40,36 +40,36 @@ class SpatialResidualMasking(nn.Module):
 
 class MotifBackbone(nn.Module):
     """
-    Advanced Backbone with Pretrained ResNet101 for stronger feature extraction.
+    Advanced Backbone with Pretrained ResNet18 for stronger feature extraction.
     """
     def __init__(self, in_channels=1, feat_dim=128):
         super().__init__()
         import torchvision.models as models
         try:
-            resnet = models.resnet101(weights=models.ResNet101_Weights.DEFAULT)
+            resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
         except Exception:
-            resnet = models.resnet101(pretrained=True)
-
+            resnet = models.resnet18(pretrained=True)
+            
         # Keep original 3-channel pretrained conv1 but change stride to 1 to keep spatial size 6x6
         self.conv1 = resnet.conv1
         self.conv1.stride = (1, 1)
         self.conv1.padding = (3, 3)
         self.bn1 = resnet.bn1
         self.relu = resnet.relu
-
+        
         # Skip maxpool to keep spatial size 6x6 at the end (48->48->24->12->6)
         self.maxpool = nn.Identity()
-
+        
         self.layer1 = resnet.layer1 # 48x48
         self.layer2 = resnet.layer2 # 24x24
         self.layer3 = resnet.layer3 # 12x12
-        self.layer4 = resnet.layer4 # 6x6, 2048 channels
-
-        self.residual_masking = SpatialResidualMasking(3072)
-
+        self.layer4 = resnet.layer4 # 6x6, 512 channels
+        
+        self.residual_masking = SpatialResidualMasking(768)
+        
         # Reduce dimension to expected feat_dim (128)
         self.dim_reducer = nn.Sequential(
-            nn.Conv2d(3072, feat_dim, kernel_size=1, bias=False),
+            nn.Conv2d(768, feat_dim, kernel_size=1, bias=False),
             nn.BatchNorm2d(feat_dim),
             nn.ReLU(inplace=True)
         )
@@ -86,7 +86,7 @@ class MotifBackbone(nn.Module):
         except Exception as e:
             print(f"Error loading checkpoint: {e}")
             return
-
+            
         if 'state_dict' in checkpoint:
             state_dict = checkpoint['state_dict']
         elif 'model_state_dict' in checkpoint:
@@ -97,21 +97,21 @@ class MotifBackbone(nn.Module):
             state_dict = checkpoint['net']
         else:
             state_dict = checkpoint
-
+            
         model_dict = self.state_dict()
         pretrained_dict = {}
-
+        
         for k, v in state_dict.items():
             # Clean common prefixes from RMN or generic wrappers
             name = k.replace('module.', '').replace('backbone.', '').replace('resnet.', '').replace('net.', '')
-
+            
             if name in model_dict:
                 if v.shape == model_dict[name].shape:
                     pretrained_dict[name] = v
                 else:
                     # Skip layers with shape mismatch (e.g., conv1 7x7 vs 3x3)
                     pass
-
+                    
         if len(pretrained_dict) == 0:
             print("WARNING: No matching keys found. Checkpoint format might be unsupported.")
         else:
@@ -132,11 +132,11 @@ class MotifBackbone(nn.Module):
         x = self.layer2(x)
         x3 = self.layer3(x)
         x4 = self.layer4(x3)
-
+        
         # Upsample layer4 (6x6) to match layer3 (12x12) spatial size
         x4_up = F.interpolate(x4, size=x3.shape[2:], mode='bilinear', align_corners=False)
-        x_combined = torch.cat([x3, x4_up], dim=1) # (B, 3072, 12, 12)
-
+        x_combined = torch.cat([x3, x4_up], dim=1) # (B, 768, 12, 12)
+        
         x = self.residual_masking(x_combined)
         x = self.dim_reducer(x)
         return x

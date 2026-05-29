@@ -2,7 +2,7 @@
 Semantic ROI Graph FER model (2-tier: micro + macro) without ArcFace.
 
 This module implements:
-- SemanticBackbone (ResNet101-based, high-res feature map)
+- SemanticBackbone (ResNet18-based, high-res feature map)
 - SemanticRoIAlign (ROIAlign per region)
 - MicroGraphReasoner (intra-region graph attention + pooling)
 - MacroGraphReasoner (inter-region graph attention)
@@ -68,12 +68,12 @@ class SemanticRoiGraphConfig:
 
 
 class SemanticBackbone(nn.Module):
-    """ResNet101 backbone with high spatial resolution output."""
+    """ResNet18 backbone with high spatial resolution output."""
 
     def __init__(self, feature_dim: int = 256, use_pretrained: bool = True):
         super().__init__()
-        weights = torchvision.models.ResNet101_Weights.DEFAULT if use_pretrained else None
-        resnet = torchvision.models.resnet101(weights=weights)
+        weights = torchvision.models.ResNet18_Weights.DEFAULT if use_pretrained else None
+        resnet = torchvision.models.resnet18(weights=weights)
 
         # Keep high resolution by removing early downsampling.
         resnet.conv1.stride = (1, 1)
@@ -87,30 +87,23 @@ class SemanticBackbone(nn.Module):
 
         if feature_dim == 256:
             self.output_layer = nn.Sequential(self.layer1, self.layer2, self.layer3)
+            self.out_channels = 256
             self.use_layer4 = False
-            backbone_channels = 1024
-            # Free layer4 — not used in forward, but would waste GPU memory
+            # Free layer4 — not used in forward, but would waste ~8MB GPU memory
             # if kept as a registered submodule with its pretrained weights.
             del self.layer4
         elif feature_dim == 512:
             self.output_layer = nn.Sequential(self.layer1, self.layer2, self.layer3, self.layer4)
+            self.out_channels = 512
             self.use_layer4 = True
-            backbone_channels = 2048
         else:
             raise ValueError("feature_dim must be 256 or 512")
-
-        self.out_channels = feature_dim
-        self.proj = nn.Conv2d(backbone_channels, feature_dim, kernel_size=1)
-        nn.init.kaiming_normal_(self.proj.weight, nonlinearity="linear")
-        if self.proj.bias is not None:
-            nn.init.zeros_(self.proj.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.stem(x)
         x = self.output_layer(x)
         if self.use_layer4:
             x = F.interpolate(x, size=(12, 12), mode="bilinear", align_corners=False)
-        x = self.proj(x)
         return x
 
 
@@ -147,11 +140,6 @@ class SemanticRoiAlign(nn.Module):
     def validate_bboxes(self, bboxes: torch.Tensor) -> torch.Tensor:
         """Clamp and repair invalid bbox coordinates while preserving batch/region count."""
         bboxes = bboxes.float().clone()
-        finite = torch.isfinite(bboxes).all(dim=-1, keepdim=True)
-        if not finite.all():
-            canonical = self._canonical_region_boxes(self.bbox_input_size, bboxes.device, bboxes.dtype)
-            canonical = canonical.unsqueeze(0).expand(bboxes.size(0), -1, -1)
-            bboxes = torch.where(finite, bboxes, canonical)
         bboxes[..., 0::2] = bboxes[..., 0::2].clamp(0.0, float(self.bbox_input_size - 1))
         bboxes[..., 1::2] = bboxes[..., 1::2].clamp(0.0, float(self.bbox_input_size - 1))
 
@@ -677,8 +665,6 @@ class SemanticProgramExecutor(nn.Module):
 
         # Combine raw similarities first, THEN scale by temperature (fixes topology being ignored)
         total_sim = region_sim + 0.5 * topology_sim + 0.25 * composition_sim
-        if not torch.isfinite(total_sim).all():
-            total_sim = torch.nan_to_num(total_sim, neginf=-1e4, posinf=1e4)
         compatibility = total_sim / self.temperature
         
         # Save pre-temperature scaled versions for auxiliary loss logging consistency
