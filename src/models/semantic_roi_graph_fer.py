@@ -372,11 +372,7 @@ class MicroSemanticMotifMatcher(nn.Module):
             nn.LayerNorm(state_dim),
             nn.GELU(),
         )
-        self.gate_network = nn.Sequential(
-            nn.Dropout(0.2),
-            nn.Linear(state_dim * 2, state_dim),
-            nn.Sigmoid(),
-        )
+        self.gate_network = nn.Linear(state_dim * 2, state_dim)
 
     def forward(self, semantic_states: torch.Tensor, motif_bank: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         state_norm = F.normalize(semantic_states, dim=-1)
@@ -386,7 +382,7 @@ class MicroSemanticMotifMatcher(nn.Module):
         tokens = torch.einsum("brk,rks->brs", attn, motif_bank)
         tokens = self.token_proj(tokens)
         gate = self.gate_network(torch.cat([semantic_states, tokens], dim=-1))
-        semantic_tokens = semantic_states * (1.0 - gate) + tokens * gate
+        semantic_tokens = semantic_states + gate * (tokens - semantic_states)
         return attn, semantic_tokens
 
 
