@@ -56,6 +56,8 @@ def macro_motif_diversity_loss(motif_bank_fn) -> torch.Tensor:
     sim = torch.einsum("cmd,cnd->cmn", motifs, motifs)
     identity = torch.eye(m, device=sim.device).unsqueeze(0)
     off_diag = sim * (1.0 - identity)
+    # Use margin to avoid forcing 100% orthogonality which conflicts with CE
+    off_diag = torch.relu(sim.abs() - 0.3) * (1.0 - identity)
     return (off_diag ** 2).mean()
 
 
@@ -133,7 +135,8 @@ def semantic_program_sparsity_loss(
         return (entropy / denom).mean()
 
     def _l1(attn: torch.Tensor) -> torch.Tensor:
-        return attn.abs().mean()
+        # Negative L2 norm to encourage sparsity on softmax distributions
+        return -(attn ** 2).mean()
 
     if program_attention is not None:
         losses.append(program_attention)
@@ -186,7 +189,7 @@ def program_diversity_loss(program_bank) -> torch.Tensor:
     summaries = F.normalize(summaries, dim=-1)
     sim = summaries @ summaries.t()
     identity = torch.eye(sim.size(0), device=sim.device)
-    off_diag = sim * (1.0 - identity)
+    off_diag = torch.relu(sim.abs() - 0.3) * (1.0 - identity)
     return (off_diag ** 2).mean()
 
 
@@ -393,7 +396,7 @@ def compute_semantic_roi_graph_losses(
     training_cfg = _get_training_cfg(model)
 
     if temperature is None:
-        temperature = float(training_cfg.get("contrastive_temperature", 0.07))
+        temperature = float(training_cfg.get("contrastive_temperature", 0.15))
     if region_contrastive_weight is None:
         region_contrastive_weight = float(training_cfg.get("region_contrastive_weight", training_cfg.get("au_contrastive_weight", 0.1)))
     if micro_diversity_weight is None:

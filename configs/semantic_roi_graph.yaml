@@ -16,7 +16,7 @@ model:
   attn_heads: 4
   dropout: 0.35   # increased from 0.25 to combat train-val-test overfitting gap
   label_smoothing: 0.05
-  region_dropout_prob: 0.2  # ép graph network bù đắp thông tin
+  region_dropout_prob: 0.1  # randomly drops 10% of facial regions during training for robust routing
   relation_temperature: 0.07
   # Semantic compositional model hyperparameters
   semantic_state_dim: 128
@@ -50,7 +50,7 @@ training:
 
   # ── Loss enable flags (light preset) ──────────────────────────────────────
   # Only 3 auxiliary losses are active. All others disabled to reduce overfit.
-  enable_micro_diversity: false
+  enable_micro_diversity: true
   enable_macro_diversity: true
   enable_region_contrastive: true
   enable_semantic_consistency: true
@@ -67,7 +67,7 @@ training:
 
   # ── Weights for enabled losses ─────────────────────────────────────────────
   micro_motif_diversity_weight: 0.02
-  macro_motif_diversity_weight: 0.05
+  macro_motif_diversity_weight: 0.02
   semantic_consistency_weight: 0.03
   compositional_program_weight: 0.02
   program_diversity_weight: 0.01
