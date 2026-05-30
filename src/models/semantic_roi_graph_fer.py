@@ -373,6 +373,7 @@ class MicroSemanticMotifMatcher(nn.Module):
             nn.GELU(),
         )
         self.gate_network = nn.Sequential(
+            nn.Dropout(0.2),
             nn.Linear(state_dim * 2, state_dim),
             nn.Sigmoid(),
         )
