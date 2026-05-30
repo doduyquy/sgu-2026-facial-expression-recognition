@@ -103,7 +103,6 @@ def main():
         mode='min',
         factor=0.5,
         patience=5,
-        verbose=True,
         min_lr=1e-6,
     )
     
