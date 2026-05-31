@@ -98,12 +98,11 @@ def main():
 
     loss = build_loss(config=config, class_weights=class_weights)
     optimizer = build_optimizer(model=model, config=config)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
         optimizer,
-        mode='min',
-        factor=0.5,
-        patience=5,
-        min_lr=1e-6,
+        T_0=20,
+        T_mult=2,
+        eta_min=1e-6,
     )
     
     # set path to save ckpt

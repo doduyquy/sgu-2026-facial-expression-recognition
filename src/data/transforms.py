@@ -35,6 +35,7 @@ def build_transform(config, split="train") -> Compose:
             trans = transforms.Compose([
                 transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
                 transforms.ToTensor(),
+                transforms.RandomErasing(p=0.5, scale=(0.02, 0.15), ratio=(0.3, 3.3), value=0),
                 transforms.Normalize(mean=(mu,), std=(st,)),
             ])
         else:

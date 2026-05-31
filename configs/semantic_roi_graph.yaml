@@ -14,15 +14,15 @@ model:
   micro_layers: 2
   macro_layers: 2
   attn_heads: 4
-  dropout: 0.35   # increased from 0.25 to combat train-val-test overfitting gap
+  dropout: 0.35 # increased from 0.25 to combat train-val-test overfitting gap
   label_smoothing: 0.05
-  region_dropout_prob: 0.1  # randomly drops 10% of facial regions during training for robust routing
+  region_dropout_prob: 0.25 # randomly drops 10% of facial regions during training for robust routing
   relation_temperature: 0.07
   # Semantic compositional model hyperparameters
   semantic_state_dim: 128
   semantic_latent_dim: 256
-  semantic_attn_heads: 4      # must divide semantic_state_dim (128 / 4 = 32 ✓)
-  hyperedge_count: 4          # Fix 4: was missing, silently used dataclass default
+  semantic_attn_heads: 4 # must divide semantic_state_dim (128 / 4 = 32 ✓)
+  hyperedge_count: 4 # Fix 4: was missing, silently used dataclass default
   router_hidden_dim: 256
   cross_region_compositions: 8
   programs_per_class: 4
@@ -42,7 +42,7 @@ data:
 training:
   epochs: 1000
   lr: 0.0003
-  weight_decay: 0.003      # increased from 0.001 to combat train-val-test gap
+  weight_decay: 0.003 # increased from 0.001 to combat train-val-test gap
   loss: "semantic_roi_graph"
   label_smoothing: 0.05
   class_weight_mode: "sqrt_inverse"
