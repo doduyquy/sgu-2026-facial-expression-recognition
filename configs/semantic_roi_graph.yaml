@@ -56,7 +56,7 @@ training:
   enable_semantic_consistency: true
   enable_compositional_program: true
   enable_semantic_disentanglement: true
-  enable_region_coordination: true
+  enable_region_coordination: false
   enable_topology_alignment: false
   enable_region_composition_contrastive: false
   enable_program_sparsity: True
@@ -76,7 +76,7 @@ training:
   # Disabled weights (kept for reference / easy re-enable)
   region_contrastive_weight: 0.04
   semantic_disentanglement_weight: 0.02
-  region_coordination_weight: 0.03
+  region_coordination_weight: 0.0
   topology_alignment_weight: 0.0
   region_composition_contrastive_weight: 0.0
   program_sparsity_weight: 0.02
