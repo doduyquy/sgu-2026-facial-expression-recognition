@@ -411,7 +411,7 @@ class SemanticInteractionBlock(nn.Module):
         left = semantic_states.unsqueeze(2).expand(b, r, r, s)
         right = semantic_states.unsqueeze(1).expand(b, r, r, s)
         pair_input = torch.cat([left, right, left - right, left * right], dim=-1)
-        gates = self.edge_gate(pair_input).squeeze(-1)
+        gates = self.edge_gate(pair_input).squeeze(-1) + 0.1
         
         # Computational fix: Mask out invalid regions from interaction
         if region_mask is not None:
