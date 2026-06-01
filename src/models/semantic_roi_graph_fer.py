@@ -84,35 +84,27 @@ class SemanticBackbone(nn.Module):
         self.layer2 = resnet.layer2  # 48 -> 24
         self.layer3 = resnet.layer3  # 24 -> 12
         self.layer4 = resnet.layer4  # 12 -> 6
-        self.roi_proj = nn.Conv2d(128, feature_dim, kernel_size=1)
 
         if feature_dim == 256:
+            self.output_layer = nn.Sequential(self.layer1, self.layer2, self.layer3)
             self.out_channels = 256
             self.use_layer4 = False
             # Free layer4 — not used in forward, but would waste ~8MB GPU memory
             # if kept as a registered submodule with its pretrained weights.
             del self.layer4
         elif feature_dim == 512:
+            self.output_layer = nn.Sequential(self.layer1, self.layer2, self.layer3, self.layer4)
             self.out_channels = 512
             self.use_layer4 = True
         else:
             raise ValueError("feature_dim must be 256 or 512")
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.stem(x)
-        x1 = self.layer1(x)
-        x2 = self.layer2(x1)  # Feature map 24x24 (128 channels)
-
-        # High-res feature for ROI (sharp, no extra downsampling)
-        roi_feature = self.roi_proj(x2)
-
-        # Low-res feature for global branch (deep context)
-        global_feature = self.layer3(x2)
-        if getattr(self, "use_layer4", False):
-            global_feature = self.layer4(global_feature)
-            global_feature = F.interpolate(global_feature, size=(12, 12), mode="bilinear", align_corners=False)
-
-        return roi_feature, global_feature
+        x = self.output_layer(x)
+        if self.use_layer4:
+            x = F.interpolate(x, size=(12, 12), mode="bilinear", align_corners=False)
+        return x
 
 
 class SemanticRoiAlign(nn.Module):
@@ -1045,7 +1037,7 @@ class SemanticROIGraphFER(nn.Module):
             image = image.repeat(1, 3, 1, 1)
 
         batch_size = image.size(0)
-        roi_feature_map, global_feature_map = self.backbone(image)
+        feature_map = self.backbone(image)
         bboxes, computed_mask, computed_confidence, invalid_indices = self._prepare_regions(
             bboxes,
             batch_size=batch_size,
@@ -1067,7 +1059,7 @@ class SemanticROIGraphFER(nn.Module):
             region_mask = region_mask * drop_mask
             region_confidence = region_confidence * drop_mask
 
-        roi_nodes = self.roi_align(roi_feature_map, bboxes)
+        roi_nodes = self.roi_align(feature_map, bboxes)
         micro_node_features, region_embeddings = self.micro_reasoner(roi_nodes)
 
         missing_token = self.missing_region_token.view(1, 1, -1)
@@ -1133,7 +1125,7 @@ class SemanticROIGraphFER(nn.Module):
         semantic_program_composition_scores = semantic_program_outputs["composition_score"]
         semantic_program_routing_entropy = semantic_program_outputs["routing_entropy"]
 
-        global_semantic_context = self.global_context(global_feature_map)
+        global_semantic_context = self.global_context(feature_map)
         fused_latent = self.global_fusion(torch.cat([semantic_latent_embedding, global_semantic_context], dim=-1))
         logits_fused = self.semantic_classifier(fused_latent)
 

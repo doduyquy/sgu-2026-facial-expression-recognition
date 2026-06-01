@@ -27,7 +27,7 @@ model:
   cross_region_compositions: 8
   programs_per_class: 4
   program_dim: 128
-  fusion_scale: 0.25
+  fusion_scale: 0.4
 
 data:
   batch_size: 64
@@ -46,7 +46,7 @@ training:
   loss: "semantic_roi_graph"
   label_smoothing: 0.05
   class_weight_mode: "sqrt_inverse"
-  use_class_weights: true
+  use_class_weights: false
 
   # ── Loss enable flags (light preset) ──────────────────────────────────────
   # Only 3 auxiliary losses are active. All others disabled to reduce overfit.
@@ -71,7 +71,7 @@ training:
   semantic_consistency_weight: 0.03
   compositional_program_weight: 0.02
   program_diversity_weight: 0.01
-  fused_aux_ce_weight: 0.05
+  fused_aux_ce_weight: 0.2
 
   # Disabled weights (kept for reference / easy re-enable)
   region_contrastive_weight: 0.04
