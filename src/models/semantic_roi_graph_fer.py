@@ -87,16 +87,28 @@ class SemanticBackbone(nn.Module):
         self.layer4 = resnet.layer4  # 12 -> 6
 
         if feature_dim == 256:
-            self.output_layer = nn.Sequential(self.layer1, self.layer2, self.layer3)
             self.out_channels = 256
             self.use_layer4 = False
             # Free layer4 — not used in forward, but would waste ~8MB GPU memory
             # if kept as a registered submodule with its pretrained weights.
             del self.layer4
+            
+            # Fusion for feature_dim = 256: layer2 (128) + layer3 (256) -> 256
+            self.fusion_conv = nn.Sequential(
+                nn.Conv2d(128 + 256, 256, kernel_size=1, bias=False),
+                nn.BatchNorm2d(256),
+                nn.ReLU(inplace=True)
+            )
         elif feature_dim == 512:
-            self.output_layer = nn.Sequential(self.layer1, self.layer2, self.layer3, self.layer4)
             self.out_channels = 512
             self.use_layer4 = True
+            
+            # Fusion for feature_dim = 512: layer2 (128) + layer3 (256) + layer4 (512) -> 512
+            self.fusion_conv = nn.Sequential(
+                nn.Conv2d(128 + 256 + 512, 512, kernel_size=1, bias=False),
+                nn.BatchNorm2d(512),
+                nn.ReLU(inplace=True)
+            )
         else:
             raise ValueError("feature_dim must be 256 or 512")
             
@@ -104,13 +116,26 @@ class SemanticBackbone(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.stem(x)
-        x = self.output_layer(x)
-        if self.use_layer4:
-            x = F.interpolate(x, size=(12, 12), mode="bilinear", align_corners=False)
+        x1 = self.layer1(x)  # (B, 64, 48, 48)
+        x2 = self.layer2(x1) # (B, 128, 24, 24)
+        x3 = self.layer3(x2) # (B, 256, 12, 12)
         
-        # Apply Spatial Attention (Soft Mask) to filter out background noise
-        x = self.spatial_attention(x)
-        return x
+        # MaxPool layer2 (24x24 -> 12x12)
+        x2_pooled = F.max_pool2d(x2, kernel_size=2, stride=2)
+        
+        if self.use_layer4:
+            x4 = self.layer4(x3) # (B, 512, 6, 6)
+            # Interpolate layer4 (6x6 -> 12x12)
+            x4_up = F.interpolate(x4, size=(12, 12), mode="bilinear", align_corners=False)
+            fused = torch.cat([x2_pooled, x3, x4_up], dim=1)
+        else:
+            fused = torch.cat([x2_pooled, x3], dim=1)
+            
+        x_out = self.fusion_conv(fused)
+        
+        # Apply Spatial Attention (CBAM) to filter out background noise
+        x_out = self.spatial_attention(x_out)
+        return x_out
 
 
 class SemanticRoiAlign(nn.Module):
