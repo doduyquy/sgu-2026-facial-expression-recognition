@@ -861,18 +861,7 @@ class SemanticROIGraphFER(nn.Module):
         # Per-class gate: each emotion class learns its own graph-vs-global balance.
         # Init with -0.5 → sigmoid(-0.5) ≈ 0.38, slightly below 0.5 to favour the graph branch early.
         self.semantic_structure_gate = nn.Parameter(torch.full((config.num_classes,), -0.5))
-        
-        # Dynamic Fusion Gate
-        self.dynamic_fusion_gate = nn.Sequential(
-            nn.Linear(config.semantic_latent_dim, config.semantic_latent_dim // 2),
-            nn.GELU(),
-            nn.Dropout(config.dropout),
-            nn.Linear(config.semantic_latent_dim // 2, 1)
-        )
-        # Safe init for Dynamic Fusion to start at ~0.4 (the default fusion scale)
-        # log(0.4 / (1 - 0.4)) ≈ -0.405
-        nn.init.zeros_(self.dynamic_fusion_gate[3].weight)
-        nn.init.constant_(self.dynamic_fusion_gate[3].bias, -0.405)
+        self.fusion_scale = float(getattr(config, "fusion_scale", 0.25))
 
         # Backward-compatible aliases for older checkpoints and callers.
         self.macro_motif_bank = self.semantic_program_bank
@@ -1171,20 +1160,17 @@ class SemanticROIGraphFER(nn.Module):
         fused_latent = self.global_fusion(torch.cat([semantic_latent_embedding, global_semantic_context], dim=-1))
         logits_fused = self.semantic_classifier(fused_latent)
 
-        # Dynamic Fusion Scale (B, 1) computed from global image context
-        dynamic_scale = torch.sigmoid(self.dynamic_fusion_gate(global_semantic_context))
-
         # Per-class gate: shape (1, num_classes) — each emotion learns its own balance
         structure_gate = torch.sigmoid(self.semantic_structure_gate).view(1, -1)
         logits_motif = semantic_program_scores
-        logits = logits_motif + dynamic_scale * structure_gate * logits_fused
+        logits = logits_motif + self.fusion_scale * structure_gate * logits_fused
 
         return {
             "logits": logits,
             "logits_motif": logits_motif,
             "logits_fused": logits_fused,
             "structure_gate": structure_gate,
-            "fusion_scale": dynamic_scale.mean().detach(),
+            "fusion_scale": logits.new_tensor(self.fusion_scale),
             "micro_node_features": micro_node_features,
             "micro_motif_attention": micro_motif_attention,
             "region_motif_tokens": semantic_motif_tokens,
