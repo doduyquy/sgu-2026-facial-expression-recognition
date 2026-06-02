@@ -14,13 +14,14 @@ This module implements:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 from torchvision.ops import roi_align
+from .CBAM import CBAM
 
 # Loss helpers moved to src/models/semantic_roi_graph_losses.py
 
@@ -67,33 +68,13 @@ class SemanticRoiGraphConfig:
     fusion_scale: float = 0.25
 
 
-class SpatialAttentionMask(nn.Module):
-    """Soft Mask to highlight facial features and suppress background noise."""
-    def __init__(self, kernel_size: int = 7):
-        super().__init__()
-        padding = kernel_size // 2
-        self.conv1 = nn.Conv2d(2, 1, kernel_size, padding=padding, bias=True)
-        # Safe Init: Initialize so that initial mask is near 1.0 (transparent)
-        # This prevents the mask from killing the signal in the first epoch and breaking checkpoints.
-        nn.init.zeros_(self.conv1.weight)
-        nn.init.constant_(self.conv1.bias, 5.0)
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        avg_out = torch.mean(x, dim=1, keepdim=True)
-        max_out, _ = torch.max(x, dim=1, keepdim=True)
-        mask_in = torch.cat([avg_out, max_out], dim=1)
-        mask = self.sigmoid(self.conv1(mask_in))
-        return x * mask
-
-
 class SemanticBackbone(nn.Module):
-    """ResNet34 backbone with high spatial resolution output."""
+    """ResNet18 backbone with high spatial resolution output."""
 
     def __init__(self, feature_dim: int = 256, use_pretrained: bool = True):
         super().__init__()
-        weights = torchvision.models.ResNet34_Weights.DEFAULT if use_pretrained else None
-        resnet = torchvision.models.resnet34(weights=weights)
+        weights = torchvision.models.ResNet18_Weights.DEFAULT if use_pretrained else None
+        resnet = torchvision.models.resnet18(weights=weights)
 
         # Keep high resolution by removing early downsampling.
         resnet.conv1.stride = (1, 1)
@@ -119,7 +100,7 @@ class SemanticBackbone(nn.Module):
         else:
             raise ValueError("feature_dim must be 256 or 512")
             
-        self.spatial_attention = SpatialAttentionMask()
+        self.spatial_attention = CBAM(channels=self.out_channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.stem(x)
@@ -855,7 +836,18 @@ class SemanticROIGraphFER(nn.Module):
         # Per-class gate: each emotion class learns its own graph-vs-global balance.
         # Init with -0.5 → sigmoid(-0.5) ≈ 0.38, slightly below 0.5 to favour the graph branch early.
         self.semantic_structure_gate = nn.Parameter(torch.full((config.num_classes,), -0.5))
-        self.fusion_scale = float(getattr(config, "fusion_scale", 0.25))
+        
+        # Dynamic Fusion Gate
+        self.dynamic_fusion_gate = nn.Sequential(
+            nn.Linear(config.semantic_latent_dim, config.semantic_latent_dim // 2),
+            nn.GELU(),
+            nn.Dropout(config.dropout),
+            nn.Linear(config.semantic_latent_dim // 2, 1)
+        )
+        # Safe init for Dynamic Fusion to start at ~0.4 (the default fusion scale)
+        # log(0.4 / (1 - 0.4)) ≈ -0.405
+        nn.init.zeros_(self.dynamic_fusion_gate[3].weight)
+        nn.init.constant_(self.dynamic_fusion_gate[3].bias, -0.405)
 
         # Backward-compatible aliases for older checkpoints and callers.
         self.macro_motif_bank = self.semantic_program_bank
@@ -1154,17 +1146,20 @@ class SemanticROIGraphFER(nn.Module):
         fused_latent = self.global_fusion(torch.cat([semantic_latent_embedding, global_semantic_context], dim=-1))
         logits_fused = self.semantic_classifier(fused_latent)
 
+        # Dynamic Fusion Scale (B, 1) computed from global image context
+        dynamic_scale = torch.sigmoid(self.dynamic_fusion_gate(global_semantic_context))
+
         # Per-class gate: shape (1, num_classes) — each emotion learns its own balance
         structure_gate = torch.sigmoid(self.semantic_structure_gate).view(1, -1)
         logits_motif = semantic_program_scores
-        logits = logits_motif + self.fusion_scale * structure_gate * logits_fused
+        logits = logits_motif + dynamic_scale * structure_gate * logits_fused
 
         return {
             "logits": logits,
             "logits_motif": logits_motif,
             "logits_fused": logits_fused,
             "structure_gate": structure_gate,
-            "fusion_scale": logits.new_tensor(self.fusion_scale),
+            "fusion_scale": dynamic_scale.mean().detach(),
             "micro_node_features": micro_node_features,
             "micro_motif_attention": micro_motif_attention,
             "region_motif_tokens": semantic_motif_tokens,
