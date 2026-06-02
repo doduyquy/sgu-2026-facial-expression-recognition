@@ -67,6 +67,26 @@ class SemanticRoiGraphConfig:
     fusion_scale: float = 0.25
 
 
+class SpatialAttentionMask(nn.Module):
+    """Soft Mask to highlight facial features and suppress background noise."""
+    def __init__(self, kernel_size: int = 7):
+        super().__init__()
+        padding = kernel_size // 2
+        self.conv1 = nn.Conv2d(2, 1, kernel_size, padding=padding, bias=True)
+        # Safe Init: Initialize so that initial mask is near 1.0 (transparent)
+        # This prevents the mask from killing the signal in the first epoch and breaking checkpoints.
+        nn.init.zeros_(self.conv1.weight)
+        nn.init.constant_(self.conv1.bias, 5.0)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        avg_out = torch.mean(x, dim=1, keepdim=True)
+        max_out, _ = torch.max(x, dim=1, keepdim=True)
+        mask_in = torch.cat([avg_out, max_out], dim=1)
+        mask = self.sigmoid(self.conv1(mask_in))
+        return x * mask
+
+
 class SemanticBackbone(nn.Module):
     """ResNet18 backbone with high spatial resolution output."""
 
@@ -98,12 +118,17 @@ class SemanticBackbone(nn.Module):
             self.use_layer4 = True
         else:
             raise ValueError("feature_dim must be 256 or 512")
+            
+        self.spatial_attention = SpatialAttentionMask()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.stem(x)
         x = self.output_layer(x)
         if self.use_layer4:
             x = F.interpolate(x, size=(12, 12), mode="bilinear", align_corners=False)
+        
+        # Apply Spatial Attention (Soft Mask) to filter out background noise
+        x = self.spatial_attention(x)
         return x
 
 
@@ -438,8 +463,10 @@ class SemanticInteractionBlock(nn.Module):
         
         # Apply spatial adjacency prior
         if r == 9:
+            # Use clamp instead of sigmoid so adj_prior=1.0 stays 1.0 (100% signal)
+            # and adj_prior=0.0 stays 0.0. adj_bias allows learning exceptions.
             learned_adj = self.adj_prior + self.adj_bias
-            spatial_gate = torch.sigmoid(learned_adj)
+            spatial_gate = torch.clamp(learned_adj, 0.0, 1.0)
             gates = raw_gates * spatial_gate.unsqueeze(0) + 0.1
         else:
             gates = raw_gates + 0.1
