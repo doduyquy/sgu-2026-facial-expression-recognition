@@ -88,12 +88,12 @@ class SpatialAttentionMask(nn.Module):
 
 
 class SemanticBackbone(nn.Module):
-    """ResNet18 backbone with high spatial resolution output."""
+    """ResNet34 backbone with high spatial resolution output."""
 
     def __init__(self, feature_dim: int = 256, use_pretrained: bool = True):
         super().__init__()
-        weights = torchvision.models.ResNet18_Weights.DEFAULT if use_pretrained else None
-        resnet = torchvision.models.resnet18(weights=weights)
+        weights = torchvision.models.ResNet34_Weights.DEFAULT if use_pretrained else None
+        resnet = torchvision.models.resnet34(weights=weights)
 
         # Keep high resolution by removing early downsampling.
         resnet.conv1.stride = (1, 1)
