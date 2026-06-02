@@ -406,12 +406,43 @@ class SemanticInteractionBlock(nn.Module):
         )
         self.norm = nn.LayerNorm(state_dim)
 
+        # Spatial Adjacency Prior for 9 regions
+        adj_prior = torch.zeros(9, 9)
+        edges = [
+            (0,0), (1,1), (2,2), (3,3), (4,4), (5,5), (6,6), (7,7), (8,8),
+            (0,1), (0,2), (0,3),
+            (1,3), (2,3),
+            (1,4), (2,5),
+            (3,4), (3,5), (3,6),
+            (4,5),
+            (4,6), (5,6),
+            (6,7), (6,8),
+            (7,8)
+        ]
+        for i, j in edges:
+            adj_prior[i, j] = 1.0
+            adj_prior[j, i] = 1.0
+            
+        # Register as buffer (non-learnable reference)
+        self.register_buffer("adj_prior", adj_prior, persistent=False)
+        # Learnable bias to adjust prior if needed (initialized to 0)
+        self.adj_bias = nn.Parameter(torch.zeros(9, 9))
+
     def forward(self, semantic_states: torch.Tensor, region_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         b, r, s = semantic_states.shape
         left = semantic_states.unsqueeze(2).expand(b, r, r, s)
         right = semantic_states.unsqueeze(1).expand(b, r, r, s)
         pair_input = torch.cat([left, right, left - right, left * right], dim=-1)
-        gates = self.edge_gate(pair_input).squeeze(-1) + 0.1
+        
+        raw_gates = self.edge_gate(pair_input).squeeze(-1)
+        
+        # Apply spatial adjacency prior
+        if r == 9:
+            learned_adj = self.adj_prior + self.adj_bias
+            spatial_gate = torch.sigmoid(learned_adj)
+            gates = raw_gates * spatial_gate.unsqueeze(0) + 0.1
+        else:
+            gates = raw_gates + 0.1
         
         # Computational fix: Mask out invalid regions from interaction
         if region_mask is not None:

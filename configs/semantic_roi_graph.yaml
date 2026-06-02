@@ -46,7 +46,7 @@ training:
   loss: "semantic_roi_graph"
   label_smoothing: 0.05
   class_weight_mode: "sqrt_inverse"
-  use_class_weights: false
+  use_class_weights: true
 
   # ── Loss enable flags (light preset) ──────────────────────────────────────
   # Only 3 auxiliary losses are active. All others disabled to reduce overfit.
