@@ -25,6 +25,17 @@ from .CBAM import CBAM
 
 # Loss helpers moved to src/models/semantic_roi_graph_losses.py
 
+def safe_softmax(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
+    """A numerically stable softmax that prevents NaN when vectors are fully masked."""
+    x_max = x.max(dim=dim, keepdim=True)[0]
+    x_shifted = x - x_max
+    # Handle the case where x was all -inf (which results in NaN after subtraction)
+    # or if the user used a very large negative number (like -1e9) which resolves to 0.
+    all_invalid = torch.isinf(x_shifted).all(dim=dim, keepdim=True) | torch.isnan(x_shifted).all(dim=dim, keepdim=True)
+    x_shifted = torch.where(all_invalid, torch.zeros_like(x_shifted), x_shifted)
+    return F.softmax(x_shifted, dim=dim)
+
+
 DEFAULT_SEMANTIC_REGIONS = (
     "forehead",
     "left_eyebrow",
@@ -275,7 +286,7 @@ class GATBlock(nn.Module):
             elif attn_mask.dim() == 3:
                 attn_mask = attn_mask.unsqueeze(1)
             attn = attn.masked_fill(attn_mask == 0, -1e9)
-        attn = F.softmax(attn, dim=-1)
+        attn = safe_softmax(attn, dim=-1)
         attn = self.dropout(attn)
 
         out = torch.einsum("bhij,bhjd->bhid", attn, v)
@@ -383,7 +394,7 @@ class MicroSemanticMotifMatcher(nn.Module):
         state_norm = F.normalize(semantic_states, dim=-1)
         bank_norm = F.normalize(motif_bank, dim=-1)
         sim = torch.einsum("brs,rks->brk", state_norm, bank_norm) / self.temperature
-        attn = F.softmax(sim, dim=-1)
+        attn = safe_softmax(sim, dim=-1)
         tokens = torch.einsum("brk,rks->brs", attn, motif_bank)
         tokens = self.token_proj(tokens)
         semantic_tokens = semantic_states + tokens
@@ -492,7 +503,7 @@ class CrossRegionCompositionGraph(nn.Module):
             pair_mask = region_mask.unsqueeze(-1) * region_mask.unsqueeze(-2)
             pair_scores = pair_scores.masked_fill(pair_mask <= 0, -1e9)
 
-        pair_attention = F.softmax(pair_scores.reshape(b, -1), dim=-1).reshape(b, r, r)
+        pair_attention = safe_softmax(pair_scores.reshape(b, -1), dim=-1).reshape(b, r, r)
         pair_sequence = pair_tokens.reshape(b, r * r, d)
 
         composition_queries = self.composition_queries.unsqueeze(0).expand(b, -1, -1)
@@ -577,7 +588,7 @@ class SemanticHypergraphReasoner(nn.Module):
         routing_logits = self.router(composed_states).squeeze(-1)
         if region_mask is not None:
             routing_logits = routing_logits.masked_fill(region_mask <= 0, -1e9)
-        routing_weights = F.softmax(routing_logits, dim=1)
+        routing_weights = safe_softmax(routing_logits, dim=1)
         if region_mask is not None:
             routing_weights = routing_weights * region_mask
             routing_weights = routing_weights / routing_weights.sum(dim=1, keepdim=True).clamp_min(1e-6)
@@ -676,14 +687,17 @@ class SemanticProgramExecutor(nn.Module):
 
         # Combine raw similarities first, THEN scale by temperature (fixes topology being ignored)
         total_sim = region_sim + 0.5 * topology_sim + 0.25 * composition_sim
-        compatibility = total_sim / self.temperature
         
         # Save pre-temperature scaled versions for auxiliary loss logging consistency
         region_score = region_sim / self.temperature
         topology_score = topology_sim / self.temperature
         composition_score = composition_sim / self.temperature
-
-        program_attention = F.softmax(compatibility, dim=-1)
+        
+        # Fix: Gradient Explosion during Temperature Scaling.
+        # Clamp compatibility to avoid logsumexp gradient blowup while preserving relative order
+        compatibility = (total_sim / self.temperature).clamp(-50, 50)
+        
+        program_attention = safe_softmax(compatibility, dim=-1)
         class_scores = torch.logsumexp(compatibility, dim=-1)
         program_tokens = torch.einsum("bcm,cmd->bcd", program_attention, program_summary)
 
