@@ -404,9 +404,8 @@ class MicroSemanticMotifMatcher(nn.Module):
 class SemanticInteractionBlock(nn.Module):
     """Learned semantic interaction reasoning for pairwise facial coordination."""
 
-    def __init__(self, state_dim: int, hidden_dim: Optional[int] = None, dropout: float = 0.1, dropedge_rate: float = 0.2):
+    def __init__(self, state_dim: int, hidden_dim: Optional[int] = None, dropout: float = 0.1):
         super().__init__()
-        self.dropedge_rate = dropedge_rate
         hidden_dim = hidden_dim or max(state_dim * 2, 32)
         pair_input_dim = state_dim * 4
         self.edge_gate = nn.Sequential(
@@ -423,6 +422,36 @@ class SemanticInteractionBlock(nn.Module):
             nn.Linear(hidden_dim, state_dim),
         )
         self.norm = nn.LayerNorm(state_dim)
+        
+        # Kịch bản 1 (Version 2.0): Static Anatomical Edge Bias (No Gradients, 100% Safe)
+        self.register_buffer("anatomical_edge_bias", self._build_static_anatomical_bias())
+
+    def _build_static_anatomical_bias(self) -> torch.Tensor:
+        """Constructs a fixed spatial prior matrix based on 2D facial anatomy."""
+        # Approximate normalized coordinates (x, y) for the 9 regions
+        coords = torch.tensor([
+            [ 0.0,  1.0],  # 0: forehead
+            [-0.5,  0.7],  # 1: left_eyebrow
+            [ 0.5,  0.7],  # 2: right_eyebrow
+            [ 0.0,  0.6],  # 3: glabella
+            [-0.4,  0.4],  # 4: left_eye
+            [ 0.4,  0.4],  # 5: right_eye
+            [ 0.0,  0.0],  # 6: nose
+            [-0.3, -0.6],  # 7: left_mouth_corner
+            [ 0.3, -0.6],  # 8: right_mouth_corner
+        ], dtype=torch.float32)
+        
+        # Pairwise squared Euclidean distance
+        diff = coords.unsqueeze(1) - coords.unsqueeze(0)
+        dist_sq = (diff ** 2).sum(dim=-1)
+        
+        # Convert distance to similarity using Gaussian decay (sigma = 0.5)
+        sim_bias = torch.exp(-dist_sq / 0.5)
+        
+        # Center around 0. Range becomes approx [-0.4, 0.6]
+        sim_bias = sim_bias - sim_bias.mean()
+        
+        return sim_bias.unsqueeze(0) # Shape: (1, 9, 9)
 
     def forward(self, semantic_states: torch.Tensor, region_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         b, r, s = semantic_states.shape
@@ -430,13 +459,9 @@ class SemanticInteractionBlock(nn.Module):
         right = semantic_states.unsqueeze(1).expand(b, r, r, s)
         pair_input = torch.cat([left, right, left - right, left * right], dim=-1)
         
-        gates = self.edge_gate(pair_input).squeeze(-1) + 0.1
-        
-        # Kịch bản 2: Graph DropEdge
-        # Randomly sever connections between facial regions during training
-        # to prevent over-smoothing and force robust path discovery.
-        if self.dropedge_rate > 0.0:
-            gates = F.dropout(gates, p=self.dropedge_rate, training=self.training)
+        # Add static anatomical bias (scaled by 0.1 to act as a gentle prior)
+        # gates range: [0, 1] + 0.1 + [-0.04, 0.06] = [0.06, 1.16] -> Always strictly positive
+        gates = self.edge_gate(pair_input).squeeze(-1) + 0.1 * self.anatomical_edge_bias + 0.1
         
         # Computational fix: Mask out invalid regions from interaction
         if region_mask is not None:
@@ -790,7 +815,6 @@ class SemanticROIGraphFER(nn.Module):
             state_dim=config.semantic_state_dim,
             hidden_dim=max(config.semantic_state_dim * 2, 32),
             dropout=config.dropout,
-            dropedge_rate=0.2,
         )
 
         self.micro_motif_bank = MicroSemanticMotifBank(
