@@ -87,28 +87,16 @@ class SemanticBackbone(nn.Module):
         self.layer4 = resnet.layer4  # 12 -> 6
 
         if feature_dim == 256:
+            self.output_layer = nn.Sequential(self.layer1, self.layer2, self.layer3)
             self.out_channels = 256
             self.use_layer4 = False
             # Free layer4 — not used in forward, but would waste ~8MB GPU memory
             # if kept as a registered submodule with its pretrained weights.
             del self.layer4
-            
-            # Fusion for feature_dim = 256: layer2 (128) + layer3 (256) -> 256
-            self.fusion_conv = nn.Sequential(
-                nn.Conv2d(128 + 256, 256, kernel_size=1, bias=False),
-                nn.BatchNorm2d(256),
-                nn.ReLU(inplace=True)
-            )
         elif feature_dim == 512:
+            self.output_layer = nn.Sequential(self.layer1, self.layer2, self.layer3, self.layer4)
             self.out_channels = 512
             self.use_layer4 = True
-            
-            # Fusion for feature_dim = 512: layer2 (128) + layer3 (256) + layer4 (512) -> 512
-            self.fusion_conv = nn.Sequential(
-                nn.Conv2d(128 + 256 + 512, 512, kernel_size=1, bias=False),
-                nn.BatchNorm2d(512),
-                nn.ReLU(inplace=True)
-            )
         else:
             raise ValueError("feature_dim must be 256 or 512")
             
@@ -116,26 +104,13 @@ class SemanticBackbone(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.stem(x)
-        x1 = self.layer1(x)  # (B, 64, 48, 48)
-        x2 = self.layer2(x1) # (B, 128, 24, 24)
-        x3 = self.layer3(x2) # (B, 256, 12, 12)
-        
-        # MaxPool layer2 (24x24 -> 12x12)
-        x2_pooled = F.max_pool2d(x2, kernel_size=2, stride=2)
-        
+        x = self.output_layer(x)
         if self.use_layer4:
-            x4 = self.layer4(x3) # (B, 512, 6, 6)
-            # Interpolate layer4 (6x6 -> 12x12)
-            x4_up = F.interpolate(x4, size=(12, 12), mode="bilinear", align_corners=False)
-            fused = torch.cat([x2_pooled, x3, x4_up], dim=1)
-        else:
-            fused = torch.cat([x2_pooled, x3], dim=1)
-            
-        x_out = self.fusion_conv(fused)
+            x = F.interpolate(x, size=(12, 12), mode="bilinear", align_corners=False)
         
         # Apply Spatial Attention (CBAM) to filter out background noise
-        x_out = self.spatial_attention(x_out)
-        return x_out
+        x = self.spatial_attention(x)
+        return x
 
 
 class SemanticRoiAlign(nn.Module):
@@ -436,13 +411,18 @@ class SemanticInteractionBlock(nn.Module):
             nn.Linear(hidden_dim, state_dim),
         )
         self.norm = nn.LayerNorm(state_dim)
+        
+        # Anatomical Edge Bias: Prior knowledge for physical distances between 9 regions
+        self.anatomical_edge_bias = nn.Parameter(torch.zeros(1, 9, 9))
 
     def forward(self, semantic_states: torch.Tensor, region_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         b, r, s = semantic_states.shape
         left = semantic_states.unsqueeze(2).expand(b, r, r, s)
         right = semantic_states.unsqueeze(1).expand(b, r, r, s)
         pair_input = torch.cat([left, right, left - right, left * right], dim=-1)
-        gates = self.edge_gate(pair_input).squeeze(-1) + 0.1
+        
+        # Add Anatomical Edge Bias to the dynamically predicted gates
+        gates = self.edge_gate(pair_input).squeeze(-1) + self.anatomical_edge_bias + 0.1
         
         # Computational fix: Mask out invalid regions from interaction
         if region_mask is not None:
