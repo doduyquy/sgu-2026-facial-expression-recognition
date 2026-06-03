@@ -404,8 +404,9 @@ class MicroSemanticMotifMatcher(nn.Module):
 class SemanticInteractionBlock(nn.Module):
     """Learned semantic interaction reasoning for pairwise facial coordination."""
 
-    def __init__(self, state_dim: int, hidden_dim: Optional[int] = None, dropout: float = 0.1):
+    def __init__(self, state_dim: int, hidden_dim: Optional[int] = None, dropout: float = 0.1, dropedge_rate: float = 0.2):
         super().__init__()
+        self.dropedge_rate = dropedge_rate
         hidden_dim = hidden_dim or max(state_dim * 2, 32)
         pair_input_dim = state_dim * 4
         self.edge_gate = nn.Sequential(
@@ -422,9 +423,6 @@ class SemanticInteractionBlock(nn.Module):
             nn.Linear(hidden_dim, state_dim),
         )
         self.norm = nn.LayerNorm(state_dim)
-        
-        # Anatomical Edge Bias: Prior knowledge for physical distances between 9 regions
-        self.anatomical_edge_bias = nn.Parameter(torch.zeros(1, 9, 9))
 
     def forward(self, semantic_states: torch.Tensor, region_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         b, r, s = semantic_states.shape
@@ -432,10 +430,13 @@ class SemanticInteractionBlock(nn.Module):
         right = semantic_states.unsqueeze(1).expand(b, r, r, s)
         pair_input = torch.cat([left, right, left - right, left * right], dim=-1)
         
-        # Apply a strictly bounded Anatomical Edge Bias [-0.1, 0.1] using Tanh.
-        # This prevents the parameter from exploding (causing NaN) while still learning spatial priors.
-        bounded_bias = 0.1 * torch.tanh(self.anatomical_edge_bias)
-        gates = self.edge_gate(pair_input).squeeze(-1) + bounded_bias + 0.1
+        gates = self.edge_gate(pair_input).squeeze(-1) + 0.1
+        
+        # Kịch bản 2: Graph DropEdge
+        # Randomly sever connections between facial regions during training
+        # to prevent over-smoothing and force robust path discovery.
+        if self.dropedge_rate > 0.0:
+            gates = F.dropout(gates, p=self.dropedge_rate, training=self.training)
         
         # Computational fix: Mask out invalid regions from interaction
         if region_mask is not None:
@@ -789,6 +790,7 @@ class SemanticROIGraphFER(nn.Module):
             state_dim=config.semantic_state_dim,
             hidden_dim=max(config.semantic_state_dim * 2, 32),
             dropout=config.dropout,
+            dropedge_rate=0.2,
         )
 
         self.micro_motif_bank = MicroSemanticMotifBank(
