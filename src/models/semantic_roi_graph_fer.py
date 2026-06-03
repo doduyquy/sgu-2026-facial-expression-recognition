@@ -402,7 +402,7 @@ class SemanticInteractionBlock(nn.Module):
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, 1),
-            # Sigmoid is removed here and applied manually in forward() to bound the bias
+            nn.Sigmoid(),
         )
         self.edge_message = nn.Sequential(
             nn.Linear(pair_input_dim, hidden_dim),
@@ -421,9 +421,10 @@ class SemanticInteractionBlock(nn.Module):
         right = semantic_states.unsqueeze(1).expand(b, r, r, s)
         pair_input = torch.cat([left, right, left - right, left * right], dim=-1)
         
-        # Add Anatomical Edge Bias BEFORE Sigmoid to ensure mathematical bounds (0, 1)
-        edge_logits = self.edge_gate(pair_input).squeeze(-1)
-        gates = torch.sigmoid(edge_logits + self.anatomical_edge_bias) + 0.1
+        # Apply a strictly bounded Anatomical Edge Bias [-0.1, 0.1] using Tanh.
+        # This prevents the parameter from exploding (causing NaN) while still learning spatial priors.
+        bounded_bias = 0.1 * torch.tanh(self.anatomical_edge_bias)
+        gates = self.edge_gate(pair_input).squeeze(-1) + bounded_bias + 0.1
         
         # Computational fix: Mask out invalid regions from interaction
         if region_mask is not None:
