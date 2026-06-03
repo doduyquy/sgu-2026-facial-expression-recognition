@@ -402,7 +402,7 @@ class SemanticInteractionBlock(nn.Module):
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, 1),
-            nn.Sigmoid(),
+            # Sigmoid is removed here and applied manually in forward() to bound the bias
         )
         self.edge_message = nn.Sequential(
             nn.Linear(pair_input_dim, hidden_dim),
@@ -421,8 +421,9 @@ class SemanticInteractionBlock(nn.Module):
         right = semantic_states.unsqueeze(1).expand(b, r, r, s)
         pair_input = torch.cat([left, right, left - right, left * right], dim=-1)
         
-        # Add Anatomical Edge Bias to the dynamically predicted gates
-        gates = self.edge_gate(pair_input).squeeze(-1) + self.anatomical_edge_bias + 0.1
+        # Add Anatomical Edge Bias BEFORE Sigmoid to ensure mathematical bounds (0, 1)
+        edge_logits = self.edge_gate(pair_input).squeeze(-1)
+        gates = torch.sigmoid(edge_logits + self.anatomical_edge_bias) + 0.1
         
         # Computational fix: Mask out invalid regions from interaction
         if region_mask is not None:
