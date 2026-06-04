@@ -278,7 +278,8 @@ def region_coordination_regularization(
             pair_mask = region_mask.unsqueeze(-1) * region_mask.unsqueeze(-2)
             gates = gates * pair_mask
         active_mean = gates.mean(dim=(-1, -2))
-        gate_balance = ((active_mean - 0.35) ** 2).mean()
+        # Kịch bản 3: Nới lỏng target lên 0.6 để cho phép Đồ thị giao tiếp mạnh mẽ hơn
+        gate_balance = ((active_mean - 0.6) ** 2).mean()
         gate_variance = gates.var(dim=(-1, -2)).mean()
         gate_loss = gate_balance + 0.05 * gate_variance
         loss = gate_loss if loss is None else loss + gate_loss
@@ -402,7 +403,8 @@ def compute_semantic_roi_graph_losses(
     if micro_diversity_weight is None:
         micro_diversity_weight = float(training_cfg.get("micro_motif_diversity_weight", training_cfg.get("motif_diversity_weight", 0.05)))
     if macro_diversity_weight is None:
-        macro_diversity_weight = float(training_cfg.get("macro_motif_diversity_weight", training_cfg.get("motif_diversity_weight", 0.05)))
+        # Kịch bản 3: Tăng gấp đôi trọng số MacroDiversity để ngăn sụp đổ Motif
+        macro_diversity_weight = float(training_cfg.get("macro_motif_diversity_weight", training_cfg.get("motif_diversity_weight", 0.05))) * 2.0
     if relation_consistency_weight is None:
         relation_consistency_weight = float(training_cfg.get("region_coordination_weight", training_cfg.get("relation_consistency_weight", 0.1)))
     if topology_reg_weight is None:
