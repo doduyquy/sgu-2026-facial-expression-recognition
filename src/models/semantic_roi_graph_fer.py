@@ -120,7 +120,7 @@ class SemanticBackbone(nn.Module):
             x = F.interpolate(x, size=(12, 12), mode="bilinear", align_corners=False)
         
         # Apply Spatial Attention (CBAM) to filter out background noise
-        x = self.spatial_attention(x)
+        # x = self.spatial_attention(x)
         return x
 
 
