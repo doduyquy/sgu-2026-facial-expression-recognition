@@ -270,7 +270,7 @@ def region_coordination_regularization(
         weights = routing_weights.clamp_min(1e-6)
         entropy = -(weights * weights.log()).sum(dim=1)
         denom = torch.log(torch.tensor(float(weights.size(1)), device=weights.device)).clamp_min(1e-6)
-        loss = (entropy / denom).mean()
+        loss = None # (entropy / denom).mean() # K?ch b?n 3: G? b? ép bu?c Sparse Routing
 
     if interaction_gates is not None:
         gates = interaction_gates
