@@ -1161,7 +1161,7 @@ class SemanticROIGraphFER(nn.Module):
         # Per-class gate: shape (1, num_classes) — each emotion learns its own balance
         structure_gate = torch.sigmoid(self.semantic_structure_gate).view(1, -1)
         logits_motif = semantic_program_scores
-        logits = logits_motif + self.fusion_scale_param * structure_gate * logits_fused
+        logits = logits_fused + self.fusion_scale_param * structure_gate * logits_motif
 
         return {
             "logits": logits,
@@ -1207,3 +1207,4 @@ class SemanticROIGraphFER(nn.Module):
                 "semantic_consistency": semantic_motif_tokens.new_tensor(0.0),
             },
         }
+
