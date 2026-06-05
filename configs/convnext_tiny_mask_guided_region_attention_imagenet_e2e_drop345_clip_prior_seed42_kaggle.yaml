@@ -93,12 +93,14 @@ model:
   ortho_loss_type: "squared_offdiag"
   ortho_loss_weight: 0.003
 
+
 training:
   init_checkpoint_path: null
   init_checkpoint_strict: false
 
-  epochs: 80
-  patience: 15
+  epochs: 301
+  
+  patience: 40
   monitor: "val_accuracy"
 
   loss: "cross_entropy"
