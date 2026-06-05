@@ -1,0 +1,22 @@
+_base_: "../convnext_tiny_mask_guided_region_attention_7462_sam_continue_learned_only_kaggle_dataset.yaml"
+
+# Seed sweep run for the config that produced the 75.12 checkpoint.
+#
+# Keep the 75.12 training scenario unchanged:
+# - FER-trained ConvNeXt 74.62 backbone initialization
+# - mask-guided region attention
+# - learned-only region tokens
+# - no CLIP dictionary / no learned+CLIP mixing
+#
+# Only change the random seed and disable WandB. All artifacts are written to
+# Kaggle working output so the run can be saved as a Kaggle output version.
+
+seed:
+  random_seed: 2025
+
+paths:
+  output_dir: "/kaggle/working/outputs/seed_sweep_7512/seed_2025"
+
+logging:
+  use_wandb: false
+
