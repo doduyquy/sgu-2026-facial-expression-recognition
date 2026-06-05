@@ -270,7 +270,7 @@ def region_coordination_regularization(
         weights = routing_weights.clamp_min(1e-6)
         entropy = -(weights * weights.log()).sum(dim=1)
         denom = torch.log(torch.tensor(float(weights.size(1)), device=weights.device)).clamp_min(1e-6)
-        loss = None # (entropy / denom).mean() # K?ch b?n 3: G? b? ép bu?c Sparse Routing
+        loss = (entropy / denom).mean() # K?ch b?n 6: Khôi ph?c Sparse Routing
 
     if interaction_gates is not None:
         gates = interaction_gates
@@ -547,3 +547,4 @@ def compute_semantic_roi_graph_losses(
         "loss_relation_consistency": coordination_loss,
         "loss_fused_aux_ce": fused_ce_loss,
     }
+
