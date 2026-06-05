@@ -1,6 +1,6 @@
-_base_: "reproduce_7512_mask_guided_7462_learned_only_kaggle.yaml"
+_base_: "../convnext_tiny_mask_guided_region_attention_7462_sam_continue_learned_only_kaggle_dataset.yaml"
 
-# Seed sweep run for the 75.12 single-checkpoint recipe.
+# Seed sweep run for the config that produced the 75.12 checkpoint.
 #
 # Keep the 75.12 training scenario unchanged:
 # - FER-trained ConvNeXt 74.62 backbone initialization
@@ -19,4 +19,3 @@ paths:
 
 logging:
   use_wandb: false
-

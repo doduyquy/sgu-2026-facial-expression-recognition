@@ -1,0 +1,16 @@
+_base_: "../convnext_tiny_mask_guided_region_attention_7462_sam_continue_learned_only_kaggle_dataset.yaml"
+
+# Same-seed rerun for the config that produced the 75.12 checkpoint.
+#
+# The original 75.12 recipe inherits seed.random_seed=42 from configs/base.yaml.
+# This file makes that seed explicit so you can rerun the exact same scenario
+# and compare reproducibility against the saved 75.12 checkpoint.
+
+seed:
+  random_seed: 42
+
+paths:
+  output_dir: "/kaggle/working/outputs/seed_sweep_7512/seed_42_rerun"
+
+logging:
+  use_wandb: false
