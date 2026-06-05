@@ -65,12 +65,14 @@ class FER2013WithUNetMasks(FER2013):
         num_regions=6,
         mask_floor=0.05,
         use_clean_filter=True,
+        bad_row_indices_path=None,
     ):
         super().__init__(
             data_path=data_path,
             split=split,
             transforms=transforms,
             use_clean_filter=use_clean_filter,
+            bad_row_indices_path=bad_row_indices_path,
         )
         self.mask_dir = resolve_mask_dir(mask_dir, split)
         self.split_mask_dir = self.mask_dir / split

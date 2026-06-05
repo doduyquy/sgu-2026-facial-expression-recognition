@@ -19,6 +19,7 @@ def build_dataloader(config, data_path, distributed=False, world_size=1):
 
     data_cfg = config.get("data", {})
     use_clean_filter = data_cfg.get("use_clean_filter", True)
+    bad_row_indices_path = data_cfg.get("bad_row_indices_path")
 
     # build dataset
     data_train = FER2013(
@@ -26,6 +27,7 @@ def build_dataloader(config, data_path, distributed=False, world_size=1):
         split="train",
         transforms=trans_train,
         use_clean_filter=use_clean_filter,
+        bad_row_indices_path=bad_row_indices_path,
     )
     data_val = FER2013(data_path=data_path, split="val", transforms=trans_val)
     data_test = FER2013(data_path=data_path, split="test", transforms=trans_test)
@@ -78,14 +80,17 @@ def build_landmark_dataloader(config, data_path, distributed=False, world_size=1
     trans_test = build_landmark_transform(config, "test")
 
     model_cfg = config.get("model", {})
+    data_cfg = config.get("data", {})
     feature_layer = model_cfg.get("feature_layer", "layer3")
-    image_size = config["data"].get("image_size", 224)
+    image_size = data_cfg.get("image_size", 224)
     grid_sizes = {"layer2": image_size // 8, "layer3": image_size // 16, "layer4": image_size // 32}
     grid_size = grid_sizes.get(feature_layer, 14)
     sigma = model_cfg.get("landmark_sigma", 1.5)
     num_regions = model_cfg.get("num_regions", 6)
     predictor_path = model_cfg.get("landmark_predictor_path", None)
-    cache_masks = config.get("data", {}).get("cache_landmark_masks", True)
+    cache_masks = data_cfg.get("cache_landmark_masks", True)
+    use_clean_filter = data_cfg.get("use_clean_filter", True)
+    bad_row_indices_path = data_cfg.get("bad_row_indices_path")
 
     ds_kwargs = dict(
         grid_size=grid_size,
@@ -95,7 +100,14 @@ def build_landmark_dataloader(config, data_path, distributed=False, world_size=1
         cache_masks=cache_masks,
     )
 
-    data_train = FER2013WithLandmarks(data_path, split="train", transforms=trans_train, **ds_kwargs)
+    data_train = FER2013WithLandmarks(
+        data_path,
+        split="train",
+        transforms=trans_train,
+        use_clean_filter=use_clean_filter,
+        bad_row_indices_path=bad_row_indices_path,
+        **ds_kwargs,
+    )
     data_val = FER2013WithLandmarks(data_path, split="val", transforms=trans_val, **ds_kwargs)
     data_test = FER2013WithLandmarks(data_path, split="test", transforms=trans_test, **ds_kwargs)
 
@@ -141,6 +153,7 @@ def build_unet_mask_dataloader(config, data_path, distributed=False, world_size=
     mask_floor = model_cfg.get("mask_floor", 0.05)
     mask_dir = model_cfg.get("mask_dir") or data_cfg.get("mask_dir") or "outputs/unet_region_masks"
     use_clean_filter = data_cfg.get("use_clean_filter", True)
+    bad_row_indices_path = data_cfg.get("bad_row_indices_path")
 
     ds_kwargs = dict(
         mask_dir=mask_dir,
@@ -154,6 +167,7 @@ def build_unet_mask_dataloader(config, data_path, distributed=False, world_size=
         split="train",
         transforms=trans_train,
         use_clean_filter=use_clean_filter,
+        bad_row_indices_path=bad_row_indices_path,
         **ds_kwargs,
     )
     data_val = FER2013WithUNetMasks(data_path, split="val", transforms=trans_val, **ds_kwargs)

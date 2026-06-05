@@ -10,7 +10,14 @@ from src.data.emotions_dict import EMOTION_DICT
 class FER2013(Dataset):
     """Load one sample for dataloader"""
 
-    def __init__(self, data_path, split="train", transforms=None, use_clean_filter=True):
+    def __init__(
+        self,
+        data_path,
+        split="train",
+        transforms=None,
+        use_clean_filter=True,
+        bad_row_indices_path=None,
+    ):
         # set relative path to train|val|test in dataset
         self.data_split_path = os.path.join(data_path, f"{split}.csv")
         # because Q splitted dataset, so we only need 2 column: emotion(for category) and pixels for images
@@ -25,13 +32,18 @@ class FER2013(Dataset):
         # tương ứng với ảnh lỗi (đen, trắng, không phải mặt người, v.v.)
         if split == "train" and use_clean_filter:
             # Tìm file blacklist ở nhiều vị trí (local & Kaggle)
+            if bad_row_indices_path and not os.path.exists(bad_row_indices_path):
+                raise FileNotFoundError(
+                    f"Configured bad_row_indices_path not found: {bad_row_indices_path}"
+                )
             candidate_paths = [
+                bad_row_indices_path,
                 os.path.join(data_path, "bad_row_indices.txt"),                     # local: cùng thư mục train.csv
                 "/kaggle/input/datasets/lphuccc/id-error/bad_row_indices.txt",      # kaggle dataset
             ]
             blacklist_path = None
             for p in candidate_paths:
-                if os.path.exists(p):
+                if p and os.path.exists(p):
                     blacklist_path = p
                     break
 

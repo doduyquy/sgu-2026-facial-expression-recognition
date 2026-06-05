@@ -35,8 +35,16 @@ class FER2013WithLandmarks(FER2013):
         num_regions=6,
         predictor_path=None,
         cache_masks=True,
+        use_clean_filter=True,
+        bad_row_indices_path=None,
     ):
-        super().__init__(data_path, split=split, transforms=transforms)
+        super().__init__(
+            data_path,
+            split=split,
+            transforms=transforms,
+            use_clean_filter=use_clean_filter,
+            bad_row_indices_path=bad_row_indices_path,
+        )
 
         self.cache_masks = cache_masks
         self._mask_cache = [None] * len(self.data) if cache_masks else None

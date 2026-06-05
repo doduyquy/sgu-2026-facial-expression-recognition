@@ -1,0 +1,20 @@
+_base_: "../convnext_tiny_mask_guided_region_attention_7462_sam_continue_learned_only_kaggle_dataset.yaml"
+
+# Ablation for the 75.12 recipe:
+# - keep the original seed 42 scenario explicit
+# - keep the same FER-seeded ConvNeXt + mask-guided learned-only setup
+# - drop only the 345 train rows whose MediaPipe masks failed detection
+# - do not recreate train.csv; the loader removes rows by original 0-based index
+
+seed:
+  random_seed: 42
+
+data:
+  use_clean_filter: true
+  bad_row_indices_path: "/kaggle/input/datasets/lhngphc/345-train-error/bad_row_indices_drop345_mediapipe_failed.txt"
+
+paths:
+  output_dir: "/kaggle/working/outputs/seed_sweep_7512/drop345_seed_42"
+
+logging:
+  use_wandb: false
