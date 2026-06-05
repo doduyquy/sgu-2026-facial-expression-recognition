@@ -1,0 +1,134 @@
+_base_: "base.yaml"
+
+# Clean end-to-end ImageNet -> FER2013 training.
+#
+# This config is intentionally self-contained and inherits only base.yaml.
+# It does not reuse the 74.62 / 75.12 FER checkpoint line.
+#
+# Contract:
+# - ConvNeXt-Tiny starts from torchvision ImageNet DEFAULT weights.
+# - No FER checkpoint is loaded through model.checkpoint_path.
+# - No full-model init checkpoint is loaded through training.init_checkpoint_path.
+# - Mask-guided region-attention is trained end to end in one run:
+#   warm up the region head first, then unfreeze the ConvNeXt backbone.
+# - Learned-only region tokens, no CLIP dictionary / no learned+CLIP mixing.
+# - Drop only the 345 MediaPipe-failed train rows by original train.csv index.
+# - Keep val/test unchanged.
+
+seed:
+  random_seed: 42
+
+paths:
+  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
+  output_dir: "/kaggle/working/outputs/imagenet_e2e_drop345/seed_42"
+
+data:
+  name: "fer13-split"
+  num_classes: 7
+  image_size: 224
+  channels: 3
+  normalize: true
+  batch_size: 16
+  num_workers: 2
+
+  use_clean_filter: true
+  bad_row_indices_path: "/kaggle/input/datasets/lhngphc/345-train-error/bad_row_indices_drop345_mediapipe_failed.txt"
+
+  mask_dir: "/kaggle/input/datasets/lhongphuc2/mediapipe-mask-datasets-35887/merged_mediapipe_region_masks"
+
+model:
+  name: "convnext_tiny_mask_guided_region_attention"
+  arch: "convnext_tiny"
+
+  # ImageNet-only initialization. These two nulls are the main guardrails that
+  # keep this run separate from the stronger FER-seeded 75.12/75.17 branch.
+  pretrained: true
+  weights: "DEFAULT"
+  checkpoint_path: null
+  checkpoint_strict: false
+
+  mask_dir: "/kaggle/input/datasets/lhongphuc2/mediapipe-mask-datasets-35887/merged_mediapipe_region_masks"
+
+  # Region-attention architecture.
+  use_swin_local_refiner: false
+  use_multiscale_se_fusion: false
+  use_layer4_se: false
+  use_source_classifier: false
+  logit_fusion: "attention"
+  finetune_logit_fusion: "attention"
+  source_logit_weight: 0.0
+  attention_logit_weight: 1.0
+
+  embed_dim: 384
+  num_heads: 4
+  num_regions: 6
+  num_encoder_layers: 2
+  transformer_dropout: 0.25
+  fusion_type: "transformer"
+  region_pooling: "concat"
+  classifier_hidden_dim: 512
+
+  pool_visual_tokens: false
+  token_grid_size: 7
+  use_visual_pos_embed: true
+  use_region_slot_embed: true
+  use_global_visual_bias: true
+  use_global_feature_concat: false
+
+  # Learned-only region tokens.
+  use_clip_dictionary: false
+  use_learnable_clip_region_tokens: false
+  clip_fallback_to_learned: true
+
+  # Soft spatial prior from precomputed MediaPipe region masks.
+  mask_guided_attention: true
+  mask_attention_alpha: 0.3
+  mask_floor: 0.05
+
+  # Stable ImageNet-only schedule: settle the new region head, then fine-tune
+  # all ConvNeXt feature layers with a very small visual LR.
+  freeze_backbone_epochs: 8
+  unfreeze_backbone: true
+  unfreeze_backbone_scope: "all"
+  freeze_unfrozen_batchnorm: true
+
+  classifier_dropout1: 0.45
+  classifier_dropout2: 0.35
+  ortho_loss_type: "squared_offdiag"
+  ortho_loss_weight: 0.003
+
+training:
+  init_checkpoint_path: null
+  init_checkpoint_strict: false
+
+  epochs: 300
+  patience: 40
+  monitor: "val_accuracy"
+
+  loss: "cross_entropy"
+  label_smoothing: 0.05
+  use_class_weights: false
+
+  optimizer: "adamw"
+  lr: 0.00008
+  finetune_lr: 0.00002
+  visual_extractor_lr: 0.000001
+  weight_decay: 0.03
+
+  scheduler: "reduce_lr_on_plateau"
+  lr_factor: 0.5
+  lr_patience: 3
+
+  grad_clip_norm: 1.0
+  skip_nonfinite_batches: true
+  use_amp: false
+
+logging:
+  use_wandb: false
+  project_name: "FER2013"
+
+ddp:
+  batch_size_is_global: true
+  find_unused_parameters: false
+  broadcast_buffers: true
+  sync_batchnorm: true
