@@ -1,4 +1,4 @@
-"""
+﻿"""
 Semantic ROI Graph FER model (2-tier: micro + macro) without ArcFace.
 
 This module implements:
@@ -790,7 +790,7 @@ class SemanticROIGraphFER(nn.Module):
             state_dim=config.semantic_state_dim,
             hidden_dim=max(config.semantic_state_dim * 2, 32),
             dropout=config.dropout,
-            dropedge_rate=0.4,
+            dropedge_rate=0.2,
         )
 
         self.micro_motif_bank = MicroSemanticMotifBank(
@@ -858,7 +858,7 @@ class SemanticROIGraphFER(nn.Module):
 
         # Per-class gate: each emotion class learns its own graph-vs-global balance.
         # Init with -0.5 → sigmoid(-0.5) ≈ 0.38, slightly below 0.5 to favour the graph branch early.
-        self.semantic_structure_gate = nn.Parameter(torch.full((config.num_classes,), 0.0))
+        self.semantic_structure_gate = nn.Parameter(torch.full((config.num_classes,), -0.5))
         
 
         # Backward-compatible aliases for older checkpoints and callers.
@@ -1207,5 +1207,6 @@ class SemanticROIGraphFER(nn.Module):
                 "semantic_consistency": semantic_motif_tokens.new_tensor(0.0),
             },
         }
+
 
 

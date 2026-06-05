@@ -1,4 +1,4 @@
-"""
+﻿"""
 Loss functions for Semantic ROI Graph FER model.
 
 This module provides standalone loss functions for the dual-level
@@ -141,7 +141,7 @@ def semantic_program_sparsity_loss(
     if program_attention is not None:
         losses.append(program_attention)
     if routing_weights is not None:
-        losses.append(routing_weights)
+        pass # losses.append(routing_weights) # Kịch bản 7: Không phạt sparsity lên routing_weights
     if cross_region_attention is not None:
         if cross_region_attention.dim() == 4:
             attn = cross_region_attention.mean(dim=1)
@@ -270,7 +270,7 @@ def region_coordination_regularization(
         weights = routing_weights.clamp_min(1e-6)
         entropy = -(weights * weights.log()).sum(dim=1)
         denom = torch.log(torch.tensor(float(weights.size(1)), device=weights.device)).clamp_min(1e-6)
-        loss = (entropy / denom).mean() # K?ch b?n 6: Kh�i ph?c Sparse Routing
+        loss = (entropy / denom).mean() # K?ch b?n 6: Kh�i ph?c Sparse Routing
 
     if interaction_gates is not None:
         gates = interaction_gates
@@ -547,4 +547,6 @@ def compute_semantic_roi_graph_losses(
         "loss_relation_consistency": coordination_loss,
         "loss_fused_aux_ce": fused_ce_loss,
     }
+
+
 
