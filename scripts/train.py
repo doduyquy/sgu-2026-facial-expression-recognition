@@ -1,5 +1,7 @@
 import os
 import sys
+import csv
+import json
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -9,6 +11,9 @@ if str(PROJECT_ROOT) not in sys.path:
 import wandb
 import torch
 import argparse
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed.elastic.multiprocessing.errors import record
@@ -29,6 +34,99 @@ from src.utils.data_stats import get_class_distribution # testing: class weight
 
 from datetime import datetime, timedelta
 #-------------------------------------------------------------
+
+
+def save_training_artifacts(history, train_losses, val_losses, output_dir, run_name):
+    curves_dir = Path(output_dir) / "training_curves" / run_name
+    curves_dir.mkdir(parents=True, exist_ok=True)
+
+    if not history:
+        history = [
+            {
+                "epoch": idx + 1,
+                "train_loss": float(train_loss),
+                "val_loss": float(val_loss),
+            }
+            for idx, (train_loss, val_loss) in enumerate(zip(train_losses, val_losses))
+        ]
+
+    csv_path = curves_dir / "training_history.csv"
+    json_path = curves_dir / "training_history.json"
+    plot_path = curves_dir / "training_curves.png"
+
+    fieldnames = sorted({key for row in history for key in row.keys()})
+    preferred = [
+        "epoch",
+        "train_loss",
+        "train_accuracy",
+        "val_loss",
+        "val_accuracy",
+        "best_val_loss",
+        "best_val_accuracy",
+        "improved",
+        "patience_counter",
+        "lr_head",
+        "lr_visual_extractor",
+    ]
+    fieldnames = [key for key in preferred if key in fieldnames] + [
+        key for key in fieldnames if key not in preferred
+    ]
+
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(history)
+
+    with json_path.open("w", encoding="utf-8") as f:
+        json.dump(history, f, indent=2)
+
+    epochs = [row["epoch"] for row in history]
+    has_accuracy = all(
+        "train_accuracy" in row and "val_accuracy" in row
+        for row in history
+    )
+    if has_accuracy:
+        fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+        loss_ax, acc_ax = axes
+    else:
+        fig, loss_ax = plt.subplots(1, 1, figsize=(8, 5))
+        acc_ax = None
+
+    loss_ax.plot(epochs, [row["train_loss"] for row in history], marker="o", label="Train loss")
+    loss_ax.plot(epochs, [row["val_loss"] for row in history], marker="x", label="Val loss")
+    loss_ax.set_title("Loss")
+    loss_ax.set_xlabel("Epoch")
+    loss_ax.set_ylabel("Loss")
+    loss_ax.grid(True, alpha=0.3)
+    loss_ax.legend()
+
+    if acc_ax is not None:
+        acc_ax.plot(
+            epochs,
+            [row["train_accuracy"] for row in history],
+            marker="o",
+            label="Train accuracy",
+        )
+        acc_ax.plot(
+            epochs,
+            [row["val_accuracy"] for row in history],
+            marker="x",
+            label="Val accuracy",
+        )
+        acc_ax.set_title("Accuracy")
+        acc_ax.set_xlabel("Epoch")
+        acc_ax.set_ylabel("Accuracy")
+        acc_ax.grid(True, alpha=0.3)
+        acc_ax.legend()
+
+    fig.suptitle(run_name)
+    fig.tight_layout()
+    fig.savefig(plot_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+    print(f"--> Training history CSV: {csv_path}")
+    print(f"--> Training history JSON: {json_path}")
+    print(f"--> Training curve plot: {plot_path}")
 
 def setup_distributed():
     if "RANK" not in os.environ or "WORLD_SIZE" not in os.environ:
@@ -294,6 +392,15 @@ def main():
             save_dir=path_save_ckpt
         )
         train_losses, val_losses = trainer.fit()
+
+        if is_main_process():
+            save_training_artifacts(
+                history=getattr(trainer, "history", []),
+                train_losses=train_losses,
+                val_losses=val_losses,
+                output_dir=output_dir,
+                run_name=run_name,
+            )
 
         # evaluate
         if distributed:

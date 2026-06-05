@@ -1,0 +1,21 @@
+_base_: "../convnext_tiny_mask_guided_region_attention_imagenet_stable_kaggle_dataset.yaml"
+
+# Reproduce / rerun the 75.01 family checkpoint.
+#
+# Evidence in this repo:
+# - checkpoint:
+#   checkpoints/version best/convnext_tiny_mask_guided_region_attention_17052026_75.01.pth
+# - evaluated config:
+#   convnext_tiny_mask_guided_region_attention_imagenet_stable
+# - test accuracy:
+#   75.00696572861521%
+# - metric artifact:
+#   outputs/ensemble/eval_version_best_2_checkpoint_logits_20260520_095839/
+#   members/mask_guided_17052026_test75_01/metrics_summary.json
+#
+# Contract:
+# - clean ImageNet ConvNeXt-Tiny DEFAULT initialization
+# - no FER 74.62 checkpoint
+# - mask-guided region attention
+# - learned region tokens only
+# - no CLIP dictionary / no learned+CLIP mixing

@@ -361,6 +361,15 @@ def load_model_from_checkpoint(
             "use_learnable_clip_region_tokens"
         ),
     }
+    if getattr(model, "learnable_logit_fusion", False):
+        diagnostics["current_cnn_logit_weight"] = model.current_cnn_logit_weight()
+        diagnostics["current_region_logit_weight"] = model.current_region_logit_weight()
+        if "logit_fusion_alpha" in diagnostics["missing_keys"]:
+            diagnostics["fusion_warning"] = (
+                "Config enables learnable_logit_fusion, but checkpoint has no "
+                "logit_fusion_alpha. Evaluation will use the config init weight, "
+                "not a trained fusion scalar."
+            )
     return model, config, diagnostics
 
 
@@ -981,6 +990,8 @@ def run_evaluation(
     )
     log_json(diagnostics, output_dir / "load_diagnostics.json")
     log(f"Missing keys: {len(diagnostics['missing_keys'])}; unexpected keys: {len(diagnostics['unexpected_keys'])}")
+    if diagnostics.get("fusion_warning"):
+        log(f"WARNING: {diagnostics['fusion_warning']}")
 
     manifest = {
         "created_at": datetime.now().isoformat(timespec="seconds"),

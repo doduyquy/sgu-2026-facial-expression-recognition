@@ -622,6 +622,7 @@ class Trainer:
         patience_counter = 0
         all_train_loss = []
         all_val_loss = []
+        self.history = []
 
         if self.is_main_process:
             print(f'\n--> Start training in total {self.epochs} epochs with {self.device} device. Start...\n')
@@ -756,6 +757,34 @@ class Trainer:
                     if self.is_main_process:
                         print(f"\t-_- Early stopping at ep={ep+1}")
                     should_stop = True
+
+            if self.is_main_process:
+                history_row = {
+                    "epoch": ep + 1,
+                    "train_loss": float(train_loss),
+                    "train_accuracy": train_acc_value,
+                    "train_ortho_loss": float(train_ortho_loss),
+                    "train_coarse_aux_loss": float(train_coarse_aux_loss),
+                    "train_prior_alignment_loss": float(train_prior_alignment_loss),
+                    "val_loss": float(val_loss),
+                    "val_accuracy": val_acc_value,
+                    "best_val_loss": float(best_val_loss),
+                    "best_val_accuracy": float(best_val_acc),
+                    "monitor": self.monitor,
+                    "best_score": float(best_score),
+                    "improved": int(improved),
+                    "patience_counter": int(patience_counter),
+                    "lr_head": lr_after_scheduler[0] if lr_after_scheduler else 0.0,
+                    "lr_visual_extractor": (
+                        lr_after_scheduler[1]
+                        if len(lr_after_scheduler) > 1
+                        else 0.0
+                    ),
+                    "phase_transitioned": int(phase_transitioned),
+                    "skipped_nonfinite_batches": int(self.skipped_nonfinite_batches),
+                }
+                history_row.update(logit_fusion_metrics)
+                self.history.append(history_row)
 
             # wandb log
             if self.use_wandb and self.is_main_process:

@@ -1,0 +1,21 @@
+_base_: "../convnext_tiny_mask_guided_region_attention_7462_sam_continue_learned_only_kaggle_dataset.yaml"
+
+# Reproduce / rerun the 75.12 family checkpoint.
+#
+# Evidence in this repo:
+# - checkpoint:
+#   checkpoints/version best/convnext_tiny_mask_guided_region_attention_18052026_75.12.pth
+# - evaluated config:
+#   convnext_tiny_mask_guided_region_attention_7462_sam_continue_learned_only
+# - test accuracy:
+#   75.11841738645863%
+# - metric artifact:
+#   outputs/ensemble/eval_version_best_2_checkpoint_logits_20260520_095839/
+#   members/mask_guided_18052026_test75_12/metrics_summary.json
+#
+# Contract:
+# - start from the FER-trained ConvNeXt 74.62 backbone
+# - mask-guided region attention
+# - learned region tokens only
+# - no CLIP dictionary / no learned+CLIP mixing
+

@@ -28,11 +28,13 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts.evaluate_convnext_mask_guided_checkpoint import prepare_state_dict_for_eval
 from scripts.precompute_mediapipe_region_masks import REGION_ORDER, import_mediapipe_face_mesh
 from src.data.dataset_unet_mask import FER2013WithUNetMasks
 from src.data.transforms import build_landmark_transform
@@ -73,7 +75,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=32, help="Evaluation batch size.")
     parser.add_argument("--num-workers", type=int, default=2, help="DataLoader workers.")
     parser.add_argument("--max-samples", type=int, default=None, help="Optional smoke-test sample cap.")
-    parser.add_argument("--data-path", default=None, help="Override FER2013 CSV path.")
+    parser.add_argument("--data-path", default=None, help="Override FER2013 split root containing train/val/test CSVs.")
     parser.add_argument(
         "--mask-dir",
         default="auto",
@@ -96,7 +98,7 @@ def resolve_path(path_value: Optional[str], *, base: Path = PROJECT_ROOT) -> Opt
     return base / path
 
 
-def resolve_data_path(config: Dict, override: Optional[str]) -> Path:
+def resolve_data_path(config: Dict, override: Optional[str], split: str) -> Path:
     candidates: List[Path] = []
     if override:
         candidates.append(resolve_path(override))
@@ -107,19 +109,19 @@ def resolve_data_path(config: Dict, override: Optional[str]) -> Path:
 
     candidates.extend(
         [
-            Path("/kaggle/input/datasets/lhongphuc3/fer2013/fer2013.csv"),
-            Path("/kaggle/input/fer2013/fer2013.csv"),
-            PROJECT_ROOT / "data" / "fer2013.csv",
-            PROJECT_ROOT / "dataset" / "fer2013.csv",
+            Path("/kaggle/input/datasets/lhongphuc3/fer13-split"),
+            Path("/kaggle/input/datasets/lphuccc/fer13-split"),
+            Path("/kaggle/input/fer13-split"),
+            PROJECT_ROOT / "dataset" / "fer13-split",
         ]
     )
 
     for candidate in candidates:
-        if candidate and candidate.exists():
+        if candidate and candidate.is_dir() and (candidate / f"{split}.csv").exists():
             return candidate
 
     raise FileNotFoundError(
-        "Could not find FER2013 split path. Pass --data-path explicitly. Tried: "
+        f"Could not find FER2013 split root with {split}.csv. Pass --data-path explicitly. Tried: "
         + ", ".join(str(c) for c in candidates if c)
     )
 
@@ -236,8 +238,22 @@ def load_model(config: Dict, checkpoint_path: Path, device: torch.device, strict
             "Expected config['model']['name'] to be a string, "
             f"got {type(model_name).__name__}: {model_name!r}"
         )
-    model = get_model(model_name, config=config).to(device)
+
+    model_cfg = config.setdefault("model", {})
+    model_cfg["checkpoint_path"] = None
+    model_cfg["checkpoint_strict"] = False
+    model_cfg["pretrained"] = False
+    model_cfg["weights"] = None
+
     state_dict = load_checkpoint_state(checkpoint_path)
+    state_dict, config = prepare_state_dict_for_eval(
+        state_dict,
+        config,
+        fuse_clip_tokens=True,
+        log=print,
+    )
+
+    model = get_model(model_name, config=config).to(device)
     incompatible = model.load_state_dict(state_dict, strict=strict)
     if not strict:
         missing = list(incompatible.missing_keys)
@@ -308,6 +324,85 @@ def model_forward(model: torch.nn.Module, images: torch.Tensor, masks: torch.Ten
 
 
 @torch.no_grad()
+def _record_without_attention(record: Dict) -> Dict:
+    row = dict(record)
+    row.pop("attention", None)
+    return row
+
+
+def select_balanced_high_confidence(records: Sequence[Dict], limit: int) -> List[Dict]:
+    if limit <= 0:
+        return []
+    buckets: Dict[int, List[Dict]] = {idx: [] for idx in range(len(EMOTION_NAMES))}
+    for record in records:
+        buckets[int(record["true_label"])].append(record)
+    for rows in buckets.values():
+        rows.sort(key=lambda item: item["confidence"], reverse=True)
+
+    selected: List[Dict] = []
+    while len(selected) < limit:
+        progressed = False
+        for class_idx in range(len(EMOTION_NAMES)):
+            if buckets[class_idx]:
+                selected.append(buckets[class_idx].pop(0))
+                progressed = True
+                if len(selected) >= limit:
+                    break
+        if not progressed:
+            break
+    return selected
+
+
+def save_confusion_artifacts(prediction_df: pd.DataFrame, output_dir: Path, title: str) -> None:
+    labels_order = list(range(len(EMOTION_NAMES)))
+    y_true = prediction_df["true_label"].to_numpy()
+    y_pred = prediction_df["pred_label"].to_numpy()
+    cm = confusion_matrix(y_true, y_pred, labels=labels_order)
+    row_sums = cm.sum(axis=1, keepdims=True)
+    row_pct = np.divide(cm, row_sums, out=np.zeros_like(cm, dtype=np.float64), where=row_sums != 0) * 100.0
+
+    pd.DataFrame(cm, index=EMOTION_NAMES, columns=EMOTION_NAMES).to_csv(output_dir / "confusion_matrix.csv")
+    pd.DataFrame(row_pct, index=EMOTION_NAMES, columns=EMOTION_NAMES).to_csv(
+        output_dir / "confusion_matrix_row_percent.csv"
+    )
+
+    report_text = classification_report(
+        y_true,
+        y_pred,
+        labels=labels_order,
+        target_names=EMOTION_NAMES,
+        zero_division=0,
+    )
+    (output_dir / "classification_report.txt").write_text(report_text, encoding="utf-8")
+
+    fig, ax = plt.subplots(figsize=(8.4, 7.0), dpi=160)
+    image = ax.imshow(cm, interpolation="nearest", cmap="Blues")
+    fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
+    ax.set_title(title, fontsize=13)
+    ax.set_xlabel("Predicted label")
+    ax.set_ylabel("True label")
+    ax.set_xticks(range(len(EMOTION_NAMES)))
+    ax.set_yticks(range(len(EMOTION_NAMES)))
+    ax.set_xticklabels(EMOTION_NAMES, rotation=42, ha="right")
+    ax.set_yticklabels(EMOTION_NAMES)
+    threshold = cm.max() / 2 if cm.size else 0
+    for row_idx in range(cm.shape[0]):
+        for col_idx in range(cm.shape[1]):
+            color = "white" if cm[row_idx, col_idx] > threshold else "#1f2933"
+            ax.text(
+                col_idx,
+                row_idx,
+                f"{cm[row_idx, col_idx]}\n{row_pct[row_idx, col_idx]:.1f}%",
+                ha="center",
+                va="center",
+                color=color,
+                fontsize=8.6,
+            )
+    fig.tight_layout()
+    fig.savefig(output_dir / "confusion_matrix.png", bbox_inches="tight")
+    plt.close(fig)
+
+
 def collect_predictions(
     model: torch.nn.Module,
     loader: DataLoader,
@@ -316,9 +411,8 @@ def collect_predictions(
     num_correct: int,
     num_wrong: int,
     use_tta: bool,
-) -> Tuple[List[Dict], List[Dict], Dict]:
-    correct: List[Dict] = []
-    wrong: List[Dict] = []
+) -> Tuple[List[Dict], List[Dict], Dict, pd.DataFrame]:
+    all_records: List[Dict] = []
     total = 0
     hit = 0
 
@@ -349,16 +443,20 @@ def collect_predictions(
                 "correct": bool(matches[item_idx].item()),
                 "attention": attn[item_idx].detach().cpu().numpy() if attn is not None else None,
             }
+            probs_np = probs[item_idx].detach().cpu().numpy()
+            for class_idx, emotion_name in enumerate(EMOTION_NAMES):
+                record[f"prob_{emotion_name}"] = float(probs_np[class_idx])
 
             if record["correct"]:
                 hit += 1
-                if len(correct) < num_correct:
-                    correct.append(record)
-            else:
-                if len(wrong) < num_wrong:
-                    wrong.append(record)
+            all_records.append(record)
 
             total += 1
+
+    correct_pool = [record for record in all_records if record["correct"]]
+    wrong_pool = [record for record in all_records if not record["correct"]]
+    correct = select_balanced_high_confidence(correct_pool, num_correct)
+    wrong = select_balanced_high_confidence(wrong_pool, num_wrong)
 
     summary = {
         "split_size": total,
@@ -366,7 +464,8 @@ def collect_predictions(
         "correct_exported": len(correct),
         "wrong_exported": len(wrong),
     }
-    return correct, wrong, summary
+    prediction_df = pd.DataFrame([_record_without_attention(record) for record in all_records])
+    return correct, wrong, summary, prediction_df
 
 
 class GradCAM:
@@ -575,7 +674,12 @@ def save_sample_figure(
         axes[2, region_idx].imshow(overlay_heatmap(base_image, upsample_small_map(attn_map), alpha=0.48, cmap="magma"))
         axes[2, region_idx].set_title(f"Attn: {region_name}", fontsize=9)
 
-    fig.tight_layout(pad=0.6)
+    fig.suptitle(
+        "MGR-CNN 75.12 XAI | MediaPipe region masks [6, 7, 7] | Cross-attention maps [6, 7, 7]",
+        fontsize=12,
+        y=0.995,
+    )
+    fig.tight_layout(pad=0.6, rect=[0, 0, 1, 0.965])
     fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
 
@@ -620,7 +724,7 @@ def main() -> None:
     else:
         device = torch.device(args.device)
 
-    data_path = resolve_data_path(config, args.data_path)
+    data_path = resolve_data_path(config, args.data_path, args.split)
     mask_root = resolve_mask_root(config, args.mask_dir, args.split)
     output_dir = make_output_dir(config, args.output_dir)
     checkpoint_path = resolve_checkpoint(config, args.checkpoint)
@@ -643,7 +747,7 @@ def main() -> None:
     )
 
     model = load_model(config, checkpoint_path, device=device, strict=args.strict_load)
-    correct, wrong, summary = collect_predictions(
+    correct, wrong, summary, prediction_df = collect_predictions(
         model=model,
         loader=loader,
         dataset=dataset,
@@ -651,6 +755,13 @@ def main() -> None:
         num_correct=args.num_correct,
         num_wrong=args.num_wrong,
         use_tta=not args.no_tta,
+    )
+    prediction_df.to_csv(output_dir / "predictions.csv", index=False)
+    prediction_df.loc[~prediction_df["correct"]].to_csv(output_dir / "wrong_predictions.csv", index=False)
+    save_confusion_artifacts(
+        prediction_df,
+        output_dir,
+        title="MGR-CNN Confusion Matrix",
     )
 
     target_module = find_convnext_final_feature_module(model)

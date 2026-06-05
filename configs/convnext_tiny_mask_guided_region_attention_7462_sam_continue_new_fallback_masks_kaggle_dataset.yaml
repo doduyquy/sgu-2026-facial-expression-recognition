@@ -11,3 +11,6 @@ model:
 
 data:
   mask_dir: "/kaggle/input/datasets/lhngphc/mask-train-val-test-fallback/merged_mediapipe_region_masks"
+mask_train_val_test_fallback
+
+
