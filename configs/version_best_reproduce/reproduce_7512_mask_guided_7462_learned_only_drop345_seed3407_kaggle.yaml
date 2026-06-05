@@ -1,0 +1,24 @@
+_base_: "../convnext_tiny_mask_guided_region_attention_7462_sam_continue_learned_only_kaggle_dataset.yaml"
+
+# Next seed for the drop345 ablation.
+#
+# Seed 42 with this drop345 recipe reached 75.17, slightly above the original
+# 75.12 run. This file keeps that same end-to-end setup and changes only:
+# - seed.random_seed: 3407
+# - paths.output_dir: per-seed Kaggle output folder
+#
+# The loader removes rows by original 0-based train.csv index; val/test stay
+# unchanged.
+
+seed:
+  random_seed: 3407
+
+data:
+  use_clean_filter: true
+  bad_row_indices_path: "/kaggle/input/datasets/lhngphc/345-train-error/bad_row_indices_drop345_mediapipe_failed.txt"
+
+paths:
+  output_dir: "/kaggle/working/outputs/seed_sweep_7512/drop345_seed_3407"
+
+logging:
+  use_wandb: false

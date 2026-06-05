@@ -7,7 +7,7 @@ from src.utils.logger_wandb import log_image_to_wandb
 from src.evaluation.metrics import compute_metrics, plot_confusion_matrix
 from src.utils.data_stats import get_class_distribution
 
-def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> None:
+def evaluate_and_show(model, test_loader, testset_path, device, save_dir, use_wandb=True) -> None:
     """Evaluate, log metrics, and visualize 30 correct / 30 wrong samples."""
     model.eval()
     
@@ -86,8 +86,11 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> Non
                         wrong_preds.append(pred_label)
                         if attn_w is not None: wrong_attns.append(attn_w)
                         
-    # Plot and push W&B
-    print("\nPushing to WandB & Dashboard...")
+    # Plot evaluation figures and optionally push them to W&B.
+    if use_wandb:
+        print("\nPushing evaluation figures to WandB...")
+    else:
+        print("\nSaving evaluation figures locally...")
 
     # metrics and confusoin matrix
     print("Compute metrics and confusion matrix...")
@@ -103,7 +106,8 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> Non
     class_distribution = get_class_distribution(csv_path)
     cm_path = os.path.join(save_dir, "confusion_matrix.png")
     fig_cm = plot_confusion_matrix(all_trues, all_preds, class_distribution, acc, save_path=cm_path)
-    log_image_to_wandb("Evaluation/Confusion_Matrix", fig_cm)
+    if use_wandb:
+        log_image_to_wandb("Evaluation/Confusion_Matrix", fig_cm)
 
 
     if len(correct_images) > 0:
@@ -113,14 +117,16 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> Non
                 title="Correct Predictions with Attention Heatmap", 
                 save_path=os.path.join(save_dir, "correct_preds_attn.png")
             )
-            log_image_to_wandb("Evaluation/Correct_Samples_Attention", fig_corr)
+            if use_wandb:
+                log_image_to_wandb("Evaluation/Correct_Samples_Attention", fig_corr)
         else:
             fig_corr = plot_prediction_grid(
                 correct_images, correct_trues, correct_preds, 
                 title="Correct Predictions", 
                 save_path=os.path.join(save_dir, "correct_preds.png")
             )
-            log_image_to_wandb("Evaluation/Correct_Samples", fig_corr)
+            if use_wandb:
+                log_image_to_wandb("Evaluation/Correct_Samples", fig_corr)
         
     if len(wrong_images) > 0:
         if len(wrong_attns) == len(wrong_images):
@@ -129,13 +135,15 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> Non
                 title="Incorrect Predictions with Attention Heatmap", 
                 save_path=os.path.join(save_dir, "wrong_preds_attn.png")
             )
-            log_image_to_wandb("Evaluation/Wrong_Samples_Attention", fig_wrong)
+            if use_wandb:
+                log_image_to_wandb("Evaluation/Wrong_Samples_Attention", fig_wrong)
         else:
             fig_wrong = plot_prediction_grid(
                 wrong_images, wrong_trues, wrong_preds, 
                 title="Incorrect Predictions", 
                 save_path=os.path.join(save_dir, "wrong_preds.png")
             )
-            log_image_to_wandb("Evaluation/Wrong_Samples", fig_wrong)
+            if use_wandb:
+                log_image_to_wandb("Evaluation/Wrong_Samples", fig_wrong)
 
     print(f"Done! Save file at: {save_dir}")
