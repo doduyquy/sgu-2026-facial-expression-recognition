@@ -790,7 +790,7 @@ class SemanticROIGraphFER(nn.Module):
             state_dim=config.semantic_state_dim,
             hidden_dim=max(config.semantic_state_dim * 2, 32),
             dropout=config.dropout,
-            dropedge_rate=0.2,
+            dropedge_rate=0.4,
         )
 
         self.micro_motif_bank = MicroSemanticMotifBank(
@@ -858,8 +858,8 @@ class SemanticROIGraphFER(nn.Module):
 
         # Per-class gate: each emotion class learns its own graph-vs-global balance.
         # Init with -0.5 → sigmoid(-0.5) ≈ 0.38, slightly below 0.5 to favour the graph branch early.
-        self.semantic_structure_gate = nn.Parameter(torch.full((config.num_classes,), -0.5))
-        self.fusion_scale_param = nn.Parameter(torch.tensor([float(getattr(config, "fusion_scale", 0.25))]))
+        self.semantic_structure_gate = nn.Parameter(torch.full((config.num_classes,), 0.0))
+        
 
         # Backward-compatible aliases for older checkpoints and callers.
         self.macro_motif_bank = self.semantic_program_bank
@@ -1161,14 +1161,14 @@ class SemanticROIGraphFER(nn.Module):
         # Per-class gate: shape (1, num_classes) — each emotion learns its own balance
         structure_gate = torch.sigmoid(self.semantic_structure_gate).view(1, -1)
         logits_motif = semantic_program_scores
-        logits = logits_fused + self.fusion_scale_param * structure_gate * logits_motif
+        logits = (1 - structure_gate) * logits_fused + structure_gate * logits_motif
 
         return {
             "logits": logits,
             "logits_motif": logits_motif,
             "logits_fused": logits_fused,
             "structure_gate": structure_gate,
-            "fusion_scale": self.fusion_scale_param.detach(),
+            
             "micro_node_features": micro_node_features,
             "micro_motif_attention": micro_motif_attention,
             "region_motif_tokens": semantic_motif_tokens,
@@ -1207,4 +1207,5 @@ class SemanticROIGraphFER(nn.Module):
                 "semantic_consistency": semantic_motif_tokens.new_tensor(0.0),
             },
         }
+
 
