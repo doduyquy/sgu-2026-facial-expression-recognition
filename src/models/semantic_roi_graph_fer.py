@@ -1,4 +1,4 @@
-﻿"""
+"""
 Semantic ROI Graph FER model (2-tier: micro + macro) without ArcFace.
 
 This module implements:
@@ -404,7 +404,7 @@ class MicroSemanticMotifMatcher(nn.Module):
 class SemanticInteractionBlock(nn.Module):
     """Learned semantic interaction reasoning for pairwise facial coordination."""
 
-    def __init__(self, state_dim: int, hidden_dim: Optional[int] = None, dropout: float = 0.1, dropedge_rate: float = 0.2):
+    def __init__(self, state_dim: int, hidden_dim: Optional[int] = None, dropout: float = 0.1, dropedge_rate: float = 0.5):
         super().__init__()
         self.dropedge_rate = dropedge_rate
         hidden_dim = hidden_dim or max(state_dim * 2, 32)
@@ -657,7 +657,9 @@ class SemanticProgramExecutor(nn.Module):
 
         # 1. Compute valid region similarity
         region_sims = torch.einsum("brd,cmrd->bcmr", state_norm, program_norm)
-        if region_mask is not None:
+        if routing_weights is not None:
+            region_sim = (region_sims * routing_weights.unsqueeze(1).unsqueeze(1)).sum(dim=-1)
+        elif region_mask is not None:
             valid_mask = region_mask.unsqueeze(1).unsqueeze(1)
             region_sims = region_sims * valid_mask
             region_sim = region_sims.sum(dim=-1) / valid_mask.sum(dim=-1).clamp_min(1.0)
