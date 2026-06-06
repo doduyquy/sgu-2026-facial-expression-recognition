@@ -56,7 +56,7 @@ training:
   enable_semantic_consistency: true
   enable_compositional_program: true
   enable_semantic_disentanglement: true
-  enable_region_coordination: false
+  enable_region_coordination: true
   enable_topology_alignment: false
   enable_region_composition_contrastive: false
   enable_program_sparsity: True
@@ -85,3 +85,4 @@ training:
 
 logging:
   use_wandb: true
+

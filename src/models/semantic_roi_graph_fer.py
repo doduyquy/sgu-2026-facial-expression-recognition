@@ -655,16 +655,17 @@ class SemanticProgramExecutor(nn.Module):
         state_norm = F.normalize(semantic_states, dim=-1)
         program_norm = F.normalize(program_bank, dim=-1)
 
-        # 1. Compute valid region similarity
+        # 1. Compute valid region similarity (Kịch bản 10: Top-K)
         region_sims = torch.einsum("brd,cmrd->bcmr", state_norm, program_norm)
-        if routing_weights is not None:
-            region_sim = (region_sims * routing_weights.unsqueeze(1).unsqueeze(1)).sum(dim=-1)
-        elif region_mask is not None:
+        if region_mask is not None:
             valid_mask = region_mask.unsqueeze(1).unsqueeze(1)
-            region_sims = region_sims * valid_mask
-            region_sim = region_sims.sum(dim=-1) / valid_mask.sum(dim=-1).clamp_min(1.0)
+            masked_sims = region_sims.masked_fill(valid_mask <= 0, -1e9)
+            min_valid = int(region_mask.sum(dim=-1).min().item())
+            k = max(1, min(3, min_valid))
+            region_sim = masked_sims.topk(k=k, dim=-1)[0].mean(dim=-1)
         else:
-            region_sim = region_sims.mean(dim=-1)
+            k = min(3, region_sims.size(-1))
+            region_sim = region_sims.topk(k=k, dim=-1)[0].mean(dim=-1)
 
         # 2. Compute valid topology similarity (1.0 - MSE)
         if interaction_gates is not None:
