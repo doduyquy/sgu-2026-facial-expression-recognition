@@ -662,21 +662,31 @@ class SemanticProgramExecutor(nn.Module):
             masked_sims = region_sims.masked_fill(valid_mask <= 0, -1e9)
             min_valid = int(region_mask.sum(dim=-1).min().item())
             k = max(1, min(3, min_valid))
-            region_sim = masked_sims.topk(k=k, dim=-1)[0].mean(dim=-1)
+            topk_sims, topk_indices = masked_sims.topk(k=k, dim=-1)
+            region_sim = topk_sims.mean(dim=-1)
         else:
             k = min(3, region_sims.size(-1))
-            region_sim = region_sims.topk(k=k, dim=-1)[0].mean(dim=-1)
+            topk_sims, topk_indices = region_sims.topk(k=k, dim=-1)
+            region_sim = topk_sims.mean(dim=-1)
 
         # 2. Compute valid topology similarity (1.0 - MSE)
         if interaction_gates is not None:
             observed_topology = interaction_gates.unsqueeze(1).unsqueeze(1)
             topology_mse = (observed_topology - program_topology.unsqueeze(0)) ** 2
+            
+            # Kịch bản 10: Chỉ đánh giá MSE trên các cạnh thuộc Top-K vùng quan trọng
+            b, c, m, r = region_sims.shape
+            device = region_sims.device
+            active_mask = torch.zeros(b, c, m, r, device=device, dtype=torch.bool)
+            active_mask.scatter_(dim=-1, index=topk_indices, value=True)
+            edge_mask = active_mask.unsqueeze(-1) & active_mask.unsqueeze(-2)
+            
             if region_mask is not None:
                 pair_mask = (region_mask.unsqueeze(-1) * region_mask.unsqueeze(-2)).unsqueeze(1).unsqueeze(1)
-                topology_mse = topology_mse * pair_mask
-                topology_sim = 1.0 - (topology_mse.sum(dim=(-1, -2)) / pair_mask.sum(dim=(-1, -2)).clamp_min(1.0))
-            else:
-                topology_sim = 1.0 - topology_mse.mean(dim=(-1, -2))
+                edge_mask = edge_mask & pair_mask.bool()
+                
+            topology_mse = topology_mse * edge_mask.float()
+            topology_sim = 1.0 - (topology_mse.sum(dim=(-1, -2)) / edge_mask.sum(dim=(-1, -2)).clamp_min(1.0))
         else:
             topology_sim = torch.ones_like(region_sim)
 
