@@ -1,4 +1,4 @@
-﻿"""
+"""
 Loss functions for Semantic ROI Graph FER model.
 
 This module provides standalone loss functions for the dual-level
@@ -141,7 +141,7 @@ def semantic_program_sparsity_loss(
     if program_attention is not None:
         losses.append(program_attention)
     if routing_weights is not None:
-        pass # losses.append(routing_weights) # Kịch bản 7: Không phạt sparsity lên routing_weights
+        pass # losses.append(routing_weights) # K?ch b?n 7: Kh�ng ph?t sparsity l�n routing_weights
     if cross_region_attention is not None:
         if cross_region_attention.dim() == 4:
             attn = cross_region_attention.mean(dim=1)
@@ -270,7 +270,7 @@ def region_coordination_regularization(
         weights = routing_weights.clamp_min(1e-6)
         entropy = -(weights * weights.log()).sum(dim=1)
         denom = torch.log(torch.tensor(float(weights.size(1)), device=weights.device)).clamp_min(1e-6)
-        loss = (entropy / denom).mean() # K?ch b?n 6: Kh�i ph?c Sparse Routing
+        loss = None # Removed entropy penalty
 
     if interaction_gates is not None:
         gates = interaction_gates
@@ -278,7 +278,7 @@ def region_coordination_regularization(
             pair_mask = region_mask.unsqueeze(-1) * region_mask.unsqueeze(-2)
             gates = gates * pair_mask
         active_mean = gates.mean(dim=(-1, -2))
-        # Kịch bản 3: Nới lỏng target lên 0.6 để cho phép Đồ thị giao tiếp mạnh mẽ hơn
+        # K?ch b?n 3: N?i l?ng target l�n 0.6 d? cho ph�p �? th? giao ti?p m?nh m? hon
         gate_balance = ((active_mean - 0.6) ** 2).mean()
         gate_variance = gates.var(dim=(-1, -2)).mean()
         gate_loss = gate_balance + 0.05 * gate_variance
@@ -403,7 +403,7 @@ def compute_semantic_roi_graph_losses(
     if micro_diversity_weight is None:
         micro_diversity_weight = float(training_cfg.get("micro_motif_diversity_weight", training_cfg.get("motif_diversity_weight", 0.05)))
     if macro_diversity_weight is None:
-        # Kịch bản 3: Tăng gấp đôi trọng số MacroDiversity để ngăn sụp đổ Motif
+        # K?ch b?n 3: Tang g?p d�i tr?ng s? MacroDiversity d? ngan s?p d? Motif
         macro_diversity_weight = float(training_cfg.get("macro_motif_diversity_weight", training_cfg.get("motif_diversity_weight", 0.05))) * 2.0
     if relation_consistency_weight is None:
         relation_consistency_weight = float(training_cfg.get("region_coordination_weight", training_cfg.get("relation_consistency_weight", 0.1)))
@@ -547,6 +547,7 @@ def compute_semantic_roi_graph_losses(
         "loss_relation_consistency": coordination_loss,
         "loss_fused_aux_ce": fused_ce_loss,
     }
+
 
 
 
