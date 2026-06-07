@@ -98,17 +98,14 @@ class SemanticBackbone(nn.Module):
         self.layer4 = resnet.layer4  # 12 -> 6
 
         if feature_dim == 256:
-            # Kịch bản 13: Feature Pyramid Network (FPN) siêu nhẹ
-            # Thay vì chạy Sequential, ta sẽ giữ lại layer1, layer2, layer3 độc lập
-            # Đầu ra sẽ là sự kết hợp (Concat) giữa layer2 (128 kênh) và layer3 (256 kênh)
-            self.out_channels = 128 + 256 # = 384 channels
-            self.fpn_proj = nn.Conv2d(self.out_channels, 256, kernel_size=1)
-            self.out_channels = 256 # Reset back to 256 cho các layer phía sau
+            self.output_layer = nn.Sequential(self.layer1, self.layer2, self.layer3)
+            self.out_channels = 256
             self.use_layer4 = False
+            # Free layer4 — not used in forward, but would waste ~8MB GPU memory
+            # if kept as a registered submodule with its pretrained weights.
             del self.layer4
         elif feature_dim == 512:
-            self.out_channels = 256 + 512 # layer3 + layer4
-            self.fpn_proj = nn.Conv2d(self.out_channels, 512, kernel_size=1)
+            self.output_layer = nn.Sequential(self.layer1, self.layer2, self.layer3, self.layer4)
             self.out_channels = 512
             self.use_layer4 = True
         else:
@@ -118,26 +115,13 @@ class SemanticBackbone(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.stem(x)
-        x1 = self.layer1(x)
-        x2 = self.layer2(x1) # High-resolution (B, 128, 24, 24)
-        x3 = self.layer3(x2) # Deep-semantics (B, 256, 12, 12)
-        
-        if not self.use_layer4:
-            # Kịch bản 13: Cường hóa tầm nhìn cục bộ
-            # Phóng to layer3 từ 12x12 lên 24x24 bằng nội suy song tuyến tính
-            x3_up = F.interpolate(x3, size=x2.shape[2:], mode="bilinear", align_corners=False)
-            # Ghép nối: (B, 128, 24, 24) + (B, 256, 24, 24) = (B, 384, 24, 24)
-            x_out = torch.cat([x2, x3_up], dim=1)
-            x_out = self.fpn_proj(x_out) # Bóp lại 256 kênh
-        else:
-            x4 = self.layer4(x3) # (B, 512, 6, 6)
-            x4_up = F.interpolate(x4, size=x3.shape[2:], mode="bilinear", align_corners=False)
-            x_out = torch.cat([x3, x4_up], dim=1) # (B, 768, 12, 12)
-            x_out = self.fpn_proj(x_out) # Bóp lại 512 kênh
+        x = self.output_layer(x)
+        if self.use_layer4:
+            x = F.interpolate(x, size=(12, 12), mode="bilinear", align_corners=False)
         
         # Apply Spatial Attention (CBAM) to filter out background noise
-        # x_out = self.spatial_attention(x_out)
-        return x_out
+        x = self.spatial_attention(x)
+        return x
 
 
 class SemanticRoiAlign(nn.Module):
