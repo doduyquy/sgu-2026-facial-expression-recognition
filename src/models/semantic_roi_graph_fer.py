@@ -102,10 +102,14 @@ class SemanticBackbone(nn.Module):
             # Thay vì chạy Sequential, ta sẽ giữ lại layer1, layer2, layer3 độc lập
             # Đầu ra sẽ là sự kết hợp (Concat) giữa layer2 (128 kênh) và layer3 (256 kênh)
             self.out_channels = 128 + 256 # = 384 channels
+            self.fpn_proj = nn.Conv2d(self.out_channels, 256, kernel_size=1)
+            self.out_channels = 256 # Reset back to 256 cho các layer phía sau
             self.use_layer4 = False
             del self.layer4
         elif feature_dim == 512:
             self.out_channels = 256 + 512 # layer3 + layer4
+            self.fpn_proj = nn.Conv2d(self.out_channels, 512, kernel_size=1)
+            self.out_channels = 512
             self.use_layer4 = True
         else:
             raise ValueError("feature_dim must be 256 or 512")
@@ -124,10 +128,12 @@ class SemanticBackbone(nn.Module):
             x3_up = F.interpolate(x3, size=x2.shape[2:], mode="bilinear", align_corners=False)
             # Ghép nối: (B, 128, 24, 24) + (B, 256, 24, 24) = (B, 384, 24, 24)
             x_out = torch.cat([x2, x3_up], dim=1)
+            x_out = self.fpn_proj(x_out) # Bóp lại 256 kênh
         else:
             x4 = self.layer4(x3) # (B, 512, 6, 6)
             x4_up = F.interpolate(x4, size=x3.shape[2:], mode="bilinear", align_corners=False)
             x_out = torch.cat([x3, x4_up], dim=1) # (B, 768, 12, 12)
+            x_out = self.fpn_proj(x_out) # Bóp lại 512 kênh
         
         # Apply Spatial Attention (CBAM) to filter out background noise
         # x_out = self.spatial_attention(x_out)
