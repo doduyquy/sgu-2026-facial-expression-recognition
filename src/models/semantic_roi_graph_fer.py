@@ -1,4 +1,4 @@
-"""
+﻿"""
 Semantic ROI Graph FER model (2-tier: micro + macro) without ArcFace.
 
 This module implements:
@@ -800,7 +800,7 @@ class SemanticROIGraphFER(nn.Module):
             state_dim=config.semantic_state_dim,
             hidden_dim=max(config.semantic_state_dim * 2, 32),
             dropout=config.dropout,
-            dropedge_rate=0.5,
+            dropedge_rate=0.2,
         )
 
         self.micro_motif_bank = MicroSemanticMotifBank(

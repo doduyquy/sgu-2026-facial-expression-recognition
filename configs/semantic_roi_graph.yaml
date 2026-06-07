@@ -22,7 +22,7 @@ model:
   semantic_state_dim: 128
   semantic_latent_dim: 256
   semantic_attn_heads: 4 # must divide semantic_state_dim (128 / 4 = 32 ✓)
-  hyperedge_count: 4 # Fix 4: was missing, silently used dataclass default
+  hyperedge_count: 8 # Tăng cường số lượng siêu liên kết
   router_hidden_dim: 256
   cross_region_compositions: 8
   programs_per_class: 4
@@ -46,7 +46,7 @@ training:
   loss: "semantic_roi_graph"
   label_smoothing: 0.05
   class_weight_mode: "sqrt_inverse"
-  use_class_weights: false
+  use_class_weights: true
   use_sce: false
   sce_alpha: 1.0
   sce_beta: 1.0
