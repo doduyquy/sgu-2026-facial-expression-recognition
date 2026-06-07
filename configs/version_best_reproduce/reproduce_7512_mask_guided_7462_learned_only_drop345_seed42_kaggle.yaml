@@ -1,7 +1,7 @@
 _base_: "../convnext_tiny_mask_guided_region_attention_7462_sam_continue_learned_only_kaggle_dataset.yaml"
 
-# Ablation for the 75.12 recipe:
-# - keep the original seed 42 scenario explicit
+# Reference run for the 75.17 drop345 recipe:
+# - seed 42 with this setup reached 75.17 in the experiment history
 # - keep the same FER-seeded ConvNeXt + mask-guided learned-only setup
 # - drop only the 345 train rows whose MediaPipe masks failed detection
 # - do not recreate train.csv; the loader removes rows by original 0-based index
