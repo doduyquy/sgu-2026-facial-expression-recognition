@@ -642,6 +642,13 @@ class SemanticProgramExecutor(nn.Module):
             nn.GELU(),
         )
 
+        # Kịch bản 12: Trọng số cấu trúc thích ứng (Adaptive Semantic Structure)
+        self.sim_weights = nn.Parameter(torch.ones(1, num_classes, 1, 3))
+        with torch.no_grad():
+            self.sim_weights[..., 0] = 1.0   # region_sim
+            self.sim_weights[..., 1] = 0.5   # topology_sim
+            self.sim_weights[..., 2] = 0.25  # composition_sim
+
     def forward(
         self,
         semantic_states: torch.Tensor,
@@ -688,8 +695,9 @@ class SemanticProgramExecutor(nn.Module):
         program_summary = self.program_summary_proj(program_bank.mean(dim=2))
         composition_sim = torch.einsum("bd,cmd->bcm", F.normalize(composition_summary, dim=-1), F.normalize(program_summary, dim=-1))
 
-        # Combine raw similarities first, THEN scale by temperature (fixes topology being ignored)
-        total_sim = region_sim + 0.5 * topology_sim + 0.25 * composition_sim
+        # Kịch bản 12: Sử dụng trọng số động thay vì hằng số cứng nhắc
+        w = F.softplus(self.sim_weights) # Đảm bảo trọng số dương
+        total_sim = w[..., 0] * region_sim + w[..., 1] * topology_sim + w[..., 2] * composition_sim
         
         # Save pre-temperature scaled versions for auxiliary loss logging consistency
         region_score = region_sim / self.temperature
@@ -792,7 +800,7 @@ class SemanticROIGraphFER(nn.Module):
             state_dim=config.semantic_state_dim,
             hidden_dim=max(config.semantic_state_dim * 2, 32),
             dropout=config.dropout,
-            dropedge_rate=0.2,
+            dropedge_rate=0.5,
         )
 
         self.micro_motif_bank = MicroSemanticMotifBank(
@@ -1209,6 +1217,7 @@ class SemanticROIGraphFER(nn.Module):
                 "semantic_consistency": semantic_motif_tokens.new_tensor(0.0),
             },
         }
+
 
 
 
