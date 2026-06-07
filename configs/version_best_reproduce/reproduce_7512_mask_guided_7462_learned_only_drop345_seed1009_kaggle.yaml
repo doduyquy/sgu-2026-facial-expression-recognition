@@ -1,0 +1,24 @@
+_base_: "../convnext_tiny_mask_guided_region_attention_7462_sam_continue_learned_only_kaggle_dataset.yaml"
+
+# Seed sweep for the 75.17 drop345 recipe.
+#
+# This keeps the same FER-seeded ConvNeXt + mask-guided learned-only setup as
+# drop345_seed_42 and changes only:
+# - seed.random_seed: 1009
+# - paths.output_dir: per-seed Kaggle output folder
+#
+# The loader removes rows by original 0-based train.csv index; val/test stay
+# unchanged.
+
+seed:
+  random_seed: 1009
+
+data:
+  use_clean_filter: true
+  bad_row_indices_path: "/kaggle/input/datasets/lhngphc/345-train-error/bad_row_indices_drop345_mediapipe_failed.txt"
+
+paths:
+  output_dir: "/kaggle/working/outputs/seed_sweep_7512/drop345_seed_1009"
+
+logging:
+  use_wandb: false
