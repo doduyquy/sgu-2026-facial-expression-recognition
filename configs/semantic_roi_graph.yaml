@@ -46,8 +46,8 @@ training:
   loss: "semantic_roi_graph"
   label_smoothing: 0.05
   class_weight_mode: "sqrt_inverse"
-  use_class_weights: true
-  use_sce: true
+  use_class_weights: false
+  use_sce: false
   sce_alpha: 1.0
   sce_beta: 1.0
 
