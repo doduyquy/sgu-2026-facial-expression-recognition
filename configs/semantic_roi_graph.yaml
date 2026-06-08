@@ -9,8 +9,8 @@ model:
   # macro_motifs_per_class: semantic program slots per emotion class
   macro_motifs_per_class: 4
   use_pretrained: true
-  backbone_out_size: 14
-  bbox_input_size: 224
+  backbone_out_size: 12
+  bbox_input_size: 48
   micro_layers: 2
   macro_layers: 2
   attn_heads: 4
