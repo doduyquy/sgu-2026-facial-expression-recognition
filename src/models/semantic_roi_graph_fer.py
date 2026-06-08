@@ -117,94 +117,51 @@ class SemanticBackbone(nn.Module):
         return self.proj(x)
 
 
-class SemanticRoiAlign(nn.Module):
-    """ROIAlign over semantic regions (batch-aware)."""
+class SemanticMaskingBlock(nn.Module):
+    """Generate soft spatial masks to extract region features (inspired by RMN)."""
 
-    def __init__(self, roi_grid: int = 4, bbox_input_size: int = 48, feature_out_size: int = 12):
+    def __init__(self, in_channels: int, num_regions: int = 9, feature_dim: int = 256):
         super().__init__()
-        self.roi_grid = int(roi_grid)
-        self.bbox_input_size = int(bbox_input_size)
-        self.feature_out_size = int(feature_out_size)
-
-    @staticmethod
-    def _canonical_region_boxes(bbox_input_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
-        """Fallback semantic ROIs for 9 regions in 48x48 space."""
-        boxes = torch.tensor(
-            [
-                [8, 0, 40, 10],   # forehead
-                [5, 8, 18, 18],   # left_eyebrow
-                [30, 8, 43, 18],  # right_eyebrow
-                [18, 12, 30, 22], # glabella
-                [6, 16, 20, 30],  # left_eye
-                [28, 16, 42, 30], # right_eye
-                [14, 20, 34, 38], # nose
-                [8, 30, 22, 43],  # left_mouth_corner
-                [26, 30, 40, 43], # right_mouth_corner
-            ],
-            device=device,
-            dtype=dtype,
+        self.num_regions = num_regions
+        
+        # Mask Predictor: Predict 9 heatmaps from the feature map
+        self.mask_predictor = nn.Sequential(
+            nn.Conv2d(in_channels, feature_dim, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(feature_dim),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(feature_dim, num_regions, kernel_size=1)
         )
-        scale = float(bbox_input_size) / 48.0
-        return boxes * scale
-
-    def validate_bboxes(self, bboxes: torch.Tensor) -> torch.Tensor:
-        """Clamp and repair invalid bbox coordinates while preserving batch/region count."""
-        bboxes = bboxes.float().clone()
-        bboxes[..., 0::2] = bboxes[..., 0::2].clamp(0.0, float(self.bbox_input_size - 1))
-        bboxes[..., 1::2] = bboxes[..., 1::2].clamp(0.0, float(self.bbox_input_size - 1))
-
-        x1 = torch.minimum(bboxes[..., 0], bboxes[..., 2])
-        y1 = torch.minimum(bboxes[..., 1], bboxes[..., 3])
-        x2 = torch.maximum(bboxes[..., 0], bboxes[..., 2])
-        y2 = torch.maximum(bboxes[..., 1], bboxes[..., 3])
-
-        x2 = torch.maximum(x2, x1 + 2.0)
-        y2 = torch.maximum(y2, y1 + 2.0)
-
-        x2 = torch.clamp(x2, max=float(self.bbox_input_size - 1))
-        y2 = torch.clamp(y2, max=float(self.bbox_input_size - 1))
-        x1 = torch.clamp(x1, max=float(self.bbox_input_size - 3))
-        y1 = torch.clamp(y1, max=float(self.bbox_input_size - 3))
-
-        repaired = torch.stack([x1, y1, x2, y2], dim=-1)
-        too_small = ((repaired[..., 2] - repaired[..., 0]) < 2.0) | ((repaired[..., 3] - repaired[..., 1]) < 2.0)
-        if too_small.any():
-            repaired[too_small] = self._canonical_region_boxes(self.bbox_input_size, repaired.device, repaired.dtype)[None, :, :].expand_as(repaired)[too_small]
-        return repaired
-
-    def forward(self, feature_map: torch.Tensor, bboxes: torch.Tensor) -> torch.Tensor:
-        # feature_map: (B, C, H, W)
-        # bboxes: (B, R, 4) in image coords (0..bbox_input_size-1)
-        b, _, h, _ = feature_map.shape
-        if bboxes.dim() != 3 or bboxes.size(-1) != 4:
-            raise ValueError("bboxes must have shape (B, R, 4)")
-
-        batch_size, num_regions, _ = bboxes.shape
-        if batch_size != b:
-            raise ValueError(f"bboxes batch {batch_size} does not match feature_map batch {b}")
-
-        bboxes = self.validate_bboxes(bboxes)
-
-        batch_indices = torch.arange(b, device=bboxes.device, dtype=bboxes.dtype).view(b, 1, 1)
-        batch_indices = batch_indices.expand(b, num_regions, 1)
-        rois = torch.cat([batch_indices, bboxes], dim=-1).reshape(-1, 5)
-
-        # ROIAlign expects a single spatial_scale that maps input-image coordinates
-        # to feature-map coordinates. For 48x48 inputs and 12x12 feature maps, this is 0.25.
-        spatial_scale = float(h) / float(self.bbox_input_size)
-
-        roi_features = roi_align(
-            feature_map,
-            rois,
-            output_size=(self.roi_grid, self.roi_grid),
-            spatial_scale=spatial_scale,
-            sampling_ratio=2,
-            aligned=True,
+        
+        # Feature Projector: Ensure feature map has the correct dimension (e.g., 256)
+        self.feature_proj = nn.Sequential(
+            nn.Conv2d(in_channels, feature_dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(feature_dim),
+            nn.GELU()
         )
-        # (B*R, C, G, G) -> (B, R, G*G, C)
-        roi_features = roi_features.view(b, -1, feature_map.shape[1], self.roi_grid * self.roi_grid)
-        roi_features = roi_features.permute(0, 1, 3, 2).contiguous()
-        return roi_features
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        # x: (B, in_channels, H, W)
+        b, c, h, w = x.shape
+        
+        # 1. Generate Masks
+        mask_logits = self.mask_predictor(x) # (B, 9, H, W)
+        spatial_masks = torch.sigmoid(mask_logits) # (B, 9, H, W)
+        
+        # 2. Project Features
+        features = self.feature_proj(x) # (B, 256, H, W)
+        
+        # 3. Masked Spatial Pooling (Attention-based Pooling)
+        # Flatten spatial dims: (B, 9, H*W) and (B, 256, H*W)
+        flat_masks = spatial_masks.view(b, self.num_regions, h * w)
+        flat_features = features.view(b, features.shape[1], h * w)
+        
+        # Normalize masks spatially so they sum to 1
+        mask_weights = flat_masks / (flat_masks.sum(dim=-1, keepdim=True) + 1e-6) # (B, 9, N)
+        
+        # Weighted sum: (B, 9, N) @ (B, N, 256) -> (B, 9, 256)
+        region_embeddings = torch.bmm(mask_weights, flat_features.transpose(1, 2))
+        
+        return region_embeddings, mask_logits
 
 
 class GATBlock(nn.Module):
@@ -303,26 +260,7 @@ class GatedPooling(nn.Module):
         return pooled
 
 
-class MicroGraphReasoner(nn.Module):
-    """Intra-region reasoning with graph attention."""
 
-    def __init__(self, dim: int, num_nodes: int, layers: int = 2, heads: int = 4, dropout: float = 0.1):
-        super().__init__()
-        self.layers = nn.ModuleList([
-            GATBlock(dim, heads=heads, dropout=dropout, num_nodes=num_nodes) for _ in range(layers)
-        ])
-        self.norms = nn.ModuleList([nn.LayerNorm(dim) for _ in range(layers)])
-        self.pool = GatedPooling(dim)
-
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        # x: (B, R, N, D)
-        b, r, n, d = x.shape
-        x = x.view(b * r, n, d)
-        for layer, norm in zip(self.layers, self.norms):
-            x = x + layer(norm(x))
-        pooled = self.pool(x).view(b, r, d)
-        x = x.view(b, r, n, d)
-        return x, pooled
 
 
 class SemanticStateEncoder(nn.Module):
@@ -767,18 +705,10 @@ class SemanticROIGraphFER(nn.Module):
             feature_dim=config.feature_dim,
             use_pretrained=config.use_pretrained,
         )
-        self.roi_align = SemanticRoiAlign(
-            roi_grid=config.roi_grid,
-            bbox_input_size=config.bbox_input_size,
-            feature_out_size=config.backbone_out_size,
-        )
-
-        self.micro_reasoner = MicroGraphReasoner(
-            dim=config.feature_dim,
-            num_nodes=config.roi_grid * config.roi_grid,
-            layers=config.micro_layers,
-            heads=config.attn_heads,
-            dropout=config.dropout,
+        self.semantic_masking = SemanticMaskingBlock(
+            in_channels=config.feature_dim,
+            num_regions=config.num_regions,
+            feature_dim=config.feature_dim,
         )
 
         # Fix 3: region_proj (feature_dim→feature_dim) removed — a same-dimension
@@ -889,9 +819,55 @@ class SemanticROIGraphFER(nn.Module):
                 state_dict[key] = old.detach().view(1).expand(self.config.num_classes).clone()
         return super().load_state_dict(state_dict, strict=strict)
 
+    @staticmethod
+    def _canonical_region_boxes(bbox_input_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        """Fallback semantic ROIs for 9 regions in 48x48 space."""
+        boxes = torch.tensor(
+            [
+                [8, 0, 40, 10],   # forehead
+                [5, 8, 18, 18],   # left_eyebrow
+                [30, 8, 43, 18],  # right_eyebrow
+                [18, 12, 30, 22], # glabella
+                [6, 16, 20, 30],  # left_eye
+                [28, 16, 42, 30], # right_eye
+                [14, 20, 34, 38], # nose
+                [8, 30, 22, 43],  # left_mouth_corner
+                [26, 30, 40, 43], # right_mouth_corner
+            ],
+            device=device,
+            dtype=dtype,
+        )
+        scale = float(bbox_input_size) / 48.0
+        return boxes * scale
+
     def _canonical_bboxes(self, batch_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
-        boxes = SemanticRoiAlign._canonical_region_boxes(self.config.bbox_input_size, device, dtype)
-        return boxes.unsqueeze(0).expand(batch_size, -1, -1).contiguous()
+        """Return canonical bounding boxes correctly sized and placed."""
+        return self._canonical_region_boxes(self.config.bbox_input_size, device, dtype).unsqueeze(0).expand(batch_size, -1, -1)
+
+    def _validate_bboxes(self, bboxes: torch.Tensor) -> torch.Tensor:
+        """Clamp and repair invalid bbox coordinates while preserving batch/region count."""
+        bboxes = bboxes.float().clone()
+        bboxes[..., 0::2] = bboxes[..., 0::2].clamp(0.0, float(self.config.bbox_input_size - 1))
+        bboxes[..., 1::2] = bboxes[..., 1::2].clamp(0.0, float(self.config.bbox_input_size - 1))
+
+        x1 = torch.minimum(bboxes[..., 0], bboxes[..., 2])
+        y1 = torch.minimum(bboxes[..., 1], bboxes[..., 3])
+        x2 = torch.maximum(bboxes[..., 0], bboxes[..., 2])
+        y2 = torch.maximum(bboxes[..., 1], bboxes[..., 3])
+
+        x2 = torch.maximum(x2, x1 + 2.0)
+        y2 = torch.maximum(y2, y1 + 2.0)
+
+        x2 = torch.clamp(x2, max=float(self.config.bbox_input_size - 1))
+        y2 = torch.clamp(y2, max=float(self.config.bbox_input_size - 1))
+        x1 = torch.clamp(x1, max=float(self.config.bbox_input_size - 3))
+        y1 = torch.clamp(y1, max=float(self.config.bbox_input_size - 3))
+
+        repaired = torch.stack([x1, y1, x2, y2], dim=-1)
+        too_small = ((repaired[..., 2] - repaired[..., 0]) < 2.0) | ((repaired[..., 3] - repaired[..., 1]) < 2.0)
+        if too_small.any():
+            repaired[too_small] = self._canonical_bboxes(repaired.size(0), repaired.device, repaired.dtype).expand_as(repaired)[too_small]
+        return repaired
 
     def _prepare_regions(
         self,
@@ -933,9 +909,14 @@ class SemanticROIGraphFER(nn.Module):
         order_mask = (x2 > x1) & (y2 > y1)
         region_mask = (finite_mask & size_mask & order_mask).to(dtype=dtype)
 
-        repaired = self.roi_align.validate_bboxes(bboxes)
+        repaired = self._validate_bboxes(bboxes)
         canonical = self._canonical_bboxes(batch_size, device, dtype)
         repaired = torch.where(region_mask.unsqueeze(-1).bool(), repaired, canonical)
+
+        # Prevent all-zero region masks which cause NaNs in MultiheadAttention
+        all_zero_mask = (region_mask.sum(dim=1) == 0)
+        if all_zero_mask.any():
+            region_mask[all_zero_mask] = 1.0
 
         width = (repaired[..., 2] - repaired[..., 0]).clamp(min=1.0)
         height = (repaired[..., 3] - repaired[..., 1]).clamp(min=1.0)
@@ -1091,8 +1072,7 @@ class SemanticROIGraphFER(nn.Module):
             region_mask = region_mask * drop_mask
             region_confidence = region_confidence * drop_mask
 
-        roi_nodes = self.roi_align(feature_map, bboxes)
-        micro_node_features, region_embeddings = self.micro_reasoner(roi_nodes)
+        region_embeddings, mask_logits = self.semantic_masking(feature_map)
 
         missing_token = self.missing_region_token.view(1, 1, -1)
         region_valid_mask = region_mask.unsqueeze(-1) > 0
@@ -1171,8 +1151,8 @@ class SemanticROIGraphFER(nn.Module):
             "logits_motif": logits_motif,
             "logits_fused": logits_fused,
             "structure_gate": structure_gate,
-            
-            "micro_node_features": micro_node_features,
+            "mask_logits": mask_logits,
+            "bboxes_for_mask_loss": bboxes,
             "micro_motif_attention": micro_motif_attention,
             "region_motif_tokens": semantic_motif_tokens,
             "region_embeddings": region_embeddings,

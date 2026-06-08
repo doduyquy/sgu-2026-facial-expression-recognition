@@ -30,6 +30,23 @@ def _get_training_cfg(model) -> Dict:
         return {}
 
 
+def semantic_masking_loss(mask_logits, bboxes):
+    import torch.nn.functional as F
+    b, r, h, w = mask_logits.shape
+    scale_x = w / 48.0
+    scale_y = h / 48.0
+    x1 = (bboxes[..., 0] * scale_x).unsqueeze(-1).unsqueeze(-1)
+    y1 = (bboxes[..., 1] * scale_y).unsqueeze(-1).unsqueeze(-1)
+    x2 = (bboxes[..., 2] * scale_x).unsqueeze(-1).unsqueeze(-1)
+    y2 = (bboxes[..., 3] * scale_y).unsqueeze(-1).unsqueeze(-1)
+    grid_y, grid_x = torch.meshgrid(torch.arange(h, device=mask_logits.device), torch.arange(w, device=mask_logits.device), indexing='ij')
+    grid_x = grid_x.unsqueeze(0).unsqueeze(0)
+    grid_y = grid_y.unsqueeze(0).unsqueeze(0)
+    mask_x = (grid_x >= x1) & (grid_x < x2)
+    mask_y = (grid_y >= y1) & (grid_y < y2)
+    gt_masks = (mask_x & mask_y).float()
+    return F.binary_cross_entropy_with_logits(mask_logits, gt_masks)
+
 def micro_motif_diversity_loss(motif_bank_fn) -> torch.Tensor:
     """Encourage diverse motifs within each semantic region bank."""
     motifs = motif_bank_fn()  # (R, K, D)
@@ -495,6 +512,12 @@ def compute_semantic_roi_graph_losses(
         mode=sparsity_mode,
     )
     diversity_loss = program_diversity_loss(base_model.semantic_program_bank)
+    mask_logits = outputs.get('mask_logits')
+    bboxes_for_mask = outputs.get('bboxes_for_mask_loss')
+    if mask_logits is not None and bboxes_for_mask is not None:
+        masking_loss = semantic_masking_loss(mask_logits, bboxes_for_mask)
+    else:
+        masking_loss = torch.tensor(0.0, device=labels.device)
 
     # Per-component enable flags (default True = preserve legacy behaviour)
     def _flag(name: str, default: bool = True) -> bool:
