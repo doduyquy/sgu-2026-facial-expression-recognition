@@ -9,8 +9,8 @@ model:
   # macro_motifs_per_class: semantic program slots per emotion class
   macro_motifs_per_class: 4
   use_pretrained: true
-  backbone_out_size: 12
-  bbox_input_size: 48
+  backbone_out_size: 14
+  bbox_input_size: 224
   micro_layers: 2
   macro_layers: 2
   attn_heads: 4
@@ -22,7 +22,7 @@ model:
   semantic_state_dim: 128
   semantic_latent_dim: 256
   semantic_attn_heads: 4 # must divide semantic_state_dim (128 / 4 = 32 ✓)
-  hyperedge_count: 8 # Tăng cường số lượng siêu liên kết
+  hyperedge_count: 4 # Restore to optimal KB12 value
   router_hidden_dim: 256
   cross_region_compositions: 8
   programs_per_class: 4
