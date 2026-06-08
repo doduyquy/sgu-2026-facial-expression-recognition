@@ -77,6 +77,9 @@ class SemanticRoiGraphConfig:
     relation_temperature: float = 0.07
     region_confidence_threshold: float = 0.3
     fusion_scale: float = 0.25
+    region_dropout_prob: float = 0.0
+    program_dim: int = 128
+    programs_per_class: int = 4
 
 
 class SemanticBackbone(nn.Module):
