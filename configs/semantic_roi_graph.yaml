@@ -44,16 +44,16 @@ training:
   lr: 0.0003 # 0.001 for head, 0.0001 for backbone
   weight_decay: 0.001 # Revert from 0.003 to prevent embedding collapse
   loss: "semantic_roi_graph"
-  label_smoothing: 0.05
+  label_smoothing: 0.15
   class_weight_mode: "sqrt_inverse"
   use_class_weights: true
   use_sce: false
-  masking_loss_weight: 1.0
+  masking_loss_weight: 0.1
 
   # ── Loss enable flags (light preset) ──────────────────────────────────────
   # Only 3 auxiliary losses are active. All others disabled to reduce overfit.
   enable_micro_diversity: true
-  enable_macro_diversity: true
+  enable_macro_diversity: false
   enable_region_contrastive: true
   enable_semantic_consistency: true
   enable_compositional_program: true
@@ -72,7 +72,7 @@ training:
   macro_motif_diversity_weight: 0.02
   semantic_consistency_weight: 0.03
   compositional_program_weight: 0.02
-  program_diversity_weight: 0.05
+  program_diversity_weight: 0.01
   fused_aux_ce_weight: 0.2
 
   # Disabled weights (kept for reference / easy re-enable)
@@ -83,7 +83,7 @@ training:
   region_composition_contrastive_weight: 0.0
   program_sparsity_weight: 0.02
 
-  use_entropy_sparsity: true
+  use_entropy_sparsity: false
 
 logging:
   use_wandb: true
