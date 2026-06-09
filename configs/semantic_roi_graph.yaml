@@ -72,7 +72,7 @@ training:
   macro_motif_diversity_weight: 0.02
   semantic_consistency_weight: 0.03
   compositional_program_weight: 0.02
-  program_diversity_weight: 0.01
+  program_diversity_weight: 0.05
   fused_aux_ce_weight: 0.2
 
   # Disabled weights (kept for reference / easy re-enable)
@@ -83,7 +83,7 @@ training:
   region_composition_contrastive_weight: 0.0
   program_sparsity_weight: 0.02
 
-  use_entropy_sparsity: false
+  use_entropy_sparsity: true
 
 logging:
   use_wandb: true
