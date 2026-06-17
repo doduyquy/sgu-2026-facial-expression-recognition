@@ -15,6 +15,48 @@ import matplotlib.pyplot as plt
 def get_args():
     parser = argparse.ArgumentParser(description="Run 2-stage training in a single execution and merge histories.")
     parser.add_argument("--env", type=str, default="kaggle", choices=["local", "kaggle"])
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="full",
+        choices=["full", "phase1", "phase2"],
+        help="Run both stages, only phase 1, or only phase 2 from a saved phase-1 checkpoint.",
+    )
+    parser.add_argument(
+        "--phase1-config",
+        type=str,
+        default="two_stage_convnext_proposed/phase1_cnn_sam_from_start",
+        help="Config used for the clean CNN phase.",
+    )
+    parser.add_argument(
+        "--phase2-base-config",
+        type=str,
+        default="phase2_proposed_from_phase1_cnn_stable.yaml",
+        help="Base config file inside configs/two_stage_convnext_proposed for phase 2.",
+    )
+    parser.add_argument(
+        "--phase1-checkpoint",
+        type=str,
+        default=None,
+        help="Best phase-1 checkpoint to initialize phase 2. If omitted, the latest local phase-1 checkpoint is used.",
+    )
+    parser.add_argument(
+        "--phase1-history-json",
+        type=str,
+        default=None,
+        help="Phase-1 training_history.json used to create the merged two-stage plot in a later Kaggle session.",
+    )
+    parser.add_argument(
+        "--phase2-temp-name",
+        type=str,
+        default="two_stage_convnext_proposed/phase2_temp.yaml",
+        help="Temporary phase-2 config path relative to configs/.",
+    )
+    parser.add_argument(
+        "--no-merge",
+        action="store_true",
+        help="Skip merged history creation after phase 2.",
+    )
     return parser.parse_args()
 
 def find_latest_history_dir(output_dir, model_name):
@@ -24,10 +66,33 @@ def find_latest_history_dir(output_dir, model_name):
         return None
     return max(dirs, key=os.path.getmtime)
 
-def merge_and_plot_histories(phase1_dir, phase2_dir, output_dir):
-    phase1_json = os.path.join(phase1_dir, "training_history.json")
-    phase2_json = os.path.join(phase2_dir, "training_history.json")
-    
+def history_json_from_dir(history_dir):
+    if not history_dir:
+        return None
+    history_json = os.path.join(history_dir, "training_history.json")
+    return history_json if os.path.exists(history_json) else None
+
+def resolve_output_dir(project_root, env):
+    env_yaml_path = project_root / "configs" / "env.yaml"
+    with open(env_yaml_path, "r", encoding="utf-8") as f:
+        env_data = yaml.safe_load(f)
+    output_dir = env_data[env].get("output_dir", "outputs")
+    if not os.path.isabs(output_dir):
+        output_dir = os.path.join(project_root, output_dir)
+    return output_dir
+
+def find_latest_phase1_checkpoint(output_dir):
+    checkpoint_pattern = os.path.join(output_dir, "checkpoints", "convnext_tiny_fer2013", "*_best.pth")
+    checkpoint_files = glob.glob(checkpoint_pattern)
+    if not checkpoint_files:
+        raise FileNotFoundError(
+            "Could not find any Phase 1 best checkpoints. "
+            f"Pattern: {checkpoint_pattern}. "
+            "If this is a fresh Kaggle session, pass --phase1-checkpoint pointing to the checkpoint dataset path."
+        )
+    return max(checkpoint_files, key=os.path.getmtime)
+
+def merge_and_plot_history_jsons(phase1_json, phase2_json, output_dir):
     if not os.path.exists(phase1_json) or not os.path.exists(phase2_json):
         print(f"[WARN] Could not find history files: {phase1_json} or {phase2_json}")
         return
@@ -120,9 +185,17 @@ def merge_and_plot_histories(phase1_dir, phase2_dir, output_dir):
     print(f"--> Plot: {plot_path}")
     print("="*60 + "\n")
 
+def merge_and_plot_histories(phase1_dir, phase2_dir, output_dir):
+    phase1_json = history_json_from_dir(phase1_dir)
+    phase2_json = history_json_from_dir(phase2_dir)
+    if not phase1_json or not phase2_json:
+        print(f"[WARN] Could not find history files in: {phase1_dir} or {phase2_dir}")
+        return
+    merge_and_plot_history_jsons(phase1_json, phase2_json, output_dir)
+
 def main():
     args = get_args()
-    print(f"--> Starting End-to-End Two-Stage training in 1 run (env: {args.env})...")
+    print(f"--> Starting Two-Stage training runner (mode: {args.mode}, env: {args.env})...")
     
     # 1. Check GPU count to decide DDP or single GPU
     import torch
@@ -134,47 +207,56 @@ def main():
         cmd_prefix = [sys.executable, "-m", "torch.distributed.run", "--standalone", f"--nproc_per_node={num_gpus}", "-m", "scripts.train"]
     else:
         cmd_prefix = [sys.executable, "-m", "scripts.train"]
+
+    project_root = Path(__file__).resolve().parents[1]
+    output_dir = resolve_output_dir(project_root, args.env)
         
     # Phase 1: Train clean ConvNeXt-Tiny FER2013
-    phase1_config = "two_stage_convnext_proposed/phase1_cnn_sam_from_start"
+    phase1_config = args.phase1_config
     phase1_cmd = cmd_prefix + ["--env", args.env, "--config", phase1_config]
     
-    print("\n" + "="*60)
-    print(">>> STAGE 1: Training clean ConvNeXt backbone on FER2013...")
-    print("Command:", " ".join(phase1_cmd))
-    print("="*60 + "\n")
-    
-    subprocess.check_call(phase1_cmd)
+    if args.mode in {"full", "phase1"}:
+        print("\n" + "="*60)
+        print(">>> STAGE 1: Training clean ConvNeXt backbone on FER2013...")
+        print("Command:", " ".join(phase1_cmd))
+        print("="*60 + "\n")
+        
+        subprocess.check_call(phase1_cmd)
+
+        if args.mode == "phase1":
+            best_checkpoint = find_latest_phase1_checkpoint(output_dir)
+            phase1_history_dir = find_latest_history_dir(output_dir, "convnext_tiny_fer2013")
+            phase1_history_json = history_json_from_dir(phase1_history_dir)
+            print("\n" + "="*60)
+            print(">>> [SUCCESS] Phase 1 completed.")
+            print(f"--> Best Phase 1 checkpoint: {Path(best_checkpoint).as_posix()}")
+            if phase1_history_json:
+                print(f"--> Phase 1 history JSON: {Path(phase1_history_json).as_posix()}")
+                print("--> Save both the checkpoint and this JSON as a Kaggle dataset for a merged plot in phase 2.")
+            else:
+                print("--> [WARN] Phase 1 history JSON was not found.")
+            print("="*60 + "\n")
+            return
     
     # 2. Find the best checkpoint from Phase 1
-    # Resolve output directory from config/env
-    project_root = Path(__file__).resolve().parents[1]
-    env_yaml_path = project_root / "configs" / "env.yaml"
-    with open(env_yaml_path, "r", encoding="utf-8") as f:
-        env_data = yaml.safe_load(f)
-    output_dir = env_data[args.env].get("output_dir", "outputs")
-    # Make absolute path if relative
-    if not os.path.isabs(output_dir):
-        output_dir = os.path.join(project_root, output_dir)
-        
-    print(f"--> Looking for checkpoint in output_dir: {output_dir}")
-    checkpoint_pattern = os.path.join(output_dir, "checkpoints", "convnext_tiny_fer2013", "*_best.pth")
-    checkpoint_files = glob.glob(checkpoint_pattern)
-    if not checkpoint_files:
-        raise FileNotFoundError(f"Could not find any Phase 1 best checkpoints matching pattern: {checkpoint_pattern}")
-        
-    best_checkpoint = max(checkpoint_files, key=os.path.getmtime)
+    if args.phase1_checkpoint:
+        best_checkpoint = args.phase1_checkpoint
+        print(f"--> Using provided Phase 1 checkpoint: {best_checkpoint}")
+    else:
+        print(f"--> Looking for checkpoint in output_dir: {output_dir}")
+        best_checkpoint = find_latest_phase1_checkpoint(output_dir)
+
     # Convert backslashes for windows compatibility in YAML
     best_checkpoint_path = Path(best_checkpoint).as_posix()
     print(f"--> [SUCCESS] Found best Phase 1 checkpoint: {best_checkpoint_path}")
     
     # 3. Create temporary config for Phase 2 pointing to the checkpoint
     configs_dir = project_root / "configs"
-    phase2_temp_name = "two_stage_convnext_proposed/phase2_temp.yaml"
+    phase2_temp_name = args.phase2_temp_name
     phase2_temp_path = configs_dir / phase2_temp_name
     
     temp_config_content = {
-        "_base_": "phase2_proposed_from_phase1_cnn_stable.yaml",
+        "_base_": args.phase2_base_config,
         "model": {
             "checkpoint_path": best_checkpoint_path
         }
@@ -186,7 +268,8 @@ def main():
         yaml.safe_dump(temp_config_content, f)
         
     # Phase 2: Train Proposed Attention Module
-    phase2_cmd = cmd_prefix + ["--env", args.env, "--config", phase2_temp_name.replace(".yaml", "")]
+    phase2_config_arg = phase2_temp_name[:-5] if phase2_temp_name.endswith(".yaml") else phase2_temp_name
+    phase2_cmd = cmd_prefix + ["--env", args.env, "--config", phase2_config_arg]
     
     print("\n" + "="*60)
     print(">>> STAGE 2: Training Proposed Attention Module on top of Phase 1 backbone...")
@@ -203,18 +286,24 @@ def main():
         if phase2_temp_path.exists():
             print(f"--> Cleaning up temporary config: {phase2_temp_path}")
             os.remove(phase2_temp_path)
+
+    if args.no_merge:
+        return
             
     # 4. Find the latest history folders and merge them
     print("--> Finding training histories to merge...")
     p1_hist_dir = find_latest_history_dir(output_dir, "convnext_tiny_fer2013")
     p2_hist_dir = find_latest_history_dir(output_dir, "convnext_tiny_mask_guided_region_attention")
+    p1_history_json = args.phase1_history_json or history_json_from_dir(p1_hist_dir)
+    p2_history_json = history_json_from_dir(p2_hist_dir)
     
-    if p1_hist_dir and p2_hist_dir:
-        print(f"--> Found Phase 1 history in: {p1_hist_dir}")
+    if p1_history_json and p2_history_json:
+        print(f"--> Found Phase 1 history JSON: {p1_history_json}")
         print(f"--> Found Phase 2 history in: {p2_hist_dir}")
-        merge_and_plot_histories(p1_hist_dir, p2_hist_dir, output_dir)
+        merge_and_plot_history_jsons(p1_history_json, p2_history_json, output_dir)
     else:
-        print("[WARN] Could not locate history directories for merging.")
+        print("[WARN] Could not locate history JSON files for merging.")
+        print("[WARN] Phase 2 still has its own training_curves.png under outputs/training_curves/.")
 
 if __name__ == "__main__":
     main()
