@@ -41,9 +41,6 @@ class SemanticInteractionBlock(nn.Module):
 
         gates = self.edge_gate(pair_input).squeeze(-1) + 0.1
 
-        # Kịch bản 2: Graph DropEdge
-        # Randomly sever connections between facial regions during training
-        # to prevent over-smoothing and force robust path discovery.
         if self.dropedge_rate > 0.0:
             gates = F.dropout(gates, p=self.dropedge_rate, training=self.training)
 
@@ -252,16 +249,14 @@ class SemanticProgramExecutor(nn.Module):
         )
 
         # Kịch bản 12: Trọng số cấu trúc thích ứng (Adaptive Semantic Structure)
-        self.sim_weights = nn.Parameter(torch.ones(1, num_classes, 1, 3))
+        self.sim_weights = nn.Parameter(torch.ones(1, num_classes, 1, 2))
         with torch.no_grad():
             self.sim_weights[..., 0] = 1.0   # region_sim
             self.sim_weights[..., 1] = 0.5   # topology_sim
-            self.sim_weights[..., 2] = 0.25  # composition_sim
 
     def forward(
         self,
         semantic_states: torch.Tensor,
-        cross_region_tokens: torch.Tensor,
         program_bank: torch.Tensor,
         program_topology: torch.Tensor,
         region_mask: Optional[torch.Tensor] = None,
@@ -295,23 +290,13 @@ class SemanticProgramExecutor(nn.Module):
         else:
             topology_sim = torch.ones_like(region_sim)
 
-        # 3. Compute valid composition similarity
-        # cross_region_tokens has shape (B, num_compositions, D) where num_compositions is 8.
-        # It's already robust to region_mask because the attention that produces it masks invalid pairs.
-        composition_summary = cross_region_tokens.mean(dim=1)
-        composition_summary = self.program_summary_proj(composition_summary)
-
-        program_summary = self.program_summary_proj(program_bank.mean(dim=2))
-        composition_sim = torch.einsum("bd,cmd->bcm", F.normalize(composition_summary, dim=-1), F.normalize(program_summary, dim=-1))
-
-        # Kịch bản 12: Sử dụng trọng số động thay vì hằng số cứng nhắc
-        w = F.softplus(self.sim_weights)  # Đảm bảo trọng số dương
-        total_sim = w[..., 0] * region_sim + w[..., 1] * topology_sim + w[..., 2] * composition_sim
+        w = F.softplus(self.sim_weights)
+        total_sim = w[..., 0] * region_sim + w[..., 1] * topology_sim
 
         # Save pre-temperature scaled versions for auxiliary loss logging consistency
         region_score = region_sim / self.temperature
         topology_score = topology_sim / self.temperature
-        composition_score = composition_sim / self.temperature
+        composition_score = torch.zeros_like(region_score)
 
         # Fix: Gradient Explosion during Temperature Scaling.
         # Clamp compatibility to avoid logsumexp gradient blowup while preserving relative order
@@ -319,6 +304,7 @@ class SemanticProgramExecutor(nn.Module):
 
         program_attention = safe_softmax(compatibility, dim=-1)
         class_scores = torch.logsumexp(compatibility, dim=-1)
+        program_summary = self.program_summary_proj(program_bank.mean(dim=2))
         program_tokens = torch.einsum("bcm,cmd->bcd", program_attention, program_summary)
 
         if routing_weights is not None:

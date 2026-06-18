@@ -19,8 +19,6 @@ from .micro_modules import (
 )
 from .macro_modules import (
     SemanticInteractionBlock,
-    CrossRegionCompositionGraph,
-    SemanticHypergraphReasoner,
     SemanticCompositionalProgramBank,
     SemanticProgramExecutor,
 )
@@ -91,23 +89,6 @@ class SemanticROIGraphFER(nn.Module):
             temperature=config.relation_temperature,
         )
 
-        self.semantic_compositional_reasoner = SemanticHypergraphReasoner(
-            state_dim=config.semantic_state_dim,
-            latent_dim=config.semantic_latent_dim,
-            hyperedge_count=config.hyperedge_count,
-            attn_heads=config.semantic_attn_heads,
-            router_hidden_dim=config.router_hidden_dim,
-            dropout=config.dropout,
-        )
-
-        self.cross_region_composition_graph = CrossRegionCompositionGraph(
-            state_dim=config.semantic_state_dim,
-            num_compositions=config.cross_region_compositions,
-            attn_heads=config.semantic_attn_heads,
-            hidden_dim=max(config.semantic_state_dim * 2, 32),
-            dropout=config.dropout,
-        )
-
         self.semantic_program_bank = SemanticCompositionalProgramBank(
             num_classes=config.num_classes,
             programs_per_class=config.macro_motifs_per_class,
@@ -134,12 +115,6 @@ class SemanticROIGraphFER(nn.Module):
             nn.Linear(config.feature_dim, config.semantic_latent_dim),
             nn.GELU(),
             nn.Dropout(config.dropout),
-        )
-
-        self.global_fusion = nn.Sequential(
-            nn.Linear(config.semantic_latent_dim * 2, config.semantic_latent_dim),
-            nn.LayerNorm(config.semantic_latent_dim),
-            nn.GELU(),
         )
 
         # Per-class gate: each emotion class learns its own graph-vs-global balance.
@@ -406,41 +381,18 @@ class SemanticROIGraphFER(nn.Module):
             region_mask=region_mask,
         )
 
-        # Step 2: Higher-order cross-region composition on interaction-enriched states.
-        cross_region_outputs      = self.cross_region_composition_graph(
-            interaction_states,
-            region_mask=region_mask,
-            region_confidence=region_confidence,
-        )
-        cross_region_tokens       = cross_region_outputs["cross_region_tokens"]
-        cross_region_attention    = cross_region_outputs["composition_attn"]
-        cross_region_pair_tokens  = cross_region_outputs["pair_tokens"]
-        cross_region_pair_scores  = cross_region_outputs["pair_scores"]
-        cross_region_pair_attention = cross_region_outputs["pair_attention"]
-
-        # Step 3: Enrich interaction states with higher-order composition context.
-        composition_summary = cross_region_tokens.mean(dim=1, keepdim=True)
-        hypergraph_input    = interaction_states + composition_summary.expand_as(interaction_states)
-
-        compositional_outputs       = self.semantic_compositional_reasoner(
-            hypergraph_input,
-            region_mask=region_mask,
-            region_confidence=region_confidence,
-        )
-        composed_states              = compositional_outputs["composed_states"]
-        hyperedge_tokens             = compositional_outputs["hyperedge_tokens"]
-        routing_weights              = compositional_outputs["routing_weights"]
-        semantic_latent_embedding    = compositional_outputs["emotion_latent"]
+        # Step 2: Shallow Graph Execution - Skip Deep Cross-Region & Hypergraph logic.
+        # Direct from Interaction States to Semantic Program Executor.
+        composed_states = interaction_states
 
         semantic_program_bank, semantic_program_topology = self.semantic_program_bank()
         semantic_program_outputs = self.semantic_program_executor(
             composed_states,
-            cross_region_tokens,
             semantic_program_bank,
             semantic_program_topology,
             region_mask=region_mask,
             interaction_gates=semantic_interaction_gates,
-            routing_weights=routing_weights,
+            routing_weights=None,
         )
         semantic_program_scores            = semantic_program_outputs["program_scores"]
         semantic_program_attention         = semantic_program_outputs["program_attention"]
@@ -451,9 +403,9 @@ class SemanticROIGraphFER(nn.Module):
         semantic_program_composition_scores = semantic_program_outputs["composition_score"]
         semantic_program_routing_entropy   = semantic_program_outputs["routing_entropy"]
 
+        # Step 3: Decoupled Global Fusion
         global_semantic_context = self.global_context(feature_map)
-        fused_latent = self.global_fusion(torch.cat([semantic_latent_embedding, global_semantic_context], dim=-1))
-        logits_fused = self.semantic_classifier(fused_latent)
+        logits_fused = self.semantic_classifier(global_semantic_context)
 
         # Per-class gate: shape (1, num_classes) — each emotion learns its own balance
         structure_gate = torch.sigmoid(self.semantic_structure_gate).view(1, -1)
@@ -472,15 +424,8 @@ class SemanticROIGraphFER(nn.Module):
             "region_embeddings": region_embeddings,
             "semantic_state_tokens": semantic_state_tokens,
             "semantic_motif_tokens": semantic_motif_tokens,
-            "cross_region_tokens": cross_region_tokens,
-            "cross_region_attention": cross_region_attention,
-            "cross_region_pair_tokens": cross_region_pair_tokens,
-            "cross_region_pair_scores": cross_region_pair_scores,
-            "cross_region_pair_attention": cross_region_pair_attention,
             "semantic_interaction_tensor": semantic_interaction_tensor,
             "semantic_interaction_gates": semantic_interaction_gates,
-            "semantic_routing_weights": routing_weights,
-            "hyperedge_tokens": hyperedge_tokens,
             "semantic_program_scores": semantic_program_scores,
             "semantic_program_attention": semantic_program_attention,
             "semantic_program_tokens": semantic_program_tokens,
@@ -491,8 +436,6 @@ class SemanticROIGraphFER(nn.Module):
             "semantic_program_routing_entropy": semantic_program_routing_entropy,
             "semantic_program_bank": semantic_program_bank,
             "semantic_program_topology": semantic_program_topology,
-            "semantic_latent_embedding": semantic_latent_embedding,
-            "fused_latent_embedding": fused_latent,
             "region_mask": region_mask,
             "region_confidence": region_confidence,
             "invalid_region_indices": invalid_indices,
