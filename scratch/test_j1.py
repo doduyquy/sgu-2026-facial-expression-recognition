@@ -3,7 +3,7 @@ import sys
 import torch
 sys.path.insert(0, ".")
 
-from src.models.semantic_roi_graph_fer import SemanticROIGraphFER, SemanticRoiGraphConfig
+from src.models.semantic_roi_graph import SemanticROIGraphFER, SemanticRoiGraphConfig
 
 # Build J1 config
 cfg = SemanticRoiGraphConfig(

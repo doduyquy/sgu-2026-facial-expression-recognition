@@ -3,7 +3,7 @@
 import torch
 from torch.optim.swa_utils import AveragedModel
 
-from src.models.semantic_roi_graph_fer import SemanticROIGraphFER, SemanticRoiGraphConfig
+from src.models.semantic_roi_graph import SemanticROIGraphFER, SemanticRoiGraphConfig
 from src.models.semantic_roi_graph_losses import compute_semantic_roi_graph_losses
 
 
