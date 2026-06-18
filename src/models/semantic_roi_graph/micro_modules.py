@@ -102,7 +102,6 @@ class GATBlock(nn.Module):
 
 
 class GatedPooling(nn.Module):
-    """Attention-based gated pooling."""
 
     def __init__(self, dim: int):
         super().__init__()
@@ -117,7 +116,6 @@ class GatedPooling(nn.Module):
 
 
 class MicroGraphReasoner(nn.Module):
-    """Intra-region reasoning with graph attention."""
 
     def __init__(self, dim: int, num_nodes: int, layers: int = 2, heads: int = 4, dropout: float = 0.1):
         super().__init__()
@@ -139,7 +137,6 @@ class MicroGraphReasoner(nn.Module):
 
 
 class MicroSemanticMotifBank(nn.Module):
-    """Learnable local semantic motifs in semantic state space."""
 
     def __init__(self, num_regions: int, motifs_per_region: int, state_dim: int):
         super().__init__()
@@ -153,7 +150,6 @@ class MicroSemanticMotifBank(nn.Module):
 
 
 class MicroSemanticMotifMatcher(nn.Module):
-    """Match semantic region states to interpretable local semantic motifs."""
 
     def __init__(self, num_regions: int, motifs_per_region: int, state_dim: int, temperature: float = 0.07):
         super().__init__()

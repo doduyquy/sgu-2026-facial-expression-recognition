@@ -30,23 +30,6 @@ def _get_training_cfg(model) -> Dict:
         return {}
 
 
-def semantic_masking_loss(mask_logits, bboxes):
-    import torch.nn.functional as F
-    b, r, h, w = mask_logits.shape
-    scale_x = w / 48.0
-    scale_y = h / 48.0
-    x1 = (bboxes[..., 0] * scale_x).unsqueeze(-1).unsqueeze(-1)
-    y1 = (bboxes[..., 1] * scale_y).unsqueeze(-1).unsqueeze(-1)
-    x2 = (bboxes[..., 2] * scale_x).unsqueeze(-1).unsqueeze(-1)
-    y2 = (bboxes[..., 3] * scale_y).unsqueeze(-1).unsqueeze(-1)
-    grid_y, grid_x = torch.meshgrid(torch.arange(h, device=mask_logits.device), torch.arange(w, device=mask_logits.device), indexing='ij')
-    grid_x = grid_x.unsqueeze(0).unsqueeze(0)
-    grid_y = grid_y.unsqueeze(0).unsqueeze(0)
-    mask_x = (grid_x >= x1) & (grid_x < x2)
-    mask_y = (grid_y >= y1) & (grid_y < y2)
-    gt_masks = (mask_x & mask_y).float()
-    return F.binary_cross_entropy_with_logits(mask_logits, gt_masks)
-
 def micro_motif_diversity_loss(motif_bank_fn) -> torch.Tensor:
     """Encourage diverse motifs within each semantic region bank."""
     motifs = motif_bank_fn()  # (R, K, D)
@@ -158,7 +141,7 @@ def semantic_program_sparsity_loss(
     if program_attention is not None:
         losses.append(program_attention)
     if routing_weights is not None:
-        pass # losses.append(routing_weights) # K?ch b?n 7: Không ph?t sparsity lên routing_weights
+        pass # losses.append(routing_weights) # K?ch b?n 7: Khï¿½ng ph?t sparsity lï¿½n routing_weights
     if cross_region_attention is not None:
         if cross_region_attention.dim() == 4:
             attn = cross_region_attention.mean(dim=1)
@@ -287,7 +270,7 @@ def region_coordination_regularization(
         weights = routing_weights.clamp_min(1e-6)
         entropy = -(weights * weights.log()).sum(dim=1)
         denom = torch.log(torch.tensor(float(weights.size(1)), device=weights.device)).clamp_min(1e-6)
-        loss = (entropy / denom).mean() # K?ch b?n 9: Khôi ph?c Sparse Routing
+        loss = (entropy / denom).mean() # K?ch b?n 9: Khï¿½i ph?c Sparse Routing
 
     if interaction_gates is not None:
         gates = interaction_gates
@@ -295,7 +278,7 @@ def region_coordination_regularization(
             pair_mask = region_mask.unsqueeze(-1) * region_mask.unsqueeze(-2)
             gates = gates * pair_mask
         active_mean = gates.mean(dim=(-1, -2))
-        # K?ch b?n 3: N?i l?ng target lên 0.6 d? cho phép Ð? th? giao ti?p m?nh m? hon
+        # K?ch b?n 3: N?i l?ng target lï¿½n 0.6 d? cho phï¿½p ï¿½? th? giao ti?p m?nh m? hon
         gate_balance = ((active_mean - 0.6) ** 2).mean()
         gate_variance = gates.var(dim=(-1, -2)).mean()
         gate_loss = gate_balance + 0.05 * gate_variance
@@ -420,7 +403,7 @@ def compute_semantic_roi_graph_losses(
     if micro_diversity_weight is None:
         micro_diversity_weight = float(training_cfg.get("micro_motif_diversity_weight", training_cfg.get("motif_diversity_weight", 0.05)))
     if macro_diversity_weight is None:
-        # K?ch b?n 3: Tang g?p dôi tr?ng s? MacroDiversity d? ngan s?p d? Motif
+        # K?ch b?n 3: Tang g?p dï¿½i tr?ng s? MacroDiversity d? ngan s?p d? Motif
         macro_diversity_weight = float(training_cfg.get("macro_motif_diversity_weight", training_cfg.get("motif_diversity_weight", 0.05))) * 2.0
     if relation_consistency_weight is None:
         relation_consistency_weight = float(training_cfg.get("region_coordination_weight", training_cfg.get("relation_consistency_weight", 0.1)))
@@ -512,12 +495,6 @@ def compute_semantic_roi_graph_losses(
         mode=sparsity_mode,
     )
     diversity_loss = program_diversity_loss(base_model.semantic_program_bank)
-    mask_logits = outputs.get('mask_logits')
-    bboxes_for_mask = outputs.get('bboxes_for_mask_loss')
-    if mask_logits is not None and bboxes_for_mask is not None:
-        masking_loss = semantic_masking_loss(mask_logits, bboxes_for_mask)
-    else:
-        masking_loss = torch.tensor(0.0, device=labels.device)
 
     # Per-component enable flags (default True = preserve legacy behaviour)
     def _flag(name: str, default: bool = True) -> bool:
@@ -570,8 +547,4 @@ def compute_semantic_roi_graph_losses(
         "loss_relation_consistency": coordination_loss,
         "loss_fused_aux_ce": fused_ce_loss,
     }
-
-
-
-
 
