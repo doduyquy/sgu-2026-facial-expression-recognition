@@ -1,13 +1,3 @@
-"""
-micro_modules.py — Intra-region (micro-level) graph reasoning modules.
-
-Contains:
-  - GATBlock
-  - GatedPooling
-  - MicroGraphReasoner
-  - MicroSemanticMotifBank
-  - MicroSemanticMotifMatcher
-"""
 
 from __future__ import annotations
 

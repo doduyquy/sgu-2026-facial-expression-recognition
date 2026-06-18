@@ -1,10 +1,12 @@
 from .motif_graph_fer import MotifGraphModel
-from .semantic_roi_graph import SemanticROIGraphFER, SemanticRoiGraphConfig
+from .model import SemanticROIGraphFER
+from .config import SemanticRoiGraphConfig
 
 def get_model(name, config):
     """
     Model factory.
     Supported: 'motif_graph_fer'  — Hybrid CNN + GATConv + Motif model.
+               'semantic_roi_graph_fer' — Semantic ROI Graph FER model.
     """
     if name == 'motif_graph_fer':
         model_config = config['model'].copy()

@@ -2,7 +2,7 @@
 
 import torch
 
-from src.models.semantic_roi_graph import SemanticROIGraphFER, SemanticRoiGraphConfig
+from src.models import SemanticROIGraphFER, SemanticRoiGraphConfig
 
 
 def random_bboxes(batch_size, num_regions):

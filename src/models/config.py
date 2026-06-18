@@ -1,6 +1,3 @@
-"""
-config.py — SemanticRoiGraphConfig dataclass and DEFAULT_SEMANTIC_REGIONS.
-"""
 
 from __future__ import annotations
 

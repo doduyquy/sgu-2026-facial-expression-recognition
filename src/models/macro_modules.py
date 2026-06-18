@@ -1,13 +1,3 @@
-"""
-macro_modules.py — Inter-region (macro-level) graph reasoning modules.
-
-Contains:
-  - SemanticInteractionBlock
-  - CrossRegionCompositionGraph
-  - SemanticHypergraphReasoner
-  - SemanticCompositionalProgramBank
-  - SemanticProgramExecutor
-"""
 
 from __future__ import annotations
 

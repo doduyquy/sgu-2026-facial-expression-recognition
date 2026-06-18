@@ -1,6 +1,3 @@
-"""
-backbone.py — SemanticBackbone (ResNet50-based, high-res feature map).
-"""
 
 from __future__ import annotations
 
@@ -9,8 +6,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 
-# Import CBAM from sibling directory (src/models/CBAM.py)
-from ..CBAM import CBAM
+# CBAM is now at the same level (src/models/CBAM.py)
+from .CBAM import CBAM
 
 
 class SemanticBackbone(nn.Module):

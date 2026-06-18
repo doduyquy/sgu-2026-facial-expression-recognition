@@ -1,10 +1,4 @@
-"""
-classifier.py — Semantic state encoder and emotion classifier head.
 
-Contains:
-  - SemanticStateEncoder
-  - SemanticEmotionClassifier
-"""
 
 from __future__ import annotations
 

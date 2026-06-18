@@ -1,10 +1,3 @@
-"""
-model.py — Main SemanticROIGraphFER class.
-
-Imports all components from the sub-modules and assembles them into a
-single end-to-end model. Backward-compatible aliases are kept here to
-ensure old checkpoints still load correctly.
-"""
 
 from __future__ import annotations
 

@@ -1,6 +1,3 @@
-"""
-roi_align.py — SemanticRoiAlign (ROIAlign per region, batch-aware).
-"""
 
 from __future__ import annotations
 
