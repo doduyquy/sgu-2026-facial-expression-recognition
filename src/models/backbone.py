@@ -6,8 +6,31 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 
-# CBAM is now at the same level (src/models/CBAM.py)
-from .CBAM import CBAM
+# CBAM is no longer used, replaced by SpatialResidualMasking
+# from .CBAM import CBAM
+
+class SpatialResidualMasking(nn.Module):
+    """
+    Lightweight Spatial Residual Masking Block.
+    Generates a spatial attention mask and applies it via a residual connection.
+    This suppresses background noise and highlights micro-expressions.
+    """
+    def __init__(self, in_channels):
+        super().__init__()
+        # Bottleneck to reduce parameters
+        reduced_channels = max(in_channels // 4, 16)
+        self.mask_generator = nn.Sequential(
+            nn.Conv2d(in_channels, reduced_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(reduced_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(reduced_channels, 1, kernel_size=1, bias=False),
+            nn.Sigmoid()
+        )
+        
+    def forward(self, x):
+        mask = self.mask_generator(x)
+        # Residual masking: x' = x + x * M
+        return x + x * mask
 
 
 class SemanticBackbone(nn.Module):
@@ -50,7 +73,7 @@ class SemanticBackbone(nn.Module):
         else:
             raise ValueError("feature_dim must be 256 or 512")
 
-        self.spatial_attention = CBAM(channels=self.out_channels)
+        self.spatial_attention = SpatialResidualMasking(self.out_channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.stem(x)
@@ -60,6 +83,6 @@ class SemanticBackbone(nn.Module):
             
         x = self.proj(x)
 
-        # Apply Spatial Attention (CBAM) to filter out background noise
-        # x = self.spatial_attention(x)
+        # Apply Spatial Residual Masking to amplify micro-expressions without losing global features
+        x = self.spatial_attention(x)
         return x
