@@ -20,7 +20,7 @@ def get_args():
         type=str,
         default="full",
         choices=["full", "phase1", "phase2"],
-        help="Run both stages, only phase 1, or only phase 2 from a saved phase-1 checkpoint.",
+        help="Run both stages, only phase 1, or only phase 2 from a saved phase-1 CNN checkpoint.",
     )
     parser.add_argument(
         "--phase1-config",
@@ -38,7 +38,13 @@ def get_args():
         "--phase1-checkpoint",
         type=str,
         default=None,
-        help="Best phase-1 checkpoint to initialize phase 2. If omitted, the latest local phase-1 checkpoint is used.",
+        help="Deprecated alias for --phase2-init-checkpoint.",
+    )
+    parser.add_argument(
+        "--phase2-init-checkpoint",
+        type=str,
+        default=None,
+        help="Phase-1 clean CNN checkpoint used as model.checkpoint_path for phase 2.",
     )
     parser.add_argument(
         "--phase1-history-json",
@@ -56,6 +62,21 @@ def get_args():
         "--no-merge",
         action="store_true",
         help="Skip merged history creation after phase 2.",
+    )
+    parser.add_argument(
+        "--phase1-gpus",
+        type=str,
+        default="1",
+        help=(
+            "Number of GPUs for phase 1. Use 1 to reproduce the older single-GPU "
+            "ConvNeXt run; use auto to launch DDP on all visible GPUs."
+        ),
+    )
+    parser.add_argument(
+        "--phase2-gpus",
+        type=str,
+        default="1",
+        help="Number of GPUs for phase 2. Use auto to launch DDP on all visible GPUs.",
     )
     return parser.parse_args()
 
@@ -81,6 +102,18 @@ def resolve_output_dir(project_root, env):
         output_dir = os.path.join(project_root, output_dir)
     return output_dir
 
+def resolve_training_output_dir(project_root, config_name, env, fallback_output_dir):
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    from src.utils.config import load_config
+
+    config = load_config(config_name, env)
+    path_cfg = config.get("paths", {})
+    output_dir = path_cfg.get("output_dir", config.get("output_dir", fallback_output_dir))
+    if not os.path.isabs(output_dir):
+        output_dir = os.path.join(project_root, output_dir)
+    return output_dir
+
 def find_latest_phase1_checkpoint(output_dir):
     checkpoint_pattern = os.path.join(output_dir, "checkpoints", "convnext_tiny_fer2013", "*_best.pth")
     checkpoint_files = glob.glob(checkpoint_pattern)
@@ -88,9 +121,53 @@ def find_latest_phase1_checkpoint(output_dir):
         raise FileNotFoundError(
             "Could not find any Phase 1 best checkpoints. "
             f"Pattern: {checkpoint_pattern}. "
-            "If this is a fresh Kaggle session, pass --phase1-checkpoint pointing to the checkpoint dataset path."
+            "If this is a fresh Kaggle session, pass --phase2-init-checkpoint pointing to the checkpoint dataset path."
         )
     return max(checkpoint_files, key=os.path.getmtime)
+
+def choose_phase2_checkpoint(args, output_dir):
+    explicit_checkpoint = args.phase2_init_checkpoint or args.phase1_checkpoint
+    if explicit_checkpoint:
+        if args.phase1_checkpoint and not args.phase2_init_checkpoint:
+            print("--> [WARN] --phase1-checkpoint is deprecated; use --phase2-init-checkpoint instead.")
+        print(f"--> Using provided Phase 2 init checkpoint: {explicit_checkpoint}")
+        return explicit_checkpoint
+
+    if args.mode == "phase2":
+        raise ValueError(
+            "Phase 2 needs the Phase 1 clean CNN checkpoint. "
+            "Pass --phase2-init-checkpoint /kaggle/input/<dataset>/phase1_cnn_imagenet_best.pth"
+        )
+
+    print(f"--> Looking for checkpoint in output_dir: {output_dir}")
+    return find_latest_phase1_checkpoint(output_dir)
+
+def build_train_command(num_visible_gpus, requested_gpus):
+    requested = str(requested_gpus).strip().lower()
+    if requested == "auto":
+        nproc = num_visible_gpus
+    else:
+        nproc = int(requested)
+
+    if nproc < 1:
+        raise ValueError(f"GPU count must be >= 1, got: {requested_gpus}")
+
+    if nproc >= 2:
+        if num_visible_gpus < nproc:
+            raise ValueError(
+                f"Requested {nproc} GPUs, but torch sees only {num_visible_gpus} CUDA GPU(s)."
+            )
+        return [
+            sys.executable,
+            "-m",
+            "torch.distributed.run",
+            "--standalone",
+            f"--nproc_per_node={nproc}",
+            "-m",
+            "scripts.train",
+        ]
+
+    return [sys.executable, "-m", "scripts.train"]
 
 def merge_and_plot_history_jsons(phase1_json, phase2_json, output_dir):
     if not os.path.exists(phase1_json) or not os.path.exists(phase2_json):
@@ -202,18 +279,17 @@ def main():
     num_gpus = torch.cuda.device_count()
     print(f"--> Found {num_gpus} CUDA GPUs.")
     
-    # Base command prefix
-    if num_gpus >= 2:
-        cmd_prefix = [sys.executable, "-m", "torch.distributed.run", "--standalone", f"--nproc_per_node={num_gpus}", "-m", "scripts.train"]
-    else:
-        cmd_prefix = [sys.executable, "-m", "scripts.train"]
+    phase1_cmd_prefix = build_train_command(num_gpus, args.phase1_gpus)
+    phase2_cmd_prefix = build_train_command(num_gpus, args.phase2_gpus)
+    print(f"--> Phase 1 launcher: {' '.join(phase1_cmd_prefix)}")
+    print(f"--> Phase 2 launcher: {' '.join(phase2_cmd_prefix)}")
 
     project_root = Path(__file__).resolve().parents[1]
     output_dir = resolve_output_dir(project_root, args.env)
         
     # Phase 1: Train clean ConvNeXt-Tiny FER2013
     phase1_config = args.phase1_config
-    phase1_cmd = cmd_prefix + ["--env", args.env, "--config", phase1_config]
+    phase1_cmd = phase1_cmd_prefix + ["--env", args.env, "--config", phase1_config]
     
     if args.mode in {"full", "phase1"}:
         print("\n" + "="*60)
@@ -238,17 +314,12 @@ def main():
             print("="*60 + "\n")
             return
     
-    # 2. Find the best checkpoint from Phase 1
-    if args.phase1_checkpoint:
-        best_checkpoint = args.phase1_checkpoint
-        print(f"--> Using provided Phase 1 checkpoint: {best_checkpoint}")
-    else:
-        print(f"--> Looking for checkpoint in output_dir: {output_dir}")
-        best_checkpoint = find_latest_phase1_checkpoint(output_dir)
+    # 2. Choose the checkpoint used to initialize Phase 2.
+    best_checkpoint = choose_phase2_checkpoint(args, output_dir)
 
     # Convert backslashes for windows compatibility in YAML
     best_checkpoint_path = Path(best_checkpoint).as_posix()
-    print(f"--> [SUCCESS] Found best Phase 1 checkpoint: {best_checkpoint_path}")
+    print(f"--> [SUCCESS] Phase 2 init checkpoint: {best_checkpoint_path}")
     
     # 3. Create temporary config for Phase 2 pointing to the checkpoint
     configs_dir = project_root / "configs"
@@ -269,7 +340,13 @@ def main():
         
     # Phase 2: Train Proposed Attention Module
     phase2_config_arg = phase2_temp_name[:-5] if phase2_temp_name.endswith(".yaml") else phase2_temp_name
-    phase2_cmd = cmd_prefix + ["--env", args.env, "--config", phase2_config_arg]
+    phase2_cmd = phase2_cmd_prefix + ["--env", args.env, "--config", phase2_config_arg]
+    phase2_output_dir = resolve_training_output_dir(
+        project_root,
+        phase2_config_arg,
+        args.env,
+        output_dir,
+    )
     
     print("\n" + "="*60)
     print(">>> STAGE 2: Training Proposed Attention Module on top of Phase 1 backbone...")
@@ -293,14 +370,14 @@ def main():
     # 4. Find the latest history folders and merge them
     print("--> Finding training histories to merge...")
     p1_hist_dir = find_latest_history_dir(output_dir, "convnext_tiny_fer2013")
-    p2_hist_dir = find_latest_history_dir(output_dir, "convnext_tiny_mask_guided_region_attention")
+    p2_hist_dir = find_latest_history_dir(phase2_output_dir, "convnext_tiny_mask_guided_region_attention")
     p1_history_json = args.phase1_history_json or history_json_from_dir(p1_hist_dir)
     p2_history_json = history_json_from_dir(p2_hist_dir)
     
     if p1_history_json and p2_history_json:
         print(f"--> Found Phase 1 history JSON: {p1_history_json}")
         print(f"--> Found Phase 2 history in: {p2_hist_dir}")
-        merge_and_plot_history_jsons(p1_history_json, p2_history_json, output_dir)
+        merge_and_plot_history_jsons(p1_history_json, p2_history_json, phase2_output_dir)
     else:
         print("[WARN] Could not locate history JSON files for merging.")
         print("[WARN] Phase 2 still has its own training_curves.png under outputs/training_curves/.")
