@@ -204,22 +204,10 @@ def build_loss(config, class_weights=None):
 
     elif loss_name == 'semantic_roi_graph':
         label_smoothing = config['training'].get('label_smoothing', 0.0)
-        use_sce = config['training'].get('use_sce', False)
-        
-        if use_sce:
-            sce_alpha = config['training'].get('sce_alpha', 1.0)
-            sce_beta = config['training'].get('sce_beta', 1.0)
-            num_classes = config['model'].get('num_classes', 7)
-            loss = SymmetricCrossEntropy(
-                alpha=sce_alpha, beta=sce_beta, 
-                num_classes=num_classes, label_smoothing=label_smoothing,
-                weight=class_weights
-            )
+        if class_weights is not None:
+            loss = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
         else:
-            if class_weights is not None:
-                loss = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=label_smoothing)
-            else:
-                loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+            loss = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
 
     else: 
         raise ValueError(f"\n[!!!] Not support {loss_name} loss!\n")
