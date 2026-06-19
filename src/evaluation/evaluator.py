@@ -6,8 +6,9 @@ from src.utils.visualization import plot_prediction_grid
 from src.utils.logger_wandb import log_image_to_wandb
 from src.evaluation.metrics import compute_metrics, plot_confusion_matrix
 from src.utils.data_stats import get_class_distribution
+from src.models.utils import apply_horizontal_flip_tta
 
-def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> None:
+def evaluate_and_show(model, test_loader, testset_path, device, save_dir, use_tta=False) -> None:
     """Test set, 10 ảnh đoán đúng, 10 ảnh đoán sai và Visualize and log to wandb"""
     model.eval()
     
@@ -45,16 +46,28 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir) -> Non
                     region_confidence = semantic_meta.get("region_confidence", None)
                     if region_confidence is not None:
                         region_confidence = region_confidence.to(device)
-                    outputs = model(
-                        images,
-                        bboxes,
-                        region_mask=region_mask,
-                        region_confidence=region_confidence,
-                    )
+                        
+                    if use_tta:
+                        outputs = apply_horizontal_flip_tta(
+                            model, images, bboxes, region_mask=region_mask, region_confidence=region_confidence
+                        )
+                    else:
+                        outputs = model(
+                            images,
+                            bboxes,
+                            region_mask=region_mask,
+                            region_confidence=region_confidence,
+                        )
                 else:
-                    outputs = model(images, bboxes)
+                    if use_tta:
+                        outputs = apply_horizontal_flip_tta(model, images, bboxes)
+                    else:
+                        outputs = model(images, bboxes)
             else:
-                outputs = model(images)
+                if use_tta:
+                    outputs = apply_horizontal_flip_tta(model, images)
+                else:
+                    outputs = model(images)
 
             logits = outputs["logits"] if isinstance(outputs, dict) else (outputs[0] if isinstance(outputs, (list, tuple)) else outputs)
             _, preds = torch.max(logits, 1)
