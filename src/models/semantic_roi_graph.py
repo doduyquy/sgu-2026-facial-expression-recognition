@@ -507,11 +507,16 @@ class CrossRegionCompositionGraph(nn.Module):
         pair_attention = safe_softmax(pair_scores.reshape(b, -1), dim=-1).reshape(b, r, r)
         pair_sequence = pair_tokens.reshape(b, r * r, d)
 
+        key_padding_mask = None
+        if region_mask is not None:
+            key_padding_mask = (pair_mask <= 0).reshape(b, r * r)
+
         composition_queries = self.composition_queries.unsqueeze(0).expand(b, -1, -1)
         cross_region_tokens, composition_attn = self.composition_attn(
             composition_queries,
             pair_sequence,
             pair_sequence,
+            key_padding_mask=key_padding_mask,
             need_weights=True,
             average_attn_weights=False,
         )
