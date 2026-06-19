@@ -76,7 +76,7 @@ class SemanticROIGraphFER(nn.Module):
             state_dim=config.semantic_state_dim,
             hidden_dim=max(config.semantic_state_dim * 2, 32),
             dropout=config.dropout,
-            dropedge_rate=0.1,
+            dropedge_rate=0.5,
         )
 
         self.micro_motif_bank = MicroSemanticMotifBank(
@@ -119,7 +119,7 @@ class SemanticROIGraphFER(nn.Module):
             programs_per_class=config.macro_motifs_per_class,
             num_regions=config.num_regions,
             state_dim=config.semantic_state_dim,
-            temperature=0.15,
+            temperature=config.relation_temperature,
         )
 
         self.semantic_classifier = SemanticEmotionClassifier(
@@ -142,13 +142,9 @@ class SemanticROIGraphFER(nn.Module):
             nn.GELU(),
         )
 
-        # Instance-aware gate: dynamically decides whether to trust the Graph branch or Global branch.
-        self.semantic_structure_gate = nn.Sequential(
-            nn.Linear(config.semantic_latent_dim, 32),
-            nn.ReLU(),
-            nn.Linear(32, 1),
-            nn.Sigmoid()
-        )
+        # Per-class gate: each emotion class learns its own graph-vs-global balance.
+        # Init with -0.5 → sigmoid(-0.5) ≈ 0.38, slightly below 0.5 to favour the graph branch early.
+        self.semantic_structure_gate = nn.Parameter(torch.full((config.num_classes,), -0.5))
 
         # Backward-compatible aliases for older checkpoints and callers.
         self.macro_motif_bank    = self.semantic_program_bank
@@ -459,8 +455,8 @@ class SemanticROIGraphFER(nn.Module):
         fused_latent = self.global_fusion(torch.cat([semantic_latent_embedding, global_semantic_context], dim=-1))
         logits_fused = self.semantic_classifier(fused_latent)
 
-        # Instance-aware gate: shape (Batch, 1) — dynamically balances based on global context
-        structure_gate = self.semantic_structure_gate(global_semantic_context)
+        # Per-class gate: shape (1, num_classes) — each emotion learns its own balance
+        structure_gate = torch.sigmoid(self.semantic_structure_gate).view(1, -1)
         logits_motif   = semantic_program_scores
         logits         = (1 - structure_gate) * logits_fused + structure_gate * logits_motif
 
