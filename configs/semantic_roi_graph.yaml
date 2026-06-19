@@ -84,4 +84,4 @@ training:
   use_entropy_sparsity: false
 
 logging:
-  use_wandb: false
+  use_wandb: true
