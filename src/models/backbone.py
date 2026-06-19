@@ -1,9 +1,14 @@
+
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
+
+# CBAM is now at the same level (src/models/CBAM.py)
+from .CBAM import CBAM
+
 
 class SemanticBackbone(nn.Module):
     """ResNet18 backbone with high spatial resolution output."""
@@ -37,10 +42,14 @@ class SemanticBackbone(nn.Module):
         else:
             raise ValueError("feature_dim must be 256 or 512")
 
+        self.spatial_attention = CBAM(channels=self.out_channels)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.stem(x)
         x = self.output_layer(x)
         if self.use_layer4:
             x = F.interpolate(x, size=(12, 12), mode="bilinear", align_corners=False)
 
+        # Apply Spatial Attention (CBAM) to filter out background noise
+        # x = self.spatial_attention(x)
         return x
