@@ -547,4 +547,3 @@ def compute_semantic_roi_graph_losses(
         "loss_relation_consistency": coordination_loss,
         "loss_fused_aux_ce": fused_ce_loss,
     }
-
