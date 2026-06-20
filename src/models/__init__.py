@@ -1,5 +1,6 @@
 from .motif_graph_fer import MotifGraphModel
-from .semantic_roi_graph import SemanticROIGraphFER, SemanticRoiGraphConfig
+from .model import SemanticROIGraphFER
+from .config import SemanticRoiGraphConfig
 
 def get_model(name, config):
     """
