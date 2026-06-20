@@ -14,7 +14,7 @@ data:
   std: [0.5]
 
 seed: 
-  random_seed: 777
+  random_seed: 3407
 
 model:
   name: "simple_cnn"       # Tên model (key trong registry)
