@@ -48,7 +48,7 @@ def main():
     os.makedirs(eval_dir_path, exist_ok=True)
     
     testset_path = os.path.join(data_path, "test.csv")
-    evaluate_and_show(model, test_loader, testset_path, device, eval_dir_path, use_tta=True)
+    evaluate_and_show(model, test_loader, testset_path, device, eval_dir_path, use_tta=False)
     print("Evaluation completed!")
 
 if __name__ == "__main__":
