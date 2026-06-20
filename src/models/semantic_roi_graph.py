@@ -72,12 +72,12 @@ class SemanticRoiGraphConfig:
 
 
 class SemanticBackbone(nn.Module):
-    """ResNet50 backbone with projection for high spatial resolution Graph input."""
+    """ResNet18 backbone with high spatial resolution output."""
 
     def __init__(self, feature_dim: int = 256, use_pretrained: bool = True):
         super().__init__()
-        weights = torchvision.models.ResNet50_Weights.DEFAULT if use_pretrained else None
-        resnet = torchvision.models.resnet50(weights=weights)
+        weights = torchvision.models.ResNet18_Weights.DEFAULT if use_pretrained else None
+        resnet = torchvision.models.resnet18(weights=weights)
 
         # Keep high resolution by removing early downsampling.
         resnet.conv1.stride = (1, 1)
@@ -88,14 +88,8 @@ class SemanticBackbone(nn.Module):
         self.layer2 = resnet.layer2  # 48 -> 24
         self.layer3 = resnet.layer3  # 24 -> 12
         
-        # ResNet50 layer3 outputs 1024 channels. Project to feature_dim (256)
         self.output_layer = nn.Sequential(self.layer1, self.layer2, self.layer3)
-        self.proj = nn.Sequential(
-            nn.Conv2d(1024, feature_dim, kernel_size=1, bias=False),
-            nn.BatchNorm2d(feature_dim),
-            nn.GELU()
-        )
-        self.out_channels = feature_dim
+        self.out_channels = 256
 
         # Free layer4 - not used in forward, but would waste GPU memory
         del resnet.layer4
@@ -103,7 +97,7 @@ class SemanticBackbone(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.stem(x)
         x = self.output_layer(x)
-        return self.proj(x)
+        return x
 
 
 class SemanticRoiAlign(nn.Module):
