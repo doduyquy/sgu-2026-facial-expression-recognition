@@ -72,12 +72,12 @@ class SemanticRoiGraphConfig:
 
 
 class SemanticBackbone(nn.Module):
-    """ResNet50 backbone with projection for high spatial resolution Graph input."""
+    """ResNet101 backbone with projection for high spatial resolution Graph input."""
 
     def __init__(self, feature_dim: int = 256, use_pretrained: bool = True):
         super().__init__()
-        weights = torchvision.models.ResNet50_Weights.DEFAULT if use_pretrained else None
-        resnet = torchvision.models.resnet50(weights=weights)
+        weights = torchvision.models.ResNet101_Weights.DEFAULT if use_pretrained else None
+        resnet = torchvision.models.resnet101(weights=weights)
 
         # Keep high resolution by removing early downsampling.
         resnet.conv1.stride = (1, 1)
