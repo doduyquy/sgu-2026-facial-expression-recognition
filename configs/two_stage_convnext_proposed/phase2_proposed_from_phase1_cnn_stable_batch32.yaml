@@ -1,0 +1,11 @@
+_base_: "phase2_proposed_from_phase1_cnn_stable.yaml"
+
+# Batch-size ablation for Phase 2 of the two-stage proposed workflow.
+#
+# Use this after Phase 1 batch32 finishes. The model/checkpoint behavior,
+# CNN-main fusion weights, SAM settings, and learning rates are inherited; only
+# the global batch size is increased from 16 to 32.
+
+data:
+  batch_size: 32
+

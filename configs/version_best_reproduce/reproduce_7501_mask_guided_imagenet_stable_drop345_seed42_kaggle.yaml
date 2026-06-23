@@ -1,0 +1,36 @@
+_base_: "../convnext_tiny_mask_guided_region_attention_imagenet_stable_kaggle_dataset.yaml"
+
+# Clean ImageNet end-to-end run with drop345 filtering.
+#
+# This is the checkpoint-free counterpart to the drop345 75.17 run:
+# - ConvNeXt-Tiny starts from ImageNet DEFAULT weights only
+# - no FER 74.62 / 75.12 checkpoint is loaded
+# - mask-guided region-attention remains learned-only
+# - CLIP dictionary / learned+CLIP mixing stay disabled via the base chain
+# - the 345 MediaPipe-failed train rows are dropped by original 0-based index
+# - val/test are unchanged
+#
+# Use this first with seed 42 because it is the clean comparison against the
+# drop345 seed42 run that reached 75.17.
+
+seed:
+  random_seed: 42
+
+model:
+  pretrained: true
+  weights: "DEFAULT"
+  checkpoint_path: null
+  checkpoint_strict: false
+
+training:
+  init_checkpoint_path: null
+
+data:
+  use_clean_filter: true
+  bad_row_indices_path: "/kaggle/input/datasets/lhngphc/345-train-error/bad_row_indices_drop345_mediapipe_failed.txt"
+
+paths:
+  output_dir: "/kaggle/working/outputs/imagenet_e2e_drop345/seed_42"
+
+logging:
+  use_wandb: false

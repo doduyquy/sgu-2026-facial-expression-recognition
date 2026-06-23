@@ -1,0 +1,33 @@
+_base_: "convnext_tiny_mask_guided_region_attention_imagenet_joint_finetune.yaml"
+
+# Optimized config for training 1 SINGLE RUN starting from ImageNet -> High Accuracy:
+# - Uses SAM (Sharpness-Aware Minimization) to find flat minima and boost generalization.
+# - Uses Cosine Scheduler for smooth learning rate annealing.
+# - Elevates backbone learning rate (visual_extractor_lr) from 3e-6 to 2e-5 so that 
+#   the ConvNeXt backbone can actively learn facial expression features from ImageNet weights.
+
+paths:
+  data_path: "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
+
+model:
+  mask_dir: "/kaggle/input/datasets/lhongphuc2/mediapipe-mask-datasets-35887/merged_mediapipe_region_masks"
+
+data:
+  mask_dir: "/kaggle/input/datasets/lhongphuc2/mediapipe-mask-datasets-35887/merged_mediapipe_region_masks"
+
+training:
+  optimizer: "sam"
+  base_optimizer: "adamw"
+  sam_rho: 0.03
+  sam_adaptive: false
+
+  # Optimizing learning rates for single joint run from ImageNet
+  lr: 0.0001
+  finetune_lr: 0.00003
+  visual_extractor_lr: 0.00002 # 2e-5 allows backbone to learn facial features actively from scratch
+
+  weight_decay: 0.03
+  scheduler: "cosine"
+  epochs: 90
+  patience: 20
+  use_amp: false

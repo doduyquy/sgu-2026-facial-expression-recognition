@@ -1,0 +1,8 @@
+_base_: "phase2_proposed_from_phase1_cnn_layer4_se.yaml"
+
+# Optional Layer4-SE Phase 2 variant with the same batch-size change.
+# Keep this as a separate follow-up after the stable Phase 2 batch32 run.
+
+data:
+  batch_size: 32
+
