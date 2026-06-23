@@ -10,9 +10,9 @@ wandb
 PyYAML
 tqdm
 
-# Jupyter Notebook & UI
+# Jupyter Notebook & UI (Optional for Kaggle)
 jupyter
 ipywidgets
 
-# Testing
+# Testing (Optional)
 pytest
