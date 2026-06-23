@@ -1,7 +1,8 @@
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -9,8 +10,8 @@ import torch.nn.functional as F
 import torchvision
 from torchvision.ops import roi_align
 
-# Loss helpers moved to src/models/semantic_roi_graph_losses.py
 
+# Loss helpers moved to src/models/semantic_roi_graph_losses.py
 
 def safe_softmax(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
     """A numerically stable softmax that prevents NaN when vectors are fully masked."""
@@ -18,9 +19,7 @@ def safe_softmax(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
     x_shifted = x - x_max
     # Handle the case where x was all -inf (which results in NaN after subtraction)
     # or if the user used a very large negative number (like -1e9) which resolves to 0.
-    all_invalid = torch.isinf(x_shifted).all(dim=dim, keepdim=True) | torch.isnan(
-        x_shifted
-    ).all(dim=dim, keepdim=True)
+    all_invalid = torch.isinf(x_shifted).all(dim=dim, keepdim=True) | torch.isnan(x_shifted).all(dim=dim, keepdim=True)
     x_shifted = torch.where(all_invalid, torch.zeros_like(x_shifted), x_shifted)
     return F.softmax(x_shifted, dim=dim)
 
@@ -49,12 +48,12 @@ class SemanticRoiGraphConfig:
     micro_motifs_per_region: int = 8
     macro_motifs_per_class: int = 4
     # Bug 5 fix: defaults now match semantic_roi_graph.yaml
-    cross_region_compositions: int = 8  # was 4
-    semantic_state_dim: int = 128  # was 9 — must be divisible by semantic_attn_heads
-    semantic_latent_dim: int = 256  # was 128
-    semantic_attn_heads: int = 4  # was 3 — must divide semantic_state_dim
+    cross_region_compositions: int = 8   # was 4
+    semantic_state_dim: int = 128         # was 9 — must be divisible by semantic_attn_heads
+    semantic_latent_dim: int = 256        # was 128
+    semantic_attn_heads: int = 4          # was 3 — must divide semantic_state_dim
     hyperedge_count: int = 4
-    router_hidden_dim: int = 256  # was 64
+    router_hidden_dim: int = 256          # was 64
     use_pretrained: bool = True
     backbone_out_size: int = 12
     bbox_input_size: int = 48
@@ -72,14 +71,12 @@ class SemanticRoiGraphConfig:
 
 
 class SemanticBackbone(nn.Module):
-    """ResNet101 backbone with projection for high spatial resolution Graph input."""
+    """ResNet50 backbone with projection for high spatial resolution Graph input."""
 
     def __init__(self, feature_dim: int = 256, use_pretrained: bool = True):
         super().__init__()
-        weights = (
-            torchvision.models.ResNet101_Weights.DEFAULT if use_pretrained else None
-        )
-        resnet = torchvision.models.resnet101(weights=weights)
+        weights = torchvision.models.ResNet50_Weights.DEFAULT if use_pretrained else None
+        resnet = torchvision.models.resnet50(weights=weights)
 
         # Keep high resolution by removing early downsampling.
         resnet.conv1.stride = (1, 1)
@@ -89,13 +86,13 @@ class SemanticBackbone(nn.Module):
         self.layer1 = resnet.layer1  # 48 -> 48
         self.layer2 = resnet.layer2  # 48 -> 24
         self.layer3 = resnet.layer3  # 24 -> 12
-
+        
         # ResNet50 layer3 outputs 1024 channels. Project to feature_dim (256)
         self.output_layer = nn.Sequential(self.layer1, self.layer2, self.layer3)
         self.proj = nn.Sequential(
             nn.Conv2d(1024, feature_dim, kernel_size=1, bias=False),
             nn.BatchNorm2d(feature_dim),
-            nn.GELU(),
+            nn.GELU()
         )
         self.out_channels = feature_dim
 
@@ -111,30 +108,26 @@ class SemanticBackbone(nn.Module):
 class SemanticRoiAlign(nn.Module):
     """ROIAlign over semantic regions (batch-aware)."""
 
-    def __init__(
-        self, roi_grid: int = 4, bbox_input_size: int = 48, feature_out_size: int = 12
-    ):
+    def __init__(self, roi_grid: int = 4, bbox_input_size: int = 48, feature_out_size: int = 12):
         super().__init__()
         self.roi_grid = int(roi_grid)
         self.bbox_input_size = int(bbox_input_size)
         self.feature_out_size = int(feature_out_size)
 
     @staticmethod
-    def _canonical_region_boxes(
-        bbox_input_size: int, device: torch.device, dtype: torch.dtype
-    ) -> torch.Tensor:
+    def _canonical_region_boxes(bbox_input_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
         """Fallback semantic ROIs for 9 regions in 48x48 space."""
         boxes = torch.tensor(
             [
-                [8, 0, 40, 10],  # forehead
-                [5, 8, 18, 18],  # left_eyebrow
+                [8, 0, 40, 10],   # forehead
+                [5, 8, 18, 18],   # left_eyebrow
                 [30, 8, 43, 18],  # right_eyebrow
-                [18, 12, 30, 22],  # glabella
+                [18, 12, 30, 22], # glabella
                 [6, 16, 20, 30],  # left_eye
-                [28, 16, 42, 30],  # right_eye
-                [14, 20, 34, 38],  # nose
+                [28, 16, 42, 30], # right_eye
+                [14, 20, 34, 38], # nose
                 [8, 30, 22, 43],  # left_mouth_corner
-                [26, 30, 40, 43],  # right_mouth_corner
+                [26, 30, 40, 43], # right_mouth_corner
             ],
             device=device,
             dtype=dtype,
@@ -145,12 +138,8 @@ class SemanticRoiAlign(nn.Module):
     def validate_bboxes(self, bboxes: torch.Tensor) -> torch.Tensor:
         """Clamp and repair invalid bbox coordinates while preserving batch/region count."""
         bboxes = bboxes.float().clone()
-        bboxes[..., 0::2] = bboxes[..., 0::2].clamp(
-            0.0, float(self.bbox_input_size - 1)
-        )
-        bboxes[..., 1::2] = bboxes[..., 1::2].clamp(
-            0.0, float(self.bbox_input_size - 1)
-        )
+        bboxes[..., 0::2] = bboxes[..., 0::2].clamp(0.0, float(self.bbox_input_size - 1))
+        bboxes[..., 1::2] = bboxes[..., 1::2].clamp(0.0, float(self.bbox_input_size - 1))
 
         x1 = torch.minimum(bboxes[..., 0], bboxes[..., 2])
         y1 = torch.minimum(bboxes[..., 1], bboxes[..., 3])
@@ -166,13 +155,9 @@ class SemanticRoiAlign(nn.Module):
         y1 = torch.clamp(y1, max=float(self.bbox_input_size - 3))
 
         repaired = torch.stack([x1, y1, x2, y2], dim=-1)
-        too_small = ((repaired[..., 2] - repaired[..., 0]) < 2.0) | (
-            (repaired[..., 3] - repaired[..., 1]) < 2.0
-        )
+        too_small = ((repaired[..., 2] - repaired[..., 0]) < 2.0) | ((repaired[..., 3] - repaired[..., 1]) < 2.0)
         if too_small.any():
-            repaired[too_small] = self._canonical_region_boxes(
-                self.bbox_input_size, repaired.device, repaired.dtype
-            )[None, :, :].expand_as(repaired)[too_small]
+            repaired[too_small] = self._canonical_region_boxes(self.bbox_input_size, repaired.device, repaired.dtype)[None, :, :].expand_as(repaired)[too_small]
         return repaired
 
     def forward(self, feature_map: torch.Tensor, bboxes: torch.Tensor) -> torch.Tensor:
@@ -184,15 +169,11 @@ class SemanticRoiAlign(nn.Module):
 
         batch_size, num_regions, _ = bboxes.shape
         if batch_size != b:
-            raise ValueError(
-                f"bboxes batch {batch_size} does not match feature_map batch {b}"
-            )
+            raise ValueError(f"bboxes batch {batch_size} does not match feature_map batch {b}")
 
         bboxes = self.validate_bboxes(bboxes)
 
-        batch_indices = torch.arange(b, device=bboxes.device, dtype=bboxes.dtype).view(
-            b, 1, 1
-        )
+        batch_indices = torch.arange(b, device=bboxes.device, dtype=bboxes.dtype).view(b, 1, 1)
         batch_indices = batch_indices.expand(b, num_regions, 1)
         rois = torch.cat([batch_indices, bboxes], dim=-1).reshape(-1, 5)
 
@@ -209,9 +190,7 @@ class SemanticRoiAlign(nn.Module):
             aligned=True,
         )
         # (B*R, C, G, G) -> (B, R, G*G, C)
-        roi_features = roi_features.view(
-            b, -1, feature_map.shape[1], self.roi_grid * self.roi_grid
-        )
+        roi_features = roi_features.view(b, -1, feature_map.shape[1], self.roi_grid * self.roi_grid)
         roi_features = roi_features.permute(0, 1, 3, 2).contiguous()
         return roi_features
 
@@ -247,7 +226,7 @@ class GATBlock(nn.Module):
 
         self.locality_bias = None
         if use_locality and num_nodes is not None:
-            side = int(num_nodes**0.5)
+            side = int(num_nodes ** 0.5)
             if side * side == num_nodes:
                 coords_1d = torch.arange(side, dtype=torch.float32)
                 grid_y, grid_x = torch.meshgrid(coords_1d, coords_1d, indexing="ij")
@@ -256,9 +235,7 @@ class GATBlock(nn.Module):
                 coords = torch.arange(num_nodes, dtype=torch.float32).unsqueeze(-1)
             dist = torch.cdist(coords, coords)
             dist = dist / (dist.max().clamp(min=1e-6))
-            self.register_buffer(
-                "locality_bias", -dist.unsqueeze(0).unsqueeze(0), persistent=False
-            )
+            self.register_buffer("locality_bias", -dist.unsqueeze(0).unsqueeze(0), persistent=False)
 
     def forward(
         self,
@@ -272,7 +249,7 @@ class GATBlock(nn.Module):
         k = self.k_proj(x).view(b, n, self.heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(b, n, self.heads, self.head_dim).transpose(1, 2)
 
-        attn = torch.einsum("bhid,bhjd->bhij", q, k) / (self.head_dim**0.5)
+        attn = torch.einsum("bhid,bhjd->bhij", q, k) / (self.head_dim ** 0.5)
         if self.adj_bias is not None:
             attn = attn + self.adj_bias
         if self.locality_bias is not None:
@@ -317,21 +294,11 @@ class GatedPooling(nn.Module):
 class MicroGraphReasoner(nn.Module):
     """Intra-region reasoning with graph attention."""
 
-    def __init__(
-        self,
-        dim: int,
-        num_nodes: int,
-        layers: int = 2,
-        heads: int = 4,
-        dropout: float = 0.1,
-    ):
+    def __init__(self, dim: int, num_nodes: int, layers: int = 2, heads: int = 4, dropout: float = 0.1):
         super().__init__()
-        self.layers = nn.ModuleList(
-            [
-                GATBlock(dim, heads=heads, dropout=dropout, num_nodes=num_nodes)
-                for _ in range(layers)
-            ]
-        )
+        self.layers = nn.ModuleList([
+            GATBlock(dim, heads=heads, dropout=dropout, num_nodes=num_nodes) for _ in range(layers)
+        ])
         self.norms = nn.ModuleList([nn.LayerNorm(dim) for _ in range(layers)])
         self.pool = GatedPooling(dim)
 
@@ -349,13 +316,7 @@ class MicroGraphReasoner(nn.Module):
 class SemanticStateEncoder(nn.Module):
     """Project region embeddings into interpretable semantic facial state space."""
 
-    def __init__(
-        self,
-        input_dim: int,
-        state_dim: int,
-        hidden_dim: Optional[int] = None,
-        dropout: float = 0.1,
-    ):
+    def __init__(self, input_dim: int, state_dim: int, hidden_dim: Optional[int] = None, dropout: float = 0.1):
         super().__init__()
         hidden_dim = hidden_dim or max(input_dim // 2, state_dim * 2)
         self.state_dim = state_dim
@@ -389,9 +350,7 @@ class MicroSemanticMotifBank(nn.Module):
         self.num_regions = num_regions
         self.motifs_per_region = motifs_per_region
         self.state_dim = state_dim
-        self.motifs = nn.Parameter(
-            torch.randn(num_regions, motifs_per_region, state_dim) * 0.02
-        )
+        self.motifs = nn.Parameter(torch.randn(num_regions, motifs_per_region, state_dim) * 0.02)
 
     def forward(self) -> torch.Tensor:
         return self.motifs
@@ -400,13 +359,7 @@ class MicroSemanticMotifBank(nn.Module):
 class MicroSemanticMotifMatcher(nn.Module):
     """Match semantic region states to interpretable local semantic motifs."""
 
-    def __init__(
-        self,
-        num_regions: int,
-        motifs_per_region: int,
-        state_dim: int,
-        temperature: float = 0.07,
-    ):
+    def __init__(self, num_regions: int, motifs_per_region: int, state_dim: int, temperature: float = 0.07):
         super().__init__()
         self.num_regions = num_regions
         self.motifs_per_region = motifs_per_region
@@ -418,9 +371,7 @@ class MicroSemanticMotifMatcher(nn.Module):
             nn.GELU(),
         )
 
-    def forward(
-        self, semantic_states: torch.Tensor, motif_bank: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, semantic_states: torch.Tensor, motif_bank: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         state_norm = F.normalize(semantic_states, dim=-1)
         bank_norm = F.normalize(motif_bank, dim=-1)
         sim = torch.einsum("brs,rks->brk", state_norm, bank_norm) / self.temperature
@@ -434,13 +385,7 @@ class MicroSemanticMotifMatcher(nn.Module):
 class SemanticInteractionBlock(nn.Module):
     """Learned semantic interaction reasoning for pairwise facial coordination."""
 
-    def __init__(
-        self,
-        state_dim: int,
-        hidden_dim: Optional[int] = None,
-        dropout: float = 0.1,
-        dropedge_rate: float = 0.5,
-    ):
+    def __init__(self, state_dim: int, hidden_dim: Optional[int] = None, dropout: float = 0.1, dropedge_rate: float = 0.5):
         super().__init__()
         self.dropedge_rate = dropedge_rate
         hidden_dim = hidden_dim or max(state_dim * 2, 32)
@@ -460,22 +405,20 @@ class SemanticInteractionBlock(nn.Module):
         )
         self.norm = nn.LayerNorm(state_dim)
 
-    def forward(
-        self, semantic_states: torch.Tensor, region_mask: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, semantic_states: torch.Tensor, region_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         b, r, s = semantic_states.shape
         left = semantic_states.unsqueeze(2).expand(b, r, r, s)
         right = semantic_states.unsqueeze(1).expand(b, r, r, s)
         pair_input = torch.cat([left, right, left - right, left * right], dim=-1)
-
+        
         gates = self.edge_gate(pair_input).squeeze(-1) + 0.1
-
+        
         # Kịch bản 2: Graph DropEdge
         # Randomly sever connections between facial regions during training
         # to prevent over-smoothing and force robust path discovery.
         if self.dropedge_rate > 0.0:
             gates = F.dropout(gates, p=self.dropedge_rate, training=self.training)
-
+        
         # Computational fix: Mask out invalid regions from interaction
         if region_mask is not None:
             pair_mask = region_mask.unsqueeze(-1) * region_mask.unsqueeze(-2)
@@ -483,9 +426,7 @@ class SemanticInteractionBlock(nn.Module):
 
         messages = self.edge_message(pair_input)
         interaction_tensor = gates.unsqueeze(-1) * messages
-        interaction_summary = interaction_tensor.sum(dim=2) / (
-            gates.sum(dim=2, keepdim=True) + 1e-6
-        )
+        interaction_summary = interaction_tensor.sum(dim=2) / (gates.sum(dim=2, keepdim=True) + 1e-6)
         updated_states = self.norm(semantic_states + interaction_summary)
         return updated_states, interaction_tensor, gates
 
@@ -507,9 +448,7 @@ class CrossRegionCompositionGraph(nn.Module):
 
         hidden_dim = hidden_dim or max(state_dim * 2, 32)
         self.num_compositions = num_compositions
-        self.composition_queries = nn.Parameter(
-            torch.randn(num_compositions, state_dim) * 0.02
-        )
+        self.composition_queries = nn.Parameter(torch.randn(num_compositions, state_dim) * 0.02)
         self.pair_encoder = nn.Sequential(
             nn.Linear(state_dim * 4, hidden_dim),
             nn.GELU(),
@@ -522,9 +461,7 @@ class CrossRegionCompositionGraph(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, 1),
         )
-        self.composition_attn = nn.MultiheadAttention(
-            state_dim, attn_heads, dropout=dropout, batch_first=True
-        )
+        self.composition_attn = nn.MultiheadAttention(state_dim, attn_heads, dropout=dropout, batch_first=True)
         self.composition_norm = nn.LayerNorm(state_dim)
 
     def forward(
@@ -548,9 +485,7 @@ class CrossRegionCompositionGraph(nn.Module):
             pair_mask = region_mask.unsqueeze(-1) * region_mask.unsqueeze(-2)
             pair_scores = pair_scores.masked_fill(pair_mask <= 0, -1e9)
 
-        pair_attention = safe_softmax(pair_scores.reshape(b, -1), dim=-1).reshape(
-            b, r, r
-        )
+        pair_attention = safe_softmax(pair_scores.reshape(b, -1), dim=-1).reshape(b, r, r)
         pair_sequence = pair_tokens.reshape(b, r * r, d)
 
         key_padding_mask = None
@@ -580,29 +515,15 @@ class CrossRegionCompositionGraph(nn.Module):
 class SemanticHypergraphReasoner(nn.Module):
     """Compose multi-region semantic programs with learned hyperedge routing."""
 
-    def __init__(
-        self,
-        state_dim: int,
-        latent_dim: int,
-        hyperedge_count: int,
-        attn_heads: int,
-        router_hidden_dim: int,
-        dropout: float = 0.1,
-    ):
+    def __init__(self, state_dim: int, latent_dim: int, hyperedge_count: int, attn_heads: int, router_hidden_dim: int, dropout: float = 0.1):
         super().__init__()
         if state_dim % attn_heads != 0:
             raise ValueError("state_dim must be divisible by semantic_attn_heads")
 
         self.hyperedge_count = hyperedge_count
-        self.hyperedge_queries = nn.Parameter(
-            torch.randn(hyperedge_count, state_dim) * 0.02
-        )
-        self.hyperedge_attn = nn.MultiheadAttention(
-            state_dim, attn_heads, dropout=dropout, batch_first=True
-        )
-        self.region_back_attn = nn.MultiheadAttention(
-            state_dim, attn_heads, dropout=dropout, batch_first=True
-        )
+        self.hyperedge_queries = nn.Parameter(torch.randn(hyperedge_count, state_dim) * 0.02)
+        self.hyperedge_attn = nn.MultiheadAttention(state_dim, attn_heads, dropout=dropout, batch_first=True)
+        self.region_back_attn = nn.MultiheadAttention(state_dim, attn_heads, dropout=dropout, batch_first=True)
         self.router = nn.Sequential(
             nn.Linear(state_dim, router_hidden_dim),
             nn.GELU(),
@@ -657,15 +578,11 @@ class SemanticHypergraphReasoner(nn.Module):
         routing_weights = safe_softmax(routing_logits, dim=1)
         if region_mask is not None:
             routing_weights = routing_weights * region_mask
-            routing_weights = routing_weights / routing_weights.sum(
-                dim=1, keepdim=True
-            ).clamp_min(1e-6)
+            routing_weights = routing_weights / routing_weights.sum(dim=1, keepdim=True).clamp_min(1e-6)
 
         pooled_state = torch.sum(routing_weights.unsqueeze(-1) * composed_states, dim=1)
         hyper_summary = hyperedge_tokens.mean(dim=1)
-        emotion_latent = self.latent_projector(
-            torch.cat([pooled_state, hyper_summary], dim=-1)
-        )
+        emotion_latent = self.latent_projector(torch.cat([pooled_state, hyper_summary], dim=-1))
         emotion_latent = self.latent_norm(emotion_latent)
 
         return {
@@ -682,25 +599,14 @@ class SemanticHypergraphReasoner(nn.Module):
 class SemanticCompositionalProgramBank(nn.Module):
     """Learn structured semantic facial programs and their topology."""
 
-    def __init__(
-        self,
-        num_classes: int,
-        programs_per_class: int,
-        num_regions: int,
-        state_dim: int,
-    ):
+    def __init__(self, num_classes: int, programs_per_class: int, num_regions: int, state_dim: int):
         super().__init__()
         self.num_classes = num_classes
         self.programs_per_class = programs_per_class
         self.num_regions = num_regions
         self.state_dim = state_dim
-        self.programs = nn.Parameter(
-            torch.randn(num_classes, programs_per_class, num_regions, state_dim) * 0.02
-        )
-        self.topology_logits = nn.Parameter(
-            torch.randn(num_classes, programs_per_class, num_regions, num_regions)
-            * 0.02
-        )
+        self.programs = nn.Parameter(torch.randn(num_classes, programs_per_class, num_regions, state_dim) * 0.02)
+        self.topology_logits = nn.Parameter(torch.randn(num_classes, programs_per_class, num_regions, num_regions) * 0.02)
 
     def forward(self) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.programs, torch.sigmoid(self.topology_logits)
@@ -709,14 +615,7 @@ class SemanticCompositionalProgramBank(nn.Module):
 class SemanticProgramExecutor(nn.Module):
     """Execute semantic facial programs against observed region states."""
 
-    def __init__(
-        self,
-        num_classes: int,
-        programs_per_class: int,
-        num_regions: int,
-        state_dim: int,
-        temperature: float = 0.07,
-    ):
+    def __init__(self, num_classes: int, programs_per_class: int, num_regions: int, state_dim: int, temperature: float = 0.07):
         super().__init__()
         self.num_classes = num_classes
         self.programs_per_class = programs_per_class
@@ -732,8 +631,8 @@ class SemanticProgramExecutor(nn.Module):
         # Kịch bản 12: Trọng số cấu trúc thích ứng (Adaptive Semantic Structure)
         self.sim_weights = nn.Parameter(torch.ones(1, num_classes, 1, 3))
         with torch.no_grad():
-            self.sim_weights[..., 0] = 1.0  # region_sim
-            self.sim_weights[..., 1] = 0.5  # topology_sim
+            self.sim_weights[..., 0] = 1.0   # region_sim
+            self.sim_weights[..., 1] = 0.5   # topology_sim
             self.sim_weights[..., 2] = 0.25  # composition_sim
 
     def forward(
@@ -752,9 +651,7 @@ class SemanticProgramExecutor(nn.Module):
         # 1. Compute valid region similarity
         region_sims = torch.einsum("brd,cmrd->bcmr", state_norm, program_norm)
         if routing_weights is not None:
-            region_sim = (region_sims * routing_weights.unsqueeze(1).unsqueeze(1)).sum(
-                dim=-1
-            )
+            region_sim = (region_sims * routing_weights.unsqueeze(1).unsqueeze(1)).sum(dim=-1)
         elif region_mask is not None:
             valid_mask = region_mask.unsqueeze(1).unsqueeze(1)
             region_sims = region_sims * valid_mask
@@ -767,16 +664,9 @@ class SemanticProgramExecutor(nn.Module):
             observed_topology = interaction_gates.unsqueeze(1).unsqueeze(1)
             topology_mse = (observed_topology - program_topology.unsqueeze(0)) ** 2
             if region_mask is not None:
-                pair_mask = (
-                    (region_mask.unsqueeze(-1) * region_mask.unsqueeze(-2))
-                    .unsqueeze(1)
-                    .unsqueeze(1)
-                )
+                pair_mask = (region_mask.unsqueeze(-1) * region_mask.unsqueeze(-2)).unsqueeze(1).unsqueeze(1)
                 topology_mse = topology_mse * pair_mask
-                topology_sim = 1.0 - (
-                    topology_mse.sum(dim=(-1, -2))
-                    / pair_mask.sum(dim=(-1, -2)).clamp_min(1.0)
-                )
+                topology_sim = 1.0 - (topology_mse.sum(dim=(-1, -2)) / pair_mask.sum(dim=(-1, -2)).clamp_min(1.0))
             else:
                 topology_sim = 1.0 - topology_mse.mean(dim=(-1, -2))
         else:
@@ -787,45 +677,31 @@ class SemanticProgramExecutor(nn.Module):
         # It's already robust to region_mask because the attention that produces it masks invalid pairs.
         composition_summary = cross_region_tokens.mean(dim=1)
         composition_summary = self.program_summary_proj(composition_summary)
-
+        
         program_summary = self.program_summary_proj(program_bank.mean(dim=2))
-        composition_sim = torch.einsum(
-            "bd,cmd->bcm",
-            F.normalize(composition_summary, dim=-1),
-            F.normalize(program_summary, dim=-1),
-        )
+        composition_sim = torch.einsum("bd,cmd->bcm", F.normalize(composition_summary, dim=-1), F.normalize(program_summary, dim=-1))
 
         # Kịch bản 12: Sử dụng trọng số động thay vì hằng số cứng nhắc
-        w = F.softplus(self.sim_weights)  # Đảm bảo trọng số dương
-        total_sim = (
-            w[..., 0] * region_sim
-            + w[..., 1] * topology_sim
-            + w[..., 2] * composition_sim
-        )
-
+        w = F.softplus(self.sim_weights) # Đảm bảo trọng số dương
+        total_sim = w[..., 0] * region_sim + w[..., 1] * topology_sim + w[..., 2] * composition_sim
+        
         # Save pre-temperature scaled versions for auxiliary loss logging consistency
         region_score = region_sim / self.temperature
         topology_score = topology_sim / self.temperature
         composition_score = composition_sim / self.temperature
-
+        
         # Fix: Gradient Explosion during Temperature Scaling.
         # Clamp compatibility to avoid logsumexp gradient blowup while preserving relative order
         compatibility = (total_sim / self.temperature).clamp(-50, 50)
-
+        
         program_attention = safe_softmax(compatibility, dim=-1)
         class_scores = torch.logsumexp(compatibility, dim=-1)
-        program_tokens = torch.einsum(
-            "bcm,cmd->bcd", program_attention, program_summary
-        )
+        program_tokens = torch.einsum("bcm,cmd->bcd", program_attention, program_summary)
 
         if routing_weights is not None:
-            routing_entropy = -(
-                routing_weights.clamp_min(1e-6) * routing_weights.clamp_min(1e-6).log()
-            ).sum(dim=-1)
+            routing_entropy = -(routing_weights.clamp_min(1e-6) * routing_weights.clamp_min(1e-6).log()).sum(dim=-1)
         else:
-            routing_entropy = torch.zeros(
-                semantic_states.size(0), device=semantic_states.device
-            )
+            routing_entropy = torch.zeros(semantic_states.size(0), device=semantic_states.device)
 
         return {
             "program_scores": class_scores,
@@ -978,9 +854,8 @@ class SemanticROIGraphFER(nn.Module):
 
         # Per-class gate: each emotion class learns its own graph-vs-global balance.
         # Init with -0.5 → sigmoid(-0.5) ≈ 0.38, slightly below 0.5 to favour the graph branch early.
-        self.semantic_structure_gate = nn.Parameter(
-            torch.full((config.num_classes,), -0.5)
-        )
+        self.semantic_structure_gate = nn.Parameter(torch.full((config.num_classes,), -0.5))
+        
 
         # Backward-compatible aliases for older checkpoints and callers.
         self.macro_motif_bank = self.semantic_program_bank
@@ -1004,17 +879,11 @@ class SemanticROIGraphFER(nn.Module):
             old = state_dict[key]
             if old.ndim == 0 or old.numel() == 1:
                 state_dict = dict(state_dict)  # don't mutate the original
-                state_dict[key] = (
-                    old.detach().view(1).expand(self.config.num_classes).clone()
-                )
+                state_dict[key] = old.detach().view(1).expand(self.config.num_classes).clone()
         return super().load_state_dict(state_dict, strict=strict)
 
-    def _canonical_bboxes(
-        self, batch_size: int, device: torch.device, dtype: torch.dtype
-    ) -> torch.Tensor:
-        boxes = SemanticRoiAlign._canonical_region_boxes(
-            self.config.bbox_input_size, device, dtype
-        )
+    def _canonical_bboxes(self, batch_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        boxes = SemanticRoiAlign._canonical_region_boxes(self.config.bbox_input_size, device, dtype)
         return boxes.unsqueeze(0).expand(batch_size, -1, -1).contiguous()
 
     def _prepare_regions(
@@ -1027,9 +896,7 @@ class SemanticROIGraphFER(nn.Module):
         """Return repaired boxes, region mask, confidence and invalid indices."""
         if bboxes is None:
             repaired = self._canonical_bboxes(batch_size, device, dtype)
-            region_mask = torch.ones(
-                batch_size, self.config.num_regions, device=device, dtype=dtype
-            )
+            region_mask = torch.ones(batch_size, self.config.num_regions, device=device, dtype=dtype)
             region_confidence = torch.full_like(region_mask, 0.95)
             invalid_indices = torch.empty((0, 2), device=device, dtype=torch.long)
             return repaired, region_mask, region_confidence, invalid_indices
@@ -1037,27 +904,17 @@ class SemanticROIGraphFER(nn.Module):
         bboxes = bboxes.to(device=device, dtype=dtype)
         if bboxes.dim() != 3 or bboxes.size(-1) != 4:
             repaired = self._canonical_bboxes(batch_size, device, dtype)
-            region_mask = torch.zeros(
-                batch_size, self.config.num_regions, device=device, dtype=dtype
-            )
+            region_mask = torch.zeros(batch_size, self.config.num_regions, device=device, dtype=dtype)
             region_confidence = torch.zeros_like(region_mask)
-            invalid_indices = torch.nonzero(
-                torch.ones_like(region_mask, dtype=torch.bool), as_tuple=False
-            )
+            invalid_indices = torch.nonzero(torch.ones_like(region_mask, dtype=torch.bool), as_tuple=False)
             return repaired, region_mask, region_confidence, invalid_indices
 
-        valid_shape = (
-            bboxes.size(0) == batch_size and bboxes.size(1) == self.config.num_regions
-        )
+        valid_shape = bboxes.size(0) == batch_size and bboxes.size(1) == self.config.num_regions
         if not valid_shape:
             repaired = self._canonical_bboxes(batch_size, device, dtype)
-            region_mask = torch.zeros(
-                batch_size, self.config.num_regions, device=device, dtype=dtype
-            )
+            region_mask = torch.zeros(batch_size, self.config.num_regions, device=device, dtype=dtype)
             region_confidence = torch.zeros_like(region_mask)
-            invalid_indices = torch.nonzero(
-                torch.ones_like(region_mask, dtype=torch.bool), as_tuple=False
-            )
+            invalid_indices = torch.nonzero(torch.ones_like(region_mask, dtype=torch.bool), as_tuple=False)
             return repaired, region_mask, region_confidence, invalid_indices
 
         finite_mask = torch.isfinite(bboxes).all(dim=-1)
@@ -1075,13 +932,9 @@ class SemanticROIGraphFER(nn.Module):
 
         width = (repaired[..., 2] - repaired[..., 0]).clamp(min=1.0)
         height = (repaired[..., 3] - repaired[..., 1]).clamp(min=1.0)
-        area = (width * height) / float(
-            self.config.bbox_input_size * self.config.bbox_input_size
-        )
+        area = (width * height) / float(self.config.bbox_input_size * self.config.bbox_input_size)
         area_conf = area.clamp(0.0, 1.0)
-        region_confidence = torch.where(
-            region_mask > 0, 0.5 + 0.5 * area_conf, torch.full_like(area_conf, 0.05)
-        )
+        region_confidence = torch.where(region_mask > 0, 0.5 + 0.5 * area_conf, torch.full_like(area_conf, 0.05))
 
         invalid_indices = torch.nonzero(region_mask == 0, as_tuple=False)
         return repaired, region_mask, region_confidence, invalid_indices
@@ -1096,23 +949,21 @@ class SemanticROIGraphFER(nn.Module):
         """Public forward: dispatches to TTA or single-image path."""
         if image.dim() == 5:
             return self._forward_tta(image, bboxes, region_mask, region_confidence)
-
+            
         if not self.training and bboxes is not None:
             # 1. Forward original image and bboxes
-            outputs_orig = self._forward_single(
-                image, bboxes, region_mask, region_confidence
-            )
-
+            outputs_orig = self._forward_single(image, bboxes, region_mask, region_confidence)
+            
             # 2. Horizontal Flip TTA: flip image along width dimension (dim=-1)
             flipped_image = torch.flip(image, dims=[-1])
-
+            
             # Flip bboxes: x1_new = (w - 1.0) - x2, x2_new = (w - 1.0) - x1
             w = float(self.config.bbox_input_size)
             flipped_bboxes = bboxes.clone()
             flipped_bboxes[..., 0] = (w - 1.0) - bboxes[..., 2]
             flipped_bboxes[..., 2] = (w - 1.0) - bboxes[..., 0]
-
-            # Swap symmetric left/right regions:
+            
+            # Swap symmetric left/right regions: 
             # 1 (left eyebrow) <-> 2 (right eyebrow)
             # 4 (left eye) <-> 5 (right eye)
             # 7 (left mouth corner) <-> 8 (right mouth corner)
@@ -1121,7 +972,7 @@ class SemanticROIGraphFER(nn.Module):
                 tmp = flipped_bboxes[:, idx_l].clone()
                 flipped_bboxes[:, idx_l] = flipped_bboxes[:, idx_r]
                 flipped_bboxes[:, idx_r] = tmp
-
+                
             flipped_region_mask = None
             if region_mask is not None:
                 flipped_region_mask = region_mask.clone()
@@ -1129,33 +980,23 @@ class SemanticROIGraphFER(nn.Module):
                     tmp = flipped_region_mask[:, idx_l].clone()
                     flipped_region_mask[:, idx_l] = flipped_region_mask[:, idx_r]
                     flipped_region_mask[:, idx_r] = tmp
-
+                    
             flipped_region_confidence = None
             if region_confidence is not None:
                 flipped_region_confidence = region_confidence.clone()
                 for idx_l, idx_r in swap_pairs:
                     tmp = flipped_region_confidence[:, idx_l].clone()
-                    flipped_region_confidence[:, idx_l] = flipped_region_confidence[
-                        :, idx_r
-                    ]
+                    flipped_region_confidence[:, idx_l] = flipped_region_confidence[:, idx_r]
                     flipped_region_confidence[:, idx_r] = tmp
-
+                    
             # 3. Forward flipped image and bboxes
             outputs_flipped = self._forward_single(
-                flipped_image,
-                flipped_bboxes,
-                flipped_region_mask,
-                flipped_region_confidence,
+                flipped_image, flipped_bboxes, flipped_region_mask, flipped_region_confidence
             )
-
+            
             # 4. Average predictions for logit/probability keys
             avg_outputs = {}
-            _avg_keys = (
-                "logits",
-                "logits_motif",
-                "logits_fused",
-                "semantic_program_scores",
-            )
+            _avg_keys = ("logits", "logits_motif", "logits_fused", "semantic_program_scores")
             for k, val in outputs_orig.items():
                 if k in _avg_keys and torch.is_tensor(val) and k in outputs_flipped:
                     avg_outputs[k] = 0.5 * (val + outputs_flipped[k])
@@ -1180,37 +1021,18 @@ class SemanticROIGraphFER(nn.Module):
         # Expand bbox / mask tensors from (B, R, *) -> (B*T, R, *)
         flat_bboxes = None
         if bboxes is not None:
-            flat_bboxes = (
-                bboxes.unsqueeze(1)
-                .expand(B, T, -1, -1)
-                .reshape(B * T, bboxes.size(1), bboxes.size(2))
-            )
+            flat_bboxes = bboxes.unsqueeze(1).expand(B, T, -1, -1).reshape(B * T, bboxes.size(1), bboxes.size(2))
         flat_region_mask = None
         if region_mask is not None:
-            flat_region_mask = (
-                region_mask.unsqueeze(1)
-                .expand(B, T, -1)
-                .reshape(B * T, region_mask.size(1))
-            )
+            flat_region_mask = region_mask.unsqueeze(1).expand(B, T, -1).reshape(B * T, region_mask.size(1))
         flat_region_confidence = None
         if region_confidence is not None:
-            flat_region_confidence = (
-                region_confidence.unsqueeze(1)
-                .expand(B, T, -1)
-                .reshape(B * T, region_confidence.size(1))
-            )
+            flat_region_confidence = region_confidence.unsqueeze(1).expand(B, T, -1).reshape(B * T, region_confidence.size(1))
 
-        outputs = self._forward_single(
-            flat_image, flat_bboxes, flat_region_mask, flat_region_confidence
-        )
+        outputs = self._forward_single(flat_image, flat_bboxes, flat_region_mask, flat_region_confidence)
 
         # Average the classification scores over T crops
-        _avg_keys = (
-            "logits",
-            "logits_motif",
-            "logits_fused",
-            "semantic_program_scores",
-        )
+        _avg_keys = ("logits", "logits_motif", "logits_fused", "semantic_program_scores")
         for key in _avg_keys:
             if key in outputs and torch.is_tensor(outputs[key]):
                 x = outputs[key]
@@ -1241,13 +1063,11 @@ class SemanticROIGraphFER(nn.Module):
 
         batch_size = image.size(0)
         feature_map = self.backbone(image)
-        bboxes, computed_mask, computed_confidence, invalid_indices = (
-            self._prepare_regions(
-                bboxes,
-                batch_size=batch_size,
-                device=image.device,
-                dtype=image.dtype,
-            )
+        bboxes, computed_mask, computed_confidence, invalid_indices = self._prepare_regions(
+            bboxes,
+            batch_size=batch_size,
+            device=image.device,
+            dtype=image.dtype,
         )
 
         if region_mask is None:
@@ -1257,15 +1077,10 @@ class SemanticROIGraphFER(nn.Module):
         if region_confidence is None:
             region_confidence = computed_confidence
         else:
-            region_confidence = region_confidence.to(
-                device=image.device, dtype=image.dtype
-            )
+            region_confidence = region_confidence.to(device=image.device, dtype=image.dtype)
 
         if self.training:
-            drop_mask = (
-                torch.rand(batch_size, self.config.num_regions, device=image.device)
-                > self.region_dropout_prob
-            ).to(image.dtype)
+            drop_mask = (torch.rand(batch_size, self.config.num_regions, device=image.device) > self.region_dropout_prob).to(image.dtype)
             region_mask = region_mask * drop_mask
             region_confidence = region_confidence * drop_mask
 
@@ -1274,32 +1089,20 @@ class SemanticROIGraphFER(nn.Module):
 
         missing_token = self.missing_region_token.view(1, 1, -1)
         region_valid_mask = region_mask.unsqueeze(-1) > 0
-        region_embeddings = torch.where(
-            region_valid_mask,
-            region_embeddings,
-            missing_token.expand_as(region_embeddings),
-        )
+        region_embeddings = torch.where(region_valid_mask, region_embeddings, missing_token.expand_as(region_embeddings))
 
-        predicted_confidence = self.region_reliability_predictor(
-            region_embeddings
-        ).squeeze(-1)
-        region_confidence = torch.clamp(
-            0.5 * region_confidence + 0.5 * predicted_confidence, 0.0, 1.0
-        )
+        predicted_confidence = self.region_reliability_predictor(region_embeddings).squeeze(-1)
+        region_confidence = torch.clamp(0.5 * region_confidence + 0.5 * predicted_confidence, 0.0, 1.0)
         region_confidence = region_confidence * region_mask
 
         semantic_state_tokens = self.semantic_state_encoder(region_embeddings)
         micro_motif_bank = self.micro_motif_bank()
-        micro_motif_attention, semantic_motif_tokens = self.micro_motif_matcher(
-            semantic_state_tokens, micro_motif_bank
-        )
+        micro_motif_attention, semantic_motif_tokens = self.micro_motif_matcher(semantic_state_tokens, micro_motif_bank)
 
         # Step 1: Pairwise region interaction (local semantic coordination).
-        interaction_states, semantic_interaction_tensor, semantic_interaction_gates = (
-            self.semantic_interaction_block(
-                semantic_motif_tokens,
-                region_mask=region_mask,
-            )
+        interaction_states, semantic_interaction_tensor, semantic_interaction_gates = self.semantic_interaction_block(
+            semantic_motif_tokens,
+            region_mask=region_mask,
         )
 
         # Step 2: Higher-order cross-region composition on interaction-enriched states.
@@ -1316,9 +1119,7 @@ class SemanticROIGraphFER(nn.Module):
 
         # Step 3: Enrich interaction states with higher-order composition context.
         composition_summary = cross_region_tokens.mean(dim=1, keepdim=True)
-        hypergraph_input = interaction_states + composition_summary.expand_as(
-            interaction_states
-        )
+        hypergraph_input = interaction_states + composition_summary.expand_as(interaction_states)
 
         compositional_outputs = self.semantic_compositional_reasoner(
             hypergraph_input,
@@ -1346,15 +1147,11 @@ class SemanticROIGraphFER(nn.Module):
         semantic_program_compatibility = semantic_program_outputs["compatibility"]
         semantic_program_region_scores = semantic_program_outputs["region_score"]
         semantic_program_topology_scores = semantic_program_outputs["topology_score"]
-        semantic_program_composition_scores = semantic_program_outputs[
-            "composition_score"
-        ]
+        semantic_program_composition_scores = semantic_program_outputs["composition_score"]
         semantic_program_routing_entropy = semantic_program_outputs["routing_entropy"]
 
         global_semantic_context = self.global_context(feature_map)
-        fused_latent = self.global_fusion(
-            torch.cat([semantic_latent_embedding, global_semantic_context], dim=-1)
-        )
+        fused_latent = self.global_fusion(torch.cat([semantic_latent_embedding, global_semantic_context], dim=-1))
         logits_fused = self.semantic_classifier(fused_latent)
 
         # Per-class gate: shape (1, num_classes) — each emotion learns its own balance
@@ -1367,6 +1164,7 @@ class SemanticROIGraphFER(nn.Module):
             "logits_motif": logits_motif,
             "logits_fused": logits_fused,
             "structure_gate": structure_gate,
+            
             "micro_node_features": micro_node_features,
             "micro_motif_attention": micro_motif_attention,
             "region_motif_tokens": semantic_motif_tokens,

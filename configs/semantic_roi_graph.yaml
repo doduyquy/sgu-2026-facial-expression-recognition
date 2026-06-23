@@ -88,4 +88,3 @@ training:
 
 logging:
   use_wandb: true
-
