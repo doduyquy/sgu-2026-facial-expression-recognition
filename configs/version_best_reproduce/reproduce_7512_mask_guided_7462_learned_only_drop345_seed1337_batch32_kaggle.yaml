@@ -1,0 +1,16 @@
+_base_: "reproduce_7512_mask_guided_7462_learned_only_drop345_seed1337_kaggle.yaml"
+
+# Batch-size ablation from the best single 5-seed member:
+# - source config: drop345 seed1337
+# - recorded test accuracy: 75.2577%
+# - only intended training change: global batch size 16 -> 32
+#
+# With torchrun on 2 GPUs and ddp.batch_size_is_global=true, this means each
+# GPU receives 16 samples.
+
+data:
+  batch_size: 32
+
+paths:
+  output_dir: "/kaggle/working/outputs/seed_sweep_7512/drop345_seed_1337_batch32"
+
