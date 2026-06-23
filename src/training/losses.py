@@ -15,8 +15,6 @@ class SymmetricCrossEntropy(nn.Module):
         self.weight = weight
 
     def forward(self, pred, labels):
-        # pred: (B, num_classes), labels: (B,)
-        # Standard Cross Entropy (ce)
         ce = F.cross_entropy(
             pred, labels, weight=self.weight, label_smoothing=self.label_smoothing
         )
@@ -54,11 +52,6 @@ class MotifConsistencyLoss(nn.Module):
         self.margin = margin
 
     def forward(self, scores, top_k_idx, targets, reduction="mean"):
-        """
-        scores: (B, num_candidates, Total_Motifs)
-        top_k_idx: (B, top_k)
-        targets: (B,)
-        """
         B, num_cands, Total_Motifs = scores.shape
         top_k = top_k_idx.shape[1]
 
@@ -66,32 +59,19 @@ class MotifConsistencyLoss(nn.Module):
         batch_idx = torch.arange(B, device=scores.device).unsqueeze(1).expand(-1, top_k)
         selected_scores = scores[batch_idx, top_k_idx]  # (B, top_k, Total_Motifs)
 
-        # Create mask for correct class motifs
         mask = torch.zeros(B, Total_Motifs, device=scores.device)
         for i in range(B):
             c = int(targets[i].item())
             mask[i, c * self.motifs_per_class : (c + 1) * self.motifs_per_class] = 1.0
         mask = mask.unsqueeze(1)  # (B, 1, Total_Motifs)
-
-        # 1. Similarity to SAME class motifs (Positive)
         pos_scores = selected_scores.masked_fill(mask == 0, -1e9)
         log_sum_exp_pos = torch.logsumexp(pos_scores / self.tau, dim=-1)
-
-        # 2. Similarity to ALL motifs
         log_sum_exp_all = torch.logsumexp(selected_scores / self.tau, dim=-1)
-
-        # Intra-class loss per sample (InfoNCE style)
-        # Average over top-k subgraphs
         loss_intra = -(log_sum_exp_pos - log_sum_exp_all).mean(dim=1)  # (B,)
-
-        # 3. Inter-class Separation (Contrastive/Triplet style)
-        # We want Avg(pos_scores) > Avg(neg_scores) + margin
         pos_avg = (selected_scores * mask).sum(dim=-1) / self.motifs_per_class
         neg_avg = (selected_scores * (1 - mask)).sum(dim=-1) / (
             Total_Motifs - self.motifs_per_class
         )
-
-        # Contrastive margin loss per sample
         loss_inter = F.relu(self.margin + neg_avg - pos_avg).mean(dim=1)  # (B,)
 
         total_loss = loss_intra + loss_inter
@@ -102,11 +82,6 @@ class MotifConsistencyLoss(nn.Module):
 
 
 def build_loss(config, class_weights=None):
-    """Define loss for traning, cross_entropy: default
-    Args:
-        config: all config load from yaml
-        class_weights=None: apply class weight or not?
-    """
     loss_name = config["training"].get("loss", "cross_entropy")
 
     if loss_name == "cross_entropy":
@@ -132,7 +107,6 @@ def build_loss(config, class_weights=None):
         )
 
     elif loss_name == "focal":
-        # Simple focal loss implementation wrapper
         gamma = config["training"].get("focal_gamma", 2.0)
         alpha = config["training"].get("focal_alpha", None)
 
@@ -162,7 +136,6 @@ def build_loss(config, class_weights=None):
         loss = FocalLoss(gamma=gamma, alpha=alpha_tensor)
 
     elif loss_name == "motif_combined":
-        # Combined (CE or SCE) and MotifConsistencyLoss
         alpha_weight = config["training"].get("motif_loss_weight", 0.5)
 
         base_loss_name = config["training"].get("base_loss", "cross_entropy")
@@ -254,25 +227,18 @@ def build_loss(config, class_weights=None):
 
 
 if __name__ == "__main__":
-    # Test block
     config_default = {"training": {}}
     loss_fn = build_loss(config_default)
     print(f"Test 1 (Default): {type(loss_fn)}")
-    # Expect: <class 'torch.nn.modules.loss.CrossEntropyLoss'>
-
     config_explicit = {"training": {"loss": "cross_entropy"}}
     loss_fn = build_loss(config_explicit)
     print(f"Test 2 (Explicit): {type(loss_fn)}")
-    # Expect: <class 'torch.nn.modules.loss.CrossEntropyLoss'>
-
     config_sce = {
         "training": {"loss": "sce", "sce_alpha": 1.0, "sce_beta": 1.0},
         "model": {"num_classes": 7},
     }
     loss_fn = build_loss(config_sce)
     print(f"Test 3 (SCE standalone): {type(loss_fn)}")
-    # Expect: <class '__main__.SymmetricCrossEntropy'>
-
     config_motif_sce = {
         "training": {
             "loss": "motif_combined",
