@@ -1,6 +1,7 @@
 from typing import Dict
+
 import numpy as np
-from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
 
 
 def compute_classification_metrics(y_true, y_pred) -> Dict:
@@ -12,4 +13,4 @@ def compute_classification_metrics(y_true, y_pred) -> Dict:
         "macro_f1": float(f1_score(y_true, y_pred, average="macro")),
         "weighted_f1": float(f1_score(y_true, y_pred, average="weighted")),
         "confusion_matrix": confusion_matrix(y_true, y_pred),
-    } 
+    }

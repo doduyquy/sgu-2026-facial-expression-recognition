@@ -5,7 +5,12 @@ import os
 
 import numpy as np
 import torch
-from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score, recall_score
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    f1_score,
+    recall_score,
+)
 
 from src.data.dataloader import build_dataloader
 from src.evaluation.evaluator import evaluate_and_show
@@ -114,7 +119,9 @@ def build_bias_candidates(calib_cfg):
     fixed_bias = calib_cfg.get("fixed_bias", {})
     tune_classes = set(calib_cfg.get("tune_classes", []))
 
-    search_names = [name for name in bias_grid.keys() if not tune_classes or name in tune_classes]
+    search_names = [
+        name for name in bias_grid.keys() if not tune_classes or name in tune_classes
+    ]
     search_values = [bias_grid[name] for name in search_names]
 
     candidates = []
@@ -151,10 +158,12 @@ def search_best_logit_bias(logits, labels, calib_cfg):
         metrics = compute_metrics_from_logits(logits, labels, class_bias=bias)
         score = metrics[metric_name]
 
-        results.append({
-            "bias": bias.tolist(),
-            **metrics,
-        })
+        results.append(
+            {
+                "bias": bias.tolist(),
+                **metrics,
+            }
+        )
 
         if score > best_score:
             best_score = score
@@ -209,17 +218,25 @@ def main():
     calib_cfg = config.get("calibration", {})
 
     if not calib_cfg.get("enable_logit_bias", False):
-        raise ValueError("Calibration is disabled in config. Set calibration.enable_logit_bias=true")
+        raise ValueError(
+            "Calibration is disabled in config. Set calibration.enable_logit_bias=true"
+        )
 
     # data path and root path for each platform
     if config["env"]["platform"] == "kaggle":
-        data_path = config["kaggle"].get("data_path", "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split")
-        root_path = config["kaggle"].get("root_path", "/kaggle/working/sgu-2026-facial-expression-recognition/")
+        data_path = config["kaggle"].get(
+            "data_path", "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
+        )
+        root_path = config["kaggle"].get(
+            "root_path", "/kaggle/working/sgu-2026-facial-expression-recognition/"
+        )
     else:
         data_path = config["local"].get("data_path", "../dataset")
         root_path = config["local"].get("root_path", "../")
 
-    train_loader, val_loader, test_loader = build_dataloader(config=config, data_path=data_path)
+    train_loader, val_loader, test_loader = build_dataloader(
+        config=config, data_path=data_path
+    )
 
     model = get_model(name=config["model"]["name"], config=config)
     model.to(device)
@@ -233,7 +250,9 @@ def main():
     logits, labels = collect_logits_and_labels(model, search_loader, device)
     result = search_best_logit_bias(logits, labels, calib_cfg)
 
-    save_path = args.save_path or calib_cfg.get("save_path", "calibration_logit_bias.json")
+    save_path = args.save_path or calib_cfg.get(
+        "save_path", "calibration_logit_bias.json"
+    )
     if not os.path.isabs(save_path):
         save_path = os.path.join(root_path, save_path)
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -245,11 +264,27 @@ def main():
         testset_path = os.path.join(data_path, "test.csv")
 
         print("\n[Calibration] Evaluate test raw logits...")
-        evaluate_and_show(model, test_loader, testset_path, device, eval_dir_path, logit_bias=None, run_tag="raw")
+        evaluate_and_show(
+            model,
+            test_loader,
+            testset_path,
+            device,
+            eval_dir_path,
+            logit_bias=None,
+            run_tag="raw",
+        )
 
         print("\n[Calibration] Evaluate test with calibrated bias...")
         logit_bias = load_logit_bias(save_path, num_classes=logits.shape[1])
-        evaluate_and_show(model, test_loader, testset_path, device, eval_dir_path, logit_bias=logit_bias, run_tag="calibrated")
+        evaluate_and_show(
+            model,
+            test_loader,
+            testset_path,
+            device,
+            eval_dir_path,
+            logit_bias=logit_bias,
+            run_tag="calibrated",
+        )
 
 
 if __name__ == "__main__":

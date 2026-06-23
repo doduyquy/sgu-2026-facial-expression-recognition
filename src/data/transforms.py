@@ -1,6 +1,6 @@
-from torchvision.transforms import Compose
 import torch
 from torchvision import transforms
+from torchvision.transforms import Compose
 
 
 def build_transform(config, split="train") -> Compose:
@@ -21,59 +21,76 @@ def build_transform(config, split="train") -> Compose:
         Compose transform pipeline
     """
     # Fix 1: accept both key names
-    data_cfg = config.get('data', {})
-    image_size = data_cfg.get('input_size', data_cfg.get('image_size', 48))
+    data_cfg = config.get("data", {})
+    image_size = data_cfg.get("input_size", data_cfg.get("image_size", 48))
     mu = 0.5
     st = 0.5
 
-    use_semantic_masks = bool(data_cfg.get('use_semantic_masks', False))
+    use_semantic_masks = bool(data_cfg.get("use_semantic_masks", False))
 
     if split == "train":
         if use_semantic_masks:
             # Non-spatial augmentations to preserve bbox alignment.
             # Horizontal flip is handled synchronously in the dataset.__getitem__ level.
-            trans = transforms.Compose([
-                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=(mu,), std=(st,)),
-            ])
+            trans = transforms.Compose(
+                [
+                    transforms.ColorJitter(
+                        brightness=0.2, contrast=0.2, saturation=0.2
+                    ),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=(mu,), std=(st,)),
+                ]
+            )
         else:
-            trans = transforms.Compose([
-                transforms.RandomResizedCrop(image_size, scale=(0.8, 1.2)),
-                transforms.RandomApply([transforms.RandomAffine(0, translate=(0.2, 0.2))], p=0.5),
-                transforms.RandomHorizontalFlip(p=0.5),
-                transforms.RandomApply([transforms.RandomRotation(10)], p=0.5),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=(mu,), std=(st,)),
-            ])
+            trans = transforms.Compose(
+                [
+                    transforms.RandomResizedCrop(image_size, scale=(0.8, 1.2)),
+                    transforms.RandomApply(
+                        [transforms.RandomAffine(0, translate=(0.2, 0.2))], p=0.5
+                    ),
+                    transforms.RandomHorizontalFlip(p=0.5),
+                    transforms.RandomApply([transforms.RandomRotation(10)], p=0.5),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=(mu,), std=(st,)),
+                ]
+            )
     else:
         if use_semantic_masks:
             # Fix 6: no TenCrop — semantic bbox coords are in original image space
             # and would be wrong after any spatial crop. Simple resize preserves coords.
-            trans = transforms.Compose([
-                transforms.Resize((image_size, image_size)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=(mu,), std=(st,)),
-            ])
+            trans = transforms.Compose(
+                [
+                    transforms.Resize((image_size, image_size)),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=(mu,), std=(st,)),
+                ]
+            )
         else:
             # TenCrop TTA for models that do not use bounding boxes.
             # Note: TenCrop order is [tl, tr, bl, br, center, ...flips].
             # Center crop is at index 4, NOT image.size(1)//2 = 5.
             larger = int(image_size * 56 / 48)
-            trans = transforms.Compose([
-                transforms.Resize((larger, larger)),
-                transforms.TenCrop(image_size),
-                transforms.Lambda(lambda crops: torch.stack(
-                    [transforms.ToTensor()(c) for c in crops]
-                )),
-                transforms.Lambda(lambda tensors: torch.stack(
-                    [transforms.Normalize(mean=(mu,), std=(st,))(t) for t in tensors]
-                )),
-            ])
+            trans = transforms.Compose(
+                [
+                    transforms.Resize((larger, larger)),
+                    transforms.TenCrop(image_size),
+                    transforms.Lambda(
+                        lambda crops: torch.stack(
+                            [transforms.ToTensor()(c) for c in crops]
+                        )
+                    ),
+                    transforms.Lambda(
+                        lambda tensors: torch.stack(
+                            [
+                                transforms.Normalize(mean=(mu,), std=(st,))(t)
+                                for t in tensors
+                            ]
+                        )
+                    ),
+                ]
+            )
 
     return trans
-
-
 
 
 # With transfer learning: VGG hay ResNet:
@@ -88,15 +105,13 @@ if __name__ == "__main__":
 
     # convert uint8 array to PIL image grayscale ('L' mode)
     dummy_image = Image.fromarray(dummy_pixels)
-    
+
     # expect: L (48, 48) --> ok
     print("Before transform: ", dummy_image.mode, dummy_image.size)
 
     # create a mock config
     mock_config = {
-        'data':{
-            'image_size': 48 # change to 224 if using VGG, Q use 48 for basic CNN
-        }
+        "data": {"image_size": 48}  # change to 224 if using VGG, Q use 48 for basic CNN
     }
 
     train_trans = build_transform(mock_config, split="train")
@@ -104,7 +119,11 @@ if __name__ == "__main__":
 
     # 6. Kiểm tra kết quả
     print("Tensor after Transform:")
-    print("   - shape = ", out_tensor.shape)       # Kỳ vọng: [1, 48, 48]
-    print("   - float32? .dtype = ", out_tensor.dtype)     # Kỳ vọng: torch.float32
-    print(f"   - Max (scale & normalize) = {out_tensor.max().item():.3f}")  # Kỳ vọng xoay quanh ~ 1.0
-    print(f"   - Min (scale & normalize) = {out_tensor.min().item():.3f}")  # Kỳ vọng xoay quanh ~ -1.0
+    print("   - shape = ", out_tensor.shape)  # Kỳ vọng: [1, 48, 48]
+    print("   - float32? .dtype = ", out_tensor.dtype)  # Kỳ vọng: torch.float32
+    print(
+        f"   - Max (scale & normalize) = {out_tensor.max().item():.3f}"
+    )  # Kỳ vọng xoay quanh ~ 1.0
+    print(
+        f"   - Min (scale & normalize) = {out_tensor.min().item():.3f}"
+    )  # Kỳ vọng xoay quanh ~ -1.0

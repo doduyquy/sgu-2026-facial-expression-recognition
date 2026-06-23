@@ -1,20 +1,25 @@
 import os
-import pandas as pd
-from tqdm import tqdm
-import torch
-from src.utils.visualization import plot_prediction_grid
-from src.utils.logger_wandb import log_image_to_wandb
-from src.evaluation.metrics import compute_metrics, plot_confusion_matrix
-from src.utils.data_stats import get_class_distribution
-from src.models.utils import apply_horizontal_flip_tta
 
-def evaluate_and_show(model, test_loader, testset_path, device, save_dir, use_tta=False) -> None:
+import pandas as pd
+import torch
+from tqdm import tqdm
+
+from src.evaluation.metrics import compute_metrics, plot_confusion_matrix
+from src.models.utils import apply_horizontal_flip_tta
+from src.utils.data_stats import get_class_distribution
+from src.utils.logger_wandb import log_image_to_wandb
+from src.utils.visualization import plot_prediction_grid
+
+
+def evaluate_and_show(
+    model, test_loader, testset_path, device, save_dir, use_tta=False
+) -> None:
     """Test set, 10 ảnh đoán đúng, 10 ảnh đoán sai và Visualize and log to wandb"""
     model.eval()
-    
+
     correct_images, correct_trues, correct_preds = [], [], []
     wrong_images, wrong_trues, wrong_preds = [], [], []
-    
+
     all_preds = []
     all_trues = []
 
@@ -39,16 +44,18 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir, use_tt
 
             # If bounding boxes are present, forward with them. If semantic_meta
             # contains region-level masks/confidences, pass them through to the model
-            if 'bboxes' in locals() and bboxes is not None:
+            if "bboxes" in locals() and bboxes is not None:
                 bboxes = bboxes.to(device)
                 if isinstance(semantic_meta, dict) and "region_mask" in semantic_meta:
                     region_mask = semantic_meta["region_mask"].to(device)
                     region_confidence = semantic_meta.get("region_confidence", None)
                     if region_confidence is not None:
                         region_confidence = region_confidence.to(device)
-                    
+
                     if use_tta:
-                        outputs = apply_horizontal_flip_tta(model, images, bboxes, region_mask, region_confidence)
+                        outputs = apply_horizontal_flip_tta(
+                            model, images, bboxes, region_mask, region_confidence
+                        )
                     else:
                         outputs = model(
                             images,
@@ -67,16 +74,20 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir, use_tt
                 else:
                     outputs = model(images)
 
-            logits = outputs["logits"] if isinstance(outputs, dict) else (outputs[0] if isinstance(outputs, (list, tuple)) else outputs)
+            logits = (
+                outputs["logits"]
+                if isinstance(outputs, dict)
+                else (outputs[0] if isinstance(outputs, (list, tuple)) else outputs)
+            )
             _, preds = torch.max(logits, 1)
-            
+
             imgs_cpu = images.cpu()
             labels_cpu = labels.cpu().numpy()
             preds_cpu = preds.cpu().numpy()
-            
+
             all_trues.extend(labels_cpu)
             all_preds.extend(preds_cpu)
-            
+
             for i in range(len(preds_cpu)):
                 img, true_label, pred_label = imgs_cpu[i], labels_cpu[i], preds_cpu[i]
                 if true_label == pred_label:
@@ -89,7 +100,7 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir, use_tt
                         wrong_images.append(img)
                         wrong_trues.append(true_label)
                         wrong_preds.append(pred_label)
-                        
+
     # Plot and push W&B
     print("\nPushing to WandB & Dashboard...")
 
@@ -102,23 +113,28 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir, use_tt
     # Plot Confusion Matrix
     class_distribution = get_class_distribution(testset_path)
     cm_path = os.path.join(save_dir, "confusion_matrix.png")
-    fig_cm = plot_confusion_matrix(all_trues, all_preds, class_distribution, acc, save_path=cm_path)
+    fig_cm = plot_confusion_matrix(
+        all_trues, all_preds, class_distribution, acc, save_path=cm_path
+    )
     log_image_to_wandb("Evaluation/Confusion_Matrix", fig_cm)
-
 
     if len(correct_images) > 0:
         fig_corr = plot_prediction_grid(
-            correct_images, correct_trues, correct_preds, 
-            title="Correct Predictions", 
-            save_path=os.path.join(save_dir, "correct_preds.png")
+            correct_images,
+            correct_trues,
+            correct_preds,
+            title="Correct Predictions",
+            save_path=os.path.join(save_dir, "correct_preds.png"),
         )
         log_image_to_wandb("Evaluation/Correct_Samples", fig_corr)
-        
+
     if len(wrong_images) > 0:
         fig_wrong = plot_prediction_grid(
-            wrong_images, wrong_trues, wrong_preds, 
-            title="Incorrect Predictions", 
-            save_path=os.path.join(save_dir, "wrong_preds.png")
+            wrong_images,
+            wrong_trues,
+            wrong_preds,
+            title="Incorrect Predictions",
+            save_path=os.path.join(save_dir, "wrong_preds.png"),
         )
         log_image_to_wandb("Evaluation/Wrong_Samples", fig_wrong)
 

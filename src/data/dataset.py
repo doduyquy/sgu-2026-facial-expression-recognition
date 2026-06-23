@@ -1,25 +1,36 @@
-from PIL.Image import fromarray
 import os
 from pathlib import Path
-import pandas as pd
+
 import numpy as np
+import pandas as pd
 import torch
-from torch.utils.data import Dataset
 from PIL import Image
+from torch.utils.data import Dataset
+
 from src.data.emotions_dict import EMOTION_DICT
 
 
 class FER2013(Dataset):
     """Load one sample for dataloader"""
 
-    def __init__(self, data_path, split="train", transforms=None, semantic_masks_dir=None, num_regions=9, use_semantic_manifest=True):
+    def __init__(
+        self,
+        data_path,
+        split="train",
+        transforms=None,
+        semantic_masks_dir=None,
+        num_regions=9,
+        use_semantic_manifest=True,
+    ):
         # set relative path to train|val|test in dataset
         self.data_split_path = os.path.join(data_path, f"{split}.csv")
         # because Q splitted dataset, so we only need 2 column: emotion(for category) and pixels for images
         self.data = pd.read_csv(self.data_split_path, usecols=[0, 1])
         self.transform = transforms
         self.split = split
-        self.semantic_masks_dir = Path(semantic_masks_dir) if semantic_masks_dir else None
+        self.semantic_masks_dir = (
+            Path(semantic_masks_dir) if semantic_masks_dir else None
+        )
         self.num_regions = int(num_regions)
         self.use_semantic_manifest = bool(use_semantic_manifest)
 
@@ -30,21 +41,21 @@ class FER2013(Dataset):
                 self.semantic_manifest = pd.read_csv(manifest_path)
 
     def __len__(self):
-        # return len(rows) of dataframe which we have read 
+        # return len(rows) of dataframe which we have read
         return len(self.data)
-    
+
     def __getitem__(self, index):
         """
-        Arg: 
-            index: index of row in dataframe in dataset 
-        Return 
+        Arg:
+            index: index of row in dataframe in dataset
+        Return
             (image, label) & apply transform for image (if have)"""
         # get row and convert to numpy array
         emotion, pixels = self.data.iloc[index].values
         label = int(emotion)
 
         # convert image vector to image 48x48
-        image_vec = np.fromstring(pixels, sep=' ', dtype=np.uint8)
+        image_vec = np.fromstring(pixels, sep=" ", dtype=np.uint8)
         image_np = image_vec.reshape((48, 48))
         image = Image.fromarray(image_np)
 
@@ -60,7 +71,9 @@ class FER2013(Dataset):
             detect_success = True
             fallback_used = False
             variant_used = "unknown"
-            if self.semantic_manifest is not None and index < len(self.semantic_manifest):
+            if self.semantic_manifest is not None and index < len(
+                self.semantic_manifest
+            ):
                 manifest_row = self.semantic_manifest.iloc[index]
                 if "success" in manifest_row:
                     detect_success = bool(manifest_row["success"])
@@ -97,7 +110,9 @@ class FER2013(Dataset):
                 width = np.clip(x2 - x1, 1.0, None)
                 height = np.clip(y2 - y1, 1.0, None)
                 area = (width * height) / float(48 * 48)
-                region_confidence = np.clip(0.5 + 0.5 * area, 0.0, 1.0).astype(np.float32)
+                region_confidence = np.clip(0.5 + 0.5 * area, 0.0, 1.0).astype(
+                    np.float32
+                )
             else:
                 region_confidence = (0.15 * region_mask).astype(np.float32)
 
@@ -107,7 +122,11 @@ class FER2013(Dataset):
                 if isinstance(image, torch.Tensor):
                     image = torch.flip(image, dims=[-1])
                 else:
-                    image = image.transpose(Image.FLIP_LEFT_RIGHT) if hasattr(image, 'transpose') else np.flip(image, axis=-1)
+                    image = (
+                        image.transpose(Image.FLIP_LEFT_RIGHT)
+                        if hasattr(image, "transpose")
+                        else np.flip(image, axis=-1)
+                    )
 
                 # 2. Flip bboxes: x1_new = 47.0 - x2, x2_new = 47.0 - x1
                 flipped_bboxes = bboxes.copy()
@@ -126,7 +145,10 @@ class FER2013(Dataset):
 
                     # Swap region mask and confidence
                     region_mask[i], region_mask[j] = region_mask[j], region_mask[i]
-                    region_confidence[i], region_confidence[j] = region_confidence[j], region_confidence[i]
+                    region_confidence[i], region_confidence[j] = (
+                        region_confidence[j],
+                        region_confidence[i],
+                    )
 
                 bboxes = flipped_bboxes
 
@@ -138,6 +160,7 @@ class FER2013(Dataset):
                 scale = np.random.uniform(0.9, 1.1)
 
                 import torchvision.transforms.functional as TF
+
                 # TF.affine works on both PIL Image and Tensor
                 image = TF.affine(
                     image,
@@ -145,7 +168,7 @@ class FER2013(Dataset):
                     translate=[int(tx), int(ty)],
                     scale=scale,
                     shear=0,
-                    interpolation=TF.InterpolationMode.BILINEAR
+                    interpolation=TF.InterpolationMode.BILINEAR,
                 )
 
                 # Rotate, scale, translate bboxes
@@ -160,17 +183,12 @@ class FER2013(Dataset):
                         continue
                     x1, y1, x2, y2 = bboxes[r]
                     # 4 corners
-                    corners = np.array([
-                        [x1, y1],
-                        [x2, y1],
-                        [x1, y2],
-                        [x2, y2]
-                    ])
+                    corners = np.array([[x1, y1], [x2, y1], [x1, y2], [x2, y2]])
                     dx = corners[:, 0] - cx
                     dy = corners[:, 1] - cy
                     x_new = dx * scale * cos_t + dy * scale * sin_t + cx + tx
                     y_new = -dx * scale * sin_t + dy * scale * cos_t + cy + ty
-                    
+
                     x1_n = np.clip(np.min(x_new), 0.0, 47.0)
                     y1_n = np.clip(np.min(y_new), 0.0, 47.0)
                     x2_n = np.clip(np.max(x_new), 0.0, 47.0)
@@ -194,19 +212,19 @@ class FER2013(Dataset):
             return (image, label, bboxes, semantic_meta)
 
         return (image, label)
-    
+
     def label_to_emotion(self, label):
         return EMOTION_DICT[label]
 
-    
+
 if __name__ == "__main__":
     import os
     from pathlib import Path
+
     root_dir = Path.cwd().resolve().parent.parent
     print(root_dir)
 
     data_path = os.path.join(root_dir, "dataset/fer13-split")
-    data_train = FER2013(data_path=data_path, split='train')
-    
+    data_train = FER2013(data_path=data_path, split="train")
 
     print("Emotion for label 3:", data_train.label_to_emotion(3))

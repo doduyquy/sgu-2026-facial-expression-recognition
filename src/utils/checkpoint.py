@@ -1,5 +1,7 @@
-import torch
 import os
+
+import torch
+
 
 def save_checkpoint():
     pass
@@ -24,6 +26,7 @@ def load_partial_state_dict(model, checkpoint_state):
     print("[PartialLoad] missing:", len(missing), "unexpected:", len(unexpected))
     return missing, unexpected, skipped
 
+
 def load_checkpoints(model, optimizer, checkpoint_path, device, partial=False):
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Not found file {checkpoint_path}")
@@ -37,9 +40,8 @@ def load_checkpoints(model, optimizer, checkpoint_path, device, partial=False):
         print("[PartialLoad] optimizer state is skipped because model shape changed.")
     else:
         # load weight -> model
-        model.load_state_dict(ckpt['model_state_dict'])
+        model.load_state_dict(ckpt["model_state_dict"])
         # load optimizer and return current checkpoint
-        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
 
-    return ckpt['epoch']
-
+    return ckpt["epoch"]

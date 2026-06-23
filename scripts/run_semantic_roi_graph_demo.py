@@ -2,7 +2,7 @@
 
 import torch
 
-from src.models import SemanticROIGraphFER, SemanticRoiGraphConfig
+from src.models import SemanticRoiGraphConfig, SemanticROIGraphFER
 
 
 def random_bboxes(batch_size, num_regions):
@@ -18,7 +18,9 @@ def random_bboxes(batch_size, num_regions):
 
 
 def main():
-    config = SemanticRoiGraphConfig(num_classes=7, num_regions=9, roi_grid=4, feature_dim=256)
+    config = SemanticRoiGraphConfig(
+        num_classes=7, num_regions=9, roi_grid=4, feature_dim=256
+    )
     model = SemanticROIGraphFER(config)
     model.eval()
 

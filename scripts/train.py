@@ -1,71 +1,74 @@
-import os
-import wandb
-import torch
 import argparse
-from pathlib import Path
+import os
 import sys
+from pathlib import Path
+
+import torch
+import wandb
 
 # Ensure project root is on sys.path so `src` imports work when running scripts
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from src.utils.config import load_config
-from src.utils.seed import set_seed
-from src.utils.logger_wandb import init_wandb
+from datetime import datetime
 
 from src.data.dataloader import build_dataloader
-from src.models import get_model # in __init__ gfile
-from src.training.trainer import Trainer
+from src.evaluation.evaluator import evaluate_and_show
+from src.models import get_model  # in __init__ gfile
 from src.training.losses import build_loss
 from src.training.optimizer import build_optimizer
+from src.training.trainer import Trainer
 from src.utils.checkpoint import load_checkpoints
-from src.evaluation.evaluator import evaluate_and_show
+from src.utils.config import load_config
+from src.utils.data_stats import get_class_distribution  # testing: class weight
 from src.utils.logger_wandb import save_model_to_wandb
-from src.utils.data_stats import get_class_distribution # testing: class weight
+from src.utils.seed import set_seed
 
-from datetime import datetime
-#-------------------------------------------------------------
+# -------------------------------------------------------------
+
 
 def main():
     print("\t\t--> In main <--\t\t")
 
-    # get args 
+    # get args
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--env", type=str, default="local", choices=["local", "kaggle"])
     args = parser.parse_args()
     # If running on Kaggle, enable CUDA launch blocking for correct stack traces
-    if args.env == 'kaggle':
+    if args.env == "kaggle":
         os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
     # device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("--- Use device:", device)
-    
+
     # load config
     config = load_config(args.config, args.env)
-    set_seed(config['seed'].get('random_seed', 21))
+    set_seed(config["seed"].get("random_seed", 21))
 
     # data path and root path for each platform
-    if config['env']['platform'] == 'kaggle':
-        data_path = config['kaggle'].get('data_path', "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split")
-        root_path = config['kaggle'].get('root_path', "/kaggle/working/sgu-2026-facial-expression-recognition/")
-    else: 
-        data_path = config['local'].get('data_path', "../dataset")
-        root_path = config['local'].get('root_path', "../")
-       
+    if config["env"]["platform"] == "kaggle":
+        data_path = config["kaggle"].get(
+            "data_path", "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"
+        )
+        root_path = config["kaggle"].get(
+            "root_path", "/kaggle/working/sgu-2026-facial-expression-recognition/"
+        )
+    else:
+        data_path = config["local"].get("data_path", "../dataset")
+        root_path = config["local"].get("root_path", "../")
 
     timestamp = datetime.now().strftime("%d%m%Y_%H%M")
     run_name = f"{config['model'].get('name', 'cnn')}_{timestamp}"
 
     # load data, loss, optim, model
-    train_loader, val_loader, test_loader = build_dataloader(config=config, data_path=data_path)
-    
-    model = get_model(
-        name=config['model']['name'],
-        config=config)
-    
+    train_loader, val_loader, test_loader = build_dataloader(
+        config=config, data_path=data_path
+    )
+
+    model = get_model(name=config["model"]["name"], config=config)
 
     # get class_distribution for class_weights (for testing)
     trainset_path = os.path.join(data_path, "train.csv")
@@ -73,17 +76,19 @@ def main():
     train_class_distribution_np = train_class_distribution.values
     class_counts = torch.tensor(train_class_distribution_np, dtype=torch.float)
 
-    class_weight_mode = config['training'].get('class_weight_mode', 'inverse')
-    use_class_weights = config['training'].get('use_class_weights', True)
+    class_weight_mode = config["training"].get("class_weight_mode", "inverse")
+    use_class_weights = config["training"].get("use_class_weights", True)
 
     class_weights = None
     if use_class_weights:
-        if class_weight_mode == 'manual':
-            manual_weights = config['training'].get('manual_class_weights', [1.2, 2.0, 1.5, 0.8, 0.8, 1.0, 1.0])
+        if class_weight_mode == "manual":
+            manual_weights = config["training"].get(
+                "manual_class_weights", [1.2, 2.0, 1.5, 0.8, 0.8, 1.0, 1.0]
+            )
             class_weights = torch.tensor(manual_weights, dtype=torch.float)
-        elif class_weight_mode == 'sqrt_inverse':
+        elif class_weight_mode == "sqrt_inverse":
             class_weights = 1.0 / torch.sqrt(class_counts)
-        elif class_weight_mode == 'inverse':
+        elif class_weight_mode == "inverse":
             class_weights = 1.0 / class_counts
         else:
             raise ValueError(f"Unsupported class_weight_mode: {class_weight_mode}")
@@ -95,19 +100,21 @@ def main():
     else:
         print("--- Class weights disabled")
 
-
     loss = build_loss(config=config, class_weights=class_weights)
     optimizer = build_optimizer(model=model, config=config)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
-        mode='min',
+        mode="min",
         factor=0.5,
         patience=5,
         min_lr=1e-6,
     )
-    
+
     # set path to save ckpt
-    path_save_ckpt = os.path.join(root_path, f"outputs/checkpoints/{config['model'].get('name', 'cnn')}/{run_name}_best.pth")
+    path_save_ckpt = os.path.join(
+        root_path,
+        f"outputs/checkpoints/{config['model'].get('name', 'cnn')}/{run_name}_best.pth",
+    )
     os.makedirs(os.path.dirname(path_save_ckpt), exist_ok=True)
 
     trainer = Trainer(
@@ -120,38 +127,38 @@ def main():
         config=config,
         device=device,
         run_name=run_name,
-        save_dir=path_save_ckpt
+        save_dir=path_save_ckpt,
     )
     train_losses, val_losses = trainer.fit()
 
     # evaluate
-    print("\n" + "="*51)
+    print("\n" + "=" * 51)
     print("Evaluate in test set")
-    print("="*51)
-    
-    # Get path of file best  
+    print("=" * 51)
+
+    # Get path of file best
     load_checkpoints(model, optimizer, path_save_ckpt, device)
-    
-    eval_dir_path = os.path.join(root_path ,"outputs/figures")
+
+    eval_dir_path = os.path.join(root_path, "outputs/figures")
     os.makedirs(eval_dir_path, exist_ok=True)
     print(f"Evaluatoin save path: {eval_dir_path}")
 
-
     # test data path
     testset_path = os.path.join(data_path, "test.csv")
-    evaluate_and_show(model, test_loader, testset_path, device, eval_dir_path, use_tta=False)
-    
+    evaluate_and_show(
+        model, test_loader, testset_path, device, eval_dir_path, use_tta=False
+    )
+
     # upload best ckpt to wandb
-    if config['logging'].get('use_wandb', True):
+    if config["logging"].get("use_wandb", True):
         print("\n\t--> Uploading best ckpt to WandB, please wait...")
         save_model_to_wandb(path_save_ckpt)
-        
+
         # Đóng cửa sổ WandB, tránh bị kẹt quá trình upload trên hệ thống ngầm của Kaggle
         wandb.finish()
 
     print("\n\t\tDONE!\n")
 
-    
 
 if __name__ == "__main__":
     main()

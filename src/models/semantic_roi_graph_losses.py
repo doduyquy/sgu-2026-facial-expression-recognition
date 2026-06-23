@@ -38,7 +38,7 @@ def micro_motif_diversity_loss(motif_bank_fn) -> torch.Tensor:
     sim = torch.einsum("rkd,rgd->rkg", motifs, motifs)
     identity = torch.eye(k, device=sim.device).unsqueeze(0)
     off_diag = sim * (1.0 - identity)
-    return (off_diag ** 2).mean()
+    return (off_diag**2).mean()
 
 
 def macro_motif_diversity_loss(motif_bank_fn) -> torch.Tensor:
@@ -58,7 +58,7 @@ def macro_motif_diversity_loss(motif_bank_fn) -> torch.Tensor:
     off_diag = sim * (1.0 - identity)
     # Use margin to avoid forcing 100% orthogonality which conflicts with CE
     off_diag = torch.relu(sim.abs() - 0.3) * (1.0 - identity)
-    return (off_diag ** 2).mean()
+    return (off_diag**2).mean()
 
 
 def motif_diversity_loss(motif_bank_fn) -> torch.Tensor:
@@ -71,7 +71,9 @@ def motif_diversity_loss(motif_bank_fn) -> torch.Tensor:
     return macro_motif_diversity_loss(lambda: motifs)
 
 
-def compositional_program_consistency_loss(program_scores: torch.Tensor | None, labels: torch.Tensor) -> torch.Tensor:
+def compositional_program_consistency_loss(
+    program_scores: torch.Tensor | None, labels: torch.Tensor
+) -> torch.Tensor:
     """Encourage the correct semantic facial program to dominate execution output."""
     if program_scores is None:
         return torch.tensor(0.0, device=labels.device)
@@ -86,13 +88,21 @@ def topology_alignment_loss(
 ) -> torch.Tensor:
     """Align observed region coordination with the selected semantic program topology."""
     if predicted_topology is None or program_topology is None:
-        device = predicted_topology.device if predicted_topology is not None else labels.device
+        device = (
+            predicted_topology.device
+            if predicted_topology is not None
+            else labels.device
+        )
         return torch.tensor(0.0, device=device)
 
     selected_topology = program_topology[labels]
     if program_attention is not None:
-        selected_attention = program_attention[torch.arange(program_attention.size(0), device=labels.device), labels]
-        selected_topology = (selected_attention.unsqueeze(-1).unsqueeze(-1) * selected_topology).sum(dim=1)
+        selected_attention = program_attention[
+            torch.arange(program_attention.size(0), device=labels.device), labels
+        ]
+        selected_topology = (
+            selected_attention.unsqueeze(-1).unsqueeze(-1) * selected_topology
+        ).sum(dim=1)
     else:
         selected_topology = selected_topology.mean(dim=1)
 
@@ -111,7 +121,9 @@ def region_composition_contrastive_loss(
     """Contrast higher-order cross-region semantic compositions across emotions."""
     if cross_region_tokens is None:
         return torch.tensor(0.0, device=labels.device)
-    return region_supervised_contrastive_loss(cross_region_tokens, labels, temperature=temperature, region_mask=None)
+    return region_supervised_contrastive_loss(
+        cross_region_tokens, labels, temperature=temperature, region_mask=None
+    )
 
 
 def semantic_program_sparsity_loss(
@@ -131,17 +143,19 @@ def semantic_program_sparsity_loss(
     def _entropy(attn: torch.Tensor) -> torch.Tensor:
         attn = attn.clamp_min(1e-6)
         entropy = -(attn * attn.log()).sum(dim=-1)
-        denom = torch.log(torch.tensor(float(attn.size(-1)), device=attn.device)).clamp_min(1e-6)
+        denom = torch.log(
+            torch.tensor(float(attn.size(-1)), device=attn.device)
+        ).clamp_min(1e-6)
         return (entropy / denom).mean()
 
     def _l1(attn: torch.Tensor) -> torch.Tensor:
         # Negative L2 norm to encourage sparsity on softmax distributions
-        return -(attn ** 2).mean()
+        return -(attn**2).mean()
 
     if program_attention is not None:
         losses.append(program_attention)
     if routing_weights is not None:
-        pass # losses.append(routing_weights) # K?ch b?n 7: Kh�ng ph?t sparsity l�n routing_weights
+        pass  # losses.append(routing_weights) # K?ch b?n 7: Kh�ng ph?t sparsity l�n routing_weights
     if cross_region_attention is not None:
         if cross_region_attention.dim() == 4:
             attn = cross_region_attention.mean(dim=1)
@@ -190,7 +204,7 @@ def program_diversity_loss(program_bank) -> torch.Tensor:
     sim = summaries @ summaries.t()
     identity = torch.eye(sim.size(0), device=sim.device)
     off_diag = torch.relu(sim.abs() - 0.3) * (1.0 - identity)
-    return (off_diag ** 2).mean()
+    return (off_diag**2).mean()
 
 
 def semantic_consistency_loss(
@@ -198,11 +212,12 @@ def semantic_consistency_loss(
     labels: torch.Tensor,
     region_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Encourage samples from the same class to share similar semantic facial states."""
     if semantic_states.dim() == 3:
         if region_mask is not None:
             weights = region_mask.unsqueeze(-1).float()
-            pooled = (semantic_states * weights).sum(dim=1) / weights.sum(dim=1).clamp_min(1.0)
+            pooled = (semantic_states * weights).sum(dim=1) / weights.sum(
+                dim=1
+            ).clamp_min(1.0)
         else:
             pooled = semantic_states.mean(dim=1)
     else:
@@ -227,8 +242,9 @@ def semantic_consistency_loss(
     return loss / count
 
 
-def compositional_motif_consistency_loss(program_scores: torch.Tensor | None, labels: torch.Tensor) -> torch.Tensor:
-    """Align semantic latent emotion representations with the correct class program."""
+def compositional_motif_consistency_loss(
+    program_scores: torch.Tensor | None, labels: torch.Tensor
+) -> torch.Tensor:
     if program_scores is None:
         return torch.tensor(0.0, device=labels.device)
     return F.cross_entropy(program_scores, labels)
@@ -238,7 +254,6 @@ def semantic_disentanglement_loss(
     semantic_states: torch.Tensor,
     region_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Reduce redundancy across semantic state channels."""
     if semantic_states.dim() == 3:
         if region_mask is not None:
             flat_mask = region_mask.reshape(-1) > 0
@@ -255,7 +270,7 @@ def semantic_disentanglement_loss(
     cov = centered.t().mm(centered) / float(tokens.size(0) - 1)
     diag = torch.diag(torch.diag(cov))
     off_diag = cov - diag
-    return (off_diag ** 2).mean()
+    return (off_diag**2).mean()
 
 
 def region_coordination_regularization(
@@ -263,14 +278,15 @@ def region_coordination_regularization(
     interaction_gates: torch.Tensor | None = None,
     region_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Regularize how strongly regions coordinate through routing and interactions."""
     loss = None
 
     if routing_weights is not None:
         weights = routing_weights.clamp_min(1e-6)
         entropy = -(weights * weights.log()).sum(dim=1)
-        denom = torch.log(torch.tensor(float(weights.size(1)), device=weights.device)).clamp_min(1e-6)
-        loss = (entropy / denom).mean() # K?ch b?n 9: Kh�i ph?c Sparse Routing
+        denom = torch.log(
+            torch.tensor(float(weights.size(1)), device=weights.device)
+        ).clamp_min(1e-6)
+        loss = (entropy / denom).mean()  # K?ch b?n 9: Kh�i ph?c Sparse Routing
 
     if interaction_gates is not None:
         gates = interaction_gates
@@ -278,7 +294,6 @@ def region_coordination_regularization(
             pair_mask = region_mask.unsqueeze(-1) * region_mask.unsqueeze(-2)
             gates = gates * pair_mask
         active_mean = gates.mean(dim=(-1, -2))
-        # K?ch b?n 3: N?i l?ng target l�n 0.6 d? cho ph�p �? th? giao ti?p m?nh m? hon
         gate_balance = ((active_mean - 0.6) ** 2).mean()
         gate_variance = gates.var(dim=(-1, -2)).mean()
         gate_loss = gate_balance + 0.05 * gate_variance
@@ -301,12 +316,10 @@ def relation_consistency_loss(
     labels: torch.Tensor,
     region_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Backward-compatible alias for semantic coordination regularization."""
     return region_coordination_regularization(topology_matrix, None, region_mask)
 
 
 def topology_regularization_loss(topology_matrix: torch.Tensor) -> torch.Tensor:
-    """Backward-compatible alias for semantic disentanglement loss."""
     return semantic_disentanglement_loss(topology_matrix)
 
 
@@ -320,7 +333,9 @@ def region_supervised_contrastive_loss(
     if embeddings.dim() == 3:
         if region_mask is not None:
             weights = region_mask.unsqueeze(-1).float()
-            pooled = (embeddings * weights).sum(dim=1) / (weights.sum(dim=1).clamp_min(1.0))
+            pooled = (embeddings * weights).sum(dim=1) / (
+                weights.sum(dim=1).clamp_min(1.0)
+            )
         else:
             pooled = embeddings.mean(dim=1)
     else:
@@ -329,7 +344,7 @@ def region_supervised_contrastive_loss(
     sim = torch.matmul(pooled, pooled.t()) / float(temperature)
     labels = labels.view(-1, 1)
     mask = torch.eq(labels, labels.T).float()
-    
+
     logits_mask = torch.ones_like(mask) - torch.eye(mask.shape[0], device=mask.device)
     mask = mask * logits_mask
 
@@ -344,12 +359,14 @@ def supervised_contrastive_loss(
     labels: torch.Tensor,
     temperature: float = 0.07,
 ) -> torch.Tensor:
-    """Backward-compatible alias for region supervised contrastive loss."""
-    return region_supervised_contrastive_loss(embeddings, labels, temperature=temperature)
+    return region_supervised_contrastive_loss(
+        embeddings, labels, temperature=temperature
+    )
 
 
-def region_consistency_loss(region_embeddings: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-    """Backward-compatible alias for semantic consistency loss."""
+def region_consistency_loss(
+    region_embeddings: torch.Tensor, labels: torch.Tensor
+) -> torch.Tensor:
     return semantic_consistency_loss(region_embeddings, labels)
 
 
@@ -374,63 +391,107 @@ def compute_semantic_roi_graph_losses(
     program_sparsity_weight: float | None = None,
     program_diversity_weight: float | None = None,
 ) -> Dict[str, torch.Tensor]:
-    """
-    Compute all losses for Semantic ROI Graph FER.
-    
-    Args:
-        model: SemanticROIGraphFER instance (to access motif_bank)
-        outputs: Dict with keys 'logits', 'macro_embeddings', 'region_embeddings'
-        labels: (B,) class labels
-        temperature: Temperature for contrastive loss
-        region_contrastive_weight: Weight for region contrastive loss
-        micro_diversity_weight: Weight for micro motif diversity
-        macro_diversity_weight: Weight for macro motif diversity
-        relation_consistency_weight: Weight for relation consistency
-        topology_reg_weight: Weight for topology regularization
-    
-    Returns:
-        Dict with loss components and total loss
-    """
     logits = outputs["logits"]
 
-    # Read weights/params from model.config if not explicitly provided
     training_cfg = _get_training_cfg(model)
 
     if temperature is None:
         temperature = float(training_cfg.get("contrastive_temperature", 0.15))
     if region_contrastive_weight is None:
-        region_contrastive_weight = float(training_cfg.get("region_contrastive_weight", training_cfg.get("au_contrastive_weight", 0.1)))
+        region_contrastive_weight = float(
+            training_cfg.get(
+                "region_contrastive_weight",
+                training_cfg.get("au_contrastive_weight", 0.1),
+            )
+        )
     if micro_diversity_weight is None:
-        micro_diversity_weight = float(training_cfg.get("micro_motif_diversity_weight", training_cfg.get("motif_diversity_weight", 0.05)))
+        micro_diversity_weight = float(
+            training_cfg.get(
+                "micro_motif_diversity_weight",
+                training_cfg.get("motif_diversity_weight", 0.05),
+            )
+        )
     if macro_diversity_weight is None:
-        # K?ch b?n 3: Tang g?p d�i tr?ng s? MacroDiversity d? ngan s?p d? Motif
-        macro_diversity_weight = float(training_cfg.get("macro_motif_diversity_weight", training_cfg.get("motif_diversity_weight", 0.05))) * 2.0
+        macro_diversity_weight = (
+            float(
+                training_cfg.get(
+                    "macro_motif_diversity_weight",
+                    training_cfg.get("motif_diversity_weight", 0.05),
+                )
+            )
+            * 2.0
+        )
     if relation_consistency_weight is None:
-        relation_consistency_weight = float(training_cfg.get("region_coordination_weight", training_cfg.get("relation_consistency_weight", 0.1)))
+        relation_consistency_weight = float(
+            training_cfg.get(
+                "region_coordination_weight",
+                training_cfg.get("relation_consistency_weight", 0.1),
+            )
+        )
     if topology_reg_weight is None:
-        topology_reg_weight = float(training_cfg.get("semantic_disentanglement_weight", training_cfg.get("topology_reg_weight", 0.0)))
+        topology_reg_weight = float(
+            training_cfg.get(
+                "semantic_disentanglement_weight",
+                training_cfg.get("topology_reg_weight", 0.0),
+            )
+        )
     if semantic_consistency_weight is None:
-        semantic_consistency_weight = float(training_cfg.get("semantic_consistency_weight", training_cfg.get("region_consistency_weight", 0.1)))
+        semantic_consistency_weight = float(
+            training_cfg.get(
+                "semantic_consistency_weight",
+                training_cfg.get("region_consistency_weight", 0.1),
+            )
+        )
     if compositional_motif_weight is None:
-        compositional_motif_weight = float(training_cfg.get("compositional_motif_weight", training_cfg.get("macro_motif_consistency_weight", 0.1)))
+        compositional_motif_weight = float(
+            training_cfg.get(
+                "compositional_motif_weight",
+                training_cfg.get("macro_motif_consistency_weight", 0.1),
+            )
+        )
     if semantic_disentanglement_weight is None:
-        semantic_disentanglement_weight = float(training_cfg.get("semantic_disentanglement_weight", training_cfg.get("topology_reg_weight", 0.01)))
+        semantic_disentanglement_weight = float(
+            training_cfg.get(
+                "semantic_disentanglement_weight",
+                training_cfg.get("topology_reg_weight", 0.01),
+            )
+        )
     if region_coordination_weight is None:
-        region_coordination_weight = float(training_cfg.get("region_coordination_weight", training_cfg.get("relation_consistency_weight", 0.1)))
+        region_coordination_weight = float(
+            training_cfg.get(
+                "region_coordination_weight",
+                training_cfg.get("relation_consistency_weight", 0.1),
+            )
+        )
     if compositional_program_weight is None:
-        compositional_program_weight = float(training_cfg.get("compositional_program_weight", 0.1))
+        compositional_program_weight = float(
+            training_cfg.get("compositional_program_weight", 0.1)
+        )
     if topology_alignment_weight is None:
-        topology_alignment_weight = float(training_cfg.get("topology_alignment_weight", 0.05))
+        topology_alignment_weight = float(
+            training_cfg.get("topology_alignment_weight", 0.05)
+        )
     if region_composition_contrastive_weight is None:
-        region_composition_contrastive_weight = float(training_cfg.get("region_composition_contrastive_weight", training_cfg.get("region_contrastive_weight", 0.1)))
+        region_composition_contrastive_weight = float(
+            training_cfg.get(
+                "region_composition_contrastive_weight",
+                training_cfg.get("region_contrastive_weight", 0.1),
+            )
+        )
     if program_sparsity_weight is None:
-        program_sparsity_weight = float(training_cfg.get("program_sparsity_weight", 0.05))
+        program_sparsity_weight = float(
+            training_cfg.get("program_sparsity_weight", 0.05)
+        )
     if program_diversity_weight is None:
-        program_diversity_weight = float(training_cfg.get("program_diversity_weight", 0.05))
+        program_diversity_weight = float(
+            training_cfg.get("program_diversity_weight", 0.05)
+        )
 
     label_smoothing = float(training_cfg.get("label_smoothing", 0.0))
     try:
-        ce_loss = F.cross_entropy(logits, labels, label_smoothing=label_smoothing, weight=class_weights)
+        ce_loss = F.cross_entropy(
+            logits, labels, label_smoothing=label_smoothing, weight=class_weights
+        )
     except TypeError:
         ce_loss = F.cross_entropy(logits, labels, weight=class_weights)
 
@@ -439,7 +500,12 @@ def compute_semantic_roi_graph_losses(
     fused_aux_ce_weight = float(training_cfg.get("fused_aux_ce_weight", 0.0))
     if logits_fused is not None:
         try:
-            fused_ce_loss = F.cross_entropy(logits_fused, labels, label_smoothing=label_smoothing, weight=class_weights)
+            fused_ce_loss = F.cross_entropy(
+                logits_fused,
+                labels,
+                label_smoothing=label_smoothing,
+                weight=class_weights,
+            )
         except TypeError:
             fused_ce_loss = F.cross_entropy(logits_fused, labels, weight=class_weights)
     else:
@@ -465,8 +531,14 @@ def compute_semantic_roi_graph_losses(
 
     micro_diversity_loss = micro_motif_diversity_loss(base_model.micro_motif_bank)
     macro_diversity_loss = macro_motif_diversity_loss(base_model.semantic_program_bank)
-    contrastive_source = semantic_states if semantic_states is not None else semantic_latent
-    contrastive_region_mask = region_mask if contrastive_source is not None and contrastive_source.dim() == 3 else None
+    contrastive_source = (
+        semantic_states if semantic_states is not None else semantic_latent
+    )
+    contrastive_region_mask = (
+        region_mask
+        if contrastive_source is not None and contrastive_source.dim() == 3
+        else None
+    )
     # Warn 4 fix: guard against both semantic_states and semantic_latent being None.
     if contrastive_source is not None:
         contrastive_loss = region_supervised_contrastive_loss(
@@ -477,15 +549,25 @@ def compute_semantic_roi_graph_losses(
         )
     else:
         contrastive_loss = torch.tensor(0.0, device=labels.device)
-    semantic_consistency = semantic_consistency_loss(semantic_states, labels, region_mask=region_mask)
+    semantic_consistency = semantic_consistency_loss(
+        semantic_states, labels, region_mask=region_mask
+    )
     compositional_loss = compositional_program_consistency_loss(program_scores, labels)
-    disentanglement_loss = semantic_disentanglement_loss(semantic_states, region_mask=region_mask)
-    coordination_loss = region_coordination_regularization(routing_weights, interaction_gates, region_mask=region_mask)
+    disentanglement_loss = semantic_disentanglement_loss(
+        semantic_states, region_mask=region_mask
+    )
+    coordination_loss = region_coordination_regularization(
+        routing_weights, interaction_gates, region_mask=region_mask
+    )
     # Bug 4 note: `interaction_gates` (B, R, R) from SemanticInteractionBlock IS the
     # observed pairwise region coordination topology. Passing it as `predicted_topology`
     # to compare against the learnable program topology prototypes is intentional.
-    topology_loss = topology_alignment_loss(interaction_gates, program_topology, labels, program_attention=program_attention)
-    composition_contrastive_loss = region_composition_contrastive_loss(cross_region_tokens, labels, region_mask=region_mask, temperature=temperature)
+    topology_loss = topology_alignment_loss(
+        interaction_gates, program_topology, labels, program_attention=program_attention
+    )
+    composition_contrastive_loss = region_composition_contrastive_loss(
+        cross_region_tokens, labels, region_mask=region_mask, temperature=temperature
+    )
     use_entropy = bool(training_cfg.get("use_entropy_sparsity", False))
     sparsity_mode = "entropy" if use_entropy else "l1"
     sparsity_loss = semantic_program_sparsity_loss(
@@ -518,14 +600,18 @@ def compute_semantic_roi_graph_losses(
     if _flag("enable_topology_alignment"):
         total = total + float(topology_alignment_weight) * topology_loss
     if _flag("enable_region_composition_contrastive"):
-        total = total + float(region_composition_contrastive_weight) * composition_contrastive_loss
+        total = (
+            total
+            + float(region_composition_contrastive_weight)
+            * composition_contrastive_loss
+        )
     if _flag("enable_program_sparsity"):
         total = total + float(program_sparsity_weight) * sparsity_loss
     if _flag("enable_program_diversity"):
         total = total + float(program_diversity_weight) * diversity_loss
     if _flag("enable_fused_aux_ce", False):
         total = total + fused_aux_ce_weight * fused_ce_loss
-    
+
     return {
         "loss": total,
         "loss_ce": ce_loss,
