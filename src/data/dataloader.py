@@ -1,17 +1,14 @@
 import os
-
 from torch.utils.data import DataLoader
-
 from .dataset import FER2013
 from .transforms import build_transform
 
-
 def build_dataloader(config, data_path):
-    """Dataloader: Group dataset into batch (mini-batch)
-    Args:
+    """ Dataloader: Group dataset into batch (mini-batch) 
+    Args: 
         config: config for data, dataloader (Q cho ca config goc)
         data_path: path to fer13-split dir
-    Return:
+    Return: 
         train_loader, val_loader, test_loader
     """
     # transform
@@ -19,14 +16,12 @@ def build_dataloader(config, data_path):
     trans_val = build_transform(config, "val")
     trans_test = build_transform(config, "test")
 
-    use_semantic_masks = bool(config.get("data", {}).get("use_semantic_masks", False))
-    semantic_masks_dir = config.get("data", {}).get("semantic_masks_dir")
-    num_regions = int(config.get("model", {}).get("num_regions", 9))
+    use_semantic_masks = bool(config.get('data', {}).get('use_semantic_masks', False))
+    semantic_masks_dir = config.get('data', {}).get('semantic_masks_dir')
+    num_regions = int(config.get('model', {}).get('num_regions', 9))
 
     if semantic_masks_dir and not os.path.isabs(semantic_masks_dir):
-        semantic_masks_dir = os.path.join(
-            os.path.dirname(data_path), semantic_masks_dir
-        )
+        semantic_masks_dir = os.path.join(os.path.dirname(data_path), semantic_masks_dir)
 
     # build dataset
     data_train = FER2013(
@@ -53,39 +48,38 @@ def build_dataloader(config, data_path):
 
     # batch the dataset
     train_loader = DataLoader(
-        data_train,
-        batch_size=config["data"]["batch_size"],
-        num_workers=config["data"].get("num_workers", 2),
-        pin_memory=True,  # push data to cache (-> send to GPU)
-        shuffle=True,
-    )
+        data_train, 
+        batch_size=config['data']['batch_size'],
+        num_workers=config['data'].get('num_workers', 2),
+        pin_memory=True, # push data to cache (-> send to GPU)
+        shuffle=True)
     val_loader = DataLoader(
-        data_val,
-        batch_size=config["data"]["batch_size"],
-        num_workers=config["data"].get("num_workers", 2),
-        pin_memory=True,  # push data to cache (-> send to GPU)
-        shuffle=False,
-    )
+        data_val, 
+        batch_size=config['data']['batch_size'], 
+        num_workers=config['data'].get('num_workers', 2),
+        pin_memory=True, # push data to cache (-> send to GPU)
+        shuffle=False)
     test_loader = DataLoader(
-        data_test,
-        batch_size=config["data"]["batch_size"],
-        num_workers=config["data"].get("num_workers", 2),
-        pin_memory=True,  # push data to cache (-> send to GPU)
-        shuffle=False,
-    )
-
+        data_test, 
+        batch_size=config['data']['batch_size'], 
+        num_workers=config['data'].get('num_workers', 2),
+        pin_memory=True, # push data to cache (-> send to GPU)
+        shuffle=False)
+    
     return train_loader, val_loader, test_loader
+
+
 
 
 if __name__ == "__main__":
 
-    import os
-
+    import os, sys
     # go back to root directory
-    # sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+    # sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))) 
     from src.utils.config import load_config
 
-    config = load_config(model="vgg19", env="kaggle")
+    config = load_config(model='vgg19', env='kaggle')
+    
 
     data_path = "./dataset/fer13-split"
 
@@ -96,19 +90,11 @@ if __name__ == "__main__":
     images, labels = next(iter(train_loader))
 
     print("--> Check one batch from train loader <--")
-    print(
-        "     - Batch tensor image, expect: (32, 1, 48, 48) ||", images.shape
-    )  # becase batch_size in VGG19 override batch_size in base
-    print(
-        "     - Batch tensor label, expect: (64) ||", labels.shape
-    )  # torch.Size([64])
-    print("     - Image dtype, expect: float32 ||", images.dtype)  # float32
-    print(
-        "     - Label dtype, REQUIRED: int64 ||", labels.dtype
-    )  # int64 (Nếu là int8 thì model ko chạy đc)
+    print("     - Batch tensor image, expect: (32, 1, 48, 48) ||", images.shape) # becase batch_size in VGG19 override batch_size in base
+    print("     - Batch tensor label, expect: (64) ||", labels.shape)     # torch.Size([64])
+    print("     - Image dtype, expect: float32 ||", images.dtype)     # float32
+    print("     - Label dtype, REQUIRED: int64 ||", labels.dtype)     # int64 (Nếu là int8 thì model ko chạy đc)
     print("     - Max pixel, expect:  ~1.0 ||", images.max().item())  # Quanh quẩn ~1.0
-    print(
-        "     - Min pixel, expect: ~-1.0 ||", images.min().item()
-    )  # Quanh quẩn ~ -1.0
+    print("     - Min pixel, expect: ~-1.0 ||", images.min().item())  # Quanh quẩn ~ -1.0
 
     print(labels)

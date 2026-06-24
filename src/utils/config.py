@@ -1,29 +1,22 @@
 # Load and merge YAML (file configs)
+import yaml
 import os
 from pathlib import Path
-
-import yaml
 
 ROOT_DIRECTORY = Path(__file__).parent.parent.parent
 CONFIG_DIR = os.path.join(ROOT_DIRECTORY, "configs")
 # print(CONFIG_DIR)
 
-
 def _deep_update(base_dict, update_dict):
     """Merge các nhánh trùng nhau, ghi đè F1 nếu có"""
     for key, value in update_dict.items():
-        if (
-            key in base_dict
-            and isinstance(base_dict[key], dict)
-            and isinstance(value, dict)
-        ):
+        if key in base_dict and isinstance(base_dict[key], dict) and isinstance(value, dict):
             _deep_update(base_dict[key], value)
         else:
             base_dict[key] = value
     return base_dict
 
-
-def load_config(model="simple_cnn", env="kaggle") -> dict:
+def load_config(model='simple_cnn', env='kaggle') -> dict:
     """Load file config và cả file base mà nó kế thừa
     Trong config, các path mà nó trả về sẽ là path tương đối,
     tùy vào môi trường chạy (kaggle/kaggle) mà path sẽ khác nhau
@@ -53,7 +46,7 @@ def load_config(model="simple_cnn", env="kaggle") -> dict:
         env_config = env_config["local"]
     elif env == "kaggle":
         env_config = env_config["kaggle"]
-
+    
     # Merge configs
     config = {**config, **env_config}
     return config
@@ -66,8 +59,8 @@ if __name__ == "__main__":
 
     # print config
     print(type(config))
-    print("Batch size after merger:", config["data"]["batch_size"])
-    print("=" * 50)
+    print("Batch size after merger:", config['data']['batch_size'])
+    print("="*50)
     print(config)
 
     """

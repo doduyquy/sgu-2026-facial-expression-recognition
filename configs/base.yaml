@@ -7,7 +7,7 @@ data:
   name: "fer13-split"
   num_classes: 7  # 1-angry, 2-disgust, 3-fear, 4-happy, 5-neutral, 6-sad, 7-surprise
   image_size: 48  # Q thấy dataset gốc:O 48x48
-  batch_size: 128
+  batch_size: 64
   num_workers: 2  # num_workers is the number of subprocesses to use for data loading. 
   channels: 1
   mean: [0.5]
@@ -22,7 +22,7 @@ model:
 
 training:
   epochs: 101
-  patience: 20
+  patience: 30
   weight_decay: 0.0001
   loss: 'cross_entropy'
   optimizer: "adam"       # adam(*) | sgd 

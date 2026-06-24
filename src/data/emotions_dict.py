@@ -7,4 +7,4 @@ EMOTION_DICT = {
     5: "surprise",
     6: "neutral",
 }
-EMOTION_NAMES = [EMOTION_DICT[i] for i in range(7)]
+EMOTION_NAMES = [EMOTION_DICT[i] for i in range(7)] 
