@@ -1,0 +1,30 @@
+_base_: "reproduce_7512_mask_guided_7462_learned_only_drop345_seed42_kaggle.yaml"
+
+# Ablation from the same recipe lineage as the reported MGR-CNN 75.20 seed-42 run.
+#
+# Verified reference run:
+# - config: version_best_reproduce/reproduce_7512_mask_guided_7462_learned_only_drop345_seed42_kaggle
+# - CNN base inherited from the config chain:
+#   checkpoints/ensemble/convnext_tiny_fer2013_15052026_valaccuracy73.59.pth
+# - XAI/eval artifact: outputs/xai_mgr_cnn_seed42_7520_paper/summary.json
+# - test accuracy: 75.20200612984118% with horizontal-flip TTA
+#
+# New module:
+#   w = softmax(MLP(global_feature))
+#   h = concat(H1*(6*w1), ..., H6*(6*w6))
+#
+# The 6x scale plus zero-init makes the first step equivalent to the old
+# concat head: w_k = 1/6, so 6*w_k = 1.0 for every region. Then training can
+# learn image-specific up/down weighting from the CNN-base-initialized MGR-CNN
+# recipe, not from an already trained 75.20 MGR-CNN checkpoint.
+
+model:
+  use_dynamic_region_weighting: true
+  region_weight_hidden_dim: 384
+  region_weight_dropout: 0.10
+  region_weight_temperature: 1.0
+  region_weight_scale: 6.0
+  region_weight_zero_init: true
+
+paths:
+  output_dir: "/kaggle/working/outputs/mgrcnn_7520_seed42_dynamic_region_weighting"

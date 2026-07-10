@@ -265,6 +265,8 @@ def load_model(config: Dict, checkpoint_path: Path, device: torch.device, strict
 
     if hasattr(model, "return_attn"):
         model.return_attn = True
+    if hasattr(model, "return_region_weights"):
+        model.return_region_weights = True
     model.eval()
     return model
 
@@ -316,17 +318,26 @@ def build_dataset_and_loader(
     return dataset, loader
 
 
-def model_forward(model: torch.nn.Module, images: torch.Tensor, masks: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+def model_forward(
+    model: torch.nn.Module,
+    images: torch.Tensor,
+    masks: torch.Tensor,
+) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
     output = model(images, region_masks=masks)
     if isinstance(output, tuple):
-        return output[0], output[1]
-    return output, None
+        if len(output) >= 3:
+            return output[0], output[1], output[2]
+        if len(output) == 2 and getattr(model, "return_region_weights", False):
+            return output[0], None, output[1]
+        return output[0], output[1], None
+    return output, None, None
 
 
 @torch.no_grad()
 def _record_without_attention(record: Dict) -> Dict:
     row = dict(record)
     row.pop("attention", None)
+    row.pop("region_weights", None)
     return row
 
 
@@ -422,9 +433,13 @@ def collect_predictions(
         labels = labels.to(device, non_blocking=True)
         masks = masks.to(device, non_blocking=True)
 
-        logits, attn = model_forward(model, images, masks)
+        logits, attn, region_weights = model_forward(model, images, masks)
         if use_tta:
-            flipped_logits, _ = model_forward(model, torch.flip(images, dims=[3]), torch.flip(masks, dims=[3]))
+            flipped_logits, _, _ = model_forward(
+                model,
+                torch.flip(images, dims=[3]),
+                torch.flip(masks, dims=[3]),
+            )
             logits = (logits + flipped_logits) * 0.5
 
         probs = torch.softmax(logits, dim=1)
@@ -442,10 +457,19 @@ def collect_predictions(
                 "confidence": float(confs[item_idx].item()),
                 "correct": bool(matches[item_idx].item()),
                 "attention": attn[item_idx].detach().cpu().numpy() if attn is not None else None,
+                "region_weights": (
+                    region_weights[item_idx].detach().cpu().numpy()
+                    if region_weights is not None
+                    else None
+                ),
             }
             probs_np = probs[item_idx].detach().cpu().numpy()
             for class_idx, emotion_name in enumerate(EMOTION_NAMES):
                 record[f"prob_{emotion_name}"] = float(probs_np[class_idx])
+            if region_weights is not None:
+                weights_np = region_weights[item_idx].detach().cpu().numpy()
+                for region_idx, region_name in enumerate(REGION_ORDER[: len(weights_np)]):
+                    record[f"region_weight_{region_name}"] = float(weights_np[region_idx])
 
             if record["correct"]:
                 hit += 1
@@ -494,7 +518,7 @@ class GradCAM:
         mask = mask.clone().detach()
 
         self.model.zero_grad(set_to_none=True)
-        logits, _ = model_forward(self.model, image, mask)
+        logits, _, _ = model_forward(self.model, image, mask)
         score = logits[:, target_class].sum()
         score.backward()
 
@@ -663,7 +687,21 @@ def save_sample_figure(
         f"pred: {pred_name}\n"
         f"conf: {record['confidence']:.3f}"
     )
-    axes[0, 5].text(0.02, 0.98, info, va="top", ha="left", fontsize=11, family="monospace")
+    region_weights = record.get("region_weights")
+    if region_weights is None:
+        axes[0, 5].text(0.02, 0.98, info, va="top", ha="left", fontsize=11, family="monospace")
+    else:
+        axes[0, 5].axis("on")
+        region_weights = np.asarray(region_weights, dtype=np.float32)
+        labels = list(REGION_ORDER[: len(region_weights)])
+        y_pos = np.arange(len(labels))
+        axes[0, 5].barh(y_pos, region_weights, color="#2563eb")
+        axes[0, 5].set_yticks(y_pos)
+        axes[0, 5].set_yticklabels(labels, fontsize=8)
+        axes[0, 5].invert_yaxis()
+        axes[0, 5].set_xlim(0.0, max(1.0, float(region_weights.max()) * 1.1))
+        axes[0, 5].set_title(info, fontsize=9, loc="left")
+        axes[0, 5].tick_params(axis="x", labelsize=8)
 
     for region_idx, region_name in enumerate(REGION_ORDER):
         mask_map = normalize_01(masks_np[region_idx])
@@ -708,6 +746,7 @@ def export_visualizations(
 
         manifest_row = dict(record)
         manifest_row.pop("attention", None)
+        manifest_row.pop("region_weights", None)
         manifest_row["kind"] = kind
         manifest_row["file"] = str(output_path)
         rows.append(manifest_row)

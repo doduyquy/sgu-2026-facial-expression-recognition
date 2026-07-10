@@ -423,6 +423,42 @@ class ChannelGate(nn.Module):
         return x * (1.0 + gamma * gate)
 
 
+class DynamicRegionWeighter(nn.Module):
+    """Predict per-image region gates from the global ConvNeXt feature."""
+
+    def __init__(
+        self,
+        global_dim,
+        num_regions,
+        hidden_dim,
+        dropout=0.1,
+        temperature=1.0,
+        output_scale=1.0,
+        zero_init=True,
+    ):
+        super().__init__()
+        self.num_regions = int(num_regions)
+        self.temperature = float(temperature)
+        self.output_scale = float(output_scale)
+        if self.temperature <= 0.0:
+            raise ValueError("model.region_weight_temperature must be > 0.")
+
+        self.mlp = nn.Sequential(
+            nn.LayerNorm(int(global_dim)),
+            nn.Linear(int(global_dim), int(hidden_dim)),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(int(hidden_dim), self.num_regions),
+        )
+        if bool(zero_init):
+            nn.init.zeros_(self.mlp[-1].weight)
+            nn.init.zeros_(self.mlp[-1].bias)
+
+    def forward(self, global_feature):
+        logits = self.mlp(global_feature)
+        return F.softmax(logits / self.temperature, dim=-1) * self.output_scale
+
+
 class ConvNeXtMultiScaleSEFusion(nn.Module):
     """Fuse ConvNeXt stage3 and stage4 maps before tokenization."""
 
@@ -912,6 +948,7 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         self.current_epoch_index = 0
         self.is_frozen = False
         self.return_attn = False
+        self.return_region_weights = False
         self.checkpoint_strict = bool(model_cfg.get("checkpoint_strict", False))
         self.mask_guided_attention = bool(model_cfg.get("mask_guided_attention", False))
         self.use_learnable_clip_region_tokens = bool(
@@ -935,6 +972,22 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             raise ValueError("model.ortho_loss_type must be one of: mean_offdiag, squared_offdiag")
         if self.cnn_aux_pooling not in ("avg", "avgmax"):
             raise ValueError("model.cnn_aux_pooling must be one of: avg, avgmax")
+        self.use_dynamic_region_weighting = bool(
+            model_cfg.get("use_dynamic_region_weighting", False)
+        )
+        self.region_weight_hidden_dim = int(
+            model_cfg.get("region_weight_hidden_dim", self.embed_dim)
+        )
+        self.region_weight_dropout = float(
+            model_cfg.get("region_weight_dropout", self.dropout_rate)
+        )
+        self.region_weight_temperature = float(
+            model_cfg.get("region_weight_temperature", 1.0)
+        )
+        self.region_weight_scale = float(model_cfg.get("region_weight_scale", 1.0))
+        self.region_weight_zero_init = bool(
+            model_cfg.get("region_weight_zero_init", True)
+        )
         valid_logit_fusions = ("attention", "source", "sum", "cnn_aux", "cnn_aux_sum")
         if self.logit_fusion not in valid_logit_fusions:
             raise ValueError(
@@ -1116,6 +1169,25 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         if self.use_global_feature_concat:
             print("--> [ConvNeXtRegionAttention] Global feature concat enabled.")
 
+        if self.use_dynamic_region_weighting:
+            self.region_weighter = DynamicRegionWeighter(
+                global_dim=self.visual_dim,
+                num_regions=self.num_output_regions,
+                hidden_dim=self.region_weight_hidden_dim,
+                dropout=self.region_weight_dropout,
+                temperature=self.region_weight_temperature,
+                output_scale=self.region_weight_scale,
+                zero_init=self.region_weight_zero_init,
+            )
+            print(
+                "--> [ConvNeXtRegionAttention] Dynamic region weighting enabled: "
+                f"K={self.num_output_regions}, hidden_dim={self.region_weight_hidden_dim}, "
+                f"temperature={self.region_weight_temperature}, "
+                f"scale={self.region_weight_scale}"
+            )
+        else:
+            self.region_weighter = None
+
         if self.fusion_type == "subgraph":
             self.transformer_encoder = nn.Sequential(*[
                 SubGraphFusion(
@@ -1232,6 +1304,7 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             "alignment.",
             "eye_fusion.",
             "visual_proj.",
+            "region_weighter.",
             "cnn_aux_classifier.",
             "transformer_encoder.",
             "classifier.",
@@ -1324,10 +1397,24 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             return "visual"
         return "head"
 
-    def _pool_region_features(self, encoded):
+    def _pool_region_features(self, encoded, region_weights=None):
         if self.region_pooling == "concat":
             return encoded.reshape(encoded.size(0), -1)
+        if region_weights is not None:
+            return encoded.sum(dim=1)
         return encoded.mean(dim=1)
+
+    def _apply_dynamic_region_weighting(self, encoded, global_feat):
+        if self.region_weighter is None:
+            return encoded, None
+
+        region_weights = self.region_weighter(global_feat)
+        if region_weights.size(1) != encoded.size(1):
+            raise ValueError(
+                f"Dynamic region weights K={region_weights.size(1)} do not match "
+                f"encoded regions K={encoded.size(1)}."
+            )
+        return encoded * region_weights.unsqueeze(-1), region_weights
 
     def _append_eye_fusion_token(self, region_features):
         if self.eye_fusion is None:
@@ -1481,7 +1568,8 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             hyper_visual = hyper_visual + global_context.unsqueeze(1)
 
         encoded = self.transformer_encoder(hyper_visual)
-        pooled = self._pool_region_features(encoded)
+        encoded, region_weights = self._apply_dynamic_region_weighting(encoded, global_feat)
+        pooled = self._pool_region_features(encoded, region_weights=region_weights)
         if self.use_global_feature_concat:
             pooled = torch.cat((pooled, global_context), dim=-1)
         attention_logits = self.classifier(pooled)
@@ -1510,6 +1598,11 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             if cnn_aux_logits is not None:
                 return logits, aux_loss, cnn_aux_logits
             return logits, aux_loss
+
+        if self.return_region_weights:
+            if self.return_attn:
+                return logits, attn_weights, region_weights
+            return logits, region_weights
 
         if self.return_attn:
             return logits, attn_weights

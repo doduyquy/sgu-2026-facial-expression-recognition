@@ -487,7 +487,11 @@ def forward_logit_components_with_masks(model, images, region_masks):
         hyper_visual = hyper_visual + global_context.unsqueeze(1)
 
     encoded = model.transformer_encoder(hyper_visual)
-    pooled = model._pool_region_features(encoded)
+    if hasattr(model, "_apply_dynamic_region_weighting"):
+        encoded, region_weights = model._apply_dynamic_region_weighting(encoded, global_feat)
+    else:
+        region_weights = None
+    pooled = model._pool_region_features(encoded, region_weights=region_weights)
     if model.use_global_feature_concat:
         pooled = torch.cat((pooled, global_context), dim=-1)
     attention_logits = model.classifier(pooled)
