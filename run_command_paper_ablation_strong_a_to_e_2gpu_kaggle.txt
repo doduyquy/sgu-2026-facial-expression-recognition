@@ -1,0 +1,12 @@
+# Run the strong-schedule paper ablations A-E on 2 GPUs.
+# Execute from repo root on Kaggle.
+
+torchrun --standalone --nproc_per_node=2 -m scripts.train --config paper_ablation_strong/a_cnn_only_imagenet_sam_cosine_seed42_kaggle --env kaggle
+
+torchrun --standalone --nproc_per_node=2 -m scripts.train --config paper_ablation_strong/b_region_only_imagenet_sam_cosine_seed42_kaggle --env kaggle
+
+torchrun --standalone --nproc_per_node=2 -m scripts.train --config paper_ablation_strong/c_cnn_region_logits_080_020_imagenet_sam_cosine_seed42_kaggle --env kaggle
+
+torchrun --standalone --nproc_per_node=2 -m scripts.train --config paper_ablation_strong/d_cnn_region_no_mask_imagenet_sam_cosine_seed42_kaggle --env kaggle
+
+torchrun --standalone --nproc_per_node=2 -m scripts.train --config paper_ablation_strong/e_cnn_region_shuffled_mask_imagenet_sam_cosine_seed42_kaggle --env kaggle

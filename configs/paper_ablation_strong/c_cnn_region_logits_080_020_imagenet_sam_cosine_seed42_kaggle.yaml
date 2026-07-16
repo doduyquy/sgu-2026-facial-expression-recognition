@@ -1,0 +1,37 @@
+_base_: "../version_best_reproduce/paper_ablation_c_cnn_region_logits_080_020_imagenet_seed42_kaggle.yaml"
+
+# Strong schedule version of C.
+# Main claim: final = 0.8 * CNN logits + 0.2 * mask-guided region logits.
+# No FER checkpoint is loaded.
+
+model:
+  freeze_backbone_epochs: 4
+  unfreeze_backbone: true
+  unfreeze_backbone_scope: "all"
+  freeze_unfrozen_batchnorm: true
+
+data:
+  batch_size: 16
+  num_workers: 2
+
+training:
+  optimizer: "sam"
+  base_optimizer: "adamw"
+  sam_rho: 0.03
+  sam_adaptive: false
+
+  lr: 0.0002
+  finetune_lr: 0.00008
+  visual_extractor_lr: 0.000008
+  weight_decay: 0.02
+
+  scheduler: "cosine"
+  epochs: 70
+  patience: 15
+  label_smoothing: 0.05
+  grad_clip_norm: 1.0
+  skip_nonfinite_batches: true
+  use_amp: false
+
+paths:
+  output_dir: "/kaggle/working/outputs/paper_ablation_strong_c_cnn_region_logits_080_020_imagenet_seed42"
