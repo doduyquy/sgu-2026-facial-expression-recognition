@@ -1,0 +1,21 @@
+_base_: "mgrcnn_imagenet_e2e_no_checkpoint_seed42_kaggle.yaml"
+
+# B. Region-only MGR-CNN.
+# ConvNeXt-Tiny starts from ImageNet DEFAULT, but final logits come only from
+# the mask-guided regional attention head.
+
+model:
+  use_source_classifier: false
+  use_cnn_aux_loss: false
+  use_cnn_aux_logits: false
+  logit_fusion: "attention"
+  finetune_logit_fusion: "attention"
+  attention_logit_weight: 1.0
+  mask_attention_alpha: 0.3
+  mask_ablation: "none"
+
+data:
+  mask_ablation: "none"
+
+paths:
+  output_dir: "/kaggle/working/outputs/paper_ablation_b_region_only_imagenet_seed42"

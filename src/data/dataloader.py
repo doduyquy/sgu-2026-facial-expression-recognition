@@ -152,6 +152,11 @@ def build_unet_mask_dataloader(config, data_path, distributed=False, world_size=
     num_regions = model_cfg.get("num_regions", 6)
     mask_floor = model_cfg.get("mask_floor", 0.05)
     mask_dir = model_cfg.get("mask_dir") or data_cfg.get("mask_dir") or "outputs/unet_region_masks"
+    mask_ablation = data_cfg.get("mask_ablation", model_cfg.get("mask_ablation", "none"))
+    mask_region_permutation = data_cfg.get(
+        "mask_region_permutation",
+        model_cfg.get("mask_region_permutation"),
+    )
     use_clean_filter = data_cfg.get("use_clean_filter", True)
     bad_row_indices_path = data_cfg.get("bad_row_indices_path")
 
@@ -160,6 +165,8 @@ def build_unet_mask_dataloader(config, data_path, distributed=False, world_size=
         grid_size=grid_size,
         num_regions=num_regions,
         mask_floor=mask_floor,
+        mask_ablation=mask_ablation,
+        mask_region_permutation=mask_region_permutation,
     )
 
     data_train = FER2013WithUNetMasks(

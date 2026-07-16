@@ -1,0 +1,15 @@
+_base_: "paper_ablation_c_cnn_region_logits_080_020_imagenet_seed42_kaggle.yaml"
+
+# D. CNN + region branch without mask prior.
+# The region branch still exists, but alpha=0 disables the additive
+# log-mask prior in cross-attention.
+
+model:
+  mask_attention_alpha: 0.0
+  mask_ablation: "none"
+
+data:
+  mask_ablation: "none"
+
+paths:
+  output_dir: "/kaggle/working/outputs/paper_ablation_d_cnn_region_no_mask_imagenet_seed42"

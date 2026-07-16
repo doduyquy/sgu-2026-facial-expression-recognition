@@ -1,0 +1,27 @@
+_base_: "../convnext_tiny_fer2013_sam_cosine_from_start.yaml"
+
+# A. CNN-only clean baseline.
+# ConvNeXt-Tiny starts from ImageNet DEFAULT and predicts with CNN logits only.
+# No FER checkpoint is loaded.
+
+seed:
+  random_seed: 42
+
+model:
+  pretrained: true
+  weights: "DEFAULT"
+  checkpoint_path: null
+  checkpoint_strict: false
+
+training:
+  init_checkpoint_path: null
+
+data:
+  use_clean_filter: true
+  bad_row_indices_path: "/kaggle/input/datasets/lhngphc/345-train-error/bad_row_indices_drop345_mediapipe_failed.txt"
+
+paths:
+  output_dir: "/kaggle/working/outputs/paper_ablation_a_cnn_only_imagenet_seed42"
+
+logging:
+  use_wandb: false

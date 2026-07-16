@@ -64,6 +64,8 @@ class FER2013WithUNetMasks(FER2013):
         grid_size=7,
         num_regions=6,
         mask_floor=0.05,
+        mask_ablation="none",
+        mask_region_permutation=None,
         use_clean_filter=True,
         bad_row_indices_path=None,
     ):
@@ -79,6 +81,24 @@ class FER2013WithUNetMasks(FER2013):
         self.grid_size = int(grid_size)
         self.num_regions = int(num_regions)
         self.mask_floor = float(mask_floor)
+        self.mask_ablation = str(mask_ablation or "none").lower()
+        if self.mask_ablation not in ("none", "uniform", "shuffle_regions"):
+            raise ValueError(
+                "mask_ablation must be one of: none, uniform, shuffle_regions"
+            )
+        if mask_region_permutation is None:
+            mask_region_permutation = [4, 2, 0, 5, 1, 3]
+        if len(mask_region_permutation) != self.num_regions:
+            raise ValueError(
+                "mask_region_permutation length must match num_regions "
+                f"({self.num_regions})."
+            )
+        self.mask_region_permutation = [int(i) for i in mask_region_permutation]
+        if sorted(self.mask_region_permutation) != list(range(self.num_regions)):
+            raise ValueError(
+                "mask_region_permutation must be a permutation of "
+                f"0..{self.num_regions - 1}."
+            )
 
         if not self.split_mask_dir.exists():
             raise FileNotFoundError(
@@ -89,7 +109,7 @@ class FER2013WithUNetMasks(FER2013):
         print(
             f"--> [FER2013WithUNetMasks] split={split}, "
             f"mask_dir={self.split_mask_dir}, grid={self.grid_size}x{self.grid_size}, "
-            f"K={self.num_regions}"
+            f"K={self.num_regions}, mask_ablation={self.mask_ablation}"
         )
 
     @staticmethod
@@ -118,6 +138,11 @@ class FER2013WithUNetMasks(FER2013):
                 mode="bilinear",
                 align_corners=False,
             ).squeeze(0)
+
+        if self.mask_ablation == "uniform":
+            masks = torch.ones_like(masks)
+        elif self.mask_ablation == "shuffle_regions":
+            masks = masks[self.mask_region_permutation]
 
         return masks.clamp(min=self.mask_floor, max=1.0)
 

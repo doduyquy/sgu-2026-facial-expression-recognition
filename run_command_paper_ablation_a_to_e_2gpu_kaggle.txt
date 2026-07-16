@@ -1,0 +1,18 @@
+# Run the clean paper ablations A-E on 2 GPUs.
+# Execute from repo root on Kaggle.
+#
+# A: CNN-only ImageNet baseline
+# B: Region-only MGR-CNN
+# C: CNN + region logits, 0.8 CNN + 0.2 region
+# D: CNN + region logits without mask prior
+# E: CNN + region logits with shuffled/wrong mask prior
+
+torchrun --standalone --nproc_per_node=2 -m scripts.train --config version_best_reproduce/paper_ablation_a_cnn_only_imagenet_seed42_kaggle --env kaggle
+
+torchrun --standalone --nproc_per_node=2 -m scripts.train --config version_best_reproduce/paper_ablation_b_region_only_imagenet_seed42_kaggle --env kaggle
+
+torchrun --standalone --nproc_per_node=2 -m scripts.train --config version_best_reproduce/paper_ablation_c_cnn_region_logits_080_020_imagenet_seed42_kaggle --env kaggle
+
+torchrun --standalone --nproc_per_node=2 -m scripts.train --config version_best_reproduce/paper_ablation_d_cnn_region_no_mask_imagenet_seed42_kaggle --env kaggle
+
+torchrun --standalone --nproc_per_node=2 -m scripts.train --config version_best_reproduce/paper_ablation_e_cnn_region_shuffled_mask_imagenet_seed42_kaggle --env kaggle
