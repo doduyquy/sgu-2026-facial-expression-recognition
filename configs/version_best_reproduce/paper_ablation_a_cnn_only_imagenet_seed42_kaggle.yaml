@@ -15,6 +15,13 @@ model:
 
 training:
   init_checkpoint_path: null
+  optimizer: "adamw"
+  base_optimizer: "adamw"
+  scheduler: "reduce_lr_on_plateau"
+  lr: 0.00008
+  finetune_lr: 0.00002
+  visual_extractor_lr: 0.000001
+  use_amp: false
 
 data:
   use_clean_filter: true
