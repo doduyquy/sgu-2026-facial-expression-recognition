@@ -1,0 +1,49 @@
+_base_: "../convnext_tiny_mask_guided_region_attention_imagenet_stable_kaggle_dataset.yaml"
+
+# Clean MGR-CNN run: ImageNet -> mask-guided region attention in one training run.
+#
+# Purpose:
+# - attach the mask-guided regional attention module from the beginning;
+# - initialize ConvNeXt-Tiny only from torchvision ImageNet DEFAULT weights;
+# - do not load any strong FER checkpoint such as 74.62 / 75.12 / 75.20.
+#
+# Run from repo root on Kaggle:
+#   python -m scripts.train --config version_best_reproduce/mgrcnn_imagenet_e2e_no_checkpoint_seed42_kaggle --env kaggle
+
+seed:
+  random_seed: 42
+
+model:
+  pretrained: true
+  weights: "DEFAULT"
+  checkpoint_path: null
+  checkpoint_strict: false
+
+  # Keep the reported MGR-CNN branch clean: final logits come from the
+  # mask-guided regional attention head, not from a reused CNN classifier.
+  use_source_classifier: false
+  logit_fusion: "attention"
+
+  # Keep the learned-only mask-guided branch: no CLIP dictionary/mixing.
+  use_clip_dictionary: false
+  use_learnable_clip_region_tokens: false
+
+  # Kaggle mask dataset used by the existing ImageNet-stable branch.
+  mask_dir: "/kaggle/input/datasets/lhongphuc2/mediapipe-mask-datasets-35887/merged_mediapipe_region_masks"
+
+training:
+  init_checkpoint_path: null
+
+data:
+  mask_dir: "/kaggle/input/datasets/lhongphuc2/mediapipe-mask-datasets-35887/merged_mediapipe_region_masks"
+
+  # Optional but recommended for the clean run: drop train rows whose
+  # MediaPipe masks failed, while val/test stay unchanged.
+  use_clean_filter: true
+  bad_row_indices_path: "/kaggle/input/datasets/lhngphc/345-train-error/bad_row_indices_drop345_mediapipe_failed.txt"
+
+paths:
+  output_dir: "/kaggle/working/outputs/mgrcnn_imagenet_e2e_no_checkpoint_seed42"
+
+logging:
+  use_wandb: false
