@@ -9,7 +9,7 @@ model:
   unfreeze_backbone_scope: "all"
 
 data:
-  batch_size: 16
+  batch_size: 32
   num_workers: 2
 
 training:
@@ -32,4 +32,4 @@ training:
   use_amp: false
 
 paths:
-  output_dir: "/kaggle/working/outputs/paper_ablation_strong_a_cnn_only_imagenet_seed42"
+  output_dir: "/kaggle/working/outputs/paper_ablation_strong_a_cnn_only_imagenet_seed42_batch32"
