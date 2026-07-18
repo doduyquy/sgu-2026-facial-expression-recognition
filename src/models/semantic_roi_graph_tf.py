@@ -780,9 +780,16 @@ class SemanticProgramExecutor(tf.keras.layers.Layer):
         # Composition similarity
         composition_summary = tf.reduce_mean(cross_region_tokens, axis=1)  # (B, D)
         composition_summary = self.program_summary_proj(composition_summary, training=training)
-        program_summary = self.program_summary_proj(
-            tf.reduce_mean(program_bank, axis=2), training=training
-        )  # (C, M, D)
+
+        # program_bank mean: (C, M, R, D) -> (C, M, D)
+        prog_mean = tf.reduce_mean(program_bank, axis=2)  # (C, M, D)
+        c_dim = tf.shape(prog_mean)[0]
+        m_dim = tf.shape(prog_mean)[1]
+        d_dim = prog_mean.shape[-1]
+        # Reshape to (C*M, D) -> Dense -> reshape back to (C, M, D)
+        prog_mean_flat = tf.reshape(prog_mean, [c_dim * m_dim, d_dim])
+        prog_mean_flat = self.program_summary_proj(prog_mean_flat, training=training)
+        program_summary = tf.reshape(prog_mean_flat, [c_dim, m_dim, -1])  # (C, M, D)
 
         composition_sim = tf.einsum(
             "bd,cmd->bcm",
