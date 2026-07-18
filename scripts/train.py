@@ -163,6 +163,22 @@ def is_main_process():
     return not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == 0
 
 
+def print_parameter_summary(model, label="Model"):
+    target_model = model.module if hasattr(model, "module") else model
+    total_params = sum(param.numel() for param in target_model.parameters())
+    trainable_params = sum(
+        param.numel() for param in target_model.parameters() if param.requires_grad
+    )
+    frozen_params = total_params - trainable_params
+    trainable_percent = 100.0 * trainable_params / total_params if total_params else 0.0
+    print(
+        f"--> [{label}] Parameters: "
+        f"total={total_params:,}, "
+        f"trainable={trainable_params:,} ({trainable_percent:.2f}%), "
+        f"frozen={frozen_params:,}"
+    )
+
+
 def _safe_torch_load(path, map_location="cpu"):
     try:
         return torch.load(path, map_location=map_location, weights_only=False)
@@ -355,6 +371,9 @@ def main():
             class_weights = 1.0 / torch.tensor(train_class_distribution_np, dtype=torch.float)
             class_weights = class_weights / class_weights.sum()
             class_weights = class_weights.to(device)
+
+        if is_main_process():
+            print_parameter_summary(model)
 
         model = model.to(device)
         if distributed:

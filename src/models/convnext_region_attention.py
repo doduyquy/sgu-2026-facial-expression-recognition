@@ -459,6 +459,41 @@ class DynamicRegionWeighter(nn.Module):
         return F.softmax(logits / self.temperature, dim=-1) * self.output_scale
 
 
+class RegionRelationTokenBuilder(nn.Module):
+    """Build explicit relation tokens from configured facial-region groups."""
+
+    def __init__(self, embed_dim, relation_pairs, dropout=0.1):
+        super().__init__()
+        self.relation_pairs = relation_pairs
+        self.fusions = nn.ModuleList([
+            nn.Sequential(
+                nn.LayerNorm(int(embed_dim) * 2),
+                nn.Linear(int(embed_dim) * 2, int(embed_dim)),
+                nn.GELU(),
+                nn.Dropout(float(dropout)),
+                nn.Linear(int(embed_dim), int(embed_dim)),
+            )
+            for _ in relation_pairs
+        ])
+
+    @staticmethod
+    def _group_feature(region_features, indices):
+        selected = region_features[:, indices, :]
+        return selected.mean(dim=1)
+
+    def forward(self, region_features):
+        relation_tokens = []
+        for pair, fusion in zip(self.relation_pairs, self.fusions):
+            left_feat = self._group_feature(region_features, pair["left"])
+            right_feat = self._group_feature(region_features, pair["right"])
+            relation_input = torch.cat((left_feat, right_feat), dim=-1)
+            relation_tokens.append(fusion(relation_input).unsqueeze(1))
+
+        if not relation_tokens:
+            return region_features
+        return torch.cat((region_features, *relation_tokens), dim=1)
+
+
 class ConvNeXtMultiScaleSEFusion(nn.Module):
     """Fuse ConvNeXt stage3 and stage4 maps before tokenization."""
 
@@ -958,9 +993,22 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         self.eye_fusion_mode = model_cfg.get("eye_fusion_mode", "post").lower()
         self.eye_fusion_left_index = int(model_cfg.get("eye_fusion_left_index", 0))
         self.eye_fusion_right_index = int(model_cfg.get("eye_fusion_right_index", 1))
-        self.num_output_regions = self.num_regions + (1 if self.use_eye_fusion_token else 0)
+        self.use_region_relation_tokens = bool(
+            model_cfg.get("use_region_relation_tokens", False)
+        )
+        self.region_relation_pairs = self._parse_region_relation_pairs(
+            model_cfg.get("region_relation_pairs")
+        )
+        self.num_relation_tokens = (
+            len(self.region_relation_pairs) if self.use_region_relation_tokens else 0
+        )
+        self.num_output_regions = (
+            self.num_regions
+            + (1 if self.use_eye_fusion_token else 0)
+            + self.num_relation_tokens
+        )
         self.num_region_tokens = (
-            self.num_output_regions
+            self.num_regions + (1 if self.use_eye_fusion_token else 0)
             if self.use_eye_fusion_token and self.eye_fusion_mode == "mask_union"
             else self.num_regions
         )
@@ -1021,6 +1069,8 @@ class ConvNeXtRegionAttentionFER(nn.Module):
                 raise ValueError("model.eye_fusion_right_index is out of range.")
             if self.eye_fusion_left_index == self.eye_fusion_right_index:
                 raise ValueError("eye-fusion needs two different region indices.")
+        if self.use_region_relation_tokens:
+            self._validate_region_relation_pairs(self.region_relation_pairs)
 
         self.convnext_backbone = ConvNeXtSpatialTokenizer(config, channels=channels)
         self.visual_dim = self.convnext_backbone.feature_dim
@@ -1169,6 +1219,20 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         if self.use_global_feature_concat:
             print("--> [ConvNeXtRegionAttention] Global feature concat enabled.")
 
+        if self.use_region_relation_tokens:
+            self.region_relation_builder = RegionRelationTokenBuilder(
+                embed_dim=self.embed_dim,
+                relation_pairs=self.region_relation_pairs,
+                dropout=float(model_cfg.get("region_relation_dropout", self.dropout_rate)),
+            )
+            relation_names = ", ".join(pair["name"] for pair in self.region_relation_pairs)
+            print(
+                "--> [ConvNeXtRegionAttention] Region relation tokens enabled: "
+                f"{relation_names}; K={self.num_regions}->{self.num_output_regions}"
+            )
+        else:
+            self.region_relation_builder = None
+
         if self.use_dynamic_region_weighting:
             self.region_weighter = DynamicRegionWeighter(
                 global_dim=self.visual_dim,
@@ -1303,6 +1367,7 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             "region_dict.",
             "alignment.",
             "eye_fusion.",
+            "region_relation_builder.",
             "visual_proj.",
             "region_weighter.",
             "cnn_aux_classifier.",
@@ -1397,6 +1462,59 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             return "visual"
         return "head"
 
+    @staticmethod
+    def _normalize_region_group(value):
+        if isinstance(value, int):
+            return [int(value)]
+        if isinstance(value, (list, tuple)):
+            return [int(item) for item in value]
+        raise ValueError("region relation group must be an int or a list of ints.")
+
+    def _parse_region_relation_pairs(self, relation_pairs):
+        if relation_pairs is None:
+            return [
+                {"name": "brow_eye", "left": [0], "right": [1, 2]},
+                {"name": "eye_nose", "left": [1, 2], "right": [3]},
+                {"name": "nose_mouth", "left": [3], "right": [4]},
+                {"name": "eyes_mouth", "left": [1, 2], "right": [4]},
+            ]
+
+        parsed = []
+        for index, pair in enumerate(relation_pairs):
+            if isinstance(pair, dict):
+                name = str(pair.get("name", f"relation_{index}"))
+                left = self._normalize_region_group(pair.get("left"))
+                right = self._normalize_region_group(pair.get("right"))
+            elif isinstance(pair, (list, tuple)) and len(pair) == 2:
+                name = f"relation_{index}"
+                left = self._normalize_region_group(pair[0])
+                right = self._normalize_region_group(pair[1])
+            else:
+                raise ValueError(
+                    "Each model.region_relation_pairs entry must be either "
+                    "{name,left,right} or a two-item list."
+                )
+            parsed.append({"name": name, "left": left, "right": right})
+        return parsed
+
+    def _validate_region_relation_pairs(self, relation_pairs):
+        if not relation_pairs:
+            raise ValueError(
+                "model.use_region_relation_tokens=true requires at least one "
+                "region relation pair."
+            )
+        for pair in relation_pairs:
+            for side in ("left", "right"):
+                indices = pair[side]
+                if not indices:
+                    raise ValueError(f"Region relation '{pair['name']}' has empty {side} group.")
+                for region_index in indices:
+                    if not 0 <= region_index < self.num_regions:
+                        raise ValueError(
+                            f"Region relation '{pair['name']}' index {region_index} "
+                            f"is out of range for num_regions={self.num_regions}."
+                        )
+
     def _pool_region_features(self, encoded, region_weights=None):
         if self.region_pooling == "concat":
             return encoded.reshape(encoded.size(0), -1)
@@ -1425,6 +1543,11 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         eye_pair = torch.cat((left_eye, right_eye), dim=-1)
         eye_token = self.eye_fusion(eye_pair).unsqueeze(1)
         return torch.cat((region_features, eye_token), dim=1)
+
+    def _append_region_relation_tokens(self, region_features):
+        if self.region_relation_builder is None:
+            return region_features
+        return self.region_relation_builder(region_features)
 
     def _append_eye_union_mask(self, flat_masks):
         if (
@@ -1558,6 +1681,7 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             if self.eye_fusion_mode == "post"
             else phi_sem
         )
+        hyper_visual = self._append_region_relation_tokens(hyper_visual)
         hyper_visual = hyper_visual + self.pos_embed
         global_context = (
             self.visual_proj(global_feat)

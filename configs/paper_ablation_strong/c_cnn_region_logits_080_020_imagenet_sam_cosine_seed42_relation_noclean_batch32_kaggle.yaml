@@ -1,0 +1,31 @@
+_base_: "c_cnn_region_logits_080_020_imagenet_sam_cosine_seed42_noclean_batch32_kaggle.yaml"
+
+# Relation-aware C ablation inspired by the facial-region interaction feedback:
+# - brow/forehead <-> eyes
+# - eyes <-> nose
+# - nose <-> mouth
+# - eyes <-> mouth
+#
+# The base C logit fusion stays unchanged:
+#   final = 0.8 * cnn_aux_logits + 0.2 * region_attention_logits
+
+model:
+  use_region_relation_tokens: true
+  region_relation_dropout: 0.1
+  region_relation_pairs:
+    - name: "brow_eye"
+      left: [0]
+      right: [1, 2]
+    - name: "eye_nose"
+      left: [1, 2]
+      right: [3]
+    - name: "nose_mouth"
+      left: [3]
+      right: [4]
+    - name: "eyes_mouth"
+      left: [1, 2]
+      right: [4]
+
+paths:
+  output_dir: "/kaggle/working/outputs/paper_ablation_strong_c_relation_tokens_080_020_imagenet_seed42_noclean_batch32"
+
