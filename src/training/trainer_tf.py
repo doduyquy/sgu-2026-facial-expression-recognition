@@ -168,9 +168,7 @@ class TrainerTF:
     # Training step
     # ------------------------------------------------------------------
 
-    @tf.function
-    def _train_step(self, batch, epoch_var):
-        epoch = int(epoch_var.numpy()) if hasattr(epoch_var, "numpy") else epoch_var
+    def _train_step(self, batch, epoch: int):
         with tf.GradientTape() as tape:
             cls_loss, logits, labels, outputs = self._forward_batch(batch, epoch, training=True)
 
@@ -190,10 +188,9 @@ class TrainerTF:
 
     def train_one_epoch(self, epoch: int):
         total_loss, total_acc, n = 0.0, 0.0, 0
-        epoch_var = tf.Variable(epoch, trainable=False, dtype=tf.int32)
 
         for batch in self.train_dataset:
-            loss, acc = self._train_step(batch, epoch_var)
+            loss, acc = self._train_step(batch, epoch)
             batch_size = tf.shape(batch[0])[0].numpy()
             total_loss += loss.numpy() * batch_size
             total_acc += acc.numpy() * batch_size
