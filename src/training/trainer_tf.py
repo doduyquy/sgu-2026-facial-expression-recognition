@@ -236,6 +236,13 @@ class TrainerTF:
         patience_counter = 0
         train_losses, val_losses = [], []
 
+        # Wire scheduler to model (required for Keras callbacks like ReduceLROnPlateau)
+        if self.scheduler is not None and hasattr(self.scheduler, "set_model"):
+            self.scheduler.set_model(self.model)
+            # ReduceLROnPlateau also needs optimizer to be set on model
+            if not hasattr(self.model, "optimizer") or self.model.optimizer is None:
+                self.model.optimizer = self.optimizer
+
         for ep in range(self.epochs):
             progress = ep / max(self.epochs - 1, 1)
 
