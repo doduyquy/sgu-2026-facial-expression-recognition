@@ -405,19 +405,21 @@ def compute_semantic_roi_graph_losses_tf(
     else:
         fused_ce_loss = tf.zeros(())
 
-    # Extract outputs
+    # Extract and cast outputs to float32 to prevent float16 underflow/overflow/type mismatch in loss
+    def _cast_f32(t): return tf.cast(t, tf.float32) if t is not None else None
+
     _st = outputs.get("semantic_state_tokens")
-    semantic_states = _st if _st is not None else outputs.get("region_embeddings")
-    region_mask = outputs.get("region_mask")
-    routing_weights = outputs.get("semantic_routing_weights")
-    interaction_gates = outputs.get("semantic_interaction_gates")
-    program_scores = outputs.get("semantic_program_scores")
-    program_attention = outputs.get("semantic_program_attention")
+    semantic_states = _cast_f32(_st if _st is not None else outputs.get("region_embeddings"))
+    region_mask = _cast_f32(outputs.get("region_mask"))
+    routing_weights = _cast_f32(outputs.get("semantic_routing_weights"))
+    interaction_gates = _cast_f32(outputs.get("semantic_interaction_gates"))
+    program_scores = _cast_f32(outputs.get("semantic_program_scores"))
+    program_attention = _cast_f32(outputs.get("semantic_program_attention"))
     _sl = outputs.get("semantic_latent_embedding")
-    semantic_latent = _sl if _sl is not None else outputs.get("macro_embeddings")
-    cross_region_tokens = outputs.get("cross_region_tokens")
-    cross_region_attention = outputs.get("cross_region_attention")
-    program_topology = outputs.get("semantic_program_topology")
+    semantic_latent = _cast_f32(_sl if _sl is not None else outputs.get("macro_embeddings"))
+    cross_region_tokens = _cast_f32(outputs.get("cross_region_tokens"))
+    cross_region_attention = _cast_f32(outputs.get("cross_region_attention"))
+    program_topology = _cast_f32(outputs.get("semantic_program_topology"))
 
     # Compute all component losses
     _micro_div = micro_motif_diversity_loss(model.micro_motif_bank)
@@ -447,6 +449,21 @@ def compute_semantic_roi_graph_losses_tf(
         mode="entropy" if use_entropy else "l1",
     )
     _prog_diversity = program_diversity_loss(model.semantic_program_bank)
+
+    # Cast all losses to float32 to prevent float16 vs float32 addition errors in Mixed Precision
+    ce_loss = tf.cast(ce_loss, tf.float32)
+    fused_ce_loss = tf.cast(fused_ce_loss, tf.float32)
+    _micro_div = tf.cast(_micro_div, tf.float32)
+    _macro_div = tf.cast(_macro_div, tf.float32)
+    _contrastive = tf.cast(_contrastive, tf.float32)
+    _sem_consistency = tf.cast(_sem_consistency, tf.float32)
+    _compositional = tf.cast(_compositional, tf.float32)
+    _disentangle = tf.cast(_disentangle, tf.float32)
+    _coordination = tf.cast(_coordination, tf.float32)
+    _topology = tf.cast(_topology, tf.float32)
+    _comp_contrastive = tf.cast(_comp_contrastive, tf.float32)
+    _sparsity = tf.cast(_sparsity, tf.float32)
+    _prog_diversity = tf.cast(_prog_diversity, tf.float32)
 
     def _flag(name, default=True):
         return bool(training_cfg.get(name, default))
