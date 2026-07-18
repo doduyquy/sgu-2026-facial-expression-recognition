@@ -14,6 +14,31 @@ from typing import Dict, Optional
 import tensorflow as tf
 
 
+def _ce_loss_with_smoothing(
+    labels_int: tf.Tensor,
+    logits: tf.Tensor,
+    label_smoothing: float = 0.0,
+) -> tf.Tensor:
+    """Cross-entropy with optional label smoothing.
+    Works across all Keras versions (sparse_categorical_crossentropy does not
+    accept label_smoothing in older versions).
+    """
+    num_classes = tf.shape(logits)[-1]
+    if label_smoothing > 0.0:
+        one_hot = tf.one_hot(labels_int, num_classes, dtype=logits.dtype)
+        smooth_val = label_smoothing / tf.cast(num_classes, logits.dtype)
+        one_hot = one_hot * (1.0 - label_smoothing) + smooth_val
+        return tf.reduce_mean(
+            tf.keras.losses.categorical_crossentropy(
+                one_hot, logits, from_logits=True
+            )
+        )
+    return tf.reduce_mean(
+        tf.keras.losses.sparse_categorical_crossentropy(
+            labels_int, logits, from_logits=True
+        )
+    )
+
 def _get_training_cfg(model) -> Dict:
     try:
         return getattr(model, "training_cfg", {})
@@ -371,20 +396,12 @@ def compute_semantic_roi_graph_losses_tf(
     labels_int = tf.cast(labels, tf.int32)
 
     # Main CE loss
-    ce_loss = tf.reduce_mean(
-        tf.keras.losses.sparse_categorical_crossentropy(
-            labels_int, logits, from_logits=True, label_smoothing=label_smoothing
-        )
-    )
+    ce_loss = _ce_loss_with_smoothing(labels_int, logits, label_smoothing)
 
     # Fused auxiliary CE
     logits_fused = outputs.get("logits_fused")
     if logits_fused is not None:
-        fused_ce_loss = tf.reduce_mean(
-            tf.keras.losses.sparse_categorical_crossentropy(
-                labels_int, logits_fused, from_logits=True, label_smoothing=label_smoothing
-            )
-        )
+        fused_ce_loss = _ce_loss_with_smoothing(labels_int, logits_fused, label_smoothing)
     else:
         fused_ce_loss = tf.zeros(())
 

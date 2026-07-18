@@ -22,6 +22,11 @@ import tensorflow as tf
 from src.models.semantic_roi_graph_losses_tf import compute_semantic_roi_graph_losses_tf
 
 
+def _spce(labels, logits):
+    """Sparse categorical cross-entropy per-sample — compatible with all Keras versions."""
+    return tf.keras.losses.sparse_categorical_crossentropy(labels, logits, from_logits=True)
+
+
 class TrainerTF:
     """TensorFlow GradientTape training loop for SemanticROIGraphFER."""
 
@@ -73,7 +78,7 @@ class TrainerTF:
 
     def _scn_loss(self, logits: tf.Tensor, labels: tf.Tensor, epoch: int):
         labels = tf.cast(labels, tf.int32)
-        ce = tf.keras.losses.sparse_categorical_crossentropy(labels, logits, from_logits=True)  # (B,)
+        ce = _spce(labels, logits)  # (B,)
 
         probs = tf.nn.softmax(logits, axis=-1)
         one_hot = tf.one_hot(labels, depth=logits.shape[-1], dtype=tf.float32)
@@ -145,12 +150,8 @@ class TrainerTF:
 
         if mixup_active:
             cls_loss = (
-                lam * tf.reduce_mean(
-                    tf.keras.losses.sparse_categorical_crossentropy(labels_a, logits, from_logits=True)
-                ) +
-                (1.0 - lam) * tf.reduce_mean(
-                    tf.keras.losses.sparse_categorical_crossentropy(labels_b, logits, from_logits=True)
-                )
+                lam * tf.reduce_mean(_spce(labels_a, logits)) +
+                (1.0 - lam) * tf.reduce_mean(_spce(labels_b, logits))
             )
         elif loss_mode == "semantic_roi_graph":
             loss_dict = compute_semantic_roi_graph_losses_tf(self.model, outputs, labels)
@@ -158,9 +159,7 @@ class TrainerTF:
         elif runtime_use_scn and epoch >= self.scn_warmup_epochs:
             cls_loss = self._scn_loss(logits, labels, epoch)
         else:
-            cls_loss = tf.reduce_mean(
-                tf.keras.losses.sparse_categorical_crossentropy(labels, logits, from_logits=True)
-            )
+            cls_loss = tf.reduce_mean(_spce(labels, logits))
 
         return cls_loss, logits, labels, outputs
 
