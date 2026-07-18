@@ -1,0 +1,17 @@
+_base_: "c_cnn_region_logits_080_020_imagenet_sam_cosine_seed42_kaggle.yaml"
+
+# Strong C ablation without the drop345 clean filter.
+# Final logits stay:
+#   final = 0.8 * cnn_aux_logits + 0.2 * region_attention_logits
+#
+# This variant keeps the global batch size at 32. With 2-GPU DDP and
+# ddp.batch_size_is_global=true, each GPU receives 16 samples.
+
+data:
+  batch_size: 32
+  use_clean_filter: false
+  bad_row_indices_path: null
+
+paths:
+  output_dir: "/kaggle/working/outputs/paper_ablation_strong_c_cnn_region_logits_080_020_imagenet_seed42_noclean_batch32"
+
