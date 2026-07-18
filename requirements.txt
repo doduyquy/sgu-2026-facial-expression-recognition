@@ -1,14 +1,27 @@
-torch>=2.0.0
-torchvision>=0.15.0
+# Deep Learning Framework
+tensorflow>=2.13.0
+keras>=2.13.0
+
+# Data Processing
 numpy
 pandas
 Pillow
+opencv-python
+
+# Visualization & Logging
 matplotlib
 seaborn
 scikit-learn
 wandb
 PyYAML
 tqdm
+
+# Jupyter Notebook & UI (Optional for Kaggle)
+jupyter
+ipywidgets
+
+# Testing (Optional)
+pytest
 
 # Jupyter Notebook & UI (Optional for Kaggle)
 jupyter
