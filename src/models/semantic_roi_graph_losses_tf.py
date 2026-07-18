@@ -406,13 +406,15 @@ def compute_semantic_roi_graph_losses_tf(
         fused_ce_loss = tf.zeros(())
 
     # Extract outputs
-    semantic_states = outputs.get("semantic_state_tokens") or outputs.get("region_embeddings")
+    _st = outputs.get("semantic_state_tokens")
+    semantic_states = _st if _st is not None else outputs.get("region_embeddings")
     region_mask = outputs.get("region_mask")
     routing_weights = outputs.get("semantic_routing_weights")
     interaction_gates = outputs.get("semantic_interaction_gates")
     program_scores = outputs.get("semantic_program_scores")
     program_attention = outputs.get("semantic_program_attention")
-    semantic_latent = outputs.get("semantic_latent_embedding") or outputs.get("macro_embeddings")
+    _sl = outputs.get("semantic_latent_embedding")
+    semantic_latent = _sl if _sl is not None else outputs.get("macro_embeddings")
     cross_region_tokens = outputs.get("cross_region_tokens")
     cross_region_attention = outputs.get("cross_region_attention")
     program_topology = outputs.get("semantic_program_topology")
