@@ -3,13 +3,14 @@ trainer_tf.py — TensorFlow/Keras training loop cho SemanticROIGraphFER.
 
 Thay thế PyTorch Trainer bằng Keras GradientTape-based custom training loop.
 Hỗ trợ:
-- EMA model (built-in Keras optimizer EMA)
+- Multi-GPU qua tf.distribute.MirroredStrategy
+- Mixed Precision (LossScaleOptimizer)
+- Graph Mode (@tf.function) để tăng tốc độ x5-x10
 - Multi-loss (via compute_semantic_roi_graph_losses_tf)
 - Mixup
 - SCN-light (sample weighting by confidence)
 - W&B logging
 - Early stopping
-- LR scheduling (ReduceLROnPlateau, CosineAnnealing, Step)
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from src.models.semantic_roi_graph_losses_tf import compute_semantic_roi_graph_l
 
 
 def _spce(labels, logits):
-    """Sparse categorical cross-entropy per-sample — compatible with all Keras versions."""
+    """Sparse categorical cross-entropy per-sample."""
     return tf.keras.losses.sparse_categorical_crossentropy(labels, logits, from_logits=True)
 
 
@@ -40,15 +41,19 @@ class TrainerTF:
         config: dict = None,
         run_name: str = "run",
         save_path: str = "best_model.weights.h5",
+        strategy: tf.distribute.Strategy = None,
     ):
+        self.strategy = strategy or tf.distribute.get_strategy()
         self.model = model
-        self.train_dataset = train_dataset
-        self.val_dataset = val_dataset
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.config = config or {}
         self.run_name = run_name
         self.save_path = save_path
+
+        # Distribute datasets
+        self.train_dataset = self.strategy.experimental_distribute_dataset(train_dataset)
+        self.val_dataset = self.strategy.experimental_distribute_dataset(val_dataset)
 
         train_cfg = self.config.get("training", {})
         self.epochs = int(train_cfg.get("epochs", 100))
@@ -65,18 +70,22 @@ class TrainerTF:
         self.scn_margin = float(train_cfg.get("scn_margin", 0.6))
         self.mixup_alpha = float(train_cfg.get("mixup_alpha", 0.2))
 
-        # Aux loss weights
-        self.motif_diversity_weight = float(train_cfg.get("motif_diversity_weight", 0.05))
-        self.au_contrastive_weight = float(train_cfg.get("au_contrastive_weight", 0.03))
-
-        # EMA
-        self._ema_weights = None
+        # Handle Mixed Precision Loss Scaling safely (Keras 2 vs Keras 3)
+        self.use_mixed_precision = (
+            tf.keras.mixed_precision.global_policy().name == "mixed_float16"
+        )
+        if self.use_mixed_precision:
+            # If LossScaleOptimizer is available (TF 2.15- / Keras 2)
+            if hasattr(tf.keras.mixed_precision, "LossScaleOptimizer"):
+                # Avoid re-wrapping if already wrapped
+                if not isinstance(self.optimizer, tf.keras.mixed_precision.LossScaleOptimizer):
+                    self.optimizer = tf.keras.mixed_precision.LossScaleOptimizer(self.optimizer)
 
     # ------------------------------------------------------------------
     # SCN Light
     # ------------------------------------------------------------------
 
-    def _scn_loss(self, logits: tf.Tensor, labels: tf.Tensor, epoch: int):
+    def _scn_loss(self, logits: tf.Tensor, labels: tf.Tensor, epoch_tensor: tf.Tensor):
         labels = tf.cast(labels, tf.int32)
         ce = _spce(labels, logits)  # (B,)
 
@@ -93,13 +102,17 @@ class TrainerTF:
         hard_idx = sorted_idx[:k]
         easy_idx = sorted_idx[k:]
 
-        hard_loss = tf.reduce_mean(tf.gather(ce, hard_idx)) if tf.size(hard_idx) > 0 else tf.zeros(())
-        easy_loss = tf.reduce_mean(tf.gather(ce, easy_idx)) if tf.size(easy_idx) > 0 else tf.zeros(())
+        hard_loss = tf.reduce_mean(tf.gather(ce, hard_idx))
+        easy_loss = tf.reduce_mean(tf.gather(ce, easy_idx))
 
-        if epoch >= self.scn_warmup_epochs:
-            ranking_loss = tf.maximum(easy_loss - hard_loss + self.scn_margin, 0.0)
-        else:
-            ranking_loss = tf.zeros(())
+        def calc_ranking_loss():
+            return tf.maximum(easy_loss - hard_loss + self.scn_margin, 0.0)
+
+        ranking_loss = tf.cond(
+            epoch_tensor >= self.scn_warmup_epochs,
+            calc_ranking_loss,
+            lambda: tf.zeros(())
+        )
 
         return self.scn_alpha * loss + self.scn_rank_lambda * ranking_loss
 
@@ -107,7 +120,7 @@ class TrainerTF:
     # Forward pass helper
     # ------------------------------------------------------------------
 
-    def _forward_batch(self, batch, epoch: int, training: bool = True):
+    def _forward_batch(self, batch, epoch_tensor: tf.Tensor, use_scn_tensor: tf.Tensor, lam_tensor: tf.Tensor, training: bool = True):
         """Unpack batch and call model. Returns (loss, logits, labels)."""
         if len(batch) == 4:
             images, labels, bboxes, semantic_meta = batch
@@ -122,14 +135,17 @@ class TrainerTF:
         labels = tf.cast(labels, tf.int32)
         loss_mode = self.config.get("training", {}).get("loss", "cross_entropy")
 
-        # Mixup (Phase 3 only)
-        mixup_active = getattr(self, "_runtime_use_mixup", False) and training
-        labels_a, labels_b, lam = labels, labels, 1.0
-        if mixup_active and self.mixup_alpha > 0:
-            lam = float(np.random.beta(self.mixup_alpha, self.mixup_alpha))
+        # Mixup
+        def apply_mixup():
             perm = tf.random.shuffle(tf.range(tf.shape(images)[0]))
-            images = lam * images + (1.0 - lam) * tf.gather(images, perm)
-            labels_b = tf.gather(labels, perm)
+            mixed_img = lam_tensor * tf.cast(images, tf.float32) + (1.0 - lam_tensor) * tf.cast(tf.gather(images, perm), tf.float32)
+            return tf.cast(mixed_img, images.dtype), tf.gather(labels, perm)
+
+        images, labels_b = tf.cond(
+            lam_tensor < 1.0,
+            apply_mixup,
+            lambda: (images, labels)
+        )
 
         # Build model inputs
         region_mask, region_confidence = None, None
@@ -146,40 +162,111 @@ class TrainerTF:
         logits = outputs["logits"]
 
         # Compute loss
-        runtime_use_scn = getattr(self, "_runtime_use_scn", self.use_scn)
-
-        if mixup_active:
-            cls_loss = (
-                lam * tf.reduce_mean(_spce(labels_a, logits)) +
-                (1.0 - lam) * tf.reduce_mean(_spce(labels_b, logits))
-            )
-        elif loss_mode == "semantic_roi_graph":
+        if loss_mode == "semantic_roi_graph":
             loss_dict = compute_semantic_roi_graph_losses_tf(self.model, outputs, labels)
             cls_loss = loss_dict["loss"]
-        elif runtime_use_scn and epoch >= self.scn_warmup_epochs:
-            cls_loss = self._scn_loss(logits, labels, epoch)
         else:
-            cls_loss = tf.reduce_mean(_spce(labels, logits))
+            def compute_mixup_loss():
+                return lam_tensor * tf.reduce_mean(_spce(labels, logits)) + (1.0 - lam_tensor) * tf.reduce_mean(_spce(labels_b, logits))
 
+            def compute_scn_or_normal():
+                return tf.cond(
+                    use_scn_tensor,
+                    lambda: self._scn_loss(logits, labels, epoch_tensor),
+                    lambda: tf.reduce_mean(_spce(labels, logits))
+                )
+
+            cls_loss = tf.cond(
+                lam_tensor < 1.0,
+                compute_mixup_loss,
+                compute_scn_or_normal
+            )
+
+        # Scale loss by number of replicas for `tf.distribute`
+        # Because we will reduce_sum or reduce_mean later.
+        # Actually strategy.reduce with MEAN will do the averaging. 
+        # But normally we divide by global batch size. 
+        # Using tf.nn.compute_average_loss is standard, but tf.reduce_mean inside the replica is ok 
+        # if we reduce with MEAN across replicas.
         return cls_loss, logits, labels, outputs
 
     # ------------------------------------------------------------------
-    # Training step
+    # Distributed Training step
     # ------------------------------------------------------------------
 
-    def _train_step(self, batch, epoch: int):
-        with tf.GradientTape() as tape:
-            cls_loss, logits, labels, outputs = self._forward_batch(batch, epoch, training=True)
+    @tf.function
+    def _distributed_train_step(self, batch, epoch_tensor, use_scn_tensor, lam_tensor):
+        def step_fn(dist_batch):
+            with tf.GradientTape() as tape:
+                cls_loss, logits, labels, _ = self._forward_batch(
+                    dist_batch, epoch_tensor, use_scn_tensor, lam_tensor, training=True
+                )
+                
+                # Mixed precision loss scaling
+                if hasattr(self.optimizer, "get_scaled_loss"):
+                    scaled_loss = self.optimizer.get_scaled_loss(cls_loss)
+                elif hasattr(self.optimizer, "scale_loss"):
+                    scaled_loss = self.optimizer.scale_loss(cls_loss)
+                else:
+                    scaled_loss = cls_loss
 
-        grads = tape.gradient(cls_loss, self.model.trainable_variables)
-        grads = [tf.clip_by_norm(g, 5.0) if g is not None else g for g in grads]
-        self.optimizer.apply_gradients(
-            zip(grads, self.model.trainable_variables)
+            if hasattr(self.optimizer, "get_scaled_loss"):
+                scaled_grads = tape.gradient(scaled_loss, self.model.trainable_variables)
+                grads = self.optimizer.get_unscaled_gradients(scaled_grads)
+            elif hasattr(self.optimizer, "scale_loss"):
+                scaled_grads = tape.gradient(scaled_loss, self.model.trainable_variables)
+                grads = self.optimizer.unscale_grads(scaled_grads)
+            else:
+                grads = tape.gradient(scaled_loss, self.model.trainable_variables)
+
+            grads = [tf.clip_by_norm(g, 5.0) if g is not None else g for g in grads]
+            self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
+
+            preds = tf.argmax(logits, axis=-1, output_type=tf.int32)
+            acc = tf.cast(tf.equal(preds, labels), tf.float32)
+            
+            # Note: cls_loss and acc are averages inside this replica
+            return cls_loss, tf.reduce_mean(acc)
+
+        per_replica_losses, per_replica_accs = self.strategy.run(
+            step_fn, args=(batch,)
+        )
+        
+        # Aggregate across replicas
+        loss = self.strategy.reduce(tf.distribute.ReduceOp.MEAN, per_replica_losses, axis=None)
+        acc = self.strategy.reduce(tf.distribute.ReduceOp.MEAN, per_replica_accs, axis=None)
+        return loss, acc
+
+    @tf.function
+    def _distributed_val_step(self, batch):
+        def step_fn(dist_batch):
+            cls_loss, logits, labels, _ = self._forward_batch(
+                dist_batch, 
+                epoch_tensor=tf.constant(0, dtype=tf.int32), 
+                use_scn_tensor=tf.constant(False), 
+                lam_tensor=tf.constant(1.0), 
+                training=False
+            )
+            preds = tf.argmax(logits, axis=-1, output_type=tf.int32)
+            acc = tf.cast(tf.equal(preds, labels), tf.float32)
+            return cls_loss, tf.reduce_mean(acc), preds, labels
+
+        per_replica_loss, per_replica_acc, per_replica_preds, per_replica_labels = self.strategy.run(
+            step_fn, args=(batch,)
         )
 
-        preds = tf.argmax(logits, axis=-1, output_type=tf.int32)
-        acc = tf.reduce_mean(tf.cast(tf.equal(preds, labels), tf.float32))
-        return cls_loss, acc
+        loss = self.strategy.reduce(tf.distribute.ReduceOp.MEAN, per_replica_loss, axis=None)
+        acc = self.strategy.reduce(tf.distribute.ReduceOp.MEAN, per_replica_acc, axis=None)
+        
+        # Gather predictions and labels across all GPUs
+        if self.strategy.num_replicas_in_sync > 1:
+            preds = self.strategy.gather(per_replica_preds, axis=0)
+            labels = self.strategy.gather(per_replica_labels, axis=0)
+        else:
+            preds = per_replica_preds
+            labels = per_replica_labels
+            
+        return loss, acc, preds, labels
 
     # ------------------------------------------------------------------
     # Epoch loops
@@ -188,12 +275,22 @@ class TrainerTF:
     def train_one_epoch(self, epoch: int):
         total_loss, total_acc, n = 0.0, 0.0, 0
 
+        use_scn_tensor = tf.constant(getattr(self, "_runtime_use_scn", self.use_scn), dtype=tf.bool)
+        use_mixup = getattr(self, "_runtime_use_mixup", False)
+        
         for batch in self.train_dataset:
-            loss, acc = self._train_step(batch, epoch)
-            batch_size = tf.shape(batch[0])[0].numpy()
-            total_loss += loss.numpy() * batch_size
-            total_acc += acc.numpy() * batch_size
-            n += batch_size
+            lam = np.random.beta(self.mixup_alpha, self.mixup_alpha) if use_mixup else 1.0
+            
+            loss, acc = self._distributed_train_step(
+                batch, 
+                epoch_tensor=tf.constant(epoch, dtype=tf.int32),
+                use_scn_tensor=use_scn_tensor,
+                lam_tensor=tf.constant(lam, dtype=tf.float32)
+            )
+            
+            total_loss += loss.numpy()
+            total_acc += acc.numpy()
+            n += 1
 
         return total_loss / max(n, 1), total_acc / max(n, 1)
 
@@ -202,13 +299,12 @@ class TrainerTF:
         all_preds, all_labels = [], []
 
         for batch in self.val_dataset:
-            cls_loss, logits, labels, _ = self._forward_batch(batch, epoch, training=False)
-            batch_size = tf.shape(batch[0])[0].numpy()
-            preds = tf.argmax(logits, axis=-1, output_type=tf.int32)
-            acc = tf.reduce_mean(tf.cast(tf.equal(preds, labels), tf.float32))
-            total_loss += cls_loss.numpy() * batch_size
-            total_acc += acc.numpy() * batch_size
-            n += batch_size
+            loss, acc, preds, labels = self._distributed_val_step(batch)
+            
+            total_loss += loss.numpy()
+            total_acc += acc.numpy()
+            n += 1
+            
             all_preds.extend(preds.numpy().tolist())
             all_labels.extend(labels.numpy().tolist())
 

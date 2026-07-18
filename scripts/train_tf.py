@@ -139,6 +139,10 @@ def main():
     parser.add_argument("--env", type=str, default="local", choices=["local", "kaggle"])
     args = parser.parse_args()
 
+    # Enable Mixed Precision
+    tf.keras.mixed_precision.set_global_policy("mixed_float16")
+    print("--> [Mixed Precision] Policy set to 'mixed_float16'")
+
     # Configure GPU
     gpus = tf.config.list_physical_devices("GPU")
     if gpus:
@@ -183,42 +187,47 @@ def main():
     )
     print(f"--> Datasets built. image_size={img_size}, batch_size={batch_size}")
 
-    # Build model
-    from src.models.semantic_roi_graph_tf import SemanticROIGraphFER, SemanticRoiGraphConfig
-    model_cfg = SemanticRoiGraphConfig(
-        name=model_name,
-        num_classes=int(config.get("model", {}).get("num_classes", 7)),
-        num_regions=int(config.get("model", {}).get("num_regions", 9)),
-        roi_grid=int(config.get("model", {}).get("roi_grid", 4)),
-        feature_dim=int(config.get("model", {}).get("feature_dim", 256)),
-        semantic_state_dim=int(config.get("model", {}).get("semantic_state_dim", 128)),
-        semantic_latent_dim=int(config.get("model", {}).get("semantic_latent_dim", 256)),
-        semantic_attn_heads=int(config.get("model", {}).get("semantic_attn_heads", 4)),
-        hyperedge_count=int(config.get("model", {}).get("hyperedge_count", 4)),
-        router_hidden_dim=int(config.get("model", {}).get("router_hidden_dim", 256)),
-        micro_motifs_per_region=int(config.get("model", {}).get("micro_motifs_per_region", 8)),
-        macro_motifs_per_class=int(config.get("model", {}).get("macro_motifs_per_class", 4)),
-        cross_region_compositions=int(config.get("model", {}).get("cross_region_compositions", 8)),
-        dropout=float(config.get("model", {}).get("dropout", 0.1)),
-        use_pretrained=bool(config.get("model", {}).get("use_pretrained", True)),
-        bbox_input_size=int(config.get("model", {}).get("bbox_input_size", 48)),
-        relation_temperature=float(config.get("model", {}).get("relation_temperature", 0.07)),
-        region_dropout_prob=float(config.get("model", {}).get("region_dropout_prob", 0.0)),
-    )
+    # Build MirroredStrategy
+    strategy = tf.distribute.MirroredStrategy()
+    print(f"--> [Strategy] Number of devices: {strategy.num_replicas_in_sync}")
 
-    model = SemanticROIGraphFER(model_cfg)
+    # Build model, optimizer, and scheduler within strategy scope
+    with strategy.scope():
+        from src.models.semantic_roi_graph_tf import SemanticROIGraphFER, SemanticRoiGraphConfig
+        model_cfg = SemanticRoiGraphConfig(
+            name=model_name,
+            num_classes=int(config.get("model", {}).get("num_classes", 7)),
+            num_regions=int(config.get("model", {}).get("num_regions", 9)),
+            roi_grid=int(config.get("model", {}).get("roi_grid", 4)),
+            feature_dim=int(config.get("model", {}).get("feature_dim", 256)),
+            semantic_state_dim=int(config.get("model", {}).get("semantic_state_dim", 128)),
+            semantic_latent_dim=int(config.get("model", {}).get("semantic_latent_dim", 256)),
+            semantic_attn_heads=int(config.get("model", {}).get("semantic_attn_heads", 4)),
+            hyperedge_count=int(config.get("model", {}).get("hyperedge_count", 4)),
+            router_hidden_dim=int(config.get("model", {}).get("router_hidden_dim", 256)),
+            micro_motifs_per_region=int(config.get("model", {}).get("micro_motifs_per_region", 8)),
+            macro_motifs_per_class=int(config.get("model", {}).get("macro_motifs_per_class", 4)),
+            cross_region_compositions=int(config.get("model", {}).get("cross_region_compositions", 8)),
+            dropout=float(config.get("model", {}).get("dropout", 0.1)),
+            use_pretrained=bool(config.get("model", {}).get("use_pretrained", True)),
+            bbox_input_size=int(config.get("model", {}).get("bbox_input_size", 48)),
+            relation_temperature=float(config.get("model", {}).get("relation_temperature", 0.07)),
+            region_dropout_prob=float(config.get("model", {}).get("region_dropout_prob", 0.0)),
+        )
 
-    # Attach training_cfg for loss functions
-    model.training_cfg = config.get("training", {})
+        model = SemanticROIGraphFER(model_cfg)
 
-    # Build model by calling with dummy input to initialize weights
-    dummy_img = tf.zeros([1, img_size, img_size, 1])
-    _ = model(dummy_img, training=False)
-    print(f"--> Model built. Trainable params: {model.count_params():,}")
+        # Attach training_cfg for loss functions
+        model.training_cfg = config.get("training", {})
 
-    # Optimizer & scheduler
-    optimizer = build_optimizer_tf(config)
-    scheduler = build_scheduler_tf(optimizer, config)
+        # Build model by calling with dummy input to initialize weights
+        dummy_img = tf.zeros([1, img_size, img_size, 1])
+        _ = model(dummy_img, training=False)
+        print(f"--> Model built. Trainable params: {model.count_params():,}")
+
+        # Optimizer & scheduler
+        optimizer = build_optimizer_tf(config)
+        scheduler = build_scheduler_tf(optimizer, config)
 
     # Checkpoint path
     ckpt_dir = os.path.join(root_path, "outputs", "checkpoints", model_name)
@@ -236,6 +245,7 @@ def main():
         config=config,
         run_name=run_name,
         save_path=save_path,
+        strategy=strategy,
     )
 
     # Train
