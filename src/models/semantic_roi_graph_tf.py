@@ -1097,6 +1097,7 @@ class SemanticROIGraphFER(tf.keras.Model):
             training=training,
         )
         cross_region_tokens = cross_region_outputs["cross_region_tokens"]
+        cross_region_attention = cross_region_outputs["pair_attention"]
 
         # --- Hypergraph Reasoner ---
         composition_summary = tf.reduce_mean(cross_region_tokens, axis=1, keepdims=True)
@@ -1153,6 +1154,7 @@ class SemanticROIGraphFER(tf.keras.Model):
             "semantic_motif_tokens": semantic_motif_tokens,
             "micro_motif_attention": micro_motif_attention,
             "cross_region_tokens": cross_region_tokens,
+            "cross_region_attention": cross_region_attention,
             "semantic_interaction_tensor": semantic_interaction_tensor,
             "semantic_interaction_gates": semantic_interaction_gates,
             "semantic_routing_weights": routing_weights,
