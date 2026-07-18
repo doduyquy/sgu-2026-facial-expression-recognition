@@ -970,7 +970,7 @@ class SemanticROIGraphFER(tf.keras.Model):
         if bboxes is None:
             repaired = self._canonical_bboxes(batch_size)
             region_mask = tf.ones([batch_size, self.config.num_regions], dtype=dtype)
-            region_confidence = tf.fill([batch_size, self.config.num_regions], 0.95)
+            region_confidence = tf.fill([batch_size, self.config.num_regions], tf.cast(0.95, dtype))
             return tf.cast(repaired, dtype), region_mask, region_confidence
 
         bboxes = tf.cast(bboxes, dtype)
@@ -994,13 +994,13 @@ class SemanticROIGraphFER(tf.keras.Model):
         width = tf.maximum(repaired[..., 2] - repaired[..., 0], 1.0)
         height = tf.maximum(repaired[..., 3] - repaired[..., 1], 1.0)
         area = (width * height) / float(self.config.bbox_input_size ** 2)
-        area_conf = tf.clip_by_value(area, 0.0, 1.0)
+        area_conf = tf.cast(tf.clip_by_value(area, 0.0, 1.0), dtype)
         region_confidence = tf.where(
             valid_bool,
-            0.5 + 0.5 * area_conf,
-            tf.fill(tf.shape(area_conf), 0.05),
+            tf.cast(0.5, dtype) + tf.cast(0.5, dtype) * area_conf,
+            tf.fill(tf.shape(area_conf), tf.cast(0.05, dtype)),
         )
-        return repaired, region_mask, region_confidence
+        return repaired, tf.cast(region_mask, dtype), tf.cast(region_confidence, dtype)
 
     def call(self, inputs, training: bool = False):
         """
@@ -1037,7 +1037,7 @@ class SemanticROIGraphFER(tf.keras.Model):
         else:
             region_mask = tf.cast(region_mask, image.dtype)
         if region_confidence is None:
-            region_confidence = computed_confidence
+            region_confidence = tf.cast(computed_confidence, image.dtype)
         else:
             region_confidence = tf.cast(region_confidence, image.dtype)
 
@@ -1070,8 +1070,10 @@ class SemanticROIGraphFER(tf.keras.Model):
             region_embeddings, training=training
         )[..., 0]
         region_confidence = tf.clip_by_value(
-            0.5 * region_confidence + 0.5 * predicted_conf, 0.0, 1.0
-        ) * region_mask
+            tf.cast(0.5, predicted_conf.dtype) * tf.cast(region_confidence, predicted_conf.dtype) + 
+            tf.cast(0.5, predicted_conf.dtype) * predicted_conf, 
+            0.0, 1.0
+        ) * tf.cast(region_mask, predicted_conf.dtype)
 
         # --- Semantic State Encoding ---
         semantic_state_tokens = self.semantic_state_encoder(region_embeddings, training=training)
