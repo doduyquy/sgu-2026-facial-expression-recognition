@@ -234,6 +234,13 @@ class TrainerTF:
                 else:
                     grads = scaled_grads
 
+            # Sanitize gradients: replace NaN/Inf with zeros BEFORE clipping.
+            # clip_by_norm(Inf) = Inf * (1.0/Inf) = NaN, which would corrupt weights.
+            grads = [
+                tf.where(tf.math.is_finite(g), g, tf.zeros_like(g))
+                if g is not None else g
+                for g in grads
+            ]
             grads = [tf.clip_by_norm(g, 1.0) if g is not None else g for g in grads]
             self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
 

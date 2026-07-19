@@ -490,31 +490,35 @@ def compute_semantic_roi_graph_losses_tf(
     def _flag(name, default=True):
         return bool(training_cfg.get(name, default))
 
+    def _safe(loss_val):
+        """Replace NaN/Inf auxiliary losses with zero to prevent poisoning total loss."""
+        return tf.where(tf.math.is_finite(loss_val), loss_val, tf.zeros_like(loss_val))
+
     total = ce_loss
     if _flag("enable_micro_diversity"):
-        total = total + micro_diversity_weight * _micro_div
+        total = total + micro_diversity_weight * _safe(_micro_div)
     if _flag("enable_macro_diversity"):
-        total = total + macro_diversity_weight * _macro_div
+        total = total + macro_diversity_weight * _safe(_macro_div)
     if _flag("enable_region_contrastive"):
-        total = total + region_contrastive_weight * _contrastive
+        total = total + region_contrastive_weight * _safe(_contrastive)
     if _flag("enable_semantic_consistency"):
-        total = total + semantic_consistency_weight * _sem_consistency
+        total = total + semantic_consistency_weight * _safe(_sem_consistency)
     if _flag("enable_compositional_program"):
-        total = total + compositional_program_weight * _compositional
+        total = total + compositional_program_weight * _safe(_compositional)
     if _flag("enable_semantic_disentanglement"):
-        total = total + semantic_disentanglement_weight * _disentangle
+        total = total + semantic_disentanglement_weight * _safe(_disentangle)
     if _flag("enable_region_coordination"):
-        total = total + region_coordination_weight * _coordination
+        total = total + region_coordination_weight * _safe(_coordination)
     if _flag("enable_topology_alignment"):
-        total = total + topology_alignment_weight * _topology
+        total = total + topology_alignment_weight * _safe(_topology)
     if _flag("enable_region_composition_contrastive"):
-        total = total + region_composition_contrastive_weight * _comp_contrastive
+        total = total + region_composition_contrastive_weight * _safe(_comp_contrastive)
     if _flag("enable_program_sparsity"):
-        total = total + program_sparsity_weight * _sparsity
+        total = total + program_sparsity_weight * _safe(_sparsity)
     if _flag("enable_program_diversity"):
-        total = total + program_diversity_weight * _prog_diversity
+        total = total + program_diversity_weight * _safe(_prog_diversity)
     if _flag("enable_fused_aux_ce", False):
-        total = total + fused_aux_ce_weight * fused_ce_loss
+        total = total + fused_aux_ce_weight * _safe(fused_ce_loss)
 
     return {
         "loss": total,
