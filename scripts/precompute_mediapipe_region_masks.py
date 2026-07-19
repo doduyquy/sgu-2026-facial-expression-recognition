@@ -103,6 +103,14 @@ def import_mediapipe_face_mesh():
         if hasattr(mp, "solutions") and hasattr(mp.solutions, "face_mesh"):
             return mp.solutions.face_mesh
     except ImportError as exc:
+        if "runtime_version" in str(exc) and "google.protobuf" in str(exc):
+            raise ImportError(
+                "MediaPipe was found, but TensorFlow/protobuf dependencies are "
+                "incompatible. On Kaggle Python 3.12, install a protobuf version "
+                "that provides google.protobuf.runtime_version before importing "
+                "mediapipe, for example: pip install --force-reinstall "
+                "'protobuf==5.28.3' 'mediapipe==0.10.21'"
+            ) from exc
         raise ImportError(
             "mediapipe is required for this script. On Kaggle, install a legacy "
             "wheel first, for example: pip install --force-reinstall "
