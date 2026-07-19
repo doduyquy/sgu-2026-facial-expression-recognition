@@ -1,0 +1,25 @@
+_base_: "c_cnn_region_logits_080_020_imagenet_sam_cosine_seed42_noclean_batch32_kaggle.yaml"
+
+# C + learnable scalar logit fusion.
+#
+# Base C uses fixed fusion:
+#   final = 0.8 * cnn_aux_logits + 0.2 * region_attention_logits
+#
+# This variant learns one bounded scalar alpha during training:
+#   alpha = min_w + (max_w - min_w) * sigmoid(logit_fusion_alpha)
+#   final = alpha * cnn_aux_logits + (1 - alpha) * region_attention_logits
+#
+# It starts from the same 0.8/0.2 prior as C, then lets training adjust it.
+
+model:
+  learnable_logit_fusion: true
+  learnable_logit_fusion_init: 0.8
+  learnable_logit_fusion_min: 0.1
+  learnable_logit_fusion_max: 0.9
+
+  # Keep these for documentation and as the non-learnable fallback.
+  attention_logit_weight: 0.2
+  cnn_aux_logit_weight: 0.8
+
+paths:
+  output_dir: "/kaggle/working/outputs/paper_ablation_strong_c_learnable_fusion_imagenet_seed42_noclean_batch32"
