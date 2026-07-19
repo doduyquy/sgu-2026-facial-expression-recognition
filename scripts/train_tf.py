@@ -142,10 +142,6 @@ def main():
     # Enable Mixed Precision
     tf.keras.mixed_precision.set_global_policy("mixed_float16")
     print("--> [Mixed Precision] Policy set to 'mixed_float16'")
-    
-    # Enable NaN debugging
-    tf.debugging.enable_check_numerics()
-    print("--> [Debugging] tf.debugging.enable_check_numerics() enabled")
 
     # Configure GPU
     gpus = tf.config.list_physical_devices("GPU")
