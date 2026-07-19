@@ -282,34 +282,31 @@ class GATBlock(tf.keras.layers.Layer):
             t = tf.reshape(t, [b, n, self.heads, self.head_dim])
             return tf.transpose(t, [0, 2, 1, 3])  # (B, H, N, D)
 
-        q = split_heads(self.q_proj(x))
-        k = split_heads(self.k_proj(x))
-        v = split_heads(self.v_proj(x))
+        orig_dtype = x.dtype
+        q = tf.cast(split_heads(self.q_proj(x)), tf.float32)
+        k = tf.cast(split_heads(self.k_proj(x)), tf.float32)
+        v = tf.cast(split_heads(self.v_proj(x)), tf.float32)
 
-        # Scale before einsum to prevent float16 overflow
-        scale = tf.cast(float(self.head_dim) ** -0.25, q.dtype)
-        scale = tf.cast(float(self.head_dim) ** -0.25, q.dtype)
-        q = q * scale
-        k = k * scale
         # Attention scores (B, H, N, N)
-        attn = tf.einsum("bhid,bhjd->bhij", q, k)
+        attn = tf.einsum("bhid,bhjd->bhij", q, k) / (float(self.head_dim) ** 0.5)
 
         if self.adj_bias is not None:
-            attn = attn + self.adj_bias
+            attn = attn + tf.cast(self.adj_bias, tf.float32)
         if self.locality_bias is not None:
-            attn = attn + self.locality_bias
+            attn = attn + tf.cast(self.locality_bias, tf.float32)
         if edge_prior is not None:
             if len(edge_prior.shape) == 2:
                 edge_prior = tf.expand_dims(edge_prior, 0)
-            attn = attn + tf.math.log(tf.maximum(edge_prior, 1e-4))[:, None]
+            attn = attn + tf.math.log(tf.maximum(tf.cast(edge_prior, tf.float32), 1e-6))[:, None]
         if attn_mask is not None:
             # attn_mask: True where should be masked
-            attn = tf.where(attn_mask[:, None, None, :], tf.fill(tf.shape(attn), tf.cast(-1e4, attn.dtype)), attn)
+            attn = tf.where(attn_mask[:, None, None, :], tf.fill(tf.shape(attn), tf.cast(-1e4, tf.float32)), attn)
 
         attn = safe_softmax(attn, axis=-1)
         attn = self.dropout_layer(attn, training=training)
 
         out = tf.einsum("bhij,bhjd->bhid", attn, v)
+        out = tf.cast(out, orig_dtype)
         out = tf.transpose(out, [0, 2, 1, 3])  # (B, N, H, D)
         out = tf.reshape(out, [b, n, self.dim])
         return self.out_proj(out)
@@ -426,13 +423,19 @@ class MicroSemanticMotifMatcher(tf.keras.layers.Layer):
         ])
 
     def call(self, semantic_states: tf.Tensor, motif_bank: tf.Tensor, training: bool = False):
-        state_norm = tf.math.l2_normalize(semantic_states, axis=-1, epsilon=1e-4)
-        bank_norm = tf.math.l2_normalize(motif_bank, axis=-1, epsilon=1e-4)
+        orig_dtype = semantic_states.dtype
+        states_f32 = tf.cast(semantic_states, tf.float32)
+        bank_f32 = tf.cast(motif_bank, tf.float32)
+        
+        state_norm = tf.math.l2_normalize(states_f32, axis=-1, epsilon=1e-4)
+        bank_norm = tf.math.l2_normalize(bank_f32, axis=-1, epsilon=1e-4)
         sim = tf.einsum("brs,rks->brk", state_norm, bank_norm) / self.temperature
         attn = safe_softmax(sim, axis=-1)
-        tokens = tf.einsum("brk,rks->brs", attn, motif_bank)
+        tokens = tf.einsum("brk,rks->brs", attn, bank_f32)
+        
+        tokens = tf.cast(tokens, orig_dtype)
         tokens = self.token_proj(tokens, training=training)
-        return attn, semantic_states + tokens
+        return tf.cast(attn, orig_dtype), semantic_states + tokens
 
 
 # ---------------------------------------------------------------------------
@@ -467,15 +470,17 @@ class SemanticInteractionBlock(tf.keras.layers.Layer):
         s = semantic_states.shape[-1]
 
         # Expand for pairwise interactions
+        states_f32 = tf.cast(semantic_states, tf.float32)
         left = tf.broadcast_to(
-            tf.expand_dims(semantic_states, 2),
+            tf.expand_dims(states_f32, 2),
             [b, r, r, s]
         )
         right = tf.broadcast_to(
-            tf.expand_dims(semantic_states, 1),
+            tf.expand_dims(states_f32, 1),
             [b, r, r, s]
         )
         pair_input = tf.concat([left, right, left - right, left * right], axis=-1)
+        pair_input = tf.cast(pair_input, semantic_states.dtype)
 
         gates = self.edge_gate(pair_input, training=training)[..., 0] + 0.1
 
@@ -660,21 +665,28 @@ class SemanticHypergraphReasoner(tf.keras.layers.Layer):
 
         composed_states = tokens + region_context
         routing_logits = self.router(composed_states, training=training)[..., 0]
+        orig_dtype = routing_logits.dtype
+        routing_logits_f32 = tf.cast(routing_logits, tf.float32)
 
         if region_mask is not None:
-            routing_logits = tf.where(
-                region_mask == 0.0,
-                tf.fill(tf.shape(routing_logits), tf.cast(-1e4, routing_logits.dtype)),
-                routing_logits
+            region_mask_f32 = tf.cast(region_mask, tf.float32)
+            routing_logits_f32 = tf.where(
+                region_mask_f32 == 0.0,
+                tf.fill(tf.shape(routing_logits_f32), tf.cast(-1e4, tf.float32)),
+                routing_logits_f32
             )
-        routing_weights = safe_softmax(routing_logits, axis=1)
+        
+        routing_weights_f32 = safe_softmax(routing_logits_f32, axis=1)
+        
         if region_mask is not None:
-            routing_weights = routing_weights * region_mask
-            rw_f32 = tf.cast(routing_weights, tf.float32)
-            routing_weights = rw_f32 / (
-                tf.reduce_sum(rw_f32, axis=1, keepdims=True) + 1e-4
+            routing_weights_f32 = routing_weights_f32 * region_mask_f32
+            routing_weights_f32 = routing_weights_f32 / tf.clip_by_value(
+                tf.reduce_sum(routing_weights_f32, axis=1, keepdims=True), 
+                clip_value_min=1e-6, clip_value_max=1e9
             )
-            routing_weights = tf.cast(routing_weights, region_mask.dtype)
+            
+        routing_weights = tf.cast(routing_weights_f32, orig_dtype)
+        routing_logits = tf.cast(routing_logits_f32, orig_dtype)
 
         pooled_state = tf.reduce_sum(
             tf.expand_dims(routing_weights, -1) * composed_states, axis=1
@@ -744,10 +756,14 @@ class SemanticProgramExecutor(tf.keras.layers.Layer):
         ])
 
     def build(self, input_shape):
+        init_val = np.ones((1, self.num_classes, 1, 3), dtype=np.float32)
+        init_val[..., 0] = 1.0
+        init_val[..., 1] = 0.5
+        init_val[..., 2] = 0.25
         self.sim_weights = self.add_weight(
             name="sim_weights",
             shape=(1, self.num_classes, 1, 3),
-            initializer=tf.initializers.Ones(),
+            initializer=tf.constant_initializer(init_val),
             trainable=True,
         )
         super().build(input_shape)
@@ -755,57 +771,61 @@ class SemanticProgramExecutor(tf.keras.layers.Layer):
     def call(self, semantic_states, cross_region_tokens, program_bank,
              program_topology, region_mask=None, interaction_gates=None,
              routing_weights=None, training: bool = False):
+        
+        orig_dtype = semantic_states.dtype
+        states_f32 = tf.cast(semantic_states, tf.float32)
+        bank_f32 = tf.cast(program_bank, tf.float32)
 
-        state_norm = tf.math.l2_normalize(semantic_states, axis=-1, epsilon=1e-4)
-        program_norm = tf.math.l2_normalize(program_bank, axis=-1, epsilon=1e-4)
+        state_norm = tf.math.l2_normalize(states_f32, axis=-1, epsilon=1e-4)
+        program_norm = tf.math.l2_normalize(bank_f32, axis=-1, epsilon=1e-4)
 
         # Region similarity: (B, C, M)
         region_sims = tf.einsum("brd,cmrd->bcmr", state_norm, program_norm)
         if routing_weights is not None:
+            rw_f32 = tf.cast(routing_weights, tf.float32)
             region_sim = tf.reduce_sum(
-                region_sims * routing_weights[:, None, None, :], axis=-1
+                region_sims * rw_f32[:, None, None, :], axis=-1
             )
         elif region_mask is not None:
             valid_mask = tf.cast(region_mask[:, None, None, :], tf.float32)
-            region_sims_f32 = tf.cast(region_sims, tf.float32) * valid_mask
-            region_sim = tf.reduce_sum(region_sims_f32, axis=-1) / (
-                tf.reduce_sum(valid_mask, axis=-1) + 1e-4
+            region_sims = region_sims * valid_mask
+            region_sim = tf.reduce_sum(region_sims, axis=-1) / tf.clip_by_value(
+                tf.reduce_sum(valid_mask, axis=-1), clip_value_min=1.0, clip_value_max=1e9
             )
-            region_sim = tf.cast(region_sim, region_sims.dtype)
         else:
             region_sim = tf.reduce_mean(region_sims, axis=-1)
 
         # Topology similarity
         if interaction_gates is not None:
-            observed_topo = interaction_gates[:, None, None, :, :]
-            topo_mse = (observed_topo - program_topology[None]) ** 2
+            observed_topo = tf.cast(interaction_gates, tf.float32)[:, None, None, :, :]
+            topo_bank = tf.cast(program_topology, tf.float32)[None, :, :, :, :]
+            topo_mse = (observed_topo - topo_bank) ** 2
             if region_mask is not None:
                 pair_mask = tf.cast(
                     region_mask[:, None, None, :, None] *
                     region_mask[:, None, None, None, :], tf.float32
                 )
-                topo_mse_f32 = tf.cast(topo_mse, tf.float32) * pair_mask
-                topology_sim_f32 = 1.0 - (
-                    tf.reduce_sum(topo_mse_f32, axis=[-1, -2]) /
-                    (tf.reduce_sum(pair_mask, axis=[-1, -2]) + 1e-4)
+                topo_mse = topo_mse * pair_mask
+                topology_sim = 1.0 - (
+                    tf.reduce_sum(topo_mse, axis=[-1, -2]) / tf.clip_by_value(
+                        tf.reduce_sum(pair_mask, axis=[-1, -2]), clip_value_min=1.0, clip_value_max=1e9
+                    )
                 )
-                topology_sim = tf.cast(topology_sim_f32, topo_mse.dtype)
             else:
-                topology_sim = 1.0 - tf.reduce_mean(tf.cast(topo_mse, tf.float32), axis=[-1, -2])
-                topology_sim = tf.cast(topology_sim, topo_mse.dtype)
+                topology_sim = 1.0 - tf.reduce_mean(topo_mse, axis=[-1, -2])
         else:
             topology_sim = tf.ones_like(region_sim)
 
         # Composition similarity
         cr_tokens_f32 = tf.cast(cross_region_tokens, tf.float32)
         composition_summary = tf.reduce_mean(cr_tokens_f32, axis=1)  # (B, D)
-        composition_summary = tf.cast(composition_summary, cross_region_tokens.dtype)
+        composition_summary = tf.cast(composition_summary, orig_dtype)
         composition_summary = self.program_summary_proj(composition_summary, training=training)
+        composition_summary_f32 = tf.cast(composition_summary, tf.float32)
 
         # program_bank mean: (C, M, R, D) -> (C, M, D)
-        prog_bank_f32 = tf.cast(program_bank, tf.float32)
-        prog_mean = tf.reduce_mean(prog_bank_f32, axis=2)  # (C, M, D)
-        prog_mean = tf.cast(prog_mean, program_bank.dtype)
+        prog_mean = tf.reduce_mean(bank_f32, axis=2)  # (C, M, D)
+        prog_mean = tf.cast(prog_mean, orig_dtype)
         c_dim = tf.shape(prog_mean)[0]
         m_dim = tf.shape(prog_mean)[1]
         d_dim = prog_mean.shape[-1]
@@ -813,37 +833,51 @@ class SemanticProgramExecutor(tf.keras.layers.Layer):
         prog_mean_flat = tf.reshape(prog_mean, [c_dim * m_dim, d_dim])
         prog_mean_flat = self.program_summary_proj(prog_mean_flat, training=training)
         program_summary = tf.reshape(prog_mean_flat, [c_dim, m_dim, -1])  # (C, M, D)
+        program_summary_f32 = tf.cast(program_summary, tf.float32)
 
         composition_sim = tf.einsum(
             "bd,cmd->bcm",
-            tf.math.l2_normalize(composition_summary, axis=-1, epsilon=1e-4),
-            tf.math.l2_normalize(program_summary, axis=-1, epsilon=1e-4),
+            tf.math.l2_normalize(composition_summary_f32, axis=-1, epsilon=1e-4),
+            tf.math.l2_normalize(program_summary_f32, axis=-1, epsilon=1e-4),
         )
 
-        w = tf.nn.softplus(self.sim_weights)
+        w = tf.cast(tf.nn.softplus(self.sim_weights), tf.float32)
         total_sim = w[..., 0] * region_sim + w[..., 1] * topology_sim + w[..., 2] * composition_sim
+        
+        region_score = tf.cast(region_sim / self.temperature, orig_dtype)
+        topology_score = tf.cast(topology_sim / self.temperature, orig_dtype)
+        composition_score = tf.cast(composition_sim / self.temperature, orig_dtype)
+        
         compatibility = tf.clip_by_value(total_sim / self.temperature, -50.0, 50.0)
 
         program_attention = safe_softmax(compatibility, axis=-1)
         class_scores = tf.reduce_logsumexp(compatibility, axis=-1)
+        
+        # Cast attention back to original dtype before computing tokens
+        program_attention = tf.cast(program_attention, orig_dtype)
+        class_scores = tf.cast(class_scores, orig_dtype)
+        compatibility = tf.cast(compatibility, orig_dtype)
+        
         program_tokens = tf.einsum("bcm,cmd->bcd", program_attention, program_summary)
 
         if routing_weights is not None:
+            rw_f32 = tf.cast(routing_weights, tf.float32)
             routing_entropy = -tf.reduce_sum(
-                tf.maximum(routing_weights, 1e-4) * tf.math.log(tf.maximum(routing_weights, 1e-4)),
+                tf.maximum(rw_f32, 1e-6) * tf.math.log(tf.maximum(rw_f32, 1e-6)),
                 axis=-1,
             )
+            routing_entropy = tf.cast(routing_entropy, orig_dtype)
         else:
-            routing_entropy = tf.zeros([tf.shape(semantic_states)[0]])
+            routing_entropy = tf.zeros([tf.shape(semantic_states)[0]], dtype=orig_dtype)
 
         return {
             "program_scores": class_scores,
             "program_attention": program_attention,
             "program_tokens": program_tokens,
             "compatibility": compatibility,
-            "region_score": region_sim / self.temperature,
-            "topology_score": topology_sim / self.temperature,
-            "composition_score": composition_sim / self.temperature,
+            "region_score": region_score,
+            "topology_score": topology_score,
+            "composition_score": composition_score,
             "routing_entropy": routing_entropy,
         }
 
@@ -1057,18 +1091,18 @@ class SemanticROIGraphFER(tf.keras.Model):
         )
         if region_mask is None:
             region_mask = computed_mask
-        else:
-            region_mask = tf.cast(region_mask, image.dtype)
+        
         if region_confidence is None:
-            region_confidence = tf.cast(computed_confidence, image.dtype)
-        else:
-            region_confidence = tf.cast(region_confidence, image.dtype)
+            region_confidence = computed_confidence
+
+        region_mask = tf.cast(region_mask, tf.float32)
+        region_confidence = tf.cast(region_confidence, tf.float32)
 
         # Region dropout during training
         if training and self.region_dropout_prob > 0:
             drop_mask = tf.cast(
                 tf.random.uniform([batch_size, self.config.num_regions]) > self.region_dropout_prob,
-                image.dtype
+                tf.float32
             )
             region_mask = region_mask * drop_mask
             region_confidence = region_confidence * drop_mask
@@ -1168,6 +1202,7 @@ class SemanticROIGraphFER(tf.keras.Model):
         structure_gate = tf.sigmoid(self.semantic_structure_gate)[None]  # (1, C)
         logits_motif = semantic_program_scores
         logits = (1.0 - structure_gate) * logits_fused + structure_gate * logits_motif
+        logits = tf.cast(logits, tf.float32)
 
         return {
             "logits": logits,

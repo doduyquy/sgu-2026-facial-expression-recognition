@@ -306,10 +306,10 @@ def semantic_program_sparsity_loss(
     losses = []
 
     def _entropy(attn):
-        attn = tf.maximum(attn, 1e-6)
+        attn = tf.maximum(attn, 1e-4)
         entropy = -tf.reduce_sum(attn * tf.math.log(attn), axis=-1)
         n = tf.cast(tf.shape(attn)[-1], attn.dtype)
-        return tf.reduce_mean(entropy / tf.maximum(tf.math.log(n), 1e-6))
+        return tf.reduce_mean(entropy / tf.maximum(tf.math.log(n), 1e-4))
 
     def _l1(attn):
         return -tf.reduce_mean(attn ** 2)
