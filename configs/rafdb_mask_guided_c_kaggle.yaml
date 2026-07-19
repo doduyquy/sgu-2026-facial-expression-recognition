@@ -6,11 +6,11 @@ device: cuda
 data:
   name: "raf-db"
   root: "/kaggle/input/datasets/shuvoalok/raf-db-dataset/DATASET"
-  mask_dir: "/kaggle/input/rafdb-mediapipe-region-masks/rafdb_mediapipe_region_masks"
+  mask_dir: "/kaggle/input/datasets/lhongphuc3/mask-rafdb/outputs/rafdb_mediapipe_region_masks"
   num_classes: 7
   channels: 3
   image_size: 224
-  batch_size: 32
+  batch_size: 16
   eval_batch_size: 64
   num_workers: 2
   val_fraction: 0.10
@@ -26,7 +26,7 @@ model:
   checkpoint_path: null
   checkpoint_strict: false
 
-  mask_dir: "/kaggle/input/rafdb-mediapipe-region-masks/rafdb_mediapipe_region_masks"
+  mask_dir: "/kaggle/input/datasets/lhongphuc3/mask-rafdb/outputs/rafdb_mediapipe_region_masks"
   mask_guided_attention: true
   mask_attention_alpha: 0.3
   mask_floor: 0.05
@@ -86,7 +86,7 @@ training:
   skip_nonfinite_batches: true
 
 paths:
-  output_dir: "/kaggle/working/outputs/rafdb_mask_guided_c_cnn_region_logits_080_020_seed42"
+  output_dir: "/kaggle/working/outputs/rafdb_mask_guided_c_cnn_region_logits_080_020_seed42_noclean_batch16"
 
 logging:
   use_wandb: false
