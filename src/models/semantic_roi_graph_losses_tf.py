@@ -113,13 +113,17 @@ def region_supervised_contrastive_loss(
     logits_mask = 1.0 - tf.eye(n, dtype=pooled.dtype)
     mask = mask_pos * logits_mask
 
-    exp_sim = tf.exp(sim) * logits_mask
-    log_prob = sim - tf.math.log(
+    # Subtract max for numerical stability (prevent tf.exp overflow)
+    sim_max = tf.stop_gradient(tf.reduce_max(sim, axis=1, keepdims=True))
+    sim_stable = sim - sim_max
+
+    exp_sim = tf.exp(sim_stable) * logits_mask
+    log_prob = sim_stable - tf.math.log(
         tf.reduce_sum(exp_sim, axis=1, keepdims=True) + 1e-8
     )
     mean_log_prob_pos = (
         tf.reduce_sum(mask * log_prob, axis=1) /
-        (tf.reduce_sum(mask, axis=1) + 1e-8)
+        tf.maximum(tf.reduce_sum(mask, axis=1), 1e-8)
     )
     return -tf.reduce_mean(mean_log_prob_pos)
 
