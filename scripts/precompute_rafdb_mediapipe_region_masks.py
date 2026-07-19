@@ -198,6 +198,11 @@ def parse_args():
     parser.add_argument("--save-dtype", type=str, default="float16", choices=["float16", "float32"])
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--min-detection-confidence", type=float, default=0.5)
+    parser.add_argument(
+        "--geometry-only",
+        action="store_true",
+        help="Skip MediaPipe and build deterministic geometry masks only.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--log-every", type=int, default=1000)
     return parser.parse_args()
@@ -211,7 +216,7 @@ def main():
     dtype = np.float16 if args.save_dtype == "float16" else np.float32
 
     face_mesh = None
-    mask_source = "geometry_only"
+    mask_source = "geometry_only" if args.geometry_only else "mediapipe"
     if not args.geometry_only:
         try:
             face_mesh_solution = import_mediapipe_face_mesh()
@@ -221,9 +226,13 @@ def main():
                 refine_landmarks=True,
                 min_detection_confidence=args.min_detection_confidence,
             )
-            mask_source = "mediapipe"
         except ImportError as exc:
-            print(f"--> MediaPipe unavailable; falling back to geometry-only masks. Reason: {exc}")
+            raise ImportError(
+                "MediaPipe could not be imported in this Kaggle environment. "
+                "Install a compatible wheel without resolver conflicts, for example: "
+                "pip install -q --force-reinstall --no-deps "
+                '\"protobuf==5.28.3\" \"mediapipe==0.10.35\"'
+            ) from exc
 
     manifest_path = output_dir / "rafdb_mediapipe_mask_manifest.csv"
     summaries = []
