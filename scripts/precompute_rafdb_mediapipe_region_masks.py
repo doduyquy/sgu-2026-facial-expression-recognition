@@ -31,6 +31,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from scripts.precompute_face_parsing_region_masks import (  # noqa: E402
+    geometry_templates,
+)
 from scripts.precompute_mediapipe_region_masks import (  # noqa: E402
     REGION_ORDER,
     import_mediapipe_face_mesh,
@@ -107,10 +110,13 @@ def read_rgb_image(image_path, detection_size):
 
 
 def detect_image_masks(face_mesh, image_path, args, dtype):
+    if face_mesh is None:
+        return geometry_templates(args.mask_size, args.mask_size).astype(dtype), "geometry_only"
+
     image = read_rgb_image(image_path, args.detection_size)
     result = face_mesh.process(np.ascontiguousarray(image))
     if not result.multi_face_landmarks:
-        return uniform_masks(len(REGION_ORDER), args.mask_size, dtype), True
+        return uniform_masks(len(REGION_ORDER), args.mask_size, dtype), "uniform_fallback"
 
     face = result.multi_face_landmarks[0]
     masks = render_gaussian_masks(
@@ -119,7 +125,7 @@ def detect_image_masks(face_mesh, image_path, args, dtype):
         sigma=args.sigma,
         dtype=dtype,
     )
-    return masks, False
+    return masks, "mediapipe_detected"
 
 
 def mask_path_for_image(root, output_dir, split, image_path):
@@ -143,10 +149,10 @@ def process_split(face_mesh, root, output_dir, split, args, dtype, writer):
 
         if mask_path.exists() and not args.overwrite:
             skipped_count += 1
-            fallback = None
+            mask_mode = "skipped"
         else:
-            masks, fallback = detect_image_masks(face_mesh, image_path, args, dtype)
-            if fallback:
+            masks, mask_mode = detect_image_masks(face_mesh, image_path, args, dtype)
+            if mask_mode != "mediapipe_detected":
                 fallback_count += 1
             np.save(mask_path, masks)
             saved_count += 1
@@ -159,7 +165,8 @@ def process_split(face_mesh, root, output_dir, split, args, dtype, writer):
                 "class_name": RAFDB_FOLDER_TO_NAME[class_folder],
                 "image_path": str(image_path),
                 "mask_path": str(mask_path),
-                "fallback_uniform": "" if fallback is None else int(fallback),
+                "mask_mode": mask_mode,
+                "fallback_uniform": int(mask_mode == "uniform_fallback"),
             }
         )
 
@@ -203,13 +210,20 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     dtype = np.float16 if args.save_dtype == "float16" else np.float32
 
-    face_mesh_solution = import_mediapipe_face_mesh()
-    face_mesh = face_mesh_solution.FaceMesh(
-        static_image_mode=True,
-        max_num_faces=1,
-        refine_landmarks=True,
-        min_detection_confidence=args.min_detection_confidence,
-    )
+    face_mesh = None
+    mask_source = "geometry_only"
+    if not args.geometry_only:
+        try:
+            face_mesh_solution = import_mediapipe_face_mesh()
+            face_mesh = face_mesh_solution.FaceMesh(
+                static_image_mode=True,
+                max_num_faces=1,
+                refine_landmarks=True,
+                min_detection_confidence=args.min_detection_confidence,
+            )
+            mask_source = "mediapipe"
+        except ImportError as exc:
+            print(f"--> MediaPipe unavailable; falling back to geometry-only masks. Reason: {exc}")
 
     manifest_path = output_dir / "rafdb_mediapipe_mask_manifest.csv"
     summaries = []
@@ -221,6 +235,7 @@ def main():
                 "class_name",
                 "image_path",
                 "mask_path",
+                "mask_mode",
                 "fallback_uniform",
             ]
             writer = csv.DictWriter(manifest_file, fieldnames=fieldnames)
@@ -228,7 +243,8 @@ def main():
             for split in args.splits:
                 summaries.append(process_split(face_mesh, root, output_dir, split, args, dtype, writer))
     finally:
-        face_mesh.close()
+        if face_mesh is not None:
+            face_mesh.close()
 
     summary = {
         "data_root": str(root),
@@ -239,6 +255,7 @@ def main():
         "save_dtype": args.save_dtype,
         "sigma": args.sigma,
         "detection_size": args.detection_size,
+        "mask_source": mask_source,
         "splits": summaries,
     }
     summary_path = output_dir / "rafdb_mediapipe_mask_summary.json"
