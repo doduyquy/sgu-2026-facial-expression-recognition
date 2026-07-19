@@ -12,5 +12,9 @@ model:
   checkpoint_path: null
   checkpoint_strict: false
 
+training:
+  epochs: 150
+  patience: 30
+
 paths:
   output_dir: "/kaggle/working/outputs/paper_ablation_strong_c_mobilenet_v3_large_imagenet_seed42_noclean_batch32"
