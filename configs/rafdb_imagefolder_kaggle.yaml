@@ -31,6 +31,9 @@ training:
   label_smoothing: 0.05
   use_amp: true
 
+logging:
+  progress_bar: false
+
 augmentation:
   train:
     enabled: true

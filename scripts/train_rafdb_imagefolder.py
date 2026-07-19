@@ -36,8 +36,29 @@ CLASS_FOLDERS = [str(i) for i in range(1, 8)]
 CLASS_NAMES = [RAFDB_FOLDER_TO_NAME[str(i)] for i in range(1, 8)]
 
 
+def resolve_config_path(path):
+    raw_path = Path(path)
+    candidates = [raw_path]
+    if raw_path.suffix == "":
+        candidates.extend(
+            [
+                raw_path.with_suffix(".yaml"),
+                raw_path.with_suffix(".yml"),
+            ]
+        )
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    tried = ", ".join(str(candidate) for candidate in candidates)
+    raise FileNotFoundError(f"Config file not found. Tried: {tried}")
+
+
 def load_yaml(path):
-    with open(path, "r", encoding="utf-8") as f:
+    config_path = resolve_config_path(path)
+    print(f"--> Config: {config_path}")
+    with config_path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 
@@ -338,13 +359,13 @@ def build_optimizer_and_scheduler(config, model):
     return optimizer, scheduler
 
 
-def train_one_epoch(model, loader, criterion, optimizer, scaler, device, use_amp):
+def train_one_epoch(model, loader, criterion, optimizer, scaler, device, use_amp, show_progress=False):
     model.train()
     total_loss = 0.0
     total = 0
     correct = 0
 
-    for images, labels in tqdm(loader, desc="train", leave=False):
+    for images, labels in tqdm(loader, desc="train", leave=False, disable=not show_progress):
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
@@ -366,14 +387,14 @@ def train_one_epoch(model, loader, criterion, optimizer, scaler, device, use_amp
 
 
 @torch.no_grad()
-def evaluate(model, loader, criterion, device, split_name):
+def evaluate(model, loader, criterion, device, split_name, show_progress=False):
     model.eval()
     total_loss = 0.0
     total = 0
     y_true = []
     y_pred = []
 
-    for images, labels in tqdm(loader, desc=split_name, leave=False):
+    for images, labels in tqdm(loader, desc=split_name, leave=False, disable=not show_progress):
         images = images.to(device, non_blocking=True)
         labels = labels.to(device, non_blocking=True)
         logits = model(images)
@@ -547,6 +568,8 @@ def main():
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     train_cfg = config.get("training", {})
+    log_cfg = config.get("logging", {})
+    show_progress = bool(log_cfg.get("progress_bar", False))
     epochs = int(train_cfg.get("epochs", 30))
     patience = int(train_cfg.get("patience", 8))
     best_macro_f1 = -1.0
@@ -555,8 +578,17 @@ def main():
     history = []
 
     for epoch in range(1, epochs + 1):
-        train_metrics = train_one_epoch(model, train_loader, criterion, optimizer, scaler, device, use_amp)
-        val_metrics = evaluate(model, val_loader, criterion, device, "val")
+        train_metrics = train_one_epoch(
+            model,
+            train_loader,
+            criterion,
+            optimizer,
+            scaler,
+            device,
+            use_amp,
+            show_progress=show_progress,
+        )
+        val_metrics = evaluate(model, val_loader, criterion, device, "val", show_progress=show_progress)
 
         if scheduler is not None:
             if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
@@ -589,10 +621,11 @@ def main():
         save_history(output_dir, history)
 
         print(
-            f"Epoch {epoch:03d}/{epochs} | "
-            f"train_loss={train_metrics['loss']:.4f} train_acc={train_metrics['accuracy']:.4f} | "
-            f"val_loss={val_metrics['loss']:.4f} val_acc={val_metrics['accuracy']:.4f} "
-            f"val_macro_f1={val_metrics['macro_f1']:.4f} | best={best_macro_f1:.4f}"
+            f"Epoch {epoch}/{epochs} - "
+            f"loss: {train_metrics['loss']:.4f}  "
+            f"accuracy: {train_metrics['accuracy']:.4f} - "
+            f"val_loss: {val_metrics['loss']:.4f} - "
+            f"val_accuracy: {val_metrics['accuracy']:.4f}"
         )
 
         if patience > 0 and stale_epochs >= patience:
@@ -605,7 +638,7 @@ def main():
     print(f"\n--> Loading best checkpoint for final one-time test: {best_path}")
     checkpoint = safe_torch_load(best_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
-    test_metrics = evaluate(model, test_loader, criterion, device, "test")
+    test_metrics = evaluate(model, test_loader, criterion, device, "test", show_progress=show_progress)
     test_summary = save_metrics(output_dir, "test", test_metrics)
 
     manifest = {
