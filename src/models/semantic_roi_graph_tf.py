@@ -304,6 +304,7 @@ class GATBlock(tf.keras.layers.Layer):
 
         attn = safe_softmax(attn, axis=-1)
         attn = self.dropout_layer(attn, training=training)
+        attn = tf.cast(attn, tf.float32)  # dropout may cast back to float16
 
         out = tf.einsum("bhij,bhjd->bhid", attn, v)
         out = tf.cast(out, orig_dtype)
