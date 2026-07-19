@@ -238,18 +238,6 @@ class TrainerTF:
                 else:
                     grads = scaled_grads
 
-            # Apply differential learning rate (scale head gradients by 2.0)
-            diff_grads = []
-            for g, var in zip(grads, self.model.trainable_variables):
-                if g is not None:
-                    # PyTorch sets lr * 2.0 for all parameters EXCEPT those with 'backbone' in their name 
-                    # (unless they also contain 'dim_reducer' or 'final_cbam').
-                    is_backbone = 'backbone' in var.name and 'dim_reducer' not in var.name and 'final_cbam' not in var.name
-                    if not is_backbone:
-                        g = g * 2.0
-                diff_grads.append(g)
-            grads = diff_grads
-
             # Sanitize gradients: replace NaN/Inf with zeros BEFORE clipping.
             # clip_by_norm(Inf) = Inf * (1.0/Inf) = NaN, which would corrupt weights.
             grads = [

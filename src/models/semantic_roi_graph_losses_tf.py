@@ -40,6 +40,8 @@ def _ce_loss_with_smoothing(
     if class_weights is not None:
         sample_weights = tf.gather(class_weights, labels_int)
         losses = losses * tf.cast(sample_weights, losses.dtype)
+        sum_weights = tf.reduce_sum(tf.cast(sample_weights, losses.dtype))
+        return tf.reduce_sum(losses) / tf.maximum(sum_weights, 1e-6)
         
     return tf.reduce_mean(losses)
 
