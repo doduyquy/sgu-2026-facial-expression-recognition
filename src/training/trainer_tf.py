@@ -74,12 +74,21 @@ class TrainerTF:
         self.use_mixed_precision = (
             tf.keras.mixed_precision.global_policy().name == "mixed_float16"
         )
-        if self.use_mixed_precision:
-            # If LossScaleOptimizer is available (TF 2.15- / Keras 2)
-            if hasattr(tf.keras.mixed_precision, "LossScaleOptimizer"):
-                # Avoid re-wrapping if already wrapped
-                if not isinstance(self.optimizer, tf.keras.mixed_precision.LossScaleOptimizer):
-                    self.optimizer = tf.keras.mixed_precision.LossScaleOptimizer(self.optimizer)
+        
+        with self.strategy.scope():
+            if self.use_mixed_precision:
+                # If LossScaleOptimizer is available (TF 2.15- / Keras 2)
+                if hasattr(tf.keras.mixed_precision, "LossScaleOptimizer"):
+                    # Avoid re-wrapping if already wrapped
+                    if not isinstance(self.optimizer, tf.keras.mixed_precision.LossScaleOptimizer):
+                        self.optimizer = tf.keras.mixed_precision.LossScaleOptimizer(self.optimizer)
+            
+            # Eagerly initialize optimizer variables to prevent them from being created
+            # lazily inside tf.cond during the first @tf.function apply_gradients call.
+            if hasattr(self.optimizer, "build"):
+                self.optimizer.build(self.model.trainable_variables)
+            elif hasattr(self.optimizer, "_create_all_weights"):
+                self.optimizer._create_all_weights(self.model.trainable_variables)
 
     # ------------------------------------------------------------------
     # SCN Light
