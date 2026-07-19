@@ -211,14 +211,19 @@ class TrainerTF:
                 else:
                     scaled_loss = cls_loss
 
-            if hasattr(self.optimizer, "get_scaled_loss"):
-                scaled_grads = tape.gradient(scaled_loss, self.model.trainable_variables)
+            scaled_grads = tape.gradient(scaled_loss, self.model.trainable_variables)
+            if hasattr(self.optimizer, "get_unscaled_gradients"):
                 grads = self.optimizer.get_unscaled_gradients(scaled_grads)
-            elif hasattr(self.optimizer, "scale_loss"):
-                scaled_grads = tape.gradient(scaled_loss, self.model.trainable_variables)
+            elif hasattr(self.optimizer, "unscale_gradients"):
+                grads = self.optimizer.unscale_gradients(scaled_grads)
+            elif hasattr(self.optimizer, "unscale_grads"):
                 grads = self.optimizer.unscale_grads(scaled_grads)
             else:
-                grads = tape.gradient(scaled_loss, self.model.trainable_variables)
+                if hasattr(self.optimizer, "loss_scale"):
+                    scale = self.optimizer.loss_scale
+                    grads = [g / tf.cast(scale, g.dtype) if g is not None else g for g in scaled_grads]
+                else:
+                    grads = scaled_grads
 
             grads = [tf.clip_by_norm(g, 5.0) if g is not None else g for g in grads]
             self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
