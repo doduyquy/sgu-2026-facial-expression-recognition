@@ -3,7 +3,7 @@ device: cuda
 output_dir: /kaggle/working/outputs/rafdb_imagefolder_resnet18
 
 data:
-  root: auto
+  root: /kaggle/input/datasets/shuvoalok/raf-db-dataset/DATASET
   image_size: 224
   resize_size: 256
   batch_size: 64
