@@ -413,7 +413,7 @@ def compute_semantic_roi_graph_losses_tf(
 
     label_smoothing = float(training_cfg.get("label_smoothing", 0.0))
 
-    logits = outputs["logits"]
+    logits = tf.cast(outputs["logits"], tf.float32)
     labels_int = tf.cast(labels, tf.int32)
 
     # Main CE loss
@@ -422,6 +422,7 @@ def compute_semantic_roi_graph_losses_tf(
     # Fused auxiliary CE
     logits_fused = outputs.get("logits_fused")
     if logits_fused is not None:
+        logits_fused = tf.cast(logits_fused, tf.float32)
         fused_ce_loss = _ce_loss_with_smoothing(labels_int, logits_fused, label_smoothing)
     else:
         fused_ce_loss = tf.zeros(())

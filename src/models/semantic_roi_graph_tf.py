@@ -325,9 +325,10 @@ class GatedPooling(tf.keras.layers.Layer):
         self.gate = tf.keras.layers.Dense(1)
 
     def call(self, x: tf.Tensor) -> tf.Tensor:
-        weights = tf.sigmoid(self.gate(x))
-        weighted = x * weights
-        return tf.reduce_sum(weighted, axis=1) / (tf.reduce_sum(weights, axis=1) + 1e-4)
+        weights = tf.sigmoid(tf.cast(self.gate(x), tf.float32))
+        weighted = tf.cast(x, tf.float32) * weights
+        pooled = tf.reduce_sum(weighted, axis=1) / (tf.reduce_sum(weights, axis=1) + 1e-4)
+        return tf.cast(pooled, x.dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -489,9 +490,17 @@ class SemanticInteractionBlock(tf.keras.layers.Layer):
             gates = gates * pair_mask
 
         messages = self.edge_message(pair_input, training=training)
-        interaction_tensor = tf.expand_dims(gates, -1) * messages
-        denom = tf.reduce_sum(gates, axis=2, keepdims=True) + 1e-4
-        interaction_summary = tf.reduce_sum(interaction_tensor, axis=2) / denom
+        
+        gates_f32 = tf.cast(gates, tf.float32)
+        messages_f32 = tf.cast(messages, tf.float32)
+        
+        interaction_tensor_f32 = tf.expand_dims(gates_f32, -1) * messages_f32
+        denom_f32 = tf.reduce_sum(gates_f32, axis=2, keepdims=True) + 1e-4
+        interaction_summary_f32 = tf.reduce_sum(interaction_tensor_f32, axis=2) / denom_f32
+        
+        interaction_summary = tf.cast(interaction_summary_f32, semantic_states.dtype)
+        interaction_tensor = tf.cast(interaction_tensor_f32, semantic_states.dtype)
+        
         updated_states = self.norm(semantic_states + interaction_summary)
         return updated_states, interaction_tensor, gates
 
@@ -661,9 +670,11 @@ class SemanticHypergraphReasoner(tf.keras.layers.Layer):
         routing_weights = safe_softmax(routing_logits, axis=1)
         if region_mask is not None:
             routing_weights = routing_weights * region_mask
-            routing_weights = routing_weights / (
-                tf.reduce_sum(routing_weights, axis=1, keepdims=True) + 1e-4
+            rw_f32 = tf.cast(routing_weights, tf.float32)
+            routing_weights = rw_f32 / (
+                tf.reduce_sum(rw_f32, axis=1, keepdims=True) + 1e-4
             )
+            routing_weights = tf.cast(routing_weights, region_mask.dtype)
 
         pooled_state = tf.reduce_sum(
             tf.expand_dims(routing_weights, -1) * composed_states, axis=1
@@ -755,11 +766,12 @@ class SemanticProgramExecutor(tf.keras.layers.Layer):
                 region_sims * routing_weights[:, None, None, :], axis=-1
             )
         elif region_mask is not None:
-            valid_mask = region_mask[:, None, None, :]
-            region_sims = region_sims * valid_mask
-            region_sim = tf.reduce_sum(region_sims, axis=-1) / (
-                tf.reduce_sum(valid_mask, axis=-1) + 1.0
+            valid_mask = tf.cast(region_mask[:, None, None, :], tf.float32)
+            region_sims_f32 = tf.cast(region_sims, tf.float32) * valid_mask
+            region_sim = tf.reduce_sum(region_sims_f32, axis=-1) / (
+                tf.reduce_sum(valid_mask, axis=-1) + 1e-4
             )
+            region_sim = tf.cast(region_sim, region_sims.dtype)
         else:
             region_sim = tf.reduce_mean(region_sims, axis=-1)
 
@@ -768,26 +780,32 @@ class SemanticProgramExecutor(tf.keras.layers.Layer):
             observed_topo = interaction_gates[:, None, None, :, :]
             topo_mse = (observed_topo - program_topology[None]) ** 2
             if region_mask is not None:
-                pair_mask = (
+                pair_mask = tf.cast(
                     region_mask[:, None, None, :, None] *
-                    region_mask[:, None, None, None, :]
+                    region_mask[:, None, None, None, :], tf.float32
                 )
-                topo_mse = topo_mse * pair_mask
-                topology_sim = 1.0 - (
-                    tf.reduce_sum(topo_mse, axis=[-1, -2]) /
-                    (tf.reduce_sum(pair_mask, axis=[-1, -2]) + 1.0)
+                topo_mse_f32 = tf.cast(topo_mse, tf.float32) * pair_mask
+                topology_sim_f32 = 1.0 - (
+                    tf.reduce_sum(topo_mse_f32, axis=[-1, -2]) /
+                    (tf.reduce_sum(pair_mask, axis=[-1, -2]) + 1e-4)
                 )
+                topology_sim = tf.cast(topology_sim_f32, topo_mse.dtype)
             else:
-                topology_sim = 1.0 - tf.reduce_mean(topo_mse, axis=[-1, -2])
+                topology_sim = 1.0 - tf.reduce_mean(tf.cast(topo_mse, tf.float32), axis=[-1, -2])
+                topology_sim = tf.cast(topology_sim, topo_mse.dtype)
         else:
             topology_sim = tf.ones_like(region_sim)
 
         # Composition similarity
-        composition_summary = tf.reduce_mean(cross_region_tokens, axis=1)  # (B, D)
+        cr_tokens_f32 = tf.cast(cross_region_tokens, tf.float32)
+        composition_summary = tf.reduce_mean(cr_tokens_f32, axis=1)  # (B, D)
+        composition_summary = tf.cast(composition_summary, cross_region_tokens.dtype)
         composition_summary = self.program_summary_proj(composition_summary, training=training)
 
         # program_bank mean: (C, M, R, D) -> (C, M, D)
-        prog_mean = tf.reduce_mean(program_bank, axis=2)  # (C, M, D)
+        prog_bank_f32 = tf.cast(program_bank, tf.float32)
+        prog_mean = tf.reduce_mean(prog_bank_f32, axis=2)  # (C, M, D)
+        prog_mean = tf.cast(prog_mean, program_bank.dtype)
         c_dim = tf.shape(prog_mean)[0]
         m_dim = tf.shape(prog_mean)[1]
         d_dim = prog_mean.shape[-1]
