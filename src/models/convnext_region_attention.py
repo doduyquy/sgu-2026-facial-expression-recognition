@@ -577,9 +577,13 @@ class ConvNeXtSpatialTokenizer(nn.Module):
     _WEIGHT_ENUMS = {
         "convnext_tiny": "ConvNeXt_Tiny_Weights",
         "convnext_small": "ConvNeXt_Small_Weights",
+        "resnet18": "ResNet18_Weights",
+        "efficientnet_b0": "EfficientNet_B0_Weights",
         "efficientnet_b3": "EfficientNet_B3_Weights",
         "efficientnet_v2_s": "EfficientNet_V2_S_Weights",
         "efficientnet_v2_m": "EfficientNet_V2_M_Weights",
+        "mobilenet_v3_large": "MobileNet_V3_Large_Weights",
+        "swin_t": "Swin_T_Weights",
     }
 
     def __init__(self, config, channels=3):
@@ -588,6 +592,8 @@ class ConvNeXtSpatialTokenizer(nn.Module):
         model_cfg = config.get("model", {})
 
         self.num_classes = data_cfg.get("num_classes", 7)
+        self.input_channels = int(channels)
+        self.image_size = int(data_cfg.get("image_size", 224))
         self.arch = model_cfg.get("arch", "convnext_tiny")
         self.pool_visual_tokens = bool(model_cfg.get("pool_visual_tokens", False))
         self.token_grid_size = int(model_cfg.get("token_grid_size", 7))
@@ -600,6 +606,7 @@ class ConvNeXtSpatialTokenizer(nn.Module):
         if channels != 3:
             self._adapt_first_conv(channels)
 
+        self.feature_extractor_kind = self._resolve_feature_extractor_kind()
         self.feature_dim = self._infer_feature_dim()
         self.use_source_classifier = bool(model_cfg.get("use_source_classifier", False))
         self.num_visual_tokens = (
@@ -628,7 +635,7 @@ class ConvNeXtSpatialTokenizer(nn.Module):
         self.multiscale_stage4_index = int(
             model_cfg.get(
                 "multiscale_stage4_index",
-                len(self.backbone.features) - 1,
+                self._feature_extractor_length() - 1,
             )
         )
         if self.use_multiscale_se_fusion:
@@ -719,6 +726,23 @@ class ConvNeXtSpatialTokenizer(nn.Module):
         return getattr(weights_enum, weights_name)
 
     def _infer_feature_dim(self):
+        try:
+            with torch.no_grad():
+                param = next(self.backbone.parameters())
+                dummy = torch.zeros(
+                    1,
+                    self.input_channels,
+                    self.image_size,
+                    self.image_size,
+                    device=param.device,
+                    dtype=param.dtype,
+                )
+                feat_map = self._forward_feature_extractor(dummy)
+            if feat_map.ndim == 4:
+                return int(max(feat_map.shape[1], feat_map.shape[-1]))
+        except Exception:
+            pass
+
         _, _, last_linear, _ = self._find_last_linear(self.backbone)
         if last_linear is None:
             raise ValueError(f"Could not infer feature dim for {self.arch}.")
@@ -746,6 +770,69 @@ class ConvNeXtSpatialTokenizer(nn.Module):
             raise ValueError(f"Could not find classifier Linear in {self.arch}.")
         self._set_child(parent, child_name, head)
         return self.backbone.classifier
+
+    def _resolve_feature_extractor_kind(self):
+        if hasattr(self.backbone, "features"):
+            return "features"
+
+        if self.arch.startswith("resnet") and all(
+            hasattr(self.backbone, name)
+            for name in ("conv1", "bn1", "relu", "maxpool", "layer1", "layer2", "layer3", "layer4")
+        ):
+            return "resnet"
+
+        raise ValueError(
+            f"Could not build feature extractor for {self.arch}. "
+            "Expected a torchvision model with .features or a ResNet-style backbone."
+        )
+
+    def _feature_extractor_modules(self):
+        if self.feature_extractor_kind == "features":
+            return [self.backbone.features]
+
+        if self.feature_extractor_kind == "resnet":
+            return [
+                self.backbone.conv1,
+                self.backbone.bn1,
+                self.backbone.relu,
+                self.backbone.maxpool,
+                self.backbone.layer1,
+                self.backbone.layer2,
+                self.backbone.layer3,
+                self.backbone.layer4,
+            ]
+
+        raise RuntimeError(f"Unsupported feature extractor kind: {self.feature_extractor_kind}")
+
+    def _feature_extractor_length(self):
+        return len(self._feature_extractor_modules())
+
+    def _feature_extractor_parameters(self):
+        seen = set()
+        for module in self._feature_extractor_modules():
+            for param in module.parameters():
+                param_id = id(param)
+                if param_id in seen:
+                    continue
+                seen.add(param_id)
+                yield param
+
+    def _forward_feature_extractor(self, x):
+        if self.feature_extractor_kind == "features":
+            return self.backbone.features(x)
+
+        if self.feature_extractor_kind == "resnet":
+            x = self.backbone.conv1(x)
+            x = self.backbone.bn1(x)
+            x = self.backbone.relu(x)
+            x = self.backbone.maxpool(x)
+            x = self.backbone.layer1(x)
+            x = self.backbone.layer2(x)
+            x = self.backbone.layer3(x)
+            x = self.backbone.layer4(x)
+            return x
+
+        raise RuntimeError(f"Unsupported feature extractor kind: {self.feature_extractor_kind}")
 
     @classmethod
     def _find_last_linear(cls, module, prefix=()):
@@ -801,6 +888,10 @@ class ConvNeXtSpatialTokenizer(nn.Module):
         self._set_child(first_conv_parent, first_conv_name, new_conv)
 
     def _forward_multiscale_features(self, x):
+        if self.feature_extractor_kind != "features":
+            raise RuntimeError(
+                "model.use_multiscale_se_fusion currently needs a backbone with .features."
+            )
         stage3 = None
         stage4 = None
         feat = x
@@ -823,11 +914,23 @@ class ConvNeXtSpatialTokenizer(nn.Module):
             )
         return self.multiscale_fusion(stage3, stage4)
 
+    def _normalize_feature_map_layout(self, feat_map):
+        if feat_map.ndim != 4:
+            raise ValueError(
+                f"Expected a 4D feature map from {self.arch}, got shape {tuple(feat_map.shape)}."
+            )
+
+        # Torchvision Swin features are NHWC; CNN backbones are NCHW.
+        if feat_map.shape[1] != self.feature_dim and feat_map.shape[-1] == self.feature_dim:
+            return feat_map.permute(0, 3, 1, 2).contiguous()
+        return feat_map
+
     def forward(self, x):
         if self.use_multiscale_se_fusion:
             feat_map = self._forward_multiscale_features(x)
         else:
-            feat_map = self.backbone.features(x)
+            feat_map = self._forward_feature_extractor(x)
+            feat_map = self._normalize_feature_map_layout(feat_map)
             if self.layer4_se_gate is not None:
                 feat_map = self.layer4_se_gate(feat_map)
         token_map = self.token_pool(feat_map)
@@ -1397,16 +1500,16 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         self.convnext_backbone.load_from_checkpoint(checkpoint_path, device=device)
 
     def freeze_backbones(self):
-        for param in self.convnext_backbone.backbone.features.parameters():
+        for param in self.convnext_backbone._feature_extractor_parameters():
             param.requires_grad = False
         if self.convnext_backbone.source_classifier is not None:
             for param in self.convnext_backbone.source_classifier.parameters():
                 param.requires_grad = False
         self.is_frozen = True
-        print("[ConvNeXtRegionAttention] ConvNeXt visual backbone FROZEN.")
+        print("[ConvNeXtRegionAttention] Visual backbone FROZEN.")
 
     def unfreeze_backbones(self):
-        for param in self.convnext_backbone.backbone.features.parameters():
+        for param in self.convnext_backbone._feature_extractor_parameters():
             param.requires_grad = True
         if self.logit_fusion in ("attention", "sum") and self.convnext_backbone.source_classifier is not None:
             for param in self.convnext_backbone.source_classifier.parameters():
@@ -1414,7 +1517,7 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         previous_logit_fusion = self.logit_fusion
         self.logit_fusion = self.finetune_logit_fusion
         self.is_frozen = False
-        print("[ConvNeXtRegionAttention] ConvNeXt visual backbone UNFROZEN.")
+        print("[ConvNeXtRegionAttention] Visual backbone UNFROZEN.")
         if previous_logit_fusion != self.logit_fusion:
             print(
                 "[ConvNeXtRegionAttention] "
@@ -1433,12 +1536,14 @@ class ConvNeXtRegionAttentionFER(nn.Module):
             return self
 
         if self.is_frozen:
-            self.convnext_backbone.backbone.features.eval()
+            for module in self.convnext_backbone._feature_extractor_modules():
+                module.eval()
             if self.convnext_backbone.source_classifier is not None:
                 self.convnext_backbone.source_classifier.eval()
         else:
             if self.freeze_unfrozen_batchnorm:
-                self._freeze_norm_layers(self.convnext_backbone.backbone.features)
+                for module in self.convnext_backbone._feature_extractor_modules():
+                    self._freeze_norm_layers(module)
             if self.logit_fusion in ("attention", "sum") and self.convnext_backbone.source_classifier is not None:
                 self.convnext_backbone.source_classifier.eval()
         return self
@@ -1458,7 +1563,16 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         self.current_epoch_index = int(epoch_index)
 
     def parameter_role(self, clean_name):
-        if clean_name.startswith("convnext_backbone.backbone.features."):
+        visual_prefixes = (
+            "convnext_backbone.backbone.features.",
+            "convnext_backbone.backbone.conv1.",
+            "convnext_backbone.backbone.bn1.",
+            "convnext_backbone.backbone.layer1.",
+            "convnext_backbone.backbone.layer2.",
+            "convnext_backbone.backbone.layer3.",
+            "convnext_backbone.backbone.layer4.",
+        )
+        if clean_name.startswith(visual_prefixes):
             return "visual"
         return "head"
 
