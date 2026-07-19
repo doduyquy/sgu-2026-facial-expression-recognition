@@ -241,7 +241,7 @@ class TrainerTF:
                 if g is not None else g
                 for g in grads
             ]
-            grads = [tf.clip_by_norm(g, 1.0) if g is not None else g for g in grads]
+            grads = [tf.clip_by_norm(g, 5.0) if g is not None else g for g in grads]
             self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
 
             preds = tf.argmax(logits, axis=-1, output_type=tf.int32)

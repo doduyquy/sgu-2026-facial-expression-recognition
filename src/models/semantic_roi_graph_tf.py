@@ -115,14 +115,14 @@ class SemanticBackbone(tf.keras.layers.Layer):
             weights=weights,
             input_shape=(None, None, 3),
         )
-        # Extract up to conv3_block4_out (≈ layer3 of PyTorch ResNet50)
-        # This gives stride-8 features (48/8=6 → but we want 12, so we take conv3 which is stride-4)
-        # conv2_block3_out → stride 4 → for 48x48 input gives 12x12 ✓
+        # Extract up to conv4_block6_out (matches layer3 of PyTorch ResNet50 exactly: 1024 channels).
+        # Since ResNet50V2 stem downsamples heavily, we resize the input tensor to 192x192 
+        # before passing it to the backbone. 192 / 16 (stride at conv4) = 12x12 feature map.
         self.feature_extractor = tf.keras.Model(
             inputs=base.input,
-            outputs=base.get_layer("conv3_block4_out").output,
+            outputs=base.get_layer("conv4_block6_out").output,
         )
-        # conv3_block4_out has 512 channels in ResNet50V2
+        # conv4_block6_out has 1024 channels in ResNet50V2
         self.proj = tf.keras.Sequential([
             tf.keras.layers.Conv2D(feature_dim, kernel_size=1, use_bias=False),
             tf.keras.layers.BatchNormalization(),
@@ -134,6 +134,8 @@ class SemanticBackbone(tf.keras.layers.Layer):
         # x: (B, H, W, C) NHWC — ensure 3 channels
         if x.shape[-1] == 1:
             x = tf.repeat(x, 3, axis=-1)
+        # Resize input to 192x192 so that conv4_block6_out (stride 16) produces exactly 12x12
+        x = tf.image.resize(x, [192, 192], method="bilinear")
         x = self.feature_extractor(x, training=training)
         return self.proj(x, training=training)
 

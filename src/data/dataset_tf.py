@@ -27,11 +27,10 @@ def build_augmentation_layers(
     """Build augmentation pipeline using tf.keras.layers."""
     layers = []
     if use_augment:
+        # NOTE: We disabled spatial augmentations (Rotation, Zoom, Translation, Flip) 
+        # because the bounding boxes are static and not updated in tf.data pipeline.
+        # This matches PyTorch's `use_semantic_masks=True` fallback logic.
         layers += [
-            tf.keras.layers.RandomFlip("horizontal"),
-            tf.keras.layers.RandomRotation(factor=0.15),  # ±27 degrees
-            tf.keras.layers.RandomZoom(height_factor=0.1, width_factor=0.1),
-            tf.keras.layers.RandomTranslation(height_factor=0.1, width_factor=0.1),
             tf.keras.layers.RandomContrast(factor=0.2),
             tf.keras.layers.RandomBrightness(factor=0.2),
         ]
