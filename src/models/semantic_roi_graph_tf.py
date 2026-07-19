@@ -304,7 +304,7 @@ class GATBlock(tf.keras.layers.Layer):
             attn = attn + tf.math.log(tf.maximum(edge_prior, 1e-4))[:, None]
         if attn_mask is not None:
             # attn_mask: True where should be masked
-            attn = tf.where(attn_mask[:, None, None, :], tf.fill(tf.shape(attn), tf.cast(-1e9, attn.dtype)), attn)
+            attn = tf.where(attn_mask[:, None, None, :], tf.fill(tf.shape(attn), tf.cast(-1e4, attn.dtype)), attn)
 
         attn = safe_softmax(attn, axis=-1)
         attn = self.dropout_layer(attn, training=training)
@@ -556,7 +556,7 @@ class CrossRegionCompositionGraph(tf.keras.layers.Layer):
                 tf.expand_dims(region_mask, -1) *
                 tf.expand_dims(region_mask, -2)
             )
-            pair_scores = tf.where(pair_mask <= 0, tf.fill(tf.shape(pair_scores), tf.cast(-1e9, pair_scores.dtype)), pair_scores)
+            pair_scores = tf.where(pair_mask <= 0, tf.fill(tf.shape(pair_scores), tf.cast(-1e4, pair_scores.dtype)), pair_scores)
 
         pair_attention = tf.reshape(
             safe_softmax(tf.reshape(pair_scores, [b, -1]), axis=-1),
@@ -655,7 +655,7 @@ class SemanticHypergraphReasoner(tf.keras.layers.Layer):
         if region_mask is not None:
             routing_logits = tf.where(
                 region_mask == 0.0,
-                tf.fill(tf.shape(routing_logits), tf.cast(-1e9, routing_logits.dtype)),
+                tf.fill(tf.shape(routing_logits), tf.cast(-1e4, routing_logits.dtype)),
                 routing_logits
             )
         routing_weights = safe_softmax(routing_logits, axis=1)
