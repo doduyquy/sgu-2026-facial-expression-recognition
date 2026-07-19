@@ -1500,7 +1500,7 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         self.convnext_backbone.load_from_checkpoint(checkpoint_path, device=device)
 
     def freeze_backbones(self):
-        for param in self.convnext_backbone._feature_extractor_parameters():
+        for param in self.convnext_backbone.backbone.parameters():
             param.requires_grad = False
         if self.convnext_backbone.source_classifier is not None:
             for param in self.convnext_backbone.source_classifier.parameters():
@@ -1509,11 +1509,14 @@ class ConvNeXtRegionAttentionFER(nn.Module):
         print("[ConvNeXtRegionAttention] Visual backbone FROZEN.")
 
     def unfreeze_backbones(self):
+        for param in self.convnext_backbone.backbone.parameters():
+            param.requires_grad = False
         for param in self.convnext_backbone._feature_extractor_parameters():
             param.requires_grad = True
-        if self.logit_fusion in ("attention", "sum") and self.convnext_backbone.source_classifier is not None:
+        if self.convnext_backbone.source_classifier is not None:
+            source_trainable = self.logit_fusion == "source"
             for param in self.convnext_backbone.source_classifier.parameters():
-                param.requires_grad = False
+                param.requires_grad = source_trainable
         previous_logit_fusion = self.logit_fusion
         self.logit_fusion = self.finetune_logit_fusion
         self.is_frozen = False
