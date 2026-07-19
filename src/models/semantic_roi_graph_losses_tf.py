@@ -18,6 +18,7 @@ def _ce_loss_with_smoothing(
     labels_int: tf.Tensor,
     logits: tf.Tensor,
     label_smoothing: float = 0.0,
+    class_weights: Optional[tf.Tensor] = None,
 ) -> tf.Tensor:
     """Cross-entropy with optional label smoothing.
     Works across all Keras versions (sparse_categorical_crossentropy does not
@@ -28,16 +29,19 @@ def _ce_loss_with_smoothing(
         one_hot = tf.one_hot(labels_int, num_classes, dtype=logits.dtype)
         smooth_val = label_smoothing / tf.cast(num_classes, logits.dtype)
         one_hot = one_hot * (1.0 - label_smoothing) + smooth_val
-        return tf.reduce_mean(
-            tf.keras.losses.categorical_crossentropy(
-                one_hot, logits, from_logits=True
-            )
+        losses = tf.keras.losses.categorical_crossentropy(
+            one_hot, logits, from_logits=True
         )
-    return tf.reduce_mean(
-        tf.keras.losses.sparse_categorical_crossentropy(
+    else:
+        losses = tf.keras.losses.sparse_categorical_crossentropy(
             labels_int, logits, from_logits=True
         )
-    )
+        
+    if class_weights is not None:
+        sample_weights = tf.gather(class_weights, labels_int)
+        losses = losses * tf.cast(sample_weights, losses.dtype)
+        
+    return tf.reduce_mean(losses)
 
 def _get_training_cfg(model) -> Dict:
     try:
@@ -417,13 +421,13 @@ def compute_semantic_roi_graph_losses_tf(
     labels_int = tf.cast(labels, tf.int32)
 
     # Main CE loss
-    ce_loss = _ce_loss_with_smoothing(labels_int, logits, label_smoothing)
+    ce_loss = _ce_loss_with_smoothing(labels_int, logits, label_smoothing, class_weights)
 
     # Fused auxiliary CE
     logits_fused = outputs.get("logits_fused")
     if logits_fused is not None:
         logits_fused = tf.cast(logits_fused, tf.float32)
-        fused_ce_loss = _ce_loss_with_smoothing(labels_int, logits_fused, label_smoothing)
+        fused_ce_loss = _ce_loss_with_smoothing(labels_int, logits_fused, label_smoothing, class_weights)
     else:
         fused_ce_loss = tf.zeros(())
 

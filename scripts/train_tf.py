@@ -234,6 +234,9 @@ def main():
     os.makedirs(ckpt_dir, exist_ok=True)
     save_path = os.path.join(ckpt_dir, f"{run_name}_best.weights.h5")
 
+    # Class Weights
+    class_weights = get_class_weights_tf(train_csv, config)
+
     # Trainer
     from src.training.trainer_tf import TrainerTF
     trainer = TrainerTF(
@@ -246,6 +249,7 @@ def main():
         run_name=run_name,
         save_path=save_path,
         strategy=strategy,
+        class_weights=class_weights,
     )
 
     # Train

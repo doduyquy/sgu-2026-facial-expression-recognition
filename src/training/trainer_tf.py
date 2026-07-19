@@ -42,6 +42,7 @@ class TrainerTF:
         run_name: str = "run",
         save_path: str = "best_model.weights.h5",
         strategy: tf.distribute.Strategy = None,
+        class_weights: Optional[tf.Tensor] = None,
     ):
         self.strategy = strategy or tf.distribute.get_strategy()
         self.model = model
@@ -50,6 +51,7 @@ class TrainerTF:
         self.config = config or {}
         self.run_name = run_name
         self.save_path = save_path
+        self.class_weights = class_weights
 
         # Distribute datasets
         self.train_dataset = self.strategy.experimental_distribute_dataset(train_dataset)
@@ -173,7 +175,9 @@ class TrainerTF:
 
         # Compute loss
         if loss_mode == "semantic_roi_graph":
-            loss_dict = compute_semantic_roi_graph_losses_tf(self.model, outputs, labels)
+            loss_dict = compute_semantic_roi_graph_losses_tf(
+                self.model, outputs, labels, class_weights=self.class_weights
+            )
             cls_loss = loss_dict["loss"]
         else:
             def compute_mixup_loss():
@@ -233,6 +237,18 @@ class TrainerTF:
                     grads = [g / tf.cast(scale, g.dtype) if g is not None else g for g in scaled_grads]
                 else:
                     grads = scaled_grads
+
+            # Apply differential learning rate (scale head gradients by 2.0)
+            diff_grads = []
+            for g, var in zip(grads, self.model.trainable_variables):
+                if g is not None:
+                    # PyTorch sets lr * 2.0 for all parameters EXCEPT those with 'backbone' in their name 
+                    # (unless they also contain 'dim_reducer' or 'final_cbam').
+                    is_backbone = 'backbone' in var.name and 'dim_reducer' not in var.name and 'final_cbam' not in var.name
+                    if not is_backbone:
+                        g = g * 2.0
+                diff_grads.append(g)
+            grads = diff_grads
 
             # Sanitize gradients: replace NaN/Inf with zeros BEFORE clipping.
             # clip_by_norm(Inf) = Inf * (1.0/Inf) = NaN, which would corrupt weights.
