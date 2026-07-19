@@ -1,0 +1,16 @@
+_base_: "c_cnn_region_logits_080_020_imagenet_sam_cosine_seed42_noclean_batch32_kaggle.yaml"
+
+# Backbone generalization ablation.
+# Method stays C:
+#   final = 0.8 * cnn_aux_logits + 0.2 * region_attention_logits
+# Only the visual backbone changes: ConvNeXt-Tiny -> MobileNetV3-Large.
+
+model:
+  arch: "mobilenet_v3_large"
+  pretrained: true
+  weights: "DEFAULT"
+  checkpoint_path: null
+  checkpoint_strict: false
+
+paths:
+  output_dir: "/kaggle/working/outputs/paper_ablation_strong_c_mobilenet_v3_large_imagenet_seed42_noclean_batch32"
