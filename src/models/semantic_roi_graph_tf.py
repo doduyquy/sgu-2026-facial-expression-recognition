@@ -649,7 +649,7 @@ class SemanticHypergraphReasoner(tf.keras.layers.Layer):
 
         if region_mask is not None:
             routing_logits = tf.where(
-                tf.expand_dims(region_mask, -1) == 0.0,
+                region_mask == 0.0,
                 tf.fill(tf.shape(routing_logits), tf.cast(-1e9, routing_logits.dtype)),
                 routing_logits
             )
