@@ -425,8 +425,8 @@ class MicroSemanticMotifMatcher(tf.keras.layers.Layer):
         ])
 
     def call(self, semantic_states: tf.Tensor, motif_bank: tf.Tensor, training: bool = False):
-        state_norm = tf.math.l2_normalize(semantic_states, axis=-1)
-        bank_norm = tf.math.l2_normalize(motif_bank, axis=-1)
+        state_norm = tf.math.l2_normalize(semantic_states, axis=-1, epsilon=1e-4)
+        bank_norm = tf.math.l2_normalize(motif_bank, axis=-1, epsilon=1e-4)
         sim = tf.einsum("brs,rks->brk", state_norm, bank_norm) / self.temperature
         attn = safe_softmax(sim, axis=-1)
         tokens = tf.einsum("brk,rks->brs", attn, motif_bank)
@@ -745,8 +745,8 @@ class SemanticProgramExecutor(tf.keras.layers.Layer):
              program_topology, region_mask=None, interaction_gates=None,
              routing_weights=None, training: bool = False):
 
-        state_norm = tf.math.l2_normalize(semantic_states, axis=-1)
-        program_norm = tf.math.l2_normalize(program_bank, axis=-1)
+        state_norm = tf.math.l2_normalize(semantic_states, axis=-1, epsilon=1e-4)
+        program_norm = tf.math.l2_normalize(program_bank, axis=-1, epsilon=1e-4)
 
         # Region similarity: (B, C, M)
         region_sims = tf.einsum("brd,cmrd->bcmr", state_norm, program_norm)
@@ -798,8 +798,8 @@ class SemanticProgramExecutor(tf.keras.layers.Layer):
 
         composition_sim = tf.einsum(
             "bd,cmd->bcm",
-            tf.math.l2_normalize(composition_summary, axis=-1),
-            tf.math.l2_normalize(program_summary, axis=-1),
+            tf.math.l2_normalize(composition_summary, axis=-1, epsilon=1e-4),
+            tf.math.l2_normalize(program_summary, axis=-1, epsilon=1e-4),
         )
 
         w = tf.nn.softplus(self.sim_weights)
