@@ -1,0 +1,59 @@
+seed: 42
+device: cuda
+output_dir: /kaggle/working/outputs/rafdb_imagefolder_resnet18
+
+data:
+  root: auto
+  image_size: 224
+  resize_size: 256
+  batch_size: 64
+  eval_batch_size: 128
+  num_workers: 2
+  val_fraction: 0.10
+  drop_last: false
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+
+model:
+  arch: resnet18
+  pretrained: true
+  weights: DEFAULT
+  fallback_to_random_weights: true
+
+training:
+  epochs: 30
+  patience: 8
+  optimizer: adamw
+  lr: 0.0003
+  weight_decay: 0.0001
+  scheduler: cosine
+  min_lr: 0.000001
+  label_smoothing: 0.05
+  use_amp: true
+
+augmentation:
+  train:
+    enabled: true
+    random_resized_crop_scale: [0.80, 1.00]
+    hflip_prob: 0.5
+    rotation_degrees: 10
+    color_jitter:
+      brightness: 0.15
+      contrast: 0.15
+      saturation: 0.10
+      hue: 0.02
+    random_erasing_prob: 0.10
+
+mask:
+  enabled: false
+  mode: none
+  note: "This ImageFolder baseline does not load masks. Use a separate paired image+mask dataset after RAF-DB mask precompute."
+
+rafdb_mapping:
+  "1": Surprise
+  "2": Fear
+  "3": Disgust
+  "4": Happiness
+  "5": Sadness
+  "6": Anger
+  "7": Neutral
