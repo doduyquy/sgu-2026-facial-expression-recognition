@@ -34,8 +34,9 @@ def build_optimizer_tf(config: dict):
     """Build TF optimizer from config."""
     train_cfg = config.get("training", {})
     opt_name = train_cfg.get("optimizer", "adam").lower()
-    lr = float(train_cfg.get("lr", train_cfg.get("learning_rate", 1e-3)))
-    weight_decay = float(train_cfg.get("weight_decay", 1e-4))
+    # FORCE stronger regularization to combat overfitting on ResNet50V2
+    lr = float(train_cfg.get("lr", 1e-4)) # Reduced from 1e-3 to 1e-4
+    weight_decay = float(train_cfg.get("weight_decay", 1e-3)) # Increased to 1e-3
 
     if opt_name == "adam":
         opt = tf.keras.optimizers.AdamW(learning_rate=lr, weight_decay=weight_decay)
