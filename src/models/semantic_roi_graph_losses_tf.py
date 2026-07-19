@@ -143,19 +143,36 @@ def semantic_consistency_loss(
         pooled = semantic_states
 
     labels_flat = tf.reshape(labels, [-1])
-    unique_classes, _ = tf.unique(labels_flat)
-    losses = []
-    for cls in unique_classes.numpy():
-        mask = tf.equal(labels_flat, cls)
-        cls_states = tf.boolean_mask(pooled, mask)
-        if tf.shape(cls_states)[0] < 2:
-            continue
-        center = tf.reduce_mean(cls_states, axis=0, keepdims=True)
-        losses.append(tf.reduce_mean((cls_states - center) ** 2))
+    num_classes = tf.reduce_max(labels_flat) + 1
 
-    if not losses:
-        return tf.zeros(())
-    return tf.reduce_mean(losses)
+    # Class centers
+    class_sums = tf.math.unsorted_segment_sum(pooled, labels_flat, num_classes) # (C, D)
+    class_counts = tf.math.unsorted_segment_sum(tf.ones_like(pooled[..., :1]), labels_flat, num_classes) # (C, 1)
+    class_centers = class_sums / tf.maximum(class_counts, 1.0) # (C, D)
+
+    # Sample centers
+    sample_centers = tf.gather(class_centers, labels_flat) # (B, D)
+    sq_diff = (pooled - sample_centers) ** 2 # (B, D)
+
+    # Valid classes (count >= 2)
+    valid_classes = tf.squeeze(class_counts >= 2.0, axis=-1) # (C,)
+
+    # Compute variance per class
+    class_sq_diff_sum = tf.math.unsorted_segment_sum(
+        tf.reduce_mean(sq_diff, axis=-1), # Mean over feature dimension
+        labels_flat, 
+        num_classes
+    ) # (C,)
+    class_variances = class_sq_diff_sum / tf.maximum(tf.squeeze(class_counts, axis=-1), 1.0) # (C,)
+
+    # Select only valid classes
+    valid_variances = tf.boolean_mask(class_variances, valid_classes)
+
+    return tf.cond(
+        tf.size(valid_variances) > 0,
+        lambda: tf.reduce_mean(valid_variances),
+        lambda: tf.zeros(())
+    )
 
 
 def semantic_disentanglement_loss(
