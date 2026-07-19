@@ -268,7 +268,7 @@ class GATBlock(tf.keras.layers.Layer):
                 coords = np.arange(self.num_nodes, dtype=np.float32)[:, None]
             diff = coords[:, None, :] - coords[None, :, :]
             dist = np.sqrt((diff ** 2).sum(-1))
-            dist = dist / (dist.max() + 1e-6)
+            dist = dist / (dist.max() + 1e-4)
             self.locality_bias = tf.constant(-dist[None, None], dtype=tf.float32)
         else:
             self.locality_bias = None
@@ -286,8 +286,13 @@ class GATBlock(tf.keras.layers.Layer):
         k = split_heads(self.k_proj(x))
         v = split_heads(self.v_proj(x))
 
+        # Scale before einsum to prevent float16 overflow
+        scale = tf.cast(float(self.head_dim) ** -0.25, q.dtype)
+        scale = tf.cast(float(self.head_dim) ** -0.25, q.dtype)
+        q = q * scale
+        k = k * scale
         # Attention scores (B, H, N, N)
-        attn = tf.einsum("bhid,bhjd->bhij", q, k) / (float(self.head_dim) ** 0.5)
+        attn = tf.einsum("bhid,bhjd->bhij", q, k)
 
         if self.adj_bias is not None:
             attn = attn + self.adj_bias
@@ -296,7 +301,7 @@ class GATBlock(tf.keras.layers.Layer):
         if edge_prior is not None:
             if len(edge_prior.shape) == 2:
                 edge_prior = tf.expand_dims(edge_prior, 0)
-            attn = attn + tf.math.log(tf.maximum(edge_prior, 1e-6))[:, None]
+            attn = attn + tf.math.log(tf.maximum(edge_prior, 1e-4))[:, None]
         if attn_mask is not None:
             # attn_mask: True where should be masked
             attn = tf.where(attn_mask[:, None, None, :], tf.fill(tf.shape(attn), tf.cast(-1e9, attn.dtype)), attn)
@@ -322,7 +327,7 @@ class GatedPooling(tf.keras.layers.Layer):
     def call(self, x: tf.Tensor) -> tf.Tensor:
         weights = tf.sigmoid(self.gate(x))
         weighted = x * weights
-        return tf.reduce_sum(weighted, axis=1) / (tf.reduce_sum(weights, axis=1) + 1e-6)
+        return tf.reduce_sum(weighted, axis=1) / (tf.reduce_sum(weights, axis=1) + 1e-4)
 
 
 # ---------------------------------------------------------------------------
@@ -485,7 +490,7 @@ class SemanticInteractionBlock(tf.keras.layers.Layer):
 
         messages = self.edge_message(pair_input, training=training)
         interaction_tensor = tf.expand_dims(gates, -1) * messages
-        denom = tf.reduce_sum(gates, axis=2, keepdims=True) + 1e-6
+        denom = tf.reduce_sum(gates, axis=2, keepdims=True) + 1e-4
         interaction_summary = tf.reduce_sum(interaction_tensor, axis=2) / denom
         updated_states = self.norm(semantic_states + interaction_summary)
         return updated_states, interaction_tensor, gates
@@ -657,7 +662,7 @@ class SemanticHypergraphReasoner(tf.keras.layers.Layer):
         if region_mask is not None:
             routing_weights = routing_weights * region_mask
             routing_weights = routing_weights / (
-                tf.reduce_sum(routing_weights, axis=1, keepdims=True) + 1e-6
+                tf.reduce_sum(routing_weights, axis=1, keepdims=True) + 1e-4
             )
 
         pooled_state = tf.reduce_sum(
@@ -807,7 +812,7 @@ class SemanticProgramExecutor(tf.keras.layers.Layer):
 
         if routing_weights is not None:
             routing_entropy = -tf.reduce_sum(
-                tf.maximum(routing_weights, 1e-6) * tf.math.log(tf.maximum(routing_weights, 1e-6)),
+                tf.maximum(routing_weights, 1e-4) * tf.math.log(tf.maximum(routing_weights, 1e-4)),
                 axis=-1,
             )
         else:
