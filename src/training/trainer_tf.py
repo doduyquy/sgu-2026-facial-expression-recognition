@@ -86,6 +86,7 @@ class TrainerTF:
     # ------------------------------------------------------------------
 
     def _scn_loss(self, logits: tf.Tensor, labels: tf.Tensor, epoch_tensor: tf.Tensor):
+        logits = tf.cast(logits, tf.float32)
         labels = tf.cast(labels, tf.int32)
         ce = _spce(labels, logits)  # (B,)
 
@@ -159,7 +160,7 @@ class TrainerTF:
             model_inputs = images
 
         outputs = self.model(model_inputs, training=training)
-        logits = outputs["logits"]
+        logits = tf.cast(outputs["logits"], tf.float32)
 
         # Compute loss
         if loss_mode == "semantic_roi_graph":
