@@ -43,6 +43,8 @@ class TrainerTF:
         save_path: str = "best_model.weights.h5",
         strategy: tf.distribute.Strategy = None,
         class_weights: Optional[tf.Tensor] = None,
+        backbone_freeze_epochs: int = 10,
+        backbone_lr_scale: float = 0.1,
     ):
         self.strategy = strategy or tf.distribute.get_strategy()
         self.model = model
@@ -52,6 +54,9 @@ class TrainerTF:
         self.run_name = run_name
         self.save_path = save_path
         self.class_weights = class_weights
+        self.backbone_freeze_epochs = backbone_freeze_epochs
+        self.backbone_lr_scale = backbone_lr_scale
+        self._phase = 1  # 1 = head only, 2 = full model
 
         # Distribute datasets
         self.train_dataset = self.strategy.experimental_distribute_dataset(train_dataset)
@@ -367,6 +372,26 @@ class TrainerTF:
 
         for ep in range(self.epochs):
             progress = ep / max(self.epochs - 1, 1)
+
+            # ---------------------------------------------------------------
+            # Phase switching: unfreeze backbone after backbone_freeze_epochs
+            # After unfreeze, set LR to base_lr (same as backbone in PyTorch)
+            # ---------------------------------------------------------------
+            if self._phase == 1 and ep >= self.backbone_freeze_epochs:
+                self._phase = 2
+                base_lr = float(self.config.get("training", {}).get("lr", 3e-4))
+                # Unfreeze backbone
+                self.model.backbone.feature_extractor.trainable = True
+                for layer in self.model.backbone.feature_extractor.layers:
+                    layer.trainable = True
+                # Reset optimizer LR to base_lr for full model fine-tuning
+                self.optimizer.learning_rate.assign(base_lr)
+                # Re-build optimizer for newly unfrozen variables
+                try:
+                    self.optimizer.build(self.model.trainable_variables)
+                except Exception:
+                    pass
+                print(f"\n--> [Phase 2] Backbone UNFROZEN at epoch {ep+1}. LR reset to {base_lr:.6f}")
 
             # Phase scheduling
             if progress <= 0.7:

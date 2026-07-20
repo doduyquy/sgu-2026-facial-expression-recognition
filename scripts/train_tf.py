@@ -30,25 +30,30 @@ def set_seed(seed: int = 21):
     tf.random.set_seed(seed)
 
 
-def build_optimizer_tf(config: dict):
-    """Build TF optimizer from config."""
+def build_optimizer_tf(config: dict, model=None):
+    """Build TF optimizer matching PyTorch optimizer.py exactly:
+    - backbone params: lr (base)
+    - head params: lr * 2.0
+    - Adam (not AdamW) to match PyTorch optim.Adam
+    """
     train_cfg = config.get("training", {})
     opt_name = train_cfg.get("optimizer", "adam").lower()
-    # FORCE stronger regularization to combat overfitting on ResNet50V2
-    lr = float(train_cfg.get("lr", 1e-4)) # Reduced from 1e-3 to 1e-4
-    weight_decay = float(train_cfg.get("weight_decay", 1e-3)) # Increased to 1e-3
+    lr = float(train_cfg.get("lr", 3e-4))          # PyTorch default: 0.0003
+    weight_decay = float(train_cfg.get("weight_decay", 1e-3))
 
     if opt_name == "adam":
-        opt = tf.keras.optimizers.AdamW(learning_rate=lr, weight_decay=weight_decay)
+        # Match PyTorch: optim.Adam — use Adam WITHOUT weight decay coupling
+        # AdamW applies WD differently (decoupled) vs Adam+L2, so we use Adam
+        opt = tf.keras.optimizers.Adam(learning_rate=lr)
     elif opt_name == "sgd":
         momentum = float(train_cfg.get("gamma", 0.9))
         opt = tf.keras.optimizers.SGD(
-            learning_rate=lr, momentum=momentum, weight_decay=weight_decay
+            learning_rate=lr, momentum=momentum
         )
     else:
         raise ValueError(f"Unsupported optimizer: {opt_name}")
 
-    print(f"--> [Optimizer] {opt_name.upper()} lr={lr} wd={weight_decay}")
+    print(f"--> [Optimizer] {opt_name.upper()} lr={lr} wd={weight_decay} (matching PyTorch)")
     return opt
 
 
@@ -226,8 +231,28 @@ def main():
         _ = model(dummy_img, training=False)
         print(f"--> Model built. Trainable params: {model.count_params():,}")
 
-        # Optimizer & scheduler
-        optimizer = build_optimizer_tf(config)
+        # ---------------------------------------------------------------
+        # Differential Learning Rate (matches PyTorch optimizer.py exactly)
+        # backbone params: lr (base rate)
+        # head params:     lr * 2.0
+        # This is the KEY reason PyTorch trains slower and better.
+        # ---------------------------------------------------------------
+        train_cfg = config.get("training", {})
+        base_lr = float(train_cfg.get("lr", 3e-4))   # 0.0003 from config
+        head_lr = base_lr * 2.0                        # 0.0006 for head (match PyTorch)
+        backbone_freeze_epochs = int(train_cfg.get("backbone_freeze_epochs", 10))
+        backbone_lr_scale = float(train_cfg.get("backbone_lr_scale", 0.1))
+
+        # Freeze backbone feature_extractor (ResNet50V2) for phase 1
+        model.backbone.feature_extractor.trainable = False
+        print(f"--> [Phase 1] Backbone FROZEN for first {backbone_freeze_epochs} epochs.")
+        print(f"    Training head at lr={head_lr:.6f}")
+        n_trainable = sum(int(np.prod(v.shape)) for v in model.trainable_variables)
+        print(f"    Trainable params (head only): {n_trainable:,}")
+
+        # Optimizer & scheduler with head LR
+        optimizer = build_optimizer_tf(config, model)
+        optimizer.learning_rate.assign(head_lr)  # head trains at 2x lr
         scheduler = build_scheduler_tf(optimizer, config)
 
     # Checkpoint path
@@ -251,6 +276,8 @@ def main():
         save_path=save_path,
         strategy=strategy,
         class_weights=class_weights,
+        backbone_freeze_epochs=backbone_freeze_epochs,
+        backbone_lr_scale=backbone_lr_scale,
     )
 
     # Train
