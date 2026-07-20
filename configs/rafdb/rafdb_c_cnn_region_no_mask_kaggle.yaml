@@ -1,0 +1,14 @@
+_base_: "rafdb_mask_guided_c_kaggle.yaml"
+
+# RAF-DB no-mask ablation.
+# Same ConvNeXt C recipe, but mask_attention_alpha=0 disables the mask prior.
+
+data:
+  mask_ablation: "none"
+
+model:
+  mask_attention_alpha: 0.0
+  mask_ablation: "none"
+
+paths:
+  output_dir: "/kaggle/working/outputs/rafdb_c_cnn_region_no_mask_seed42_noclean_batch16"

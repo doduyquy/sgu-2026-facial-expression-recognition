@@ -1,0 +1,92 @@
+seed:
+  random_seed: 42
+
+device: cuda
+
+data:
+  name: "raf-db"
+  root: "/kaggle/input/datasets/shuvoalok/raf-db-dataset/DATASET"
+  mask_dir: "/kaggle/input/datasets/lhongphuc3/mask-rafdb/outputs/rafdb_mediapipe_region_masks"
+  num_classes: 7
+  channels: 3
+  image_size: 224
+  batch_size: 16
+  eval_batch_size: 64
+  num_workers: 2
+  val_fraction: 0.10
+  drop_last: false
+  normalize: true
+  mask_ablation: "none"
+
+model:
+  name: "convnext_tiny_mask_guided_region_attention"
+  arch: "convnext_tiny"
+  pretrained: true
+  weights: "DEFAULT"
+  checkpoint_path: null
+  checkpoint_strict: false
+
+  mask_dir: "/kaggle/input/datasets/lhongphuc3/mask-rafdb/outputs/rafdb_mediapipe_region_masks"
+  mask_guided_attention: true
+  mask_attention_alpha: 0.3
+  mask_floor: 0.05
+  mask_ablation: "none"
+
+  num_regions: 6
+  feature_layer: "layer4"
+  pool_visual_tokens: false
+  embed_dim: 512
+  num_heads: 4
+  num_encoder_layers: 2
+  transformer_dropout: 0.1
+  use_visual_pos_embed: true
+  use_region_slot_embed: true
+  use_global_visual_bias: true
+  use_global_feature_concat: false
+  region_pooling: "concat"
+  classifier_hidden_dim: 1024
+  classifier_dropout1: 0.35
+  classifier_dropout2: 0.25
+  ortho_loss_weight: 0.003
+
+  use_clip_dictionary: false
+  use_learnable_clip_region_tokens: false
+  use_source_classifier: false
+  use_cnn_aux_loss: true
+  use_cnn_aux_logits: true
+  cnn_aux_loss_weight: 0.4
+  cnn_aux_hidden_dim: 768
+  cnn_aux_dropout: 0.2
+  logit_fusion: "cnn_aux_sum"
+  finetune_logit_fusion: "cnn_aux_sum"
+  attention_logit_weight: 0.2
+  cnn_aux_logit_weight: 0.8
+
+  freeze_backbone_epochs: 4
+  unfreeze_backbone: true
+  unfreeze_backbone_scope: "all"
+  freeze_unfrozen_batchnorm: true
+
+training:
+  loss: "cross_entropy"
+  optimizer: "sam"
+  base_optimizer: "adamw"
+  sam_rho: 0.03
+  sam_adaptive: false
+  lr: 0.0002
+  finetune_lr: 0.00008
+  visual_extractor_lr: 0.000008
+  weight_decay: 0.02
+  scheduler: "cosine"
+  epochs: 70
+  patience: 15
+  monitor: "val_macro_f1"
+  label_smoothing: 0.05
+  grad_clip_norm: 1.0
+  skip_nonfinite_batches: true
+
+paths:
+  output_dir: "/kaggle/working/outputs/rafdb_mask_guided_c_cnn_region_logits_080_020_seed42_noclean_batch16"
+
+logging:
+  use_wandb: false

@@ -1,0 +1,9 @@
+_base_: "rafdb_mask_guided_c_kaggle.yaml"
+
+# RAF-DB mask-guided ConvNeXt C with AdamW optimizer directly (no SAM).
+
+training:
+  optimizer: "adamw"
+
+paths:
+  output_dir: "/kaggle/working/outputs/rafdb_mask_guided_c_cnn_region_logits_080_020_seed42_noclean_batch16_adamw"
