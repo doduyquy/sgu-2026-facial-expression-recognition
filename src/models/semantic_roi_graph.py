@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision
 from torchvision.ops import roi_align
+import timm
 
 
 # Loss helpers moved to src/models/semantic_roi_graph_losses.py
@@ -40,6 +41,7 @@ DEFAULT_SEMANTIC_REGIONS = (
 @dataclass
 class SemanticRoiGraphConfig:
     name: str = "semantic_roi_graph_fer"
+    backbone_type: str = "resnet50"
     num_classes: int = 7
     num_regions: int = 9
     roi_grid: int = 4
@@ -70,7 +72,7 @@ class SemanticRoiGraphConfig:
     programs_per_class: int = 4
 
 
-class SemanticBackbone(nn.Module):
+class ResNet50Backbone(nn.Module):
     """ResNet50 backbone with projection for high spatial resolution Graph input."""
 
     def __init__(self, feature_dim: int = 256, use_pretrained: bool = True):
@@ -100,8 +102,54 @@ class SemanticBackbone(nn.Module):
         del resnet.layer4
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.shape[1] == 1:
+            x = x.repeat(1, 3, 1, 1)
         x = self.stem(x)
         x = self.output_layer(x)
+        return self.proj(x)
+
+
+class HRNetBackbone(nn.Module):
+    """HRNet-W18 backbone with multi-resolution fusion and spatial resolution preservation."""
+
+    def __init__(self, feature_dim: int = 256, use_pretrained: bool = True):
+        super().__init__()
+        # Use timm to create hrnet_w18 returning features from all stages
+        self.hrnet = timm.create_model('hrnet_w18', pretrained=use_pretrained, features_only=True)
+        
+        # Modify stem to preserve resolution (48x48 -> 48x48 instead of downsampling)
+        if hasattr(self.hrnet, 'conv1'):
+            self.hrnet.conv1.stride = (1, 1)
+            
+        # Dynamically calculate the concatenated channel size
+        with torch.no_grad():
+            dummy = torch.zeros(1, 3, 48, 48)
+            feats = self.hrnet(dummy)
+            total_channels = sum([f.shape[1] for f in feats])
+            
+        self.proj = nn.Sequential(
+            nn.Conv2d(total_channels, feature_dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(feature_dim),
+            nn.GELU()
+        )
+        self.out_channels = feature_dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Fallback for 1-channel grayscale images
+        if x.shape[1] == 1:
+            x = x.repeat(1, 3, 1, 1)
+            
+        feats = self.hrnet(x)
+        # Fuse multi-resolution features by resizing all to 12x12
+        target_size = (12, 12)
+        fused = []
+        for f in feats:
+            if f.shape[2:] != target_size:
+                f = F.interpolate(f, size=target_size, mode='bilinear', align_corners=False)
+            fused.append(f)
+            
+        # Concatenate all features
+        x = torch.cat(fused, dim=1)
         return self.proj(x)
 
 
@@ -756,10 +804,16 @@ class SemanticROIGraphFER(nn.Module):
         super().__init__()
         self.config = config
 
-        self.backbone = SemanticBackbone(
-            feature_dim=config.feature_dim,
-            use_pretrained=config.use_pretrained,
-        )
+        if getattr(config, "backbone_type", "resnet50") == "hrnet_w18":
+            self.backbone = HRNetBackbone(
+                feature_dim=config.feature_dim,
+                use_pretrained=config.use_pretrained,
+            )
+        else:
+            self.backbone = ResNet50Backbone(
+                feature_dim=config.feature_dim,
+                use_pretrained=config.use_pretrained,
+            )
         self.roi_align = SemanticRoiAlign(
             roi_grid=config.roi_grid,
             bbox_input_size=config.bbox_input_size,

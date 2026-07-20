@@ -1,6 +1,9 @@
 # Deep Learning Framework
 tensorflow>=2.13.0
 keras>=2.13.0
+torch
+torchvision
+timm>=0.9.0
 
 # Data Processing
 numpy
