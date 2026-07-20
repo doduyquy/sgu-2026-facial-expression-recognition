@@ -1,14 +1,8 @@
 """
-semantic_roi_graph_tf.py — TensorFlow/Keras port của SemanticROIGraphFER.
+semantic_roi_graph_tf.py — TensorFlow/Keras port of semantic_roi_graph.py (PyTorch).
 
-Các thay đổi chính so với bản PyTorch:
-- Tensor format: NHWC thay vì NCHW
-- roi_align -> tf.image.crop_and_resize (boxes format: [y1,x1,y2,x2] normalized [0,1])
-- nn.Module -> tf.keras.Model / tf.keras.layers.Layer
-- nn.Parameter -> tf.Variable (non-trainable weights) hoặc self.add_weight
-- nn.Linear -> tf.keras.layers.Dense
-- nn.MultiheadAttention -> tf.keras.layers.MultiHeadAttention
-- ResNet50 backbone: tf.keras.applications.ResNet50V2 (lấy intermediate layer)
+Translated directly from the PyTorch source, class by class, function by function.
+NHWC format is used throughout (TF standard), converted from NCHW where needed.
 """
 
 from __future__ import annotations
@@ -18,6 +12,39 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import tensorflow as tf
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def safe_softmax(x: tf.Tensor, axis: int = -1) -> tf.Tensor:
+    """Numerically stable softmax — mirrors PyTorch safe_softmax."""
+    x_max = tf.reduce_max(x, axis=axis, keepdims=True)
+    x_shifted = x - x_max
+    # Replace any all-inf / all-nan slices with zeros
+    all_invalid = tf.reduce_all(tf.math.is_inf(x_shifted), axis=axis, keepdims=True)
+    x_shifted = tf.where(all_invalid, tf.zeros_like(x_shifted), x_shifted)
+    return tf.nn.softmax(x_shifted, axis=axis)
+
+
+DEFAULT_SEMANTIC_REGIONS = (
+    "forehead", "left_eyebrow", "right_eyebrow", "glabella",
+    "left_eye", "right_eye", "nose", "left_mouth_corner", "right_mouth_corner",
+)
+
+# Canonical bounding boxes (pixel coords in 48x48 space) — same as PyTorch
+_CANONICAL_BOXES_48 = np.array([
+    [ 8,  0, 40, 10],   # forehead
+    [ 5,  8, 18, 18],   # left_eyebrow
+    [30,  8, 43, 18],   # right_eyebrow
+    [18, 12, 30, 22],   # glabella
+    [ 6, 16, 20, 30],   # left_eye
+    [28, 16, 42, 30],   # right_eye
+    [14, 20, 34, 38],   # nose
+    [ 8, 30, 22, 43],   # left_mouth_corner
+    [26, 30, 40, 43],   # right_mouth_corner
+], dtype=np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -31,7 +58,6 @@ class SemanticRoiGraphConfig:
     num_regions: int = 9
     roi_grid: int = 4
     feature_dim: int = 256
-    motif_per_class: int = 4
     micro_motifs_per_region: int = 8
     macro_motifs_per_class: int = 4
     cross_region_compositions: int = 8
@@ -49,321 +75,316 @@ class SemanticRoiGraphConfig:
     dropout: float = 0.1
     label_smoothing: float = 0.0
     relation_temperature: float = 0.07
-    region_confidence_threshold: float = 0.3
     fusion_scale: float = 0.25
     region_dropout_prob: float = 0.0
     program_dim: int = 128
     programs_per_class: int = 4
 
 
-DEFAULT_SEMANTIC_REGIONS = (
-    "forehead",
-    "left_eyebrow",
-    "right_eyebrow",
-    "glabella",
-    "left_eye",
-    "right_eye",
-    "nose",
-    "left_mouth_corner",
-    "right_mouth_corner",
-)
-
-
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def safe_softmax(x: tf.Tensor, axis: int = -1) -> tf.Tensor:
-    """Numerically stable softmax that handles fully masked (all -inf) rows."""
-    x_max = tf.reduce_max(x, axis=axis, keepdims=True)
-    x_shifted = x - x_max
-    all_invalid = tf.reduce_all(tf.math.is_inf(x_shifted) | tf.math.is_nan(x_shifted), axis=axis, keepdims=True)
-    x_shifted = tf.where(all_invalid, tf.zeros_like(x_shifted), x_shifted)
-    return tf.nn.softmax(x_shifted, axis=axis)
-
-
-def _canonical_region_boxes_tf(bbox_input_size: int) -> tf.Tensor:
-    """Canonical 9-region bounding boxes for 48x48 images. Returns [9, 4] (x1,y1,x2,y2)."""
-    boxes = tf.constant([
-        [8,  0, 40, 10],   # forehead
-        [5,  8, 18, 18],   # left_eyebrow
-        [30, 8, 43, 18],   # right_eyebrow
-        [18, 12, 30, 22],  # glabella
-        [6,  16, 20, 30],  # left_eye
-        [28, 16, 42, 30],  # right_eye
-        [14, 20, 34, 38],  # nose
-        [8,  30, 22, 43],  # left_mouth_corner
-        [26, 30, 40, 43],  # right_mouth_corner
-    ], dtype=tf.float32)
-    scale = float(bbox_input_size) / 48.0
-    return boxes * scale
-
-
-# ---------------------------------------------------------------------------
-# Backbone
+# SemanticBackbone — mirrors PyTorch exactly
+# (stem + layer1 + layer2 + layer3 of ResNet50, conv1.stride=(1,1), maxpool=Identity)
 # ---------------------------------------------------------------------------
 
 class SemanticBackbone(tf.keras.layers.Layer):
-    """ResNet50V2 backbone (NHWC), outputs (B, H/4, W/4, feature_dim)."""
+    """ResNet50 backbone with high-resolution features.
+
+    PyTorch equivalent:
+        resnet.conv1.stride = (1,1)
+        resnet.maxpool = nn.Identity()
+        uses stem + layer1 + layer2 + layer3
+        projects 1024ch -> feature_dim
+    """
 
     def __init__(self, feature_dim: int = 256, use_pretrained: bool = True, **kwargs):
         super().__init__(**kwargs)
         weights = "imagenet" if use_pretrained else None
-        # Build full ResNet50V2 in NHWC format
+
+        # Build ResNet50V2 (closest Keras equivalent to torchvision ResNet50)
         base = tf.keras.applications.ResNet50V2(
             include_top=False,
             weights=weights,
             input_shape=(48, 48, 3),
         )
-        
-        # Slice the base model first to prevent KeyError on cloned nodes
+
+        # Slice to conv4_block6_out (=layer3 end in PyTorch, 1024 channels)
         base_sliced = tf.keras.Model(
             inputs=base.input,
             outputs=base.get_layer("conv4_block6_out").output,
         )
-        
-        # Remove early downsampling to match PyTorch SemanticBackbone exactly.
+
+        # Remove early downsampling: conv1 stride -> (1,1), maxpool -> identity
         def clone_fn(layer):
-            if layer.name == 'conv1_conv':
+            if layer.name == "conv1_conv":
                 cfg = layer.get_config()
-                cfg['strides'] = (1, 1)
+                cfg["strides"] = (1, 1)
                 return tf.keras.layers.Conv2D.from_config(cfg)
-            if layer.name == 'pool1_pad':
+            if layer.name == "pool1_pad":
                 cfg = layer.get_config()
-                cfg['padding'] = ((0, 0), (0, 0))
+                cfg["padding"] = ((0, 0), (0, 0))
                 return tf.keras.layers.ZeroPadding2D.from_config(cfg)
-            if layer.name == 'pool1_pool':
+            if layer.name == "pool1_pool":
                 cfg = layer.get_config()
-                cfg['strides'] = (1, 1)
-                cfg['pool_size'] = (1, 1)
-                cfg['padding'] = 'same'
+                cfg["strides"] = (1, 1)
+                cfg["pool_size"] = (1, 1)
+                cfg["padding"] = "same"
                 return tf.keras.layers.MaxPooling2D.from_config(cfg)
             return layer
-            
-        self.feature_extractor = tf.keras.models.clone_model(base_sliced, clone_function=clone_fn)
+
+        self.feature_extractor = tf.keras.models.clone_model(
+            base_sliced, clone_function=clone_fn
+        )
         if weights is not None:
             self.feature_extractor.set_weights(base_sliced.get_weights())
-            
-        # Ensure all layers are trainable, especially BatchNormalization layers
-        # which might get frozen when cloned.
+
+        # Ensure all layers trainable (clone_model can freeze BN layers)
         for layer in self.feature_extractor.layers:
             layer.trainable = True
-        
-        # conv4_block6_out has 1024 channels in ResNet50V2
+
+        # Projection: 1024 -> feature_dim  (mirrors PyTorch proj)
         self.proj = tf.keras.Sequential([
             tf.keras.layers.Conv2D(feature_dim, kernel_size=1, use_bias=False),
             tf.keras.layers.BatchNormalization(),
             tf.keras.layers.Activation("gelu"),
-            tf.keras.layers.SpatialDropout2D(0.2),  # Added dropout to combat overfitting
+            tf.keras.layers.SpatialDropout2D(0.1),
         ])
         self.out_channels = feature_dim
 
     def call(self, x: tf.Tensor, training: bool = False) -> tf.Tensor:
-        # x: (B, H, W, C) NHWC — ensure 3 channels
+        # x: (B, H, W, 1) or (B, H, W, 3) NHWC
         if x.shape[-1] == 1:
             x = tf.repeat(x, 3, axis=-1)
-        x = self.feature_extractor(x, training=training)
-        return self.proj(x, training=training)
+        x = tf.cast(x, tf.float32)
+        x = self.feature_extractor(x, training=training)  # (B, H', W', 1024)
+        return self.proj(x, training=training)              # (B, H', W', feature_dim)
 
 
 # ---------------------------------------------------------------------------
-# ROI Align (using tf.image.crop_and_resize)
+# SemanticRoiAlign — mirrors PyTorch roi_align behavior
 # ---------------------------------------------------------------------------
 
 class SemanticRoiAlign(tf.keras.layers.Layer):
-    """ROI Align equivalent using tf.image.crop_and_resize.
+    """ROIAlign via tf.image.crop_and_resize (mirrors PyTorch roi_align)."""
 
-    Input bboxes format: (B, R, 4) in pixel coords [x1, y1, x2, y2]
-    tf.image.crop_and_resize expects boxes [y1, x1, y2, x2] normalized [0, 1].
-    """
-
-    def __init__(self, roi_grid: int = 4, bbox_input_size: int = 48,
-                 feature_out_size: int = 12, **kwargs):
+    def __init__(
+        self,
+        roi_grid: int = 4,
+        bbox_input_size: int = 48,
+        feature_out_size: int = 12,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self.roi_grid = int(roi_grid)
         self.bbox_input_size = int(bbox_input_size)
         self.feature_out_size = int(feature_out_size)
 
     def _canonical_boxes(self, batch_size: int) -> tf.Tensor:
-        boxes = _canonical_region_boxes_tf(self.bbox_input_size)  # [9, 4]
-        return tf.tile(tf.expand_dims(boxes, 0), [batch_size, 1, 1])
+        """Return canonical 9-region boxes for a batch, in [0,1] normalized coords."""
+        boxes = _CANONICAL_BOXES_48.copy() * (float(self.bbox_input_size) / 48.0)
+        # normalize to [0, 1]
+        s = float(self.bbox_input_size - 1)
+        boxes_norm = boxes / s  # (9, 4) [x1,y1,x2,y2] -> [0,1]
+        # crop_and_resize expects [y1,x1,y2,x2]
+        boxes_yx = np.stack([boxes_norm[:, 1], boxes_norm[:, 0],
+                              boxes_norm[:, 3], boxes_norm[:, 2]], axis=-1)
+        return tf.constant(np.tile(boxes_yx[np.newaxis], [batch_size, 1, 1]),
+                           dtype=tf.float32)  # (B, 9, 4)
 
-    def validate_bboxes(self, bboxes: tf.Tensor) -> tf.Tensor:
-        """Clamp and repair invalid bboxes. Returns (B, R, 4)."""
+    def _validate_bboxes(self, bboxes: tf.Tensor) -> tf.Tensor:
+        """Clamp and repair bboxes — mirrors PyTorch validate_bboxes."""
         bboxes = tf.cast(bboxes, tf.float32)
-        bsize = float(self.bbox_input_size - 1)
+        size = float(self.bbox_input_size - 1)
 
-        x1 = tf.clip_by_value(bboxes[..., 0], 0.0, bsize)
-        y1 = tf.clip_by_value(bboxes[..., 1], 0.0, bsize)
-        x2 = tf.clip_by_value(bboxes[..., 2], 0.0, bsize)
-        y2 = tf.clip_by_value(bboxes[..., 3], 0.0, bsize)
+        x1 = tf.clip_by_value(bboxes[..., 0], 0.0, size)
+        y1 = tf.clip_by_value(bboxes[..., 1], 0.0, size)
+        x2 = tf.clip_by_value(bboxes[..., 2], 0.0, size)
+        y2 = tf.clip_by_value(bboxes[..., 3], 0.0, size)
 
-        x1_n = tf.minimum(x1, x2)
-        y1_n = tf.minimum(y1, y2)
-        x2_n = tf.maximum(x1, x2)
-        y2_n = tf.maximum(y1, y2)
+        # Ensure x2 > x1, y2 > y1 by at least 2 px
+        x1_f = tf.minimum(x1, x2)
+        x2_f = tf.maximum(x1, x2)
+        y1_f = tf.minimum(y1, y2)
+        y2_f = tf.maximum(y1, y2)
+        x2_f = tf.maximum(x2_f, x1_f + 2.0)
+        y2_f = tf.maximum(y2_f, y1_f + 2.0)
+        x2_f = tf.minimum(x2_f, size)
+        y2_f = tf.minimum(y2_f, size)
 
-        x2_n = tf.maximum(x2_n, x1_n + 2.0)
-        y2_n = tf.maximum(y2_n, y1_n + 2.0)
-        x2_n = tf.minimum(x2_n, bsize)
-        y2_n = tf.minimum(y2_n, bsize)
-
-        return tf.stack([x1_n, y1_n, x2_n, y2_n], axis=-1)
+        return tf.stack([x1_f, y1_f, x2_f, y2_f], axis=-1)
 
     def call(self, feature_map: tf.Tensor, bboxes: tf.Tensor) -> tf.Tensor:
         """
         feature_map: (B, H, W, C) NHWC
-        bboxes: (B, R, 4) pixel coords [x1, y1, x2, y2]
-        Returns: (B, R, roi_grid*roi_grid, C)
+        bboxes: (B, R, 4) in pixel coords [x1,y1,x2,y2]
+        returns: (B, R, G*G, C)
         """
         b = tf.shape(feature_map)[0]
-        h = tf.cast(tf.shape(feature_map)[1], tf.float32)
-        w = tf.cast(tf.shape(feature_map)[2], tf.float32)
-        r = tf.shape(bboxes)[1]
-        c = feature_map.shape[-1]
+        b_static = feature_map.shape[0]
+        num_regions = bboxes.shape[1] or tf.shape(bboxes)[1]
 
-        bboxes = self.validate_bboxes(bboxes)
+        bboxes = self._validate_bboxes(bboxes)
 
-        # Normalize to [0,1] and convert [x1,y1,x2,y2] -> [y1,x1,y2,x2]
-        norm_scale = tf.cast(self.bbox_input_size, tf.float32)
-        x1 = bboxes[..., 0] / norm_scale
-        y1 = bboxes[..., 1] / norm_scale
-        x2 = bboxes[..., 2] / norm_scale
-        y2 = bboxes[..., 3] / norm_scale
-        # boxes for crop_and_resize: [y1, x1, y2, x2]
-        boxes_norm = tf.stack([y1, x1, y2, x2], axis=-1)  # (B, R, 4)
+        # Normalize to [0,1] for crop_and_resize
+        s = float(self.bbox_input_size - 1)
+        x1 = bboxes[..., 0] / s
+        y1 = bboxes[..., 1] / s
+        x2 = bboxes[..., 2] / s
+        y2 = bboxes[..., 3] / s
+        # crop_and_resize wants [y1, x1, y2, x2]
+        boxes_yx = tf.stack([y1, x1, y2, x2], axis=-1)  # (B, R, 4)
 
-        # Flatten for crop_and_resize: boxes=(B*R, 4), box_ind=(B*R,)
-        boxes_flat = tf.reshape(boxes_norm, [-1, 4])
-        box_ind = tf.repeat(tf.range(b), r)
+        # Flatten to (B*R, 4) + box_ind (B*R,)
+        boxes_flat = tf.reshape(boxes_yx, [-1, 4])  # (B*R, 4)
+        batch_range = tf.range(b)
+        box_ind = tf.repeat(batch_range, num_regions)  # (B*R,)
 
-        # Crop and resize
+        # Crop and resize: (B*R, G, G, C)
         crops = tf.image.crop_and_resize(
             feature_map,
             boxes_flat,
             box_ind,
-            crop_size=(self.roi_grid, self.roi_grid),
+            crop_size=[self.roi_grid, self.roi_grid],
             method="bilinear",
-        )  # (B*R, roi_grid, roi_grid, C)
-
-        # Reshape to (B, R, roi_grid*roi_grid, C)
-        crops = tf.reshape(crops, [b, r, self.roi_grid * self.roi_grid, -1])
+        )
+        C = feature_map.shape[-1]
+        # Reshape to (B, R, G*G, C)
+        crops = tf.reshape(crops, [b, num_regions, self.roi_grid * self.roi_grid, C])
         return crops
 
 
 # ---------------------------------------------------------------------------
-# Graph Attention Block
+# GATBlock — mirrors PyTorch GATBlock
 # ---------------------------------------------------------------------------
 
 class GATBlock(tf.keras.layers.Layer):
-    """Multi-head graph attention with learnable adjacency bias."""
+    """Multi-head graph attention — direct translation of PyTorch GATBlock."""
 
-    def __init__(self, dim: int, heads: int = 4, dropout: float = 0.1,
-                 num_nodes: Optional[int] = None, use_locality: bool = False, **kwargs):
+    def __init__(
+        self,
+        dim: int,
+        heads: int = 4,
+        dropout: float = 0.1,
+        num_nodes: Optional[int] = None,
+        use_locality: bool = False,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
-        if dim % heads != 0:
-            raise ValueError("dim must be divisible by heads")
+        assert dim % heads == 0, "dim must be divisible by heads"
         self.dim = dim
         self.heads = heads
         self.head_dim = dim // heads
-        self.dropout_rate = dropout
+        self.num_nodes = num_nodes
+
         self.q_proj = tf.keras.layers.Dense(dim)
         self.k_proj = tf.keras.layers.Dense(dim)
         self.v_proj = tf.keras.layers.Dense(dim)
         self.out_proj = tf.keras.layers.Dense(dim)
-        self.dropout_layer = tf.keras.layers.Dropout(dropout)
-        self.num_nodes = num_nodes
-        self.use_locality = use_locality
+        self.attn_drop = tf.keras.layers.Dropout(dropout)
 
-    def build(self, input_shape):
-        if self.num_nodes is not None:
+        # Learnable adjacency bias
+        self.adj_bias = None
+        if num_nodes is not None:
             self.adj_bias = self.add_weight(
                 name="adj_bias",
-                shape=(1, 1, self.num_nodes, self.num_nodes),
-                initializer=tf.initializers.RandomNormal(stddev=0.01),
+                shape=(1, 1, num_nodes, num_nodes),
+                initializer=tf.keras.initializers.RandomNormal(stddev=0.01),
                 trainable=True,
             )
-        else:
-            self.adj_bias = None
 
-        if self.use_locality and self.num_nodes is not None:
-            side = int(self.num_nodes ** 0.5)
-            if side * side == self.num_nodes:
+        # Locality bias (fixed)
+        self.locality_bias_val = None
+        if use_locality and num_nodes is not None:
+            side = int(num_nodes ** 0.5)
+            if side * side == num_nodes:
                 coords_1d = np.arange(side, dtype=np.float32)
                 gy, gx = np.meshgrid(coords_1d, coords_1d, indexing="ij")
-                coords = np.stack([gy.flatten(), gx.flatten()], axis=-1)
+                coords = np.stack([gy.ravel(), gx.ravel()], axis=-1)
             else:
-                coords = np.arange(self.num_nodes, dtype=np.float32)[:, None]
-            diff = coords[:, None, :] - coords[None, :, :]
-            dist = np.sqrt((diff ** 2).sum(-1))
-            dist = dist / (dist.max() + 1e-4)
-            self.locality_bias = tf.constant(-dist[None, None], dtype=tf.float32)
-        else:
-            self.locality_bias = None
-        super().build(input_shape)
+                coords = np.arange(num_nodes, dtype=np.float32)[:, None]
+            dist = np.linalg.norm(coords[:, None] - coords[None], axis=-1)
+            dist = dist / max(dist.max(), 1e-6)
+            self.locality_bias_val = tf.constant(
+                -dist[np.newaxis, np.newaxis], dtype=tf.float32
+            )  # (1,1,N,N)
 
-    def call(self, x: tf.Tensor, edge_prior=None, attn_mask=None, training: bool = False) -> tf.Tensor:
+    def call(self, x: tf.Tensor, training: bool = False,
+             edge_prior: Optional[tf.Tensor] = None,
+             attn_mask: Optional[tf.Tensor] = None) -> tf.Tensor:
+        # x: (B, N, D)
         b = tf.shape(x)[0]
         n = tf.shape(x)[1]
 
-        def split_heads(t):
-            t = tf.reshape(t, [b, n, self.heads, self.head_dim])
-            return tf.transpose(t, [0, 2, 1, 3])  # (B, H, N, D)
+        def _proj_heads(proj, inp):
+            out = proj(inp)  # (B,N,D)
+            out = tf.reshape(out, [b, n, self.heads, self.head_dim])
+            return tf.transpose(out, [0, 2, 1, 3])  # (B,H,N,head_dim)
 
-        orig_dtype = x.dtype
-        q = tf.cast(split_heads(self.q_proj(x)), tf.float32)
-        k = tf.cast(split_heads(self.k_proj(x)), tf.float32)
-        v = tf.cast(split_heads(self.v_proj(x)), tf.float32)
+        q = _proj_heads(self.q_proj, x)
+        k = _proj_heads(self.k_proj, x)
+        v = _proj_heads(self.v_proj, x)
 
-        # Attention scores (B, H, N, N)
-        attn = tf.einsum("bhid,bhjd->bhij", q, k) / (float(self.head_dim) ** 0.5)
+        # Attention scores: (B,H,N,N)
+        scale = float(self.head_dim) ** -0.5
+        attn = tf.einsum("bhid,bhjd->bhij", q, k) * scale
 
         if self.adj_bias is not None:
-            attn = attn + tf.cast(self.adj_bias, tf.float32)
-        if self.locality_bias is not None:
-            attn = attn + tf.cast(self.locality_bias, tf.float32)
+            attn = attn + self.adj_bias
+        if self.locality_bias_val is not None:
+            attn = attn + tf.cast(self.locality_bias_val, attn.dtype)
         if edge_prior is not None:
-            if len(edge_prior.shape) == 2:
-                edge_prior = tf.expand_dims(edge_prior, 0)
-            attn = attn + tf.math.log(tf.maximum(tf.cast(edge_prior, tf.float32), 1e-6))[:, None]
+            edge_prior = tf.cast(tf.maximum(edge_prior, 1e-6), attn.dtype)
+            log_ep = tf.math.log(edge_prior)
+            if len(log_ep.shape) == 2:
+                log_ep = log_ep[tf.newaxis, tf.newaxis]
+            elif len(log_ep.shape) == 3:
+                log_ep = log_ep[:, tf.newaxis]
+            attn = attn + log_ep
         if attn_mask is not None:
-            # attn_mask: True where should be masked
-            attn = tf.where(attn_mask[:, None, None, :], tf.fill(tf.shape(attn), tf.cast(-1e4, tf.float32)), attn)
+            attn_mask = tf.cast(attn_mask, attn.dtype)
+            if len(attn_mask.shape) == 2:
+                attn_mask = attn_mask[:, tf.newaxis, tf.newaxis, :]
+            elif len(attn_mask.shape) == 3:
+                attn_mask = attn_mask[:, tf.newaxis, :, :]
+            attn = attn + (1.0 - attn_mask) * (-1e9)
 
         attn = safe_softmax(attn, axis=-1)
-        attn = self.dropout_layer(attn, training=training)
-        attn = tf.cast(attn, tf.float32)  # dropout may cast back to float16
+        attn = self.attn_drop(attn, training=training)
 
+        # (B,H,N,N) x (B,H,N,head_dim) -> (B,H,N,head_dim)
         out = tf.einsum("bhij,bhjd->bhid", attn, v)
-        out = tf.cast(out, orig_dtype)
-        out = tf.transpose(out, [0, 2, 1, 3])  # (B, N, H, D)
-        out = tf.reshape(out, [b, n, self.dim])
+        out = tf.transpose(out, [0, 2, 1, 3])        # (B,N,H,head_dim)
+        out = tf.reshape(out, [b, n, self.dim])       # (B,N,D)
         return self.out_proj(out)
 
 
 # ---------------------------------------------------------------------------
-# Gated Pooling
+# GatedPooling — mirrors PyTorch GatedPooling
 # ---------------------------------------------------------------------------
 
 class GatedPooling(tf.keras.layers.Layer):
+    """Attention-based gated pooling."""
+
     def __init__(self, dim: int, **kwargs):
         super().__init__(**kwargs)
         self.gate = tf.keras.layers.Dense(1)
 
-    def call(self, x: tf.Tensor) -> tf.Tensor:
-        weights = tf.sigmoid(tf.cast(self.gate(x), tf.float32))
-        weighted = tf.cast(x, tf.float32) * weights
-        pooled = tf.reduce_sum(weighted, axis=1) / (tf.reduce_sum(weights, axis=1) + 1e-4)
-        return tf.cast(pooled, x.dtype)
+    def call(self, x: tf.Tensor, training: bool = False) -> tf.Tensor:
+        # x: (B, N, D)
+        weights = tf.nn.sigmoid(self.gate(x))        # (B,N,1)
+        weighted = x * weights
+        pooled = tf.reduce_sum(weighted, axis=1) / (tf.reduce_sum(weights, axis=1) + 1e-6)
+        return pooled
 
 
 # ---------------------------------------------------------------------------
-# Micro Graph Reasoner
+# MicroGraphReasoner — mirrors PyTorch MicroGraphReasoner
 # ---------------------------------------------------------------------------
 
 class MicroGraphReasoner(tf.keras.layers.Layer):
-    def __init__(self, dim: int, num_nodes: int, layers: int = 2, heads: int = 4,
-                 dropout: float = 0.1, **kwargs):
+    """Intra-region reasoning with GAT — direct translation."""
+
+    def __init__(self, dim: int, num_nodes: int, layers: int = 2,
+                 heads: int = 4, dropout: float = 0.1, **kwargs):
         super().__init__(**kwargs)
         self.gat_layers = [
             GATBlock(dim, heads=heads, dropout=dropout, num_nodes=num_nodes)
@@ -372,28 +393,30 @@ class MicroGraphReasoner(tf.keras.layers.Layer):
         self.norms = [tf.keras.layers.LayerNormalization() for _ in range(layers)]
         self.pool = GatedPooling(dim)
 
-    def call(self, x: tf.Tensor, training: bool = False):
+    def call(self, x: tf.Tensor, training: bool = False) -> Tuple[tf.Tensor, tf.Tensor]:
         # x: (B, R, N, D)
         b = tf.shape(x)[0]
-        r = tf.shape(x)[1]
-        n = tf.shape(x)[2]
-        d = x.shape[-1]
+        r = x.shape[1]
+        n = x.shape[2]
+        d = x.shape[3]
+        x_flat = tf.reshape(x, [b * r, n, d])  # (B*R, N, D)
 
-        x_flat = tf.reshape(x, [b * r, n, d])
         for layer, norm in zip(self.gat_layers, self.norms):
             x_flat = x_flat + layer(norm(x_flat), training=training)
 
-        pooled = self.pool(x_flat)  # (B*R, D)
-        pooled = tf.reshape(pooled, [b, r, d])
-        x_out = tf.reshape(x_flat, [b, r, n, d])
+        pooled = self.pool(x_flat, training=training)  # (B*R, D)
+        pooled = tf.reshape(pooled, [b, r, d])          # (B, R, D)
+        x_out = tf.reshape(x_flat, [b, r, n, d])        # (B, R, N, D)
         return x_out, pooled
 
 
 # ---------------------------------------------------------------------------
-# Semantic State Encoder
+# SemanticStateEncoder — mirrors PyTorch SemanticStateEncoder
 # ---------------------------------------------------------------------------
 
 class SemanticStateEncoder(tf.keras.layers.Layer):
+    """Project region embeddings -> semantic state space."""
+
     def __init__(self, input_dim: int, state_dim: int,
                  hidden_dim: Optional[int] = None, dropout: float = 0.1, **kwargs):
         super().__init__(**kwargs)
@@ -404,23 +427,25 @@ class SemanticStateEncoder(tf.keras.layers.Layer):
             tf.keras.layers.Dropout(dropout),
             tf.keras.layers.Dense(state_dim),
         ])
-        self.gate_net = tf.keras.Sequential([
+        self.gate = tf.keras.Sequential([
             tf.keras.layers.Dense(state_dim),
             tf.keras.layers.Activation("sigmoid"),
         ])
         self.norm = tf.keras.layers.LayerNormalization()
 
-    def call(self, x: tf.Tensor, training: bool = False) -> tf.Tensor:
-        raw_state = self.proj(x, training=training)
-        gate = self.gate_net(x)
+    def call(self, region_embeddings: tf.Tensor, training: bool = False) -> tf.Tensor:
+        raw_state = self.proj(region_embeddings, training=training)
+        gate = self.gate(region_embeddings, training=training)
         return self.norm(raw_state * gate)
 
 
 # ---------------------------------------------------------------------------
-# Micro Semantic Motif Bank & Matcher
+# MicroSemanticMotifBank — mirrors PyTorch MicroSemanticMotifBank
 # ---------------------------------------------------------------------------
 
 class MicroSemanticMotifBank(tf.keras.layers.Layer):
+    """Learnable local semantic motifs."""
+
     def __init__(self, num_regions: int, motifs_per_region: int, state_dim: int, **kwargs):
         super().__init__(**kwargs)
         self.num_regions = num_regions
@@ -431,18 +456,24 @@ class MicroSemanticMotifBank(tf.keras.layers.Layer):
         self.motifs = self.add_weight(
             name="motifs",
             shape=(self.num_regions, self.motifs_per_region, self.state_dim),
-            initializer=tf.initializers.RandomNormal(stddev=0.02),
+            initializer=tf.keras.initializers.RandomNormal(stddev=0.02),
             trainable=True,
         )
         super().build(input_shape)
 
-    def call(self, inputs=None) -> tf.Tensor:
+    def call(self, inputs=None, training: bool = False) -> tf.Tensor:
         return self.motifs
 
 
+# ---------------------------------------------------------------------------
+# MicroSemanticMotifMatcher — mirrors PyTorch MicroSemanticMotifMatcher
+# ---------------------------------------------------------------------------
+
 class MicroSemanticMotifMatcher(tf.keras.layers.Layer):
-    def __init__(self, num_regions: int, motifs_per_region: int, state_dim: int,
-                 temperature: float = 0.07, **kwargs):
+    """Match semantic region states to local motifs."""
+
+    def __init__(self, num_regions: int, motifs_per_region: int,
+                 state_dim: int, temperature: float = 0.07, **kwargs):
         super().__init__(**kwargs)
         self.temperature = float(temperature)
         self.token_proj = tf.keras.Sequential([
@@ -451,33 +482,37 @@ class MicroSemanticMotifMatcher(tf.keras.layers.Layer):
             tf.keras.layers.Activation("gelu"),
         ])
 
-    def call(self, semantic_states: tf.Tensor, motif_bank: tf.Tensor, training: bool = False):
-        orig_dtype = semantic_states.dtype
-        states_f32 = tf.cast(semantic_states, tf.float32)
-        bank_f32 = tf.cast(motif_bank, tf.float32)
-        
-        state_norm = tf.math.l2_normalize(states_f32, axis=-1, epsilon=1e-4)
-        bank_norm = tf.math.l2_normalize(bank_f32, axis=-1, epsilon=1e-4)
-        sim = tf.einsum("brs,rks->brk", state_norm, bank_norm) / self.temperature
+    def call(self, semantic_states: tf.Tensor, motif_bank: tf.Tensor,
+             training: bool = False) -> Tuple[tf.Tensor, tf.Tensor]:
+        # semantic_states: (B, R, D), motif_bank: (R, K, D)
+        state_norm = tf.nn.l2_normalize(semantic_states, axis=-1)
+        bank_norm = tf.nn.l2_normalize(motif_bank, axis=-1)
+
+        # sim: (B, R, K)
+        sim = tf.einsum("brd,rks->brk", state_norm, bank_norm) / self.temperature
         attn = safe_softmax(sim, axis=-1)
-        tokens = tf.einsum("brk,rks->brs", attn, bank_f32)
-        
-        tokens = tf.cast(tokens, orig_dtype)
+
+        # tokens: (B, R, D)
+        tokens = tf.einsum("brk,rks->brs", attn, motif_bank)
         tokens = self.token_proj(tokens, training=training)
-        return tf.cast(attn, orig_dtype), semantic_states + tokens
+        semantic_tokens = semantic_states + tokens
+        return attn, semantic_tokens
 
 
 # ---------------------------------------------------------------------------
-# Semantic Interaction Block
+# SemanticInteractionBlock — mirrors PyTorch SemanticInteractionBlock
 # ---------------------------------------------------------------------------
 
 class SemanticInteractionBlock(tf.keras.layers.Layer):
+    """Pairwise region interaction — direct translation."""
+
     def __init__(self, state_dim: int, hidden_dim: Optional[int] = None,
                  dropout: float = 0.1, dropedge_rate: float = 0.5, **kwargs):
         super().__init__(**kwargs)
         self.dropedge_rate = dropedge_rate
         hidden_dim = hidden_dim or max(state_dim * 2, 32)
         pair_input_dim = state_dim * 4
+
         self.edge_gate = tf.keras.Sequential([
             tf.keras.layers.Dense(hidden_dim),
             tf.keras.layers.Activation("gelu"),
@@ -493,62 +528,56 @@ class SemanticInteractionBlock(tf.keras.layers.Layer):
         ])
         self.norm = tf.keras.layers.LayerNormalization()
 
-    def call(self, semantic_states: tf.Tensor, region_mask=None, training: bool = False):
+    def call(self, semantic_states: tf.Tensor, training: bool = False,
+             region_mask: Optional[tf.Tensor] = None) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
+        # semantic_states: (B, R, S)
         b = tf.shape(semantic_states)[0]
-        r = tf.shape(semantic_states)[1]
-        s = semantic_states.shape[-1]
+        r = semantic_states.shape[1]
+        s = semantic_states.shape[2]
 
-        # Expand for pairwise interactions
-        states_f32 = tf.cast(semantic_states, tf.float32)
-        left = tf.broadcast_to(
-            tf.expand_dims(states_f32, 2),
-            [b, r, r, s]
-        )
-        right = tf.broadcast_to(
-            tf.expand_dims(states_f32, 1),
-            [b, r, r, s]
-        )
-        pair_input = tf.concat([left, right, left - right, left * right], axis=-1)
-        pair_input = tf.cast(pair_input, semantic_states.dtype)
+        left = tf.tile(semantic_states[:, :, tf.newaxis, :], [1, 1, r, 1])   # (B,R,R,S)
+        right = tf.tile(semantic_states[:, tf.newaxis, :, :], [1, r, 1, 1])  # (B,R,R,S)
+        pair_input = tf.concat([left, right, left - right, left * right], axis=-1)  # (B,R,R,4S)
 
-        gates = self.edge_gate(pair_input, training=training)[..., 0] + 0.1
+        gates = self.edge_gate(pair_input, training=training)[..., 0] + 0.1  # (B,R,R)
 
-        if training and self.dropedge_rate > 0:
-            gates = tf.nn.dropout(gates, rate=self.dropedge_rate)
+        # DropEdge during training
+        if self.dropedge_rate > 0.0 and training:
+            keep_prob = 1.0 - self.dropedge_rate
+            noise = tf.random.uniform(tf.shape(gates))
+            gates = tf.where(noise < keep_prob, gates / keep_prob, tf.zeros_like(gates))
 
         if region_mask is not None:
-            pair_mask = (
-                tf.expand_dims(region_mask, -1) *
-                tf.expand_dims(region_mask, -2)
-            )
+            pair_mask = tf.cast(region_mask[:, :, tf.newaxis], gates.dtype) * \
+                        tf.cast(region_mask[:, tf.newaxis, :], gates.dtype)
             gates = gates * pair_mask
 
-        messages = self.edge_message(pair_input, training=training)
-        
-        gates_f32 = tf.cast(gates, tf.float32)
-        messages_f32 = tf.cast(messages, tf.float32)
-        
-        interaction_tensor_f32 = tf.expand_dims(gates_f32, -1) * messages_f32
-        denom_f32 = tf.reduce_sum(gates_f32, axis=2, keepdims=True) + 1e-4
-        interaction_summary_f32 = tf.reduce_sum(interaction_tensor_f32, axis=2) / denom_f32
-        
-        interaction_summary = tf.cast(interaction_summary_f32, semantic_states.dtype)
-        interaction_tensor = tf.cast(interaction_tensor_f32, semantic_states.dtype)
-        
+        messages = self.edge_message(pair_input, training=training)  # (B,R,R,S)
+        interaction_tensor = gates[..., tf.newaxis] * messages        # (B,R,R,S)
+
+        gate_sum = tf.reduce_sum(gates, axis=2, keepdims=True) + 1e-6
+        interaction_summary = tf.reduce_sum(interaction_tensor, axis=2) / gate_sum  # (B,R,S)
         updated_states = self.norm(semantic_states + interaction_summary)
         return updated_states, interaction_tensor, gates
 
 
 # ---------------------------------------------------------------------------
-# Cross Region Composition Graph
+# CrossRegionCompositionGraph — mirrors PyTorch CrossRegionCompositionGraph
 # ---------------------------------------------------------------------------
 
 class CrossRegionCompositionGraph(tf.keras.layers.Layer):
+    """Higher-order cross-region compositions."""
+
     def __init__(self, state_dim: int, num_compositions: int, attn_heads: int = 4,
                  hidden_dim: Optional[int] = None, dropout: float = 0.1, **kwargs):
         super().__init__(**kwargs)
+        assert state_dim % attn_heads == 0
         hidden_dim = hidden_dim or max(state_dim * 2, 32)
         self.num_compositions = num_compositions
+        self.state_dim = state_dim
+        self.attn_heads = attn_heads
+        self.head_dim = state_dim // attn_heads
+
         self.pair_encoder = tf.keras.Sequential([
             tf.keras.layers.Dense(hidden_dim),
             tf.keras.layers.Activation("gelu"),
@@ -561,66 +590,99 @@ class CrossRegionCompositionGraph(tf.keras.layers.Layer):
             tf.keras.layers.Dropout(dropout),
             tf.keras.layers.Dense(1),
         ])
-        self.composition_attn = tf.keras.layers.MultiHeadAttention(
-            num_heads=attn_heads,
-            key_dim=state_dim // attn_heads,
-            dropout=dropout,
-        )
+        # MHA: composition_queries attend to pair_sequence
+        self.q_proj = tf.keras.layers.Dense(state_dim)
+        self.k_proj = tf.keras.layers.Dense(state_dim)
+        self.v_proj = tf.keras.layers.Dense(state_dim)
+        self.out_proj = tf.keras.layers.Dense(state_dim)
+        self.attn_drop = tf.keras.layers.Dropout(dropout)
         self.composition_norm = tf.keras.layers.LayerNormalization()
 
     def build(self, input_shape):
-        state_dim = input_shape[-1]
         self.composition_queries = self.add_weight(
             name="composition_queries",
-            shape=(self.num_compositions, state_dim),
-            initializer=tf.initializers.RandomNormal(stddev=0.02),
+            shape=(self.num_compositions, self.state_dim),
+            initializer=tf.keras.initializers.RandomNormal(stddev=0.02),
             trainable=True,
         )
         super().build(input_shape)
 
-    def call(self, semantic_states: tf.Tensor, region_mask=None,
-             region_confidence=None, training: bool = False):
+    def _mha(self, q, kv, training, key_mask=None):
+        """Multi-head cross-attention: q attends to kv."""
+        b = tf.shape(q)[0]
+        qn = tf.shape(q)[1]
+        kvn = tf.shape(kv)[1]
+
+        def heads(proj, x, seq_len):
+            out = proj(x)
+            out = tf.reshape(out, [b, seq_len, self.attn_heads, self.head_dim])
+            return tf.transpose(out, [0, 2, 1, 3])
+
+        Q = heads(self.q_proj, q, qn)
+        K = heads(self.k_proj, kv, kvn)
+        V = heads(self.v_proj, kv, kvn)
+
+        scale = float(self.head_dim) ** -0.5
+        attn_w = tf.einsum("bhid,bhjd->bhij", Q, K) * scale  # (B,H,qn,kvn)
+        if key_mask is not None:
+            # key_mask: (B, kvn) True = ignore
+            key_mask = tf.cast(key_mask, attn_w.dtype)
+            attn_w = attn_w + key_mask[:, tf.newaxis, tf.newaxis, :] * (-1e9)
+        attn_w = tf.nn.softmax(attn_w, axis=-1)
+        attn_w = self.attn_drop(attn_w, training=training)
+
+        out = tf.einsum("bhij,bhjd->bhid", attn_w, V)
+        out = tf.transpose(out, [0, 2, 1, 3])
+        out = tf.reshape(out, [b, qn, self.state_dim])
+        out = self.out_proj(out)
+        return out, attn_w
+
+    def call(self, semantic_states: tf.Tensor, training: bool = False,
+             region_mask: Optional[tf.Tensor] = None,
+             region_confidence: Optional[tf.Tensor] = None) -> Dict:
         b = tf.shape(semantic_states)[0]
-        r = tf.shape(semantic_states)[1]
-        d = semantic_states.shape[-1]
+        r = semantic_states.shape[1]
+        d = semantic_states.shape[2]
 
         tokens = semantic_states
         if region_confidence is not None:
-            tokens = tokens * tf.expand_dims(region_confidence, -1)
+            tokens = tokens * region_confidence[..., tf.newaxis]
 
-        left = tf.broadcast_to(tf.expand_dims(tokens, 2), [b, r, r, d])
-        right = tf.broadcast_to(tf.expand_dims(tokens, 1), [b, r, r, d])
+        left = tf.tile(tokens[:, :, tf.newaxis, :], [1, 1, r, 1])
+        right = tf.tile(tokens[:, tf.newaxis, :, :], [1, r, 1, 1])
         pair_input = tf.concat([left, right, left - right, left * right], axis=-1)
-        pair_tokens = self.pair_encoder(pair_input, training=training)
-        pair_scores = self.pair_router(pair_tokens, training=training)[..., 0]
+
+        pair_tokens = self.pair_encoder(pair_input, training=training)  # (B,R,R,D)
+        pair_scores = self.pair_router(pair_tokens, training=training)[..., 0]  # (B,R,R)
 
         if region_mask is not None:
-            pair_mask = (
-                tf.expand_dims(region_mask, -1) *
-                tf.expand_dims(region_mask, -2)
-            )
-            pair_scores = tf.where(pair_mask <= 0, tf.fill(tf.shape(pair_scores), tf.cast(-1e4, pair_scores.dtype)), pair_scores)
+            pair_mask = tf.cast(region_mask[:, :, tf.newaxis], pair_scores.dtype) * \
+                        tf.cast(region_mask[:, tf.newaxis, :], pair_scores.dtype)
+            pair_scores = pair_scores + (1.0 - pair_mask) * (-1e9)
 
-        pair_attention = tf.reshape(
-            safe_softmax(tf.reshape(pair_scores, [b, -1]), axis=-1),
-            [b, r, r]
-        )
+        pair_attention = safe_softmax(tf.reshape(pair_scores, [b, -1]), axis=-1)
+        pair_attention = tf.reshape(pair_attention, [b, r, r])
         pair_sequence = tf.reshape(pair_tokens, [b, r * r, d])
 
-        composition_queries = tf.tile(
-            tf.expand_dims(self.composition_queries, 0), [b, 1, 1]
-        )
+        # key_mask for MHA
+        key_padding_mask = None
+        if region_mask is not None:
+            pair_mask_flat = tf.reshape(
+                tf.cast(region_mask[:, :, tf.newaxis], pair_scores.dtype) *
+                tf.cast(region_mask[:, tf.newaxis, :], pair_scores.dtype),
+                [b, r * r]
+            )
+            key_padding_mask = 1.0 - pair_mask_flat  # 1.0 = ignore
 
-        cross_region_tokens = self.composition_attn(
-            query=composition_queries,
-            key=pair_sequence,
-            value=pair_sequence,
-            training=training,
+        comp_queries = tf.tile(self.composition_queries[tf.newaxis], [b, 1, 1])
+        cross_region_tokens, composition_attn = self._mha(
+            comp_queries, pair_sequence, training, key_mask=key_padding_mask
         )
         cross_region_tokens = self.composition_norm(cross_region_tokens)
 
         return {
             "cross_region_tokens": cross_region_tokens,
+            "composition_attn": composition_attn,
             "pair_tokens": pair_tokens,
             "pair_scores": pair_scores,
             "pair_attention": pair_attention,
@@ -628,24 +690,36 @@ class CrossRegionCompositionGraph(tf.keras.layers.Layer):
 
 
 # ---------------------------------------------------------------------------
-# Semantic Hypergraph Reasoner
+# SemanticHypergraphReasoner — mirrors PyTorch SemanticHypergraphReasoner
 # ---------------------------------------------------------------------------
 
 class SemanticHypergraphReasoner(tf.keras.layers.Layer):
+    """Hypergraph multi-region reasoning."""
+
     def __init__(self, state_dim: int, latent_dim: int, hyperedge_count: int,
-                 attn_heads: int = 4, router_hidden_dim: int = 256, dropout: float = 0.1, **kwargs):
+                 attn_heads: int = 4, router_hidden_dim: int = 256,
+                 dropout: float = 0.1, **kwargs):
         super().__init__(**kwargs)
+        assert state_dim % attn_heads == 0
         self.hyperedge_count = hyperedge_count
-        self.hyperedge_attn = tf.keras.layers.MultiHeadAttention(
-            num_heads=attn_heads,
-            key_dim=state_dim // attn_heads,
-            dropout=dropout,
-        )
-        self.region_back_attn = tf.keras.layers.MultiHeadAttention(
-            num_heads=attn_heads,
-            key_dim=state_dim // attn_heads,
-            dropout=dropout,
-        )
+        self.state_dim = state_dim
+        self.attn_heads = attn_heads
+        self.head_dim = state_dim // attn_heads
+
+        # hyperedge attention: hyper_queries -> tokens
+        self.he_q = tf.keras.layers.Dense(state_dim)
+        self.he_k = tf.keras.layers.Dense(state_dim)
+        self.he_v = tf.keras.layers.Dense(state_dim)
+        self.he_out = tf.keras.layers.Dense(state_dim)
+        self.he_drop = tf.keras.layers.Dropout(dropout)
+
+        # region back-attention: tokens -> hyperedge_tokens
+        self.rb_q = tf.keras.layers.Dense(state_dim)
+        self.rb_k = tf.keras.layers.Dense(state_dim)
+        self.rb_v = tf.keras.layers.Dense(state_dim)
+        self.rb_out = tf.keras.layers.Dense(state_dim)
+        self.rb_drop = tf.keras.layers.Dropout(dropout)
+
         self.router = tf.keras.Sequential([
             tf.keras.layers.Dense(router_hidden_dim),
             tf.keras.layers.Activation("gelu"),
@@ -662,64 +736,72 @@ class SemanticHypergraphReasoner(tf.keras.layers.Layer):
         self.latent_norm = tf.keras.layers.LayerNormalization()
 
     def build(self, input_shape):
-        state_dim = input_shape[-1]
         self.hyperedge_queries = self.add_weight(
             name="hyperedge_queries",
-            shape=(self.hyperedge_count, state_dim),
-            initializer=tf.initializers.RandomNormal(stddev=0.02),
+            shape=(self.hyperedge_count, self.state_dim),
+            initializer=tf.keras.initializers.RandomNormal(stddev=0.02),
             trainable=True,
         )
         super().build(input_shape)
 
-    def call(self, semantic_states: tf.Tensor, region_mask=None,
-             region_confidence=None, training: bool = False):
+    def _mha(self, q_proj, k_proj, v_proj, out_proj, drop,
+             query, kv, training, key_mask=None):
+        b = tf.shape(query)[0]
+        qn = tf.shape(query)[1]
+        kvn = tf.shape(kv)[1]
+
+        def heads(proj, x, n):
+            out = proj(x)
+            out = tf.reshape(out, [b, n, self.attn_heads, self.head_dim])
+            return tf.transpose(out, [0, 2, 1, 3])
+
+        Q = heads(q_proj, query, qn)
+        K = heads(k_proj, kv, kvn)
+        V = heads(v_proj, kv, kvn)
+
+        scale = float(self.head_dim) ** -0.5
+        attn_w = tf.einsum("bhid,bhjd->bhij", Q, K) * scale
+        if key_mask is not None:
+            attn_w = attn_w + tf.cast(key_mask, attn_w.dtype)[:, tf.newaxis, tf.newaxis, :] * (-1e9)
+        attn_w = tf.nn.softmax(attn_w, axis=-1)
+        attn_w = drop(attn_w, training=training)
+        out = tf.einsum("bhij,bhjd->bhid", attn_w, V)
+        out = tf.transpose(out, [0, 2, 1, 3])
+        out = tf.reshape(out, [b, qn, self.state_dim])
+        return out_proj(out), attn_w
+
+    def call(self, semantic_states: tf.Tensor, training: bool = False,
+             region_mask: Optional[tf.Tensor] = None,
+             region_confidence: Optional[tf.Tensor] = None) -> Dict:
         b = tf.shape(semantic_states)[0]
         tokens = semantic_states
         if region_confidence is not None:
-            tokens = tokens * tf.expand_dims(region_confidence, -1)
+            tokens = tokens * region_confidence[..., tf.newaxis]
 
-        hyper_queries = tf.tile(tf.expand_dims(self.hyperedge_queries, 0), [b, 1, 1])
-        hyperedge_tokens = self.hyperedge_attn(
-            query=hyper_queries,
-            key=tokens,
-            value=tokens,
-            training=training,
+        key_mask = None
+        if region_mask is not None:
+            key_mask = 1.0 - tf.cast(region_mask, tokens.dtype)
+
+        hyper_queries = tf.tile(self.hyperedge_queries[tf.newaxis], [b, 1, 1])
+        hyperedge_tokens, hyperedge_attn = self._mha(
+            self.he_q, self.he_k, self.he_v, self.he_out, self.he_drop,
+            hyper_queries, tokens, training, key_mask=key_mask
         )
-        region_context = self.region_back_attn(
-            query=tokens,
-            key=hyperedge_tokens,
-            value=hyperedge_tokens,
-            training=training,
+        region_context, region_back_attn = self._mha(
+            self.rb_q, self.rb_k, self.rb_v, self.rb_out, self.rb_drop,
+            tokens, hyperedge_tokens, training, key_mask=None
         )
 
         composed_states = tokens + region_context
         routing_logits = self.router(composed_states, training=training)[..., 0]
-        orig_dtype = routing_logits.dtype
-        routing_logits_f32 = tf.cast(routing_logits, tf.float32)
-
         if region_mask is not None:
-            region_mask_f32 = tf.cast(region_mask, tf.float32)
-            routing_logits_f32 = tf.where(
-                region_mask_f32 == 0.0,
-                tf.fill(tf.shape(routing_logits_f32), tf.cast(-1e4, tf.float32)),
-                routing_logits_f32
-            )
-        
-        routing_weights_f32 = safe_softmax(routing_logits_f32, axis=1)
-        
+            routing_logits = routing_logits + (1.0 - tf.cast(region_mask, routing_logits.dtype)) * (-1e9)
+        routing_weights = safe_softmax(routing_logits, axis=1)
         if region_mask is not None:
-            routing_weights_f32 = routing_weights_f32 * region_mask_f32
-            routing_weights_f32 = routing_weights_f32 / tf.clip_by_value(
-                tf.reduce_sum(routing_weights_f32, axis=1, keepdims=True), 
-                clip_value_min=1e-6, clip_value_max=1e9
-            )
-            
-        routing_weights = tf.cast(routing_weights_f32, orig_dtype)
-        routing_logits = tf.cast(routing_logits_f32, orig_dtype)
+            routing_weights = routing_weights * tf.cast(region_mask, routing_weights.dtype)
+            routing_weights = routing_weights / (tf.reduce_sum(routing_weights, axis=1, keepdims=True) + 1e-6)
 
-        pooled_state = tf.reduce_sum(
-            tf.expand_dims(routing_weights, -1) * composed_states, axis=1
-        )
+        pooled_state = tf.reduce_sum(routing_weights[..., tf.newaxis] * composed_states, axis=1)
         hyper_summary = tf.reduce_mean(hyperedge_tokens, axis=1)
         emotion_latent = self.latent_projector(
             tf.concat([pooled_state, hyper_summary], axis=-1), training=training
@@ -729,6 +811,8 @@ class SemanticHypergraphReasoner(tf.keras.layers.Layer):
         return {
             "composed_states": composed_states,
             "hyperedge_tokens": hyperedge_tokens,
+            "hyperedge_attn": hyperedge_attn,
+            "region_back_attn": region_back_attn,
             "routing_logits": routing_logits,
             "routing_weights": routing_weights,
             "emotion_latent": emotion_latent,
@@ -736,12 +820,14 @@ class SemanticHypergraphReasoner(tf.keras.layers.Layer):
 
 
 # ---------------------------------------------------------------------------
-# Semantic Compositional Program Bank
+# SemanticCompositionalProgramBank — mirrors PyTorch
 # ---------------------------------------------------------------------------
 
 class SemanticCompositionalProgramBank(tf.keras.layers.Layer):
-    def __init__(self, num_classes: int, programs_per_class: int, num_regions: int,
-                 state_dim: int, **kwargs):
+    """Learnable semantic facial programs + topology."""
+
+    def __init__(self, num_classes: int, programs_per_class: int,
+                 num_regions: int, state_dim: int, **kwargs):
         super().__init__(**kwargs)
         self.num_classes = num_classes
         self.programs_per_class = programs_per_class
@@ -752,32 +838,37 @@ class SemanticCompositionalProgramBank(tf.keras.layers.Layer):
         self.programs = self.add_weight(
             name="programs",
             shape=(self.num_classes, self.programs_per_class, self.num_regions, self.state_dim),
-            initializer=tf.initializers.RandomNormal(stddev=0.02),
+            initializer=tf.keras.initializers.RandomNormal(stddev=0.02),
             trainable=True,
         )
         self.topology_logits = self.add_weight(
             name="topology_logits",
             shape=(self.num_classes, self.programs_per_class, self.num_regions, self.num_regions),
-            initializer=tf.initializers.RandomNormal(stddev=0.02),
+            initializer=tf.keras.initializers.RandomNormal(stddev=0.02),
             trainable=True,
         )
         super().build(input_shape)
 
-    def call(self, inputs=None):
-        return self.programs, tf.sigmoid(self.topology_logits)
+    def call(self, inputs=None, training: bool = False) -> Tuple[tf.Tensor, tf.Tensor]:
+        return self.programs, tf.nn.sigmoid(self.topology_logits)
 
 
 # ---------------------------------------------------------------------------
-# Semantic Program Executor
+# SemanticProgramExecutor — mirrors PyTorch SemanticProgramExecutor
 # ---------------------------------------------------------------------------
 
 class SemanticProgramExecutor(tf.keras.layers.Layer):
+    """Execute semantic facial programs against observed states."""
+
     def __init__(self, num_classes: int, programs_per_class: int, num_regions: int,
                  state_dim: int, temperature: float = 0.07, **kwargs):
         super().__init__(**kwargs)
         self.num_classes = num_classes
         self.programs_per_class = programs_per_class
+        self.num_regions = num_regions
+        self.state_dim = state_dim
         self.temperature = float(temperature)
+
         self.program_summary_proj = tf.keras.Sequential([
             tf.keras.layers.Dense(state_dim),
             tf.keras.layers.LayerNormalization(),
@@ -785,119 +876,93 @@ class SemanticProgramExecutor(tf.keras.layers.Layer):
         ])
 
     def build(self, input_shape):
-        init_val = np.ones((1, self.num_classes, 1, 3), dtype=np.float32)
-        init_val[..., 0] = 1.0
-        init_val[..., 1] = 0.5
-        init_val[..., 2] = 0.25
+        # sim_weights: (1, num_classes, 1, 3) — adaptive structure weights
+        init = np.array([[[[1.0, 0.5, 0.25]]]] * self.num_classes
+                        ).reshape(1, self.num_classes, 1, 3).astype(np.float32)
         self.sim_weights = self.add_weight(
             name="sim_weights",
             shape=(1, self.num_classes, 1, 3),
-            initializer=tf.constant_initializer(init_val),
+            initializer=tf.keras.initializers.Constant(init),
             trainable=True,
         )
         super().build(input_shape)
 
-    def call(self, semantic_states, cross_region_tokens, program_bank,
-             program_topology, region_mask=None, interaction_gates=None,
-             routing_weights=None, training: bool = False):
-        
-        orig_dtype = semantic_states.dtype
-        states_f32 = tf.cast(semantic_states, tf.float32)
-        bank_f32 = tf.cast(program_bank, tf.float32)
+    def call(self, semantic_states: tf.Tensor, cross_region_tokens: tf.Tensor,
+             program_bank: tf.Tensor, program_topology: tf.Tensor,
+             training: bool = False,
+             region_mask: Optional[tf.Tensor] = None,
+             interaction_gates: Optional[tf.Tensor] = None,
+             routing_weights: Optional[tf.Tensor] = None) -> Dict:
+        state_norm = tf.nn.l2_normalize(semantic_states, axis=-1)
+        program_norm = tf.nn.l2_normalize(program_bank, axis=-1)
 
-        state_norm = tf.math.l2_normalize(states_f32, axis=-1, epsilon=1e-4)
-        program_norm = tf.math.l2_normalize(bank_f32, axis=-1, epsilon=1e-4)
-
-        # Region similarity: (B, C, M)
+        # region_sims: (B, C, M, R)
         region_sims = tf.einsum("brd,cmrd->bcmr", state_norm, program_norm)
         if routing_weights is not None:
-            rw_f32 = tf.cast(routing_weights, tf.float32)
             region_sim = tf.reduce_sum(
-                region_sims * rw_f32[:, None, None, :], axis=-1
+                region_sims * routing_weights[:, tf.newaxis, tf.newaxis, :], axis=-1
             )
         elif region_mask is not None:
-            valid_mask = tf.cast(region_mask[:, None, None, :], tf.float32)
-            region_sims = region_sims * valid_mask
-            region_sim = tf.reduce_sum(region_sims, axis=-1) / tf.clip_by_value(
-                tf.reduce_sum(valid_mask, axis=-1), clip_value_min=1.0, clip_value_max=1e9
-            )
+            valid_mask = region_mask[:, tf.newaxis, tf.newaxis, :]
+            region_sims = region_sims * tf.cast(valid_mask, region_sims.dtype)
+            region_sim = tf.reduce_sum(region_sims, axis=-1) / \
+                         tf.maximum(tf.reduce_sum(tf.cast(valid_mask, tf.float32), axis=-1), 1.0)
         else:
             region_sim = tf.reduce_mean(region_sims, axis=-1)
 
-        # Topology similarity
+        # topology_sim: (B, C, M)
         if interaction_gates is not None:
-            observed_topo = tf.cast(interaction_gates, tf.float32)[:, None, None, :, :]
-            topo_bank = tf.cast(program_topology, tf.float32)[None, :, :, :, :]
-            topo_mse = (observed_topo - topo_bank) ** 2
+            obs_topo = interaction_gates[:, tf.newaxis, tf.newaxis, :, :]
+            topo_mse = (obs_topo - program_topology[tf.newaxis]) ** 2
             if region_mask is not None:
-                pair_mask = tf.cast(
-                    region_mask[:, None, None, :, None] *
-                    region_mask[:, None, None, None, :], tf.float32
-                )
+                pair_mask = tf.cast(region_mask[:, :, tf.newaxis], topo_mse.dtype) * \
+                            tf.cast(region_mask[:, tf.newaxis, :], topo_mse.dtype)
+                pair_mask = pair_mask[:, tf.newaxis, tf.newaxis, :, :]
                 topo_mse = topo_mse * pair_mask
-                topology_sim = 1.0 - (
-                    tf.reduce_sum(topo_mse, axis=[-1, -2]) / tf.clip_by_value(
-                        tf.reduce_sum(pair_mask, axis=[-1, -2]), clip_value_min=1.0, clip_value_max=1e9
-                    )
-                )
+                topology_sim = 1.0 - (tf.reduce_sum(topo_mse, axis=[-2, -1]) /
+                                      tf.maximum(tf.reduce_sum(pair_mask, axis=[-2, -1]), 1.0))
             else:
-                topology_sim = 1.0 - tf.reduce_mean(topo_mse, axis=[-1, -2])
+                topology_sim = 1.0 - tf.reduce_mean(topo_mse, axis=[-2, -1])
         else:
             topology_sim = tf.ones_like(region_sim)
 
-        # Composition similarity
-        cr_tokens_f32 = tf.cast(cross_region_tokens, tf.float32)
-        composition_summary = tf.reduce_mean(cr_tokens_f32, axis=1)  # (B, D)
-        composition_summary = tf.cast(composition_summary, orig_dtype)
-        composition_summary = self.program_summary_proj(composition_summary, training=training)
-        composition_summary_f32 = tf.cast(composition_summary, tf.float32)
-
-        # program_bank mean: (C, M, R, D) -> (C, M, D)
-        prog_mean = tf.reduce_mean(bank_f32, axis=2)  # (C, M, D)
-        prog_mean = tf.cast(prog_mean, orig_dtype)
-        c_dim = tf.shape(prog_mean)[0]
-        m_dim = tf.shape(prog_mean)[1]
-        d_dim = prog_mean.shape[-1]
-        # Reshape to (C*M, D) -> Dense -> reshape back to (C, M, D)
-        prog_mean_flat = tf.reshape(prog_mean, [c_dim * m_dim, d_dim])
-        prog_mean_flat = self.program_summary_proj(prog_mean_flat, training=training)
-        program_summary = tf.reshape(prog_mean_flat, [c_dim, m_dim, -1])  # (C, M, D)
-        program_summary_f32 = tf.cast(program_summary, tf.float32)
-
+        # composition_sim: (B, C, M)
+        comp_summary = tf.reduce_mean(cross_region_tokens, axis=1)  # (B, D)
+        comp_summary = self.program_summary_proj(comp_summary, training=training)
+        prog_summary = self.program_summary_proj(
+            tf.reduce_mean(program_bank, axis=2), training=training
+        )  # (C, M, D)
         composition_sim = tf.einsum(
             "bd,cmd->bcm",
-            tf.math.l2_normalize(composition_summary_f32, axis=-1, epsilon=1e-4),
-            tf.math.l2_normalize(program_summary_f32, axis=-1, epsilon=1e-4),
+            tf.nn.l2_normalize(comp_summary, axis=-1),
+            tf.nn.l2_normalize(prog_summary, axis=-1),
         )
 
-        w = tf.cast(tf.nn.softplus(self.sim_weights), tf.float32)
-        total_sim = w[..., 0] * region_sim + w[..., 1] * topology_sim + w[..., 2] * composition_sim
-        
-        region_score = tf.cast(region_sim / self.temperature, orig_dtype)
-        topology_score = tf.cast(topology_sim / self.temperature, orig_dtype)
-        composition_score = tf.cast(composition_sim / self.temperature, orig_dtype)
-        
-        compatibility = tf.clip_by_value(total_sim / self.temperature, -50.0, 50.0)
+        # Adaptive weighting — softplus ensures positive
+        w = tf.nn.softplus(self.sim_weights)  # (1, C, 1, 3)
+        total_sim = (w[..., 0] * region_sim +
+                     w[..., 1] * topology_sim +
+                     w[..., 2] * composition_sim)
 
+        region_score = region_sim / self.temperature
+        topology_score = topology_sim / self.temperature
+        composition_score = composition_sim / self.temperature
+
+        compatibility = tf.clip_by_value(total_sim / self.temperature, -50.0, 50.0)
         program_attention = safe_softmax(compatibility, axis=-1)
         class_scores = tf.reduce_logsumexp(compatibility, axis=-1)
-        
-        # Cast attention back to original dtype before computing tokens
-        program_attention = tf.cast(program_attention, orig_dtype)
-        class_scores = tf.cast(class_scores, orig_dtype)
-        compatibility = tf.cast(compatibility, orig_dtype)
-        
-        program_tokens = tf.einsum("bcm,cmd->bcd", program_attention, program_summary)
+
+        # program_tokens: (B, C, D)
+        prog_summ_2d = tf.reshape(prog_summary, [self.num_classes, self.programs_per_class, -1])
+        program_tokens = tf.einsum("bcm,cmd->bcd", program_attention, prog_summ_2d)
 
         if routing_weights is not None:
-            rw_f32 = tf.cast(routing_weights, tf.float32)
             routing_entropy = -tf.reduce_sum(
-                tf.maximum(rw_f32, 1e-6) * tf.math.log(tf.maximum(rw_f32, 1e-6)),
-                axis=-1,
+                tf.maximum(routing_weights, 1e-6) * tf.math.log(tf.maximum(routing_weights, 1e-6)),
+                axis=-1
             )
-            routing_entropy = tf.cast(routing_entropy, orig_dtype)
         else:
-            routing_entropy = tf.zeros([tf.shape(semantic_states)[0]], dtype=orig_dtype)
+            routing_entropy = tf.zeros([tf.shape(semantic_states)[0]], dtype=semantic_states.dtype)
 
         return {
             "program_scores": class_scores,
@@ -912,10 +977,11 @@ class SemanticProgramExecutor(tf.keras.layers.Layer):
 
 
 # ---------------------------------------------------------------------------
-# Semantic Emotion Classifier
+# SemanticEmotionClassifier — mirrors PyTorch SemanticEmotionClassifier
 # ---------------------------------------------------------------------------
 
 class SemanticEmotionClassifier(tf.keras.layers.Layer):
+
     def __init__(self, latent_dim: int, num_classes: int, dropout: float = 0.1, **kwargs):
         super().__init__(**kwargs)
         self.net = tf.keras.Sequential([
@@ -930,15 +996,16 @@ class SemanticEmotionClassifier(tf.keras.layers.Layer):
 
 
 # ---------------------------------------------------------------------------
-# Main Model
+# SemanticROIGraphFER — main model (mirrors PyTorch SemanticROIGraphFER)
 # ---------------------------------------------------------------------------
 
 class SemanticROIGraphFER(tf.keras.Model):
-    """End-to-end semantic compositional facial reasoning model (TensorFlow port)."""
+    """End-to-end semantic compositional facial reasoning model."""
 
     def __init__(self, config: SemanticRoiGraphConfig, **kwargs):
         super().__init__(**kwargs)
         self.config = config
+        self.training_cfg: Dict = {}
 
         self.backbone = SemanticBackbone(
             feature_dim=config.feature_dim,
@@ -1012,9 +1079,10 @@ class SemanticROIGraphFER(tf.keras.Model):
             num_classes=config.num_classes,
             dropout=config.dropout,
         )
-        # Global context branch (GlobalAvgPool + Dense)
-        self.global_pool = tf.keras.layers.GlobalAveragePooling2D()
-        self.global_context_net = tf.keras.Sequential([
+
+        # Global context branch (mirrors PyTorch global_context)
+        self.global_context_pool = tf.keras.layers.GlobalAveragePooling2D()
+        self.global_context_dense = tf.keras.Sequential([
             tf.keras.layers.Dense(config.semantic_latent_dim),
             tf.keras.layers.Activation("gelu"),
             tf.keras.layers.Dropout(config.dropout),
@@ -1024,226 +1092,222 @@ class SemanticROIGraphFER(tf.keras.Model):
             tf.keras.layers.LayerNormalization(),
             tf.keras.layers.Activation("gelu"),
         ])
+
+        # Missing region token
         self.region_reliability_predictor = tf.keras.Sequential([
             tf.keras.layers.Dense(config.feature_dim // 2),
             tf.keras.layers.Activation("relu"),
             tf.keras.layers.Dense(1),
             tf.keras.layers.Activation("sigmoid"),
         ])
-        self.region_dropout_prob = float(getattr(config, "region_dropout_prob", 0.05))
+
+        self.region_dropout_prob = float(getattr(config, "region_dropout_prob", 0.0))
 
     def build(self, input_shape):
+        # semantic_structure_gate: (num_classes,) — per-class gate init -0.5
         self.semantic_structure_gate = self.add_weight(
             name="semantic_structure_gate",
             shape=(self.config.num_classes,),
-            initializer=tf.initializers.Constant(-0.5),
+            initializer=tf.keras.initializers.Constant(-0.5),
             trainable=True,
         )
+        # missing_region_token: (feature_dim,)
         self.missing_region_token = self.add_weight(
             name="missing_region_token",
             shape=(self.config.feature_dim,),
-            initializer=tf.initializers.RandomNormal(stddev=0.02),
+            initializer=tf.keras.initializers.RandomNormal(stddev=0.02),
             trainable=True,
         )
         super().build(input_shape)
 
-    def _canonical_bboxes(self, batch_size: int) -> tf.Tensor:
-        boxes = _canonical_region_boxes_tf(self.config.bbox_input_size)
-        return tf.tile(tf.expand_dims(boxes, 0), [batch_size, 1, 1])
+    # ------------------------------------------------------------------
+    # Region preparation (mirrors PyTorch _prepare_regions)
+    # ------------------------------------------------------------------
 
-    def _prepare_regions(self, bboxes, batch_size: int, dtype=tf.float32):
-        """Validate and repair bboxes. Returns (bboxes, region_mask, region_confidence)."""
+    def _canonical_bboxes(self, batch_size: int) -> tf.Tensor:
+        boxes = _CANONICAL_BOXES_48.copy() * (float(self.config.bbox_input_size) / 48.0)
+        return tf.constant(
+            np.tile(boxes[np.newaxis], [batch_size, 1, 1]), dtype=tf.float32
+        )
+
+    def _prepare_regions(self, bboxes, batch_size, training):
+        R = self.config.num_regions
+
         if bboxes is None:
             repaired = self._canonical_bboxes(batch_size)
-            region_mask = tf.ones([batch_size, self.config.num_regions], dtype=dtype)
-            region_confidence = tf.fill([batch_size, self.config.num_regions], tf.cast(0.95, dtype))
-            return tf.cast(repaired, dtype), region_mask, region_confidence
+            region_mask = tf.ones([batch_size, R], dtype=tf.float32)
+            region_confidence = tf.fill([batch_size, R], 0.95)
+            return repaired, region_mask, region_confidence
 
-        bboxes = tf.cast(bboxes, dtype)
+        bboxes = tf.cast(bboxes, tf.float32)
+
         x1 = bboxes[..., 0]; y1 = bboxes[..., 1]
         x2 = bboxes[..., 2]; y2 = bboxes[..., 3]
 
         finite_mask = tf.reduce_all(tf.math.is_finite(bboxes), axis=-1)
         size_mask = ((x2 - x1) >= 2.0) & ((y2 - y1) >= 2.0)
         order_mask = (x2 > x1) & (y2 > y1)
-        region_mask = tf.cast(finite_mask & size_mask & order_mask, dtype)
+        region_mask = tf.cast(finite_mask & size_mask & order_mask, tf.float32)
 
-        repaired = self.roi_align_layer.validate_bboxes(bboxes)
-        canonical = tf.cast(self._canonical_bboxes(batch_size), dtype)
-        valid_bool = tf.cast(region_mask, tf.bool)
-        repaired = tf.where(
-            tf.expand_dims(valid_bool, -1),
-            repaired,
-            canonical
-        )
+        # Repair bboxes
+        repaired = self.roi_align_layer._validate_bboxes(bboxes)
+        canonical = self._canonical_bboxes(batch_size)
+        mask_4 = region_mask[..., tf.newaxis] > 0
+        repaired = tf.where(mask_4, repaired, canonical)
 
-        width = tf.maximum(repaired[..., 2] - repaired[..., 0], 1.0)
+        width  = tf.maximum(repaired[..., 2] - repaired[..., 0], 1.0)
         height = tf.maximum(repaired[..., 3] - repaired[..., 1], 1.0)
-        area = (width * height) / float(self.config.bbox_input_size ** 2)
-        area_conf = tf.cast(tf.clip_by_value(area, 0.0, 1.0), dtype)
+        size = float(self.config.bbox_input_size)
+        area = (width * height) / (size * size)
+        area_conf = tf.clip_by_value(area, 0.0, 1.0)
         region_confidence = tf.where(
-            valid_bool,
-            tf.cast(0.5, dtype) + tf.cast(0.5, dtype) * area_conf,
-            tf.fill(tf.shape(area_conf), tf.cast(0.05, dtype)),
+            region_mask > 0,
+            0.5 + 0.5 * area_conf,
+            tf.fill(tf.shape(area_conf), 0.05),
         )
-        return repaired, tf.cast(region_mask, dtype), tf.cast(region_confidence, dtype)
+        return repaired, region_mask, region_confidence
 
-    def call(self, inputs, training: bool = False):
-        """
-        inputs: tuple of (image, bboxes) or just image tensor
-        image: (B, H, W, C) NHWC
-        bboxes: (B, R, 4) pixel coords [x1, y1, x2, y2], optional
-        """
-        if isinstance(inputs, (list, tuple)):
-            image = inputs[0]
-            bboxes = inputs[1] if len(inputs) > 1 else None
-            region_mask = inputs[2] if len(inputs) > 2 else None
-            region_confidence = inputs[3] if len(inputs) > 3 else None
-        else:
-            image = inputs
-            bboxes = None
-            region_mask = None
-            region_confidence = None
+    # ------------------------------------------------------------------
+    # Core forward (mirrors PyTorch _forward_single)
+    # ------------------------------------------------------------------
 
-        # Ensure 3-channel
+    def _forward_single(self, image: tf.Tensor, bboxes=None, region_mask=None, region_confidence=None, training: bool = False) -> Dict:
+        image = tf.cast(image, tf.float32)
         if image.shape[-1] == 1:
-            image = tf.repeat(image, 3, axis=-1)
+            image = tf.repeat(image, 3, axis=-1)  # grayscale -> 3ch
 
         batch_size = tf.shape(image)[0]
+        batch_size_s = image.shape[0]
 
-        # --- Backbone ---
-        feature_map = self.backbone(image, training=training)  # (B, H/8, W/8, feature_dim)
+        # Backbone: NHWC -> NHWC
+        feature_map = self.backbone(image, training=training)  # (B, H', W', C)
 
-        # --- Region preparation ---
-        bboxes_prep, computed_mask, computed_confidence = self._prepare_regions(
-            bboxes, batch_size, dtype=image.dtype
+        repaired, computed_mask, computed_confidence = self._prepare_regions(
+            bboxes, batch_size, training
         )
+        
         if region_mask is None:
             region_mask = computed_mask
-        
+        else:
+            region_mask = tf.cast(region_mask, tf.float32)
+            
         if region_confidence is None:
             region_confidence = computed_confidence
+        else:
+            region_confidence = tf.cast(region_confidence, tf.float32)
 
-        region_mask = tf.cast(region_mask, tf.float32)
-        region_confidence = tf.cast(region_confidence, tf.float32)
-
-        # Region dropout during training
-        if training and self.region_dropout_prob > 0:
+        # Region dropout (mirrors PyTorch training drop_mask)
+        if training and self.region_dropout_prob > 0.0:
             drop_mask = tf.cast(
                 tf.random.uniform([batch_size, self.config.num_regions]) > self.region_dropout_prob,
-                tf.float32
+                tf.float32,
             )
             region_mask = region_mask * drop_mask
             region_confidence = region_confidence * drop_mask
 
-        # --- ROI Align ---
-        roi_nodes = self.roi_align_layer(feature_map, bboxes_prep)  # (B, R, G*G, C)
+        # ROI Align: (B, R, G*G, C)
+        roi_nodes = self.roi_align_layer(feature_map, repaired)
 
-        # --- Micro Graph Reasoning ---
+        # MicroGraphReasoner: (B, R, G*G, C) -> (B, R, G*G, C), (B, R, C)
         micro_node_features, region_embeddings = self.micro_reasoner(roi_nodes, training=training)
 
-        # Fill missing regions
+        # Missing region token substitution
         missing_token = tf.reshape(self.missing_region_token, [1, 1, -1])
-        region_valid = tf.expand_dims(region_mask, -1) > 0
-        region_embeddings = tf.where(
-            region_valid,
-            region_embeddings,
-            tf.broadcast_to(missing_token, tf.shape(region_embeddings)),
-        )
+        region_valid_mask = region_mask[..., tf.newaxis] > 0
+        region_embeddings = tf.where(region_valid_mask, region_embeddings,
+                                     tf.broadcast_to(missing_token, tf.shape(region_embeddings)))
 
         # Predicted confidence
-        predicted_conf = self.region_reliability_predictor(
+        predicted_confidence = self.region_reliability_predictor(
             region_embeddings, training=training
         )[..., 0]
         region_confidence = tf.clip_by_value(
-            tf.cast(0.5, predicted_conf.dtype) * tf.cast(region_confidence, predicted_conf.dtype) + 
-            tf.cast(0.5, predicted_conf.dtype) * predicted_conf, 
-            0.0, 1.0
-        ) * tf.cast(region_mask, predicted_conf.dtype)
+            0.5 * region_confidence + 0.5 * predicted_confidence, 0.0, 1.0
+        )
+        region_confidence = region_confidence * region_mask
 
-        # --- Semantic State Encoding ---
+        # Semantic state encoding
         semantic_state_tokens = self.semantic_state_encoder(region_embeddings, training=training)
 
-        # --- Micro Motif Matching ---
-        micro_motif_bank = self.micro_motif_bank(None)
+        # Micro motif matching
+        micro_motif_bank = self.micro_motif_bank(training=training)
         micro_motif_attention, semantic_motif_tokens = self.micro_motif_matcher(
             semantic_state_tokens, micro_motif_bank, training=training
         )
 
-        # --- Semantic Interaction Block ---
-        interaction_states, semantic_interaction_tensor, semantic_interaction_gates = (
-            self.semantic_interaction_block(
-                semantic_motif_tokens, region_mask=region_mask, training=training
-            )
-        )
+        # Pairwise interaction
+        interaction_states, semantic_interaction_tensor, semantic_interaction_gates = \
+            self.semantic_interaction_block(semantic_motif_tokens, training=training, region_mask=region_mask)
 
-        # --- Cross-Region Composition ---
+        # Cross-region composition
         cross_region_outputs = self.cross_region_composition_graph(
-            interaction_states,
-            region_mask=region_mask,
-            region_confidence=region_confidence,
-            training=training,
+            interaction_states, training=training,
+            region_mask=region_mask, region_confidence=region_confidence,
         )
         cross_region_tokens = cross_region_outputs["cross_region_tokens"]
-        cross_region_attention = cross_region_outputs["pair_attention"]
+        cross_region_attention = cross_region_outputs["composition_attn"]
+        cross_region_pair_tokens = cross_region_outputs["pair_tokens"]
+        cross_region_pair_scores = cross_region_outputs["pair_scores"]
+        cross_region_pair_attention = cross_region_outputs["pair_attention"]
 
-        # --- Hypergraph Reasoner ---
+        # Enrich with composition context
         composition_summary = tf.reduce_mean(cross_region_tokens, axis=1, keepdims=True)
         hypergraph_input = interaction_states + tf.broadcast_to(
             composition_summary, tf.shape(interaction_states)
         )
+
+        # Hypergraph reasoning
         compositional_outputs = self.semantic_compositional_reasoner(
-            hypergraph_input, region_mask=region_mask,
-            region_confidence=region_confidence, training=training
+            hypergraph_input, training=training,
+            region_mask=region_mask, region_confidence=region_confidence,
         )
         composed_states = compositional_outputs["composed_states"]
         hyperedge_tokens = compositional_outputs["hyperedge_tokens"]
         routing_weights = compositional_outputs["routing_weights"]
         semantic_latent_embedding = compositional_outputs["emotion_latent"]
 
-        # --- Program Bank & Executor ---
-        semantic_program_bank, semantic_program_topology = self.semantic_program_bank(None)
+        # Program bank + executor
+        semantic_program_bank, semantic_program_topology = self.semantic_program_bank(training=training)
         semantic_program_outputs = self.semantic_program_executor(
-            composed_states,
-            cross_region_tokens,
-            semantic_program_bank,
-            semantic_program_topology,
+            composed_states, cross_region_tokens,
+            semantic_program_bank, semantic_program_topology,
+            training=training,
             region_mask=region_mask,
             interaction_gates=semantic_interaction_gates,
             routing_weights=routing_weights,
-            training=training,
         )
         semantic_program_scores = semantic_program_outputs["program_scores"]
         semantic_program_attention = semantic_program_outputs["program_attention"]
         semantic_program_tokens = semantic_program_outputs["program_tokens"]
-        routing_entropy = semantic_program_outputs["routing_entropy"]
 
-        # --- Global Context Fusion ---
-        global_ctx = self.global_pool(feature_map)
-        global_ctx = self.global_context_net(global_ctx, training=training)
+        # Global context branch
+        global_ctx = self.global_context_pool(feature_map)
+        global_ctx = self.global_context_dense(global_ctx, training=training)
         fused_latent = self.global_fusion(
-            tf.concat([semantic_latent_embedding, global_ctx], axis=-1),
-            training=training,
+            tf.concat([semantic_latent_embedding, global_ctx], axis=-1), training=training
         )
         logits_fused = self.semantic_classifier(fused_latent, training=training)
 
         # Per-class gate
-        structure_gate = tf.sigmoid(self.semantic_structure_gate)[None]  # (1, C)
+        structure_gate = tf.nn.sigmoid(self.semantic_structure_gate)[tf.newaxis, :]  # (1, C)
         logits_motif = semantic_program_scores
         logits = (1.0 - structure_gate) * logits_fused + structure_gate * logits_motif
-        logits = tf.cast(logits, tf.float32)
 
         return {
             "logits": logits,
             "logits_motif": logits_motif,
             "logits_fused": logits_fused,
             "structure_gate": structure_gate,
+            "micro_node_features": micro_node_features,
+            "micro_motif_attention": micro_motif_attention,
             "region_embeddings": region_embeddings,
             "semantic_state_tokens": semantic_state_tokens,
             "semantic_motif_tokens": semantic_motif_tokens,
-            "micro_motif_attention": micro_motif_attention,
             "cross_region_tokens": cross_region_tokens,
             "cross_region_attention": cross_region_attention,
+            "cross_region_pair_tokens": cross_region_pair_tokens,
+            "cross_region_pair_scores": cross_region_pair_scores,
+            "cross_region_pair_attention": cross_region_pair_attention,
             "semantic_interaction_tensor": semantic_interaction_tensor,
             "semantic_interaction_gates": semantic_interaction_gates,
             "semantic_routing_weights": routing_weights,
@@ -1259,57 +1323,104 @@ class SemanticROIGraphFER(tf.keras.Model):
             "region_confidence": region_confidence,
             "macro_embeddings": composed_states,
             "macro_motif_attention": semantic_program_attention,
-            "aux_losses": {
-                "semantic_consistency": tf.zeros(()),
-            },
+            "micro_motif_bank": micro_motif_bank,
+            "macro_motif_bank": semantic_program_bank,
         }
 
-    def call_with_tta(self, image, bboxes=None, region_mask=None, region_confidence=None):
-        """Horizontal flip TTA during inference."""
-        outputs_orig = self.call(
-            (image, bboxes, region_mask, region_confidence), training=False
-        )
-
-        if bboxes is None:
-            return outputs_orig
-
-        w = float(self.config.bbox_input_size)
-        flipped_image = image[:, :, ::-1, :]  # flip W axis (NHWC)
-
-        flipped_bboxes = bboxes
-        # x1_new = (w-1) - x2, x2_new = (w-1) - x1
-        x1_new = (w - 1.0) - bboxes[..., 2]
-        y1_new = bboxes[..., 1]
-        x2_new = (w - 1.0) - bboxes[..., 0]
-        y2_new = bboxes[..., 3]
-        flipped_bboxes = tf.stack([x1_new, y1_new, x2_new, y2_new], axis=-1)
-
-        # Swap symmetric pairs: (1,2), (4,5), (7,8)
-        swap_pairs = [(1, 2), (4, 5), (7, 8)]
-        bboxes_list = tf.unstack(flipped_bboxes, axis=1)
-        mask_list = tf.unstack(region_mask, axis=1) if region_mask is not None else None
-        conf_list = tf.unstack(region_confidence, axis=1) if region_confidence is not None else None
-
-        for i, j in swap_pairs:
-            bboxes_list[i], bboxes_list[j] = bboxes_list[j], bboxes_list[i]
-            if mask_list:
-                mask_list[i], mask_list[j] = mask_list[j], mask_list[i]
-            if conf_list:
-                conf_list[i], conf_list[j] = conf_list[j], conf_list[i]
-
-        flipped_bboxes = tf.stack(bboxes_list, axis=1)
-        flipped_mask = tf.stack(mask_list, axis=1) if mask_list else None
-        flipped_conf = tf.stack(conf_list, axis=1) if conf_list else None
-
-        outputs_flipped = self.call(
-            (flipped_image, flipped_bboxes, flipped_mask, flipped_conf), training=False
-        )
-
-        avg_keys = ("logits", "logits_motif", "logits_fused", "semantic_program_scores")
-        avg_outputs = {}
-        for k, val in outputs_orig.items():
-            if k in avg_keys and tf.is_tensor(val) and k in outputs_flipped:
-                avg_outputs[k] = 0.5 * (val + outputs_flipped[k])
+    def call(self, inputs, training: bool = False):
+        """Accept (image,) or (image, bboxes) or dict."""
+        region_mask, region_confidence = None, None
+        if isinstance(inputs, dict):
+            image = inputs["image"]
+            bboxes = inputs.get("bboxes", None)
+            region_mask = inputs.get("region_mask", None)
+            region_confidence = inputs.get("region_confidence", None)
+        elif isinstance(inputs, (list, tuple)):
+            if len(inputs) == 2:
+                image, bboxes = inputs
+            elif len(inputs) == 4:
+                image, bboxes, region_mask, region_confidence = inputs
             else:
-                avg_outputs[k] = val
-        return avg_outputs
+                image = inputs[0]
+                bboxes = None
+        else:
+            image = inputs
+            bboxes = None
+        
+        # Public forward: dispatch to TTA or single-image path (mimicking PyTorch)
+        if len(image.shape) == 5:
+            return self._forward_tta(image, bboxes, region_mask, region_confidence, training)
+            
+        if not training and bboxes is not None:
+            # Horizontal Flip TTA
+            outputs_orig = self._forward_single(image, bboxes, region_mask, region_confidence, training)
+            flipped_image = tf.reverse(image, axis=[-2]) # flip width
+            
+            # Flip bboxes
+            w = float(self.config.bbox_input_size)
+            x1 = (w - 1.0) - bboxes[..., 2]
+            y1 = bboxes[..., 1]
+            x2 = (w - 1.0) - bboxes[..., 0]
+            y2 = bboxes[..., 3]
+            flipped_bboxes = tf.stack([x1, y1, x2, y2], axis=-1)
+            
+            swap_pairs = [(1, 2), (4, 5), (7, 8)]
+            
+            def _swap(tensor):
+                if tensor is None: return None
+                indices = list(range(self.config.num_regions))
+                for l, r in swap_pairs:
+                    indices[l], indices[r] = indices[r], indices[l]
+                return tf.gather(tensor, indices, axis=1)
+
+            flipped_bboxes = _swap(flipped_bboxes)
+            flipped_region_mask = _swap(region_mask)
+            flipped_region_confidence = _swap(region_confidence)
+            
+            outputs_flipped = self._forward_single(
+                flipped_image, flipped_bboxes, flipped_region_mask, flipped_region_confidence, training
+            )
+            
+            avg_outputs = {}
+            _avg_keys = ("logits", "logits_motif", "logits_fused", "semantic_program_scores")
+            for k, val in outputs_orig.items():
+                if k in _avg_keys and k in outputs_flipped:
+                    avg_outputs[k] = 0.5 * (val + outputs_flipped[k])
+                else:
+                    avg_outputs[k] = val
+            return avg_outputs
+
+        return self._forward_single(image, bboxes, region_mask, region_confidence, training=training)
+
+    def _forward_tta(self, image, bboxes, region_mask, region_confidence, training):
+        # image: (B, T, H, W, C)
+        b = tf.shape(image)[0]
+        t = tf.shape(image)[1]
+        h, w, c = image.shape[2:]
+        flat_image = tf.reshape(image, [b * t, h, w, c])
+        
+        flat_bboxes, flat_rmask, flat_rconf = None, None, None
+        if bboxes is not None:
+            flat_bboxes = tf.reshape(tf.tile(bboxes[:, tf.newaxis, :, :], [1, t, 1, 1]), [b * t, -1, 4])
+        if region_mask is not None:
+            flat_rmask = tf.reshape(tf.tile(region_mask[:, tf.newaxis, :], [1, t, 1]), [b * t, -1])
+        if region_confidence is not None:
+            flat_rconf = tf.reshape(tf.tile(region_confidence[:, tf.newaxis, :], [1, t, 1]), [b * t, -1])
+            
+        outputs = self._forward_single(flat_image, flat_bboxes, flat_rmask, flat_rconf, training)
+        
+        _avg_keys = ("logits", "logits_motif", "logits_fused", "semantic_program_scores")
+        for key in _avg_keys:
+            if key in outputs:
+                x = outputs[key]
+                outputs[key] = tf.reduce_mean(tf.reshape(x, [b, t, -1]), axis=1)
+                
+        # For non-averaged keys, keep center-crop
+        center_idx = 4 if image.shape[1] > 4 else image.shape[1] // 2
+        for key, val in list(outputs.items()):
+            if key not in _avg_keys:
+                if isinstance(val, tf.Tensor) and len(val.shape) >= 1 and tf.shape(val)[0] == b * t:
+                    outputs[key] = tf.reshape(val, [b, t] + list(val.shape[1:]))[:, center_idx]
+                    
+        return outputs
+

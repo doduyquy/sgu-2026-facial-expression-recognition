@@ -294,7 +294,7 @@ def main():
         for batch in test_ds:
             if len(batch) >= 3:
                 images, labels, bboxes = batch[0], batch[1], batch[2]
-                outputs = model.call_with_tta(images, bboxes)
+                outputs = model({"image": images, "bboxes": bboxes}, training=False)
             else:
                 images, labels = batch[0], batch[1]
                 outputs = model(images, training=False)
