@@ -129,14 +129,14 @@ def semantic_consistency_loss(
         
         def _add_loss():
             center = tf.reduce_mean(cls_states, axis=0, keepdims=True)
-            return tf.reduce_mean((cls_states - center) ** 2), 1
+            return tf.cast(tf.reduce_mean((cls_states - center) ** 2), tf.float32), tf.constant(1, dtype=tf.int32)
             
         def _skip():
-            return 0.0, 0
+            return tf.constant(0.0, dtype=tf.float32), tf.constant(0, dtype=tf.int32)
             
         var, c = tf.cond(tf.shape(cls_states)[0] >= 2, _add_loss, _skip)
-        loss_acc = loss_acc + tf.cast(var, tf.float32)
-        count = count + tf.cast(c, tf.int32)
+        loss_acc = loss_acc + var
+        count = count + c
 
     return tf.cond(count > 0, lambda: loss_acc / tf.cast(count, tf.float32),
                    lambda: tf.zeros((), dtype=tf.float32))
