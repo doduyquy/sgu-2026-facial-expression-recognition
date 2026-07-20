@@ -3,6 +3,7 @@ _base_: "rafdb_mask_guided_c_adamw_kaggle.yaml"
 # RAF-DB mask-guided ConvNeXt C tuned a bit lighter for RAF-DB.
 
 data:
+  mask_dir: "/kaggle/working/outputs/rafdb_mediapipe_region_masks"
   paired_augmentation:
     enabled: true
     hflip_prob: 0.5
@@ -19,6 +20,7 @@ data:
       hue: 0.0
 
 model:
+  mask_dir: "/kaggle/working/outputs/rafdb_mediapipe_region_masks"
   mask_attention_alpha: 0.2
   classifier_dropout1: 0.25
   classifier_dropout2: 0.15
