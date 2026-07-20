@@ -113,14 +113,31 @@ class SemanticBackbone(tf.keras.layers.Layer):
         base = tf.keras.applications.ResNet50V2(
             include_top=False,
             weights=weights,
-            input_shape=(None, None, 3),
+            input_shape=(48, 48, 3),
         )
+        
+        # Remove early downsampling to match PyTorch SemanticBackbone exactly.
+        def clone_fn(layer):
+            if layer.name == 'conv1_conv':
+                cfg = layer.get_config()
+                cfg['strides'] = (1, 1)
+                return tf.keras.layers.Conv2D.from_config(cfg)
+            if layer.name == 'pool1_pool':
+                cfg = layer.get_config()
+                cfg['strides'] = (1, 1)
+                cfg['pool_size'] = (1, 1)
+                return tf.keras.layers.MaxPooling2D.from_config(cfg)
+            return layer
+            
+        modified_base = tf.keras.models.clone_model(base, clone_function=clone_fn)
+        if weights is not None:
+            modified_base.set_weights(base.get_weights())
+        
         # Extract up to conv4_block6_out (matches layer3 of PyTorch ResNet50 exactly: 1024 channels).
-        # Since ResNet50V2 stem downsamples heavily, we resize the input tensor to 192x192 
-        # before passing it to the backbone. 192 / 16 (stride at conv4) = 12x12 feature map.
+        # Without early downsampling, conv4_block6_out produces 12x12 for a 48x48 input.
         self.feature_extractor = tf.keras.Model(
-            inputs=base.input,
-            outputs=base.get_layer("conv4_block6_out").output,
+            inputs=modified_base.input,
+            outputs=modified_base.get_layer("conv4_block6_out").output,
         )
         # conv4_block6_out has 1024 channels in ResNet50V2
         self.proj = tf.keras.Sequential([
@@ -134,8 +151,6 @@ class SemanticBackbone(tf.keras.layers.Layer):
         # x: (B, H, W, C) NHWC — ensure 3 channels
         if x.shape[-1] == 1:
             x = tf.repeat(x, 3, axis=-1)
-        # Resize input to 192x192 so that conv4_block6_out (stride 16) produces exactly 12x12
-        x = tf.image.resize(x, [192, 192], method="bilinear")
         x = self.feature_extractor(x, training=training)
         return self.proj(x, training=training)
 
