@@ -1212,7 +1212,7 @@ class SemanticROIGraphFER(tf.keras.Model):
         micro_node_features, region_embeddings = self.micro_reasoner(roi_nodes, training=training)
 
         # Missing region token substitution
-        missing_token = tf.reshape(self.missing_region_token, [1, 1, -1])
+        missing_token = tf.cast(tf.reshape(self.missing_region_token, [1, 1, -1]), region_embeddings.dtype)
         region_valid_mask = region_mask[..., tf.newaxis] > 0
         region_embeddings = tf.where(region_valid_mask, region_embeddings,
                                      tf.broadcast_to(missing_token, tf.shape(region_embeddings)))
@@ -1221,6 +1221,9 @@ class SemanticROIGraphFER(tf.keras.Model):
         predicted_confidence = self.region_reliability_predictor(
             region_embeddings, training=training
         )[..., 0]
+        
+        predicted_confidence = tf.cast(predicted_confidence, region_confidence.dtype)
+        
         region_confidence = tf.clip_by_value(
             0.5 * region_confidence + 0.5 * predicted_confidence, 0.0, 1.0
         )
