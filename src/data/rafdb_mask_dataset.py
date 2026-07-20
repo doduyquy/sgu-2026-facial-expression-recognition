@@ -62,18 +62,30 @@ def resolve_mask_root(mask_root, split):
     if (requested / split).exists():
         return requested
 
-    folder_name = requested.name
+    def _find_root_with_split(search_root):
+        if not search_root.exists():
+            return None
+        for current_dir, dirs, _ in os.walk(search_root):
+            current = Path(current_dir)
+            if split in dirs:
+                return current
+        return None
+
+    recursive_candidate = _find_root_with_split(requested)
+    if recursive_candidate is not None:
+        print(f"--> [RAFDBWithMasks] Using discovered mask_root: {recursive_candidate}")
+        return recursive_candidate
+
     search_roots = [Path.cwd()]
     kaggle_input = Path("/kaggle/input")
     if kaggle_input.exists():
         search_roots.insert(0, kaggle_input)
 
     for root in search_roots:
-        for current_dir, dirs, _ in os.walk(root):
-            current = Path(current_dir)
-            if current.name == folder_name and split in dirs:
-                print(f"--> [RAFDBWithMasks] Using discovered mask_root: {current}")
-                return current
+        recursive_candidate = _find_root_with_split(root)
+        if recursive_candidate is not None:
+            print(f"--> [RAFDBWithMasks] Using discovered mask_root: {recursive_candidate}")
+            return recursive_candidate
 
     return requested
 

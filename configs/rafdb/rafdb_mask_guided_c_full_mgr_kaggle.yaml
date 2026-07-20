@@ -1,0 +1,17 @@
+_base_: "rafdb_mask_guided_c_kaggle.yaml"
+
+# RAF-DB full MGR run: keep the SAM recipe, extend training, and monitor validation accuracy.
+
+data:
+  mask_dir: "/kaggle/input/datasets/lhongphuc3/mask-rafdb"
+
+model:
+  mask_dir: "/kaggle/input/datasets/lhongphuc3/mask-rafdb"
+
+training:
+  epochs: 150
+  patience: 30
+  monitor: "val_accuracy"
+
+paths:
+  output_dir: "/kaggle/working/outputs/rafdb_mask_guided_c_full_mgr_seed42_sam"
