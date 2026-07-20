@@ -143,12 +143,18 @@ class SemanticBackbone(tf.keras.layers.Layer):
         self.feature_extractor = tf.keras.models.clone_model(base_sliced, clone_function=clone_fn)
         if weights is not None:
             self.feature_extractor.set_weights(base_sliced.get_weights())
+            
+        # Ensure all layers are trainable, especially BatchNormalization layers
+        # which might get frozen when cloned.
+        for layer in self.feature_extractor.layers:
+            layer.trainable = True
         
         # conv4_block6_out has 1024 channels in ResNet50V2
         self.proj = tf.keras.Sequential([
             tf.keras.layers.Conv2D(feature_dim, kernel_size=1, use_bias=False),
             tf.keras.layers.BatchNormalization(),
             tf.keras.layers.Activation("gelu"),
+            tf.keras.layers.SpatialDropout2D(0.2),  # Added dropout to combat overfitting
         ])
         self.out_channels = feature_dim
 

@@ -26,13 +26,11 @@ def build_augmentation_layers(
 ) -> tf.keras.Sequential:
     """Build augmentation pipeline using tf.keras.layers."""
     layers = []
+    # Native Keras layers for color jitter (spatial is handled in pure TF function now)
     if use_augment:
-        # NOTE: We disabled spatial augmentations (Rotation, Zoom, Translation, Flip) 
-        # because the bounding boxes are static and not updated in tf.data pipeline.
-        # This matches PyTorch's `use_semantic_masks=True` fallback logic.
         layers += [
-            tf.keras.layers.RandomContrast(factor=0.2),
-            tf.keras.layers.RandomBrightness(factor=0.2),
+            tf.keras.layers.RandomContrast(factor=0.3),
+            tf.keras.layers.RandomBrightness(factor=0.3),
         ]
     return tf.keras.Sequential(layers)
 
@@ -47,89 +45,34 @@ def normalize_image(image: tf.Tensor) -> tf.Tensor:
 # CSV-based FER Dataset → tf.data.Dataset
 # ---------------------------------------------------------------------------
 
-def augment_spatial_py(image, bbox):
-    import torch
-    import torchvision.transforms.functional as TF
-    
-    # image: (48, 48, 1) float32, bbox: (9, 4) float32
-    image_t = torch.from_numpy(image).float().permute(2, 0, 1)
-    bboxes_np = bbox.copy()
-    
-    # Synchronized Horizontal Flip
-    if np.random.rand() < 0.5:
-        image_t = torch.flip(image_t, dims=[-1])
-        flipped_bboxes = bboxes_np.copy()
-        flipped_bboxes[:, 0] = 47.0 - bboxes_np[:, 2]
-        flipped_bboxes[:, 2] = 47.0 - bboxes_np[:, 0]
-        
-        swap_pairs = [(1, 2), (4, 5), (7, 8)]
-        for i, j in swap_pairs:
-            tmp = flipped_bboxes[i].copy()
-            flipped_bboxes[i] = flipped_bboxes[j]
-            flipped_bboxes[j] = tmp
-            
-        bboxes_np = flipped_bboxes
-        
-    # Synchronized Random Affine
-    if np.random.rand() < 0.5:
-        angle_deg = np.random.uniform(-10.0, 10.0)
-        tx = np.random.uniform(-4.8, 4.8)
-        ty = np.random.uniform(-4.8, 4.8)
-        scale = np.random.uniform(0.9, 1.1)
-        
-        image_t = TF.affine(
-            image_t,
-            angle=angle_deg,
-            translate=[int(tx), int(ty)],
-            scale=scale,
-            shear=0.0,
-            interpolation=TF.InterpolationMode.BILINEAR
-        )
-        
-        cx, cy = 23.5, 23.5
-        theta = np.radians(angle_deg)
-        cos_t = np.cos(theta)
-        sin_t = np.sin(theta)
-        
-        new_bboxes = bboxes_np.copy()
-        for r in range(len(bboxes_np)):
-            x1, y1, x2, y2 = bboxes_np[r]
-            if x2 - x1 < 2.0 or y2 - y1 < 2.0:
-                continue
-                
-            corners = np.array([
-                [x1, y1], [x2, y1], [x1, y2], [x2, y2]
-            ])
-            dx = corners[:, 0] - cx
-            dy = corners[:, 1] - cy
-            x_new = dx * scale * cos_t + dy * scale * sin_t + cx + tx
-            y_new = -dx * scale * sin_t + dy * scale * cos_t + cy + ty
-            
-            x1_n = np.clip(np.min(x_new), 0.0, 47.0)
-            y1_n = np.clip(np.min(y_new), 0.0, 47.0)
-            x2_n = np.clip(np.max(x_new), 0.0, 47.0)
-            y2_n = np.clip(np.max(y_new), 0.0, 47.0)
-            
-            if (x2_n - x1_n < 2.0) or (y2_n - y1_n < 2.0):
-                new_bboxes[r] = [0.0, 0.0, 47.0, 47.0] # Fallback
-            else:
-                new_bboxes[r] = [x1_n, y1_n, x2_n, y2_n]
-                
-        bboxes_np = new_bboxes
-        
-    image_out = image_t.permute(1, 2, 0).numpy()
-    return image_out, bboxes_np.astype(np.float32)
-
-def augment_spatial_tf(image, bbox):
+@tf.function
+def augment_spatial_tf(image: tf.Tensor, bbox: tf.Tensor):
+    """
+    Pure TensorFlow spatial augmentation (Random Flip) to avoid py_function 
+    random state caching issues in graph mode.
+    """
     image = tf.cast(image, tf.float32)
-    img_out, bbox_out = tf.py_function(
-        func=augment_spatial_py,
-        inp=[image, bbox],
-        Tout=[tf.float32, tf.float32]
-    )
-    img_out.set_shape([48, 48, 1])
-    bbox_out.set_shape([9, 4])
-    return img_out, bbox_out
+    bbox = tf.cast(bbox, tf.float32)
+    
+    do_flip = tf.random.uniform([]) < 0.5
+    
+    def apply_flip():
+        flipped_img = tf.image.flip_left_right(image)
+        # Bbox flip: x1_new = 47.0 - x2, x2_new = 47.0 - x1
+        x1 = 47.0 - bbox[:, 2]
+        y1 = bbox[:, 1]
+        x2 = 47.0 - bbox[:, 0]
+        y2 = bbox[:, 3]
+        
+        flipped_bbox = tf.stack([x1, y1, x2, y2], axis=-1)
+        
+        # Swap symmetric pairs: (1, 2), (4, 5), (7, 8)
+        indices = tf.constant([0, 2, 1, 3, 5, 4, 6, 8, 7], dtype=tf.int32)
+        flipped_bbox = tf.gather(flipped_bbox, indices)
+        return flipped_img, flipped_bbox
+        
+    image, bbox = tf.cond(do_flip, apply_flip, lambda: (image, bbox))
+    return image, bbox
 
 class FERDatasetTF:
     """
