@@ -929,9 +929,10 @@ class SemanticProgramExecutor(tf.keras.layers.Layer):
         # composition_sim: (B, C, M)
         comp_summary = tf.reduce_mean(cross_region_tokens, axis=1)  # (B, D)
         comp_summary = self.program_summary_proj(comp_summary, training=training)
-        prog_summary = self.program_summary_proj(
-            tf.reduce_mean(program_bank, axis=2), training=training
-        )  # (C, M, D)
+        prog_mean = tf.reduce_mean(program_bank, axis=2)  # (C, M, D)
+        prog_mean_flat = tf.reshape(prog_mean, [-1, self.state_dim])
+        prog_summary_flat = self.program_summary_proj(prog_mean_flat, training=training)
+        prog_summary = tf.reshape(prog_summary_flat, [self.num_classes, self.programs_per_class, self.state_dim])
         composition_sim = tf.einsum(
             "bd,cmd->bcm",
             tf.nn.l2_normalize(comp_summary, axis=-1),
