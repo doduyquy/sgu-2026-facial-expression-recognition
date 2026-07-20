@@ -116,29 +116,34 @@ class SemanticBackbone(tf.keras.layers.Layer):
             input_shape=(48, 48, 3),
         )
         
+        # Slice the base model first to prevent KeyError on cloned nodes
+        base_sliced = tf.keras.Model(
+            inputs=base.input,
+            outputs=base.get_layer("conv4_block6_out").output,
+        )
+        
         # Remove early downsampling to match PyTorch SemanticBackbone exactly.
         def clone_fn(layer):
             if layer.name == 'conv1_conv':
                 cfg = layer.get_config()
                 cfg['strides'] = (1, 1)
                 return tf.keras.layers.Conv2D.from_config(cfg)
+            if layer.name == 'pool1_pad':
+                cfg = layer.get_config()
+                cfg['padding'] = ((0, 0), (0, 0))
+                return tf.keras.layers.ZeroPadding2D.from_config(cfg)
             if layer.name == 'pool1_pool':
                 cfg = layer.get_config()
                 cfg['strides'] = (1, 1)
                 cfg['pool_size'] = (1, 1)
+                cfg['padding'] = 'same'
                 return tf.keras.layers.MaxPooling2D.from_config(cfg)
             return layer
             
-        modified_base = tf.keras.models.clone_model(base, clone_function=clone_fn)
+        self.feature_extractor = tf.keras.models.clone_model(base_sliced, clone_function=clone_fn)
         if weights is not None:
-            modified_base.set_weights(base.get_weights())
+            self.feature_extractor.set_weights(base_sliced.get_weights())
         
-        # Extract up to conv4_block6_out (matches layer3 of PyTorch ResNet50 exactly: 1024 channels).
-        # Without early downsampling, conv4_block6_out produces 12x12 for a 48x48 input.
-        self.feature_extractor = tf.keras.Model(
-            inputs=modified_base.input,
-            outputs=modified_base.get_layer("conv4_block6_out").output,
-        )
         # conv4_block6_out has 1024 channels in ResNet50V2
         self.proj = tf.keras.Sequential([
             tf.keras.layers.Conv2D(feature_dim, kernel_size=1, use_bias=False),
