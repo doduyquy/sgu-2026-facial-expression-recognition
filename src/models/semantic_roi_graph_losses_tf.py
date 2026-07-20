@@ -122,14 +122,21 @@ def semantic_consistency_loss(
     loss_acc = tf.constant(0.0, dtype=tf.float32)
     count = tf.constant(0, dtype=tf.int32)
 
-    for cls in tf.unstack(unique_classes):
+    for i in tf.range(tf.shape(unique_classes)[0]):
+        cls = unique_classes[i]
         mask = tf.equal(labels_flat, cls)
         cls_states = tf.boolean_mask(pooled, mask)
-        if tf.shape(cls_states)[0] < 2:
-            continue
-        center = tf.reduce_mean(cls_states, axis=0, keepdims=True)
-        loss_acc = loss_acc + tf.reduce_mean((cls_states - center) ** 2)
-        count = count + 1
+        
+        def _add_loss():
+            center = tf.reduce_mean(cls_states, axis=0, keepdims=True)
+            return tf.reduce_mean((cls_states - center) ** 2), 1
+            
+        def _skip():
+            return 0.0, 0
+            
+        var, c = tf.cond(tf.shape(cls_states)[0] >= 2, _add_loss, _skip)
+        loss_acc = loss_acc + tf.cast(var, tf.float32)
+        count = count + tf.cast(c, tf.int32)
 
     return tf.cond(count > 0, lambda: loss_acc / tf.cast(count, tf.float32),
                    lambda: tf.zeros((), dtype=tf.float32))
