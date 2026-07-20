@@ -187,8 +187,8 @@ class SemanticRoiAlign(tf.keras.layers.Layer):
         # crop_and_resize expects [y1,x1,y2,x2]
         boxes_yx = np.stack([boxes_norm[:, 1], boxes_norm[:, 0],
                               boxes_norm[:, 3], boxes_norm[:, 2]], axis=-1)
-        return tf.constant(np.tile(boxes_yx[np.newaxis], [batch_size, 1, 1]),
-                           dtype=tf.float32)  # (B, 9, 4)
+        boxes_tf = tf.constant(boxes_yx[np.newaxis], dtype=tf.float32)
+        return tf.tile(boxes_tf, [batch_size, 1, 1])  # (B, 9, 4)
 
     def _validate_bboxes(self, bboxes: tf.Tensor) -> tf.Tensor:
         """Clamp and repair bboxes — mirrors PyTorch validate_bboxes."""
@@ -1127,9 +1127,8 @@ class SemanticROIGraphFER(tf.keras.Model):
 
     def _canonical_bboxes(self, batch_size: int) -> tf.Tensor:
         boxes = _CANONICAL_BOXES_48.copy() * (float(self.config.bbox_input_size) / 48.0)
-        return tf.constant(
-            np.tile(boxes[np.newaxis], [batch_size, 1, 1]), dtype=tf.float32
-        )
+        boxes_tf = tf.constant(boxes[np.newaxis], dtype=tf.float32)
+        return tf.tile(boxes_tf, [batch_size, 1, 1])
 
     def _prepare_regions(self, bboxes, batch_size, training):
         R = self.config.num_regions
