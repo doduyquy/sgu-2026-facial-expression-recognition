@@ -207,6 +207,27 @@ class LandmarkPairedTransform(torch.nn.Module):
         self.image_size = config["data"].get("image_size", 48)
         self.channels = config["data"].get("channels", 1)
         self.normalize = config["data"].get("normalize", True)
+        train_aug_cfg = config.get("augmentation", {}).get("train", {})
+        paired_aug_cfg = config.get("data", {}).get("paired_augmentation", {})
+        aug_cfg = {**train_aug_cfg, **paired_aug_cfg}
+        self.train_aug_enabled = bool(aug_cfg.get("enabled", True))
+        self.hflip_prob = float(aug_cfg.get("hflip_prob", 0.5))
+        self.rotation_degrees = float(aug_cfg.get("rotation_degrees", 15.0))
+        self.gamma_prob = float(aug_cfg.get("gamma_prob", 0.5))
+        self.gamma_range = _pair_from_config(aug_cfg.get("gamma_range", None), (0.5, 2.0))
+        self.random_erasing_prob = float(aug_cfg.get("random_erasing_prob", 0.4))
+        self.random_erasing_scale = _pair_from_config(
+            aug_cfg.get("random_erasing_scale", None),
+            (0.02, 0.15),
+        )
+        self.random_erasing_value = aug_cfg.get("random_erasing_value", "random")
+        jitter_cfg = aug_cfg.get("color_jitter", {})
+        if jitter_cfg is None:
+            jitter_cfg = {}
+        self.color_jitter_brightness = float(jitter_cfg.get("brightness", 0.15))
+        self.color_jitter_contrast = float(jitter_cfg.get("contrast", 0.15))
+        self.color_jitter_saturation = float(jitter_cfg.get("saturation", 0.0))
+        self.color_jitter_hue = float(jitter_cfg.get("hue", 0.0))
 
         if self.channels == 3:
             self.mean = [0.485, 0.456, 0.406]
@@ -217,9 +238,18 @@ class LandmarkPairedTransform(torch.nn.Module):
 
         self.to_channels = ToChannels(self.channels)
         self.resize = v2.Resize((self.image_size, self.image_size))
-        self.color_jitter = v2.ColorJitter(brightness=0.15, contrast=0.15)
-        self.random_gamma = RandomGamma(p=0.5, gamma_range=(0.5, 2.0))
-        self.random_erasing = v2.RandomErasing(p=0.4, scale=(0.02, 0.15), value="random")
+        self.color_jitter = v2.ColorJitter(
+            brightness=self.color_jitter_brightness,
+            contrast=self.color_jitter_contrast,
+            saturation=self.color_jitter_saturation,
+            hue=self.color_jitter_hue,
+        )
+        self.random_gamma = RandomGamma(p=self.gamma_prob, gamma_range=self.gamma_range)
+        self.random_erasing = v2.RandomErasing(
+            p=self.random_erasing_prob,
+            scale=self.random_erasing_scale,
+            value=self.random_erasing_value,
+        )
         self.accepts_label = True
         self.class_aware = ClassAwareAugment(config)
 
@@ -227,23 +257,27 @@ class LandmarkPairedTransform(torch.nn.Module):
         img = self.to_channels(img)
         img = self.resize(img)
 
-        if self.split == "train":
-            if torch.rand(1).item() < 0.5:
+        if self.split == "train" and self.train_aug_enabled:
+            if self.hflip_prob > 0.0 and torch.rand(1).item() < self.hflip_prob:
                 img = TF.hflip(img)
                 masks = torch.flip(masks, dims=[-1])
 
-            angle = torch.empty(1).uniform_(-15.0, 15.0).item()
-            img = TF.rotate(
-                img,
-                angle=angle,
-                interpolation=InterpolationMode.NEAREST,
-            )
-            masks = TF.rotate(
-                masks,
-                angle=angle,
-                interpolation=InterpolationMode.BILINEAR,
-            )
-            masks = masks.clamp_(0.0, 1.0)
+            if self.rotation_degrees > 0.0:
+                angle = torch.empty(1).uniform_(
+                    -self.rotation_degrees,
+                    self.rotation_degrees,
+                ).item()
+                img = TF.rotate(
+                    img,
+                    angle=angle,
+                    interpolation=InterpolationMode.NEAREST,
+                )
+                masks = TF.rotate(
+                    masks,
+                    angle=angle,
+                    interpolation=InterpolationMode.BILINEAR,
+                )
+                masks = masks.clamp_(0.0, 1.0)
 
             img = self.color_jitter(img)
             img = self.random_gamma(img)
@@ -259,7 +293,7 @@ class LandmarkPairedTransform(torch.nn.Module):
         if self.normalize:
             img = v2.Normalize(mean=self.mean, std=self.std)(img)
 
-        if self.split == "train":
+        if self.split == "train" and self.train_aug_enabled:
             img = self.random_erasing(img)
             img = self.class_aware.apply_to_tensor(img, class_aware_params)
 

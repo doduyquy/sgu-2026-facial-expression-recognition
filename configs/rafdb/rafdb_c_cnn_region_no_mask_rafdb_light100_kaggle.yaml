@@ -1,0 +1,34 @@
+_base_: "rafdb_c_cnn_region_no_mask_adamw_kaggle.yaml"
+
+# RAF-DB no-mask region ablation tuned a bit lighter for RAF-DB.
+
+data:
+  paired_augmentation:
+    enabled: true
+    hflip_prob: 0.5
+    rotation_degrees: 10
+    gamma_prob: 0.3
+    gamma_range: [0.8, 1.3]
+    random_erasing_prob: 0.10
+    random_erasing_scale: [0.02, 0.10]
+    random_erasing_value: "random"
+    color_jitter:
+      brightness: 0.10
+      contrast: 0.10
+      saturation: 0.05
+      hue: 0.0
+
+model:
+  classifier_dropout1: 0.25
+  classifier_dropout2: 0.15
+  cnn_aux_dropout: 0.15
+  attention_logit_weight: 0.3
+  cnn_aux_logit_weight: 0.7
+
+training:
+  epochs: 100
+  patience: 20
+  monitor: "val_accuracy"
+
+paths:
+  output_dir: "/kaggle/working/outputs/rafdb_c_cnn_region_no_mask_seed42_light100_adamw"

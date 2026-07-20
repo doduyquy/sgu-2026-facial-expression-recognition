@@ -354,6 +354,14 @@ def save_history(output_dir, history):
         writer.writerows(history)
 
 
+def format_monitor_value(monitor, metrics):
+    if monitor == "val_loss":
+        return metrics["loss"]
+    if monitor == "val_accuracy":
+        return metrics["accuracy"]
+    return metrics["macro_f1"]
+
+
 def write_class_counts(output_dir, counts):
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / "class_counts.csv"
@@ -478,6 +486,7 @@ def main():
             "train_accuracy": train_metrics["accuracy"],
             "train_ortho_loss": train_metrics["ortho_loss"],
             "train_coarse_aux_loss": train_metrics["coarse_aux_loss"],
+            "train_prior_align_loss": 0.0,
             "val_loss": val_metrics["loss"],
             "val_accuracy": val_metrics["accuracy"],
             "val_macro_f1": val_metrics["macro_f1"],
@@ -489,12 +498,26 @@ def main():
         print(
             f"Epoch {epoch}/{epochs} - "
             f"loss: {train_metrics['loss']:.4f} "
-            f"(ortho: {train_metrics['ortho_loss']:.4f}, coarse_aux: {train_metrics['coarse_aux_loss']:.4f}) - "
+            f"(ortho: {train_metrics['ortho_loss']:.4f}, "
+            f"coarse_aux: {train_metrics['coarse_aux_loss']:.4f}, "
+            f"prior_align: 0.0000) - "
             f"accuracy: {train_metrics['accuracy']:.4f} - "
             f"val_loss: {val_metrics['loss']:.4f} - "
             f"val_accuracy: {val_metrics['accuracy']:.4f} - "
             f"val_macro_f1: {val_metrics['macro_f1']:.4f}"
         )
+        if improved:
+            print(
+                f"\t--- Save best at ep {epoch}, "
+                f"val_loss: {val_metrics['loss']:.4f}, "
+                f"val_accuracy: {val_metrics['accuracy']:.4f}, "
+                f"val_macro_f1: {val_metrics['macro_f1']:.4f}, "
+                f"monitor: {monitor}, "
+                f"score: {format_monitor_value(monitor, val_metrics):.4f}, "
+                f"path: {best_path} ---"
+            )
+        else:
+            print(f"\t-!- No improvement: {stale_epochs}/{patience}")
 
         if patience > 0 and stale_epochs >= patience:
             print(f"--> Early stopping after {patience} epochs without {monitor} improvement.")

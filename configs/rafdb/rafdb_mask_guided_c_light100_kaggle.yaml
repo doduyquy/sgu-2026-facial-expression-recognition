@@ -1,0 +1,36 @@
+_base_: "rafdb_mask_guided_c_adamw_kaggle.yaml"
+
+# RAF-DB mask-guided ConvNeXt C tuned a bit lighter for RAF-DB.
+
+data:
+  paired_augmentation:
+    enabled: true
+    hflip_prob: 0.5
+    rotation_degrees: 10
+    gamma_prob: 0.3
+    gamma_range: [0.8, 1.3]
+    random_erasing_prob: 0.10
+    random_erasing_scale: [0.02, 0.10]
+    random_erasing_value: "random"
+    color_jitter:
+      brightness: 0.10
+      contrast: 0.10
+      saturation: 0.05
+      hue: 0.0
+
+model:
+  mask_attention_alpha: 0.2
+  classifier_dropout1: 0.25
+  classifier_dropout2: 0.15
+  cnn_aux_dropout: 0.15
+  attention_logit_weight: 0.3
+  cnn_aux_logit_weight: 0.7
+
+training:
+  optimizer: "adamw"
+  epochs: 100
+  patience: 20
+  monitor: "val_accuracy"
+
+paths:
+  output_dir: "/kaggle/working/outputs/rafdb_mask_guided_c_cnn_region_logits_light100_seed42_adamw"
