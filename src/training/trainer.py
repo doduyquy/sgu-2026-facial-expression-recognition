@@ -194,106 +194,121 @@ class Trainer:
 
             loss_mode = self.config.get('training', {}).get('loss', 'cross_entropy')
 
-            if bboxes is not None:
-                if isinstance(semantic_meta, dict) and "region_mask" in semantic_meta:
-                    region_mask = semantic_meta["region_mask"].to(self.device)
-                    region_confidence = semantic_meta.get("region_confidence", None)
-                    if region_confidence is not None:
-                        region_confidence = region_confidence.to(self.device)
-                    outputs = self.model(
-                        images,
-                        bboxes,
-                        region_mask=region_mask,
-                        region_confidence=region_confidence,
-                    )
+            def compute_loss_and_backward(is_first_step=True):
+                if bboxes is not None:
+                    if isinstance(semantic_meta, dict) and "region_mask" in semantic_meta:
+                        region_mask = semantic_meta["region_mask"].to(self.device)
+                        region_confidence = semantic_meta.get("region_confidence", None)
+                        if region_confidence is not None:
+                            region_confidence = region_confidence.to(self.device)
+                        outputs = self.model(
+                            images,
+                            bboxes,
+                            region_mask=region_mask,
+                            region_confidence=region_confidence,
+                        )
+                    else:
+                        outputs = self.model(images, bboxes)
+                elif hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
+                    outputs = self.model(images, targets=labels)
                 else:
-                    outputs = self.model(images, bboxes)
-            elif hasattr(self.model, 'forward') and 'targets' in self.model.forward.__code__.co_varnames:
-                outputs = self.model(images, targets=labels)
-            else:
-                outputs = self.model(images)
-            logits = self._extract_logits(outputs)
-            if logits is None:
-                raise ValueError("Model outputs do not contain 'logits'. When returning a dict from forward(), include a 'logits' key with classification scores.")
+                    outputs = self.model(images)
+                    
+                logits = self._extract_logits(outputs)
+                if logits is None:
+                    raise ValueError("Model outputs do not contain 'logits'.")
 
-            runtime_use_scn = getattr(self, '_runtime_use_scn', self.use_scn)
+                runtime_use_scn = getattr(self, '_runtime_use_scn', self.use_scn)
 
-            if mixup_active:
-                try:
-                    cls_loss = lam * F.cross_entropy(logits, labels_a) + (1.0 - lam) * F.cross_entropy(logits, labels_b)
-                except Exception:
-                    cls_loss = self._base_criterion(logits, labels)
-            elif loss_mode == 'semantic_roi_graph':
-                # Use the standalone loss function that reads weights from config
-                class_weights = getattr(self._base_criterion, 'weight', None)
-                loss_dict = compute_semantic_roi_graph_losses(self.model, outputs, labels, class_weights=class_weights)
-                cls_loss = loss_dict["loss"]
-                # Accumulate component values for later WandB logging
-                for _k, _v in loss_dict.items():
-                    if _k != "loss" and torch.is_tensor(_v):
-                        _component_accum.setdefault(_k, []).append(float(_v.item()))
-                # Log fusion gate / scale stats
-                _gate = outputs.get("structure_gate")
-                if _gate is not None:
-                    _component_accum.setdefault("_fusion_gate_mean", []).append(float(_gate.mean().detach().cpu()))
-                    _component_accum.setdefault("_fusion_gate_min", []).append(float(_gate.min().detach().cpu()))
-                    _component_accum.setdefault("_fusion_gate_max", []).append(float(_gate.max().detach().cpu()))
-                _fs = outputs.get("fusion_scale")
-                if _fs is not None:
-                    _component_accum.setdefault("_fusion_scale", []).append(float(_fs.detach().cpu()))
-            else:
-                if runtime_use_scn and getattr(self, '_current_epoch', 0) >= getattr(self, 'scn_warmup_epochs', 0):
+                if mixup_active:
                     try:
-                        cls_loss, scn_logs = self._scn_loss(logits, labels)
-                        _scn_acc["scn_weight_mean"].append(scn_logs.get("scn_weight_mean", 0.0))
-                        _scn_acc["scn_conf_mean"].append(scn_logs.get("scn_conf_mean", 0.0))
-                        _scn_acc["scn_rank_loss"].append(scn_logs.get("scn_rank_loss", 0.0))
+                        cls_loss = lam * F.cross_entropy(logits, labels_a) + (1.0 - lam) * F.cross_entropy(logits, labels_b)
                     except Exception:
                         cls_loss = self._base_criterion(logits, labels)
+                elif loss_mode == 'semantic_roi_graph':
+                    # Use the standalone loss function that reads weights from config
+                    class_weights = getattr(self._base_criterion, 'weight', None)
+                    loss_dict = compute_semantic_roi_graph_losses(self.model, outputs, labels, class_weights=class_weights)
+                    cls_loss = loss_dict["loss"]
+                    # Accumulate component values for later WandB logging
+                    if is_first_step:
+                        for _k, _v in loss_dict.items():
+                            if _k != "loss" and torch.is_tensor(_v):
+                                _component_accum.setdefault(_k, []).append(float(_v.item()))
+                        # Log fusion gate / scale stats
+                        _gate = outputs.get("structure_gate")
+                        if _gate is not None:
+                            _component_accum.setdefault("_fusion_gate_mean", []).append(float(_gate.mean().detach().cpu()))
+                            _component_accum.setdefault("_fusion_gate_min", []).append(float(_gate.min().detach().cpu()))
+                            _component_accum.setdefault("_fusion_gate_max", []).append(float(_gate.max().detach().cpu()))
+                        _fs = outputs.get("fusion_scale")
+                        if _fs is not None:
+                            _component_accum.setdefault("_fusion_scale", []).append(float(_fs.detach().cpu()))
                 else:
-                    cls_loss = self._base_criterion(logits, labels)
+                    if runtime_use_scn and getattr(self, '_current_epoch', 0) >= getattr(self, 'scn_warmup_epochs', 0):
+                        try:
+                            cls_loss, scn_logs = self._scn_loss(logits, labels)
+                            if is_first_step:
+                                _scn_acc["scn_weight_mean"].append(scn_logs.get("scn_weight_mean", 0.0))
+                                _scn_acc["scn_conf_mean"].append(scn_logs.get("scn_conf_mean", 0.0))
+                                _scn_acc["scn_rank_loss"].append(scn_logs.get("scn_rank_loss", 0.0))
+                        except Exception:
+                            cls_loss = self._base_criterion(logits, labels)
+                    else:
+                        cls_loss = self._base_criterion(logits, labels)
 
-            loss = cls_loss
+                loss = cls_loss
 
-            # Extract and add scheduled motif losses
-            aux_losses = self._extract_aux_losses(outputs)
+                # Extract and add scheduled motif losses
+                aux_losses = self._extract_aux_losses(outputs)
 
-            # When using the dedicated semantic ROI graph loss (model.compute_losses()),
-            # the model already computes and weights motif/contrastive/consistency components.
-            # Avoid adding those auxiliary motif losses again from `outputs` to prevent
-            # double-counting. Still allow other auxiliary regularizers (e.g. attn_entropy,
-            # offset_reg) if present.
-            if loss_mode == 'semantic_roi_graph':
-                skip_aux = {"motif_diversity", "motif_consistency", "au_contrastive"}
+                if loss_mode == 'semantic_roi_graph':
+                    skip_aux = {"motif_diversity", "motif_consistency", "au_contrastive"}
+                else:
+                    skip_aux = set()
+
+                if "motif_diversity" in aux_losses and "motif_diversity" not in skip_aux:
+                    loss = loss + w_div * aux_losses["motif_diversity"]
+                if "motif_consistency" in aux_losses and "motif_consistency" not in skip_aux:
+                    loss = loss + w_consist * aux_losses["motif_consistency"]
+                if "attn_entropy" in aux_losses and "attn_entropy" not in skip_aux:
+                    loss = loss + w_ent * aux_losses["attn_entropy"]
+                if "offset_reg" in aux_losses and "offset_reg" not in skip_aux:
+                    loss = loss + w_off * aux_losses["offset_reg"]
+                if "au_contrastive" in aux_losses and "au_contrastive" not in skip_aux:
+                    loss = loss + w_contrastive * aux_losses["au_contrastive"]
+
+                # Fallback for other unrecognized auxiliary losses
+                for k, v in aux_losses.items():
+                    if k in skip_aux:
+                        continue
+                    if k not in ["motif_diversity", "motif_consistency", "attn_entropy", "offset_reg", "au_contrastive"]:
+                        w_other = self.config.get('training', {}).get(f'{k}_weight', 0.1)
+                        loss = loss + float(w_other) * v
+
+                loss.backward()
+                try:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
+                except Exception:
+                    pass
+                    
+                return loss, logits
+
+            # --- Execute Forward/Backward ---
+            loss, logits = compute_loss_and_backward(is_first_step=True)
+            
+            from src.training.optimizer import SAM
+            if isinstance(self.optimizer, SAM):
+                # 1. Update weights with perturbed gradients
+                self.optimizer.first_step(zero_grad=True)
+                # 2. Re-evaluate loss at perturbed position
+                compute_loss_and_backward(is_first_step=False)
+                # 3. Un-perturb weights and take the final step
+                self.optimizer.second_step(zero_grad=True)
             else:
-                skip_aux = set()
-
-            if "motif_diversity" in aux_losses and "motif_diversity" not in skip_aux:
-                loss = loss + w_div * aux_losses["motif_diversity"]
-            if "motif_consistency" in aux_losses and "motif_consistency" not in skip_aux:
-                loss = loss + w_consist * aux_losses["motif_consistency"]
-            if "attn_entropy" in aux_losses and "attn_entropy" not in skip_aux:
-                loss = loss + w_ent * aux_losses["attn_entropy"]
-            if "offset_reg" in aux_losses and "offset_reg" not in skip_aux:
-                loss = loss + w_off * aux_losses["offset_reg"]
-            if "au_contrastive" in aux_losses and "au_contrastive" not in skip_aux:
-                loss = loss + w_contrastive * aux_losses["au_contrastive"]
-
-            # Fallback for other unrecognized auxiliary losses
-            for k, v in aux_losses.items():
-                if k in skip_aux:
-                    continue
-                if k not in ["motif_diversity", "motif_consistency", "attn_entropy", "offset_reg", "au_contrastive"]:
-                    w_other = self.config.get('training', {}).get(f'{k}_weight', 0.1)
-                    loss = loss + float(w_other) * v
-
-            loss.backward()
-            try:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
-            except Exception:
-                pass
+                self.optimizer.step()
+                self.optimizer.zero_grad()
                 
-            self.optimizer.step()
             if hasattr(self, 'ema_model'):
                 self.ema_model.update_parameters(self.model)
 
