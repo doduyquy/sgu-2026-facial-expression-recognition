@@ -114,18 +114,50 @@ class HRNetBackbone(nn.Module):
 
     def __init__(self, feature_dim: int = 256, use_pretrained: bool = True):
         super().__init__()
-        # Use timm to create hrnet_w18 returning features from all stages
+        # Use default stride (2,2) for conv1 to preserve ImageNet pre-training receptive fields
         self.hrnet = timm.create_model('hrnet_w18', pretrained=use_pretrained, features_only=True)
         
-        # Modify stem to preserve resolution (48x48 -> 48x48 instead of downsampling)
-        if hasattr(self.hrnet, 'conv1'):
-            self.hrnet.conv1.stride = (1, 1)
-            
-        # Dynamically calculate the concatenated channel size
         with torch.no_grad():
-            dummy = torch.zeros(1, 3, 48, 48)
+            # Dummy 96x96 to match the upsampled input in forward
+            dummy = torch.zeros(1, 3, 96, 96)
             feats = self.hrnet(dummy)
-            total_channels = sum([f.shape[1] for f in feats])
+            
+        self.target_size = (12, 12)
+        self.adapters = nn.ModuleList()
+        total_channels = 0
+        
+        for f in feats:
+            ch = f.shape[1]
+            sz = f.shape[2]
+            total_channels += ch
+            
+            # Create strided adapters instead of simple bilinear interpolation
+            if sz == 48:
+                # Downsample 4x (48 -> 12)
+                self.adapters.append(nn.Conv2d(ch, ch, kernel_size=4, stride=4, groups=ch))
+            elif sz == 24:
+                # Downsample 2x (24 -> 12)
+                self.adapters.append(nn.Conv2d(ch, ch, kernel_size=2, stride=2, groups=ch))
+            elif sz == 12:
+                # No change
+                self.adapters.append(nn.Identity())
+            elif sz == 6:
+                # Upsample 2x (6 -> 12)
+                self.adapters.append(nn.ConvTranspose2d(ch, ch, kernel_size=2, stride=2, groups=ch))
+            elif sz == 3:
+                # Upsample 4x (3 -> 12)
+                self.adapters.append(nn.ConvTranspose2d(ch, ch, kernel_size=4, stride=4, groups=ch))
+            else:
+                self.adapters.append(nn.Identity())
+                
+        # Channel Attention (Squeeze-and-Excitation) for multi-scale fusion
+        self.se = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(total_channels, total_channels // 16, 1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(total_channels // 16, total_channels, 1, bias=False),
+            nn.Sigmoid()
+        )
             
         self.proj = nn.Sequential(
             nn.Conv2d(total_channels, feature_dim, kernel_size=1, bias=False),
@@ -135,22 +167,29 @@ class HRNetBackbone(nn.Module):
         self.out_channels = feature_dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Fallback for 1-channel grayscale images
+        # Upsample 48x48 to 96x96 to utilize pre-trained stride=(2,2) effectively
+        if x.shape[2:] == (48, 48):
+            x = F.interpolate(x, size=(96, 96), mode='bilinear', align_corners=False)
+            
         if x.shape[1] == 1:
             x = x.repeat(1, 3, 1, 1)
             
         feats = self.hrnet(x)
-        # Fuse multi-resolution features by resizing all to 12x12
-        target_size = (12, 12)
+        
         fused = []
-        for f in feats:
-            if f.shape[2:] != target_size:
-                f = F.interpolate(f, size=target_size, mode='bilinear', align_corners=False)
-            fused.append(f)
+        for i, f in enumerate(feats):
+            f_adapted = self.adapters[i](f)
+            # Fallback resize just in case mathematical bounds miss slightly
+            if f_adapted.shape[2:] != self.target_size:
+                f_adapted = F.interpolate(f_adapted, size=self.target_size, mode='bilinear', align_corners=False)
+            fused.append(f_adapted)
             
-        # Concatenate all features
-        x = torch.cat(fused, dim=1)
-        return self.proj(x)
+        x_cat = torch.cat(fused, dim=1)
+        
+        # Apply Channel Attention
+        x_attn = x_cat * self.se(x_cat)
+        
+        return self.proj(x_attn)
 
 
 class SemanticRoiAlign(nn.Module):
