@@ -1,0 +1,27 @@
+_base_: "rafdb_mask_guided_c_full_mgr_kaggle.yaml"
+
+# RAF-DB best-candidate rerun from the post-hoc inference study.
+# Train recipe:
+# - Full MGR/SAM recipe inherited from rafdb_mask_guided_c_full_mgr_kaggle.yaml
+# - 100 epochs, selected by validation accuracy
+# - Stronger mask prior: alpha = 0.40
+# - CNN/region logit fusion close to the best advanced-TTA setting:
+#   final logits = 0.86 * CNN aux logits + 0.14 * region-attention logits
+#
+# Evaluation note:
+# The best observed test-time setting used combined_light TTA + prob_avg with
+# cnn_weight=0.86 and region_weight=0.14. Use scripts/evaluate_rafdb_advanced_tta.py
+# after training to reproduce that evaluation protocol.
+
+model:
+  mask_attention_alpha: 0.40
+  attention_logit_weight: 0.14
+  cnn_aux_logit_weight: 0.86
+
+training:
+  epochs: 100
+  patience: 100
+  monitor: "val_accuracy"
+
+paths:
+  output_dir: "/kaggle/working/outputs/rafdb_mgr_full_best_a040_f086_014_100ep"
