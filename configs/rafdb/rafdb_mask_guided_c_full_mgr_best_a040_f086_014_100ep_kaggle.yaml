@@ -20,7 +20,7 @@ model:
 
 training:
   epochs: 100
-  patience: 100
+  patience: 25
   monitor: "val_accuracy"
 
 paths:
