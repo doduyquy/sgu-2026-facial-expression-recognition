@@ -1,0 +1,36 @@
+_base_: "rafdb_mask_guided_c_full_mgr_kaggle.yaml"
+
+# RAF-DB MGR-CNN with rescued MediaPipe masks and learnable CNN/region logit fusion.
+#
+# The model learns a scalar w for final-logit fusion:
+#   final_logits = w * cnn_aux_logits + (1 - w) * region_attention_logits
+#
+# Initial w is set from the best exploratory RAF-DB sweep (CNN=0.86, region=0.14),
+# but w is trainable and will be logged during training as:
+#   fusion_w: cnn=..., region=...
+
+data:
+  mask_dir: "/kaggle/input/datasets/lhongphuc/maskrafdbverbest"
+
+model:
+  mask_dir: "/kaggle/input/datasets/lhongphuc/maskrafdbverbest"
+  mask_attention_alpha: 0.40
+
+  logit_fusion: "cnn_aux_sum"
+  finetune_logit_fusion: "cnn_aux_sum"
+  learnable_logit_fusion: true
+  learnable_logit_fusion_init: 0.86
+  learnable_logit_fusion_min: 0.05
+  learnable_logit_fusion_max: 0.95
+
+  # Fixed-fusion fallback/documentation only; ignored when learnable_logit_fusion=true.
+  cnn_aux_logit_weight: 0.86
+  attention_logit_weight: 0.14
+
+training:
+  epochs: 100
+  patience: 25
+  monitor: "val_accuracy"
+
+paths:
+  output_dir: "/kaggle/working/outputs/rafdb_mgr_maskbest_a040_learnable_fusion_100ep"
