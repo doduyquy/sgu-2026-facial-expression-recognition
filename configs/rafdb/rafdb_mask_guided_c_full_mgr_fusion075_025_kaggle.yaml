@@ -1,0 +1,10 @@
+_base_: "rafdb_mask_guided_c_full_mgr_kaggle.yaml"
+
+# Full MGR RAF-DB fusion sweep: give the region-attention branch a bit more weight.
+
+model:
+  attention_logit_weight: 0.25
+  cnn_aux_logit_weight: 0.75
+
+paths:
+  output_dir: "/kaggle/working/outputs/rafdb_mgr_full_f075_025"

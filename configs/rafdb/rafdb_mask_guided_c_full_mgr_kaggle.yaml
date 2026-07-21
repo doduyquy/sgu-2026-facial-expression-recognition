@@ -14,4 +14,4 @@ training:
   monitor: "val_accuracy"
 
 paths:
-  output_dir: "/kaggle/working/outputs/rafdb_mask_guided_c_full_mgr_seed42_sam"
+  output_dir: "/kaggle/working/outputs/rafdb_mgr_full_a030_f080_020"

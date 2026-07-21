@@ -1,0 +1,10 @@
+_base_: "rafdb_mask_guided_c_full_mgr_kaggle.yaml"
+
+# Full MGR RAF-DB fusion sweep: rely a bit more on the CNN auxiliary logits.
+
+model:
+  attention_logit_weight: 0.15
+  cnn_aux_logit_weight: 0.85
+
+paths:
+  output_dir: "/kaggle/working/outputs/rafdb_mgr_full_f085_015"

@@ -1,0 +1,9 @@
+_base_: "rafdb_mask_guided_c_full_mgr_kaggle.yaml"
+
+# Full MGR RAF-DB alpha sweep: slightly stronger mask prior than alpha 0.3.
+
+model:
+  mask_attention_alpha: 0.35
+
+paths:
+  output_dir: "/kaggle/working/outputs/rafdb_mgr_full_a035"

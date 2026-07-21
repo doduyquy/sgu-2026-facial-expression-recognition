@@ -31,4 +31,4 @@ training:
   monitor: "val_accuracy"
 
 paths:
-  output_dir: "/kaggle/working/outputs/rafdb_c_cnn_region_no_mask_seed42_light100_adamw"
+  output_dir: "/kaggle/working/outputs/rafdb_mgr_nomask_adamw"
