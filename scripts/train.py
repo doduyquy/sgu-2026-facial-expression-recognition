@@ -139,7 +139,7 @@ def main():
 
     # test data path
     testset_path = os.path.join(data_path, "test.csv")
-    evaluate_and_show(model, test_loader, testset_path, device, eval_dir_path, use_tta=False)
+    evaluate_and_show(model, test_loader, testset_path, device, eval_dir_path, use_tta=True)
     
     # upload best ckpt to wandb
     if config['logging'].get('use_wandb', True):
