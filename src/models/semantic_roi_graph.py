@@ -147,6 +147,33 @@ class HRNetBackbone(nn.Module):
         return self.proj(x)
 
 
+class ConvNeXtBackbone(nn.Module):
+    """ConvNeXt Tiny backbone with spatial upsampling to preserve details."""
+    def __init__(self, feature_dim: int = 256, use_pretrained: bool = True):
+        super().__init__()
+        self.convnext = timm.create_model('convnext_tiny', pretrained=use_pretrained, features_only=True, out_indices=[2])
+        
+        # Stage 3 output of convnext_tiny has 384 channels
+        self.proj = nn.Sequential(
+            nn.Conv2d(384, feature_dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(feature_dim),
+            nn.GELU()
+        )
+        self.out_channels = feature_dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.shape[1] == 1:
+            x = x.repeat(1, 3, 1, 1)
+            
+        # Upsample 48x48 to 192x192 to match standard convnext receptive field ratios
+        x = F.interpolate(x, size=(192, 192), mode='bilinear', align_corners=False)
+        
+        feats = self.convnext(x)
+        x = feats[0] # output from out_indices=[2]
+        
+        return self.proj(x)
+
+
 class SemanticRoiAlign(nn.Module):
     """ROIAlign over semantic regions (batch-aware)."""
 
@@ -800,6 +827,11 @@ class SemanticROIGraphFER(nn.Module):
 
         if getattr(config, "backbone_type", "resnet50") == "hrnet_w18":
             self.backbone = HRNetBackbone(
+                feature_dim=config.feature_dim,
+                use_pretrained=config.use_pretrained,
+            )
+        elif getattr(config, "backbone_type", "resnet50") == "convnext_tiny":
+            self.backbone = ConvNeXtBackbone(
                 feature_dim=config.feature_dim,
                 use_pretrained=config.use_pretrained,
             )
