@@ -1,76 +1,11 @@
-import torch
 import torch.optim as optim  
 import torch.optim.lr_scheduler as lr_scheduler
-
-class SAM(torch.optim.Optimizer):
-    def __init__(self, params, base_optimizer, rho=0.05, adaptive=False, **kwargs):
-        assert rho >= 0.0, f"Invalid rho, should be non-negative: {rho}"
-
-        defaults = dict(rho=rho, adaptive=adaptive, **kwargs)
-        super(SAM, self).__init__(params, defaults)
-
-        self.base_optimizer = base_optimizer(self.param_groups, **kwargs)
-        self.param_groups = self.base_optimizer.param_groups
-        self.defaults.update(self.base_optimizer.defaults)
-
-    @torch.no_grad()
-    def first_step(self, zero_grad=False):
-        grad_norm = self._grad_norm()
-        for group in self.param_groups:
-            scale = group["rho"] / (grad_norm + 1e-12)
-            for p in group["params"]:
-                if p.grad is None: continue
-                self.state[p]["old_p"] = p.data.clone()
-                e_w = (torch.pow(p, 2) if group["adaptive"] else 1.0) * p.grad * scale.to(p)
-                p.add_(e_w)
-        if zero_grad: self.zero_grad()
-
-    @torch.no_grad()
-    def second_step(self, zero_grad=False):
-        for group in self.param_groups:
-            for p in group["params"]:
-                if p.grad is None: continue
-                p.data = self.state[p]["old_p"]  # get back to "w" from "w + e(w)"
-        self.base_optimizer.step()
-        if zero_grad: self.zero_grad()
-
-    @torch.no_grad()
-    def step(self, closure=None):
-        assert closure is not None, "Sharpness Aware Minimization requires closure, but it was not provided"
-        closure = torch.enable_grad()(closure)
-        self.first_step(zero_grad=True)
-        closure()
-        self.second_step()
-
-    def _grad_norm(self):
-        shared_device = None
-        for group in self.param_groups:
-            if len(group["params"]) > 0:
-                shared_device = group["params"][0].device
-                break
-        if shared_device is None:
-            return torch.tensor(0.0)
-            
-        grad_norms = [
-            ((torch.abs(p) if group["adaptive"] else 1.0) * p.grad).norm(p=2).to(shared_device)
-            for group in self.param_groups for p in group["params"]
-            if p.grad is not None
-        ]
-        
-        if len(grad_norms) == 0:
-            return torch.tensor(0.0, device=shared_device)
-            
-        return torch.norm(torch.stack(grad_norms), p=2)
 
 def build_optimizer(model, config):
     train_cfg = config.get('training', {})
     opt_name = train_cfg.get('optimizer', 'adam').lower()
     lr = float(train_cfg.get('lr', train_cfg.get('learning_rate', 0.001)))
     weight_decay = float(train_cfg.get('weight_decay', 0.0001))
-    
-    # SAM parameters
-    sam_rho = float(train_cfg.get('sam_rho', 0.05))
-    sam_adaptive = bool(train_cfg.get('sam_adaptive', False))
 
     # Differential learning rate for transfer learning
     backbone_params = []
@@ -92,11 +27,7 @@ def build_optimizer(model, config):
     elif opt_name == 'sgd':
         gamma = train_cfg.get('gamma', 0.9) 
         return optim.SGD(param_groups, lr=lr, weight_decay=weight_decay, momentum=gamma)
-    elif opt_name == 'sam_adam':
-        return SAM(param_groups, optim.Adam, rho=sam_rho, adaptive=sam_adaptive, lr=lr, weight_decay=weight_decay)
-    elif opt_name == 'sam_sgd':
-        gamma = train_cfg.get('gamma', 0.9) 
-        return SAM(param_groups, optim.SGD, rho=sam_rho, adaptive=sam_adaptive, lr=lr, weight_decay=weight_decay, momentum=gamma)
+    # add another optimizer
     else:
         raise ValueError(f"Optimizer {opt_name} unsupported!")
 

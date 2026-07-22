@@ -6,7 +6,7 @@ from src.utils.visualization import plot_prediction_grid
 from src.utils.logger_wandb import log_image_to_wandb
 from src.evaluation.metrics import compute_metrics, plot_confusion_matrix
 from src.utils.data_stats import get_class_distribution
-from src.models.utils import apply_horizontal_flip_tta
+from src.models.utils import apply_multi_scale_tta
 
 def evaluate_and_show(model, test_loader, testset_path, device, save_dir, use_tta=False) -> None:
     """Test set, 10 ảnh đoán đúng, 10 ảnh đoán sai và Visualize and log to wandb"""
@@ -48,7 +48,7 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir, use_tt
                         region_confidence = region_confidence.to(device)
                     
                     if use_tta:
-                        outputs = apply_horizontal_flip_tta(model, images, bboxes, region_mask, region_confidence)
+                        outputs = apply_multi_scale_tta(model, images, bboxes, region_mask, region_confidence)
                     else:
                         outputs = model(
                             images,
@@ -58,12 +58,12 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir, use_tt
                         )
                 else:
                     if use_tta:
-                        outputs = apply_horizontal_flip_tta(model, images, bboxes)
+                        outputs = apply_multi_scale_tta(model, images, bboxes)
                     else:
                         outputs = model(images, bboxes)
             else:
                 if use_tta:
-                    outputs = apply_horizontal_flip_tta(model, images)
+                    outputs = apply_multi_scale_tta(model, images)
                 else:
                     outputs = model(images)
 
