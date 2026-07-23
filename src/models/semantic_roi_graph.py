@@ -111,9 +111,9 @@ class ResNet50Backbone(nn.Module):
 
 class HRNetBackbone(nn.Module):
     """HRNet-W18 backbone with multi-resolution fusion and spatial resolution preservation."""
-    def __init__(self, feature_dim: int = 256, use_pretrained: bool = True):
+    def __init__(self, feature_dim: int = 256, use_pretrained: bool = True, hrnet_type: str = 'hrnet_w18'):
         super().__init__()
-        self.hrnet = timm.create_model('hrnet_w18', pretrained=use_pretrained, features_only=True)
+        self.hrnet = timm.create_model(hrnet_type, pretrained=use_pretrained, features_only=True)
         
         if hasattr(self.hrnet, 'conv1'):
             self.hrnet.conv1.stride = (1, 1)
@@ -832,10 +832,11 @@ class SemanticROIGraphFER(nn.Module):
         super().__init__()
         self.config = config
 
-        if getattr(config, "backbone_type", "resnet50") == "hrnet_w18":
+        if getattr(config, "backbone_type", "resnet50").startswith("hrnet"):
             self.backbone = HRNetBackbone(
                 feature_dim=config.feature_dim,
                 use_pretrained=config.use_pretrained,
+                hrnet_type=config.backbone_type
             )
         elif getattr(config, "backbone_type", "resnet50") == "vgg19_bn":
             self.backbone = VGG19Backbone(

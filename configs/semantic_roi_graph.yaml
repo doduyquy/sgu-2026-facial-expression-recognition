@@ -1,6 +1,6 @@
 model:
   name: "semantic_roi_graph_fer"
-  backbone_type: "vgg19_bn"
+  backbone_type: "hrnet_w32"
   num_classes: 7
   num_regions: 9
   roi_grid: 4
