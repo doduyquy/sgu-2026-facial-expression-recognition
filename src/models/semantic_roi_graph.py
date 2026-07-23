@@ -147,31 +147,38 @@ class HRNetBackbone(nn.Module):
         return self.proj(x)
 
 
-class ConvNeXtBackbone(nn.Module):
-    """ConvNeXt Tiny backbone with spatial upsampling to preserve details."""
+class VGG19Backbone(nn.Module):
+    """VGG19-BN backbone tailored for 48x48 images.
+    Extracts features before pool3 to maintain 12x12 resolution with 256 channels.
+    """
     def __init__(self, feature_dim: int = 256, use_pretrained: bool = True):
         super().__init__()
-        self.convnext = timm.create_model('convnext_tiny', pretrained=use_pretrained, features_only=True, out_indices=[2])
+        import torchvision.models as models
         
-        # Stage 3 output of convnext_tiny has 384 channels
-        self.proj = nn.Sequential(
-            nn.Conv2d(384, feature_dim, kernel_size=1, bias=False),
+        # Load pretrained VGG19 with BatchNorm
+        weights = models.VGG19_BN_Weights.DEFAULT if use_pretrained else None
+        full_vgg = models.vgg19_bn(weights=weights)
+        
+        # We take features up to the layer BEFORE MaxPool2d at index 26
+        # This keeps the spatial resolution at 12x12 (for 48x48 input)
+        # and outputs exactly 256 channels.
+        self.features = full_vgg.features[:26]
+        
+        self.out_channels = 256
+        
+        # Project if feature_dim is different from 256
+        self.proj = nn.Identity() if feature_dim == 256 else nn.Sequential(
+            nn.Conv2d(256, feature_dim, kernel_size=1, bias=False),
             nn.BatchNorm2d(feature_dim),
             nn.GELU()
         )
-        self.out_channels = feature_dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.shape[1] == 1:
             x = x.repeat(1, 3, 1, 1)
-            
-        # Upsample 48x48 to 192x192 to match standard convnext receptive field ratios
-        x = F.interpolate(x, size=(192, 192), mode='bilinear', align_corners=False)
-        
-        feats = self.convnext(x)
-        x = feats[0] # output from out_indices=[2]
-        
+        x = self.features(x)
         return self.proj(x)
+
 
 
 class SemanticRoiAlign(nn.Module):
@@ -830,8 +837,8 @@ class SemanticROIGraphFER(nn.Module):
                 feature_dim=config.feature_dim,
                 use_pretrained=config.use_pretrained,
             )
-        elif getattr(config, "backbone_type", "resnet50") == "convnext_tiny":
-            self.backbone = ConvNeXtBackbone(
+        elif getattr(config, "backbone_type", "resnet50") == "vgg19_bn":
+            self.backbone = VGG19Backbone(
                 feature_dim=config.feature_dim,
                 use_pretrained=config.use_pretrained,
             )
