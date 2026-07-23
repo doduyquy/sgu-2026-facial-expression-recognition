@@ -34,6 +34,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--env", type=str, default="local", choices=["local", "kaggle"])
+    parser.add_argument("--resume_path", type=str, default=None, help="Path to checkpoint to resume training")
     args = parser.parse_args()
     # If running on Kaggle, enable CUDA launch blocking for correct stack traces
     if args.env == 'kaggle':
@@ -109,6 +110,11 @@ def main():
     # set path to save ckpt
     path_save_ckpt = os.path.join(root_path, f"outputs/checkpoints/{config['model'].get('name', 'cnn')}/{run_name}_best.pth")
     os.makedirs(os.path.dirname(path_save_ckpt), exist_ok=True)
+    
+    start_epoch = 0
+    if args.resume_path is not None:
+        start_epoch = load_checkpoints(model, optimizer, args.resume_path, device)
+        print(f"Resuming training from epoch {start_epoch}")
 
     trainer = Trainer(
         model=model,
@@ -122,7 +128,7 @@ def main():
         run_name=run_name,
         save_dir=path_save_ckpt
     )
-    train_losses, val_losses = trainer.fit()
+    train_losses, val_losses = trainer.fit(start_epoch=start_epoch)
 
     # evaluate
     print("\n" + "="*51)
