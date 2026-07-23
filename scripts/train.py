@@ -66,6 +66,7 @@ def main():
     model = get_model(
         name=config['model']['name'],
         config=config)
+    model = model.to(device)
     
 
     # get class_distribution for class_weights (for testing)
