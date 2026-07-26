@@ -43,10 +43,9 @@ data:
 training:
   epochs: 1000
   optimizer: "adamw"
-  scheduler: "cosine_warm_restarts"
-  cosine_T0: 20
-  cosine_T_mult: 2
-  cosine_eta_min: 0.000001
+  scheduler: "reduce_lr_on_plateau"
+  lr_factor: 0.5
+  lr_patience: 5
   lr: 0.0003
   weight_decay: 0.01
   loss: "semantic_roi_graph"
