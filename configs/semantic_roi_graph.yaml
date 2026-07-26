@@ -42,8 +42,13 @@ data:
 
 training:
   epochs: 1000
+  optimizer: "adamw"
+  scheduler: "cosine_warm_restarts"
+  cosine_T0: 20
+  cosine_T_mult: 2
+  cosine_eta_min: 0.000001
   lr: 0.0003
-  weight_decay: 0.001 # Revert from 0.003 to prevent embedding collapse
+  weight_decay: 0.01
   loss: "semantic_roi_graph"
   label_smoothing: 0.05
   class_weight_mode: "sqrt_inverse"

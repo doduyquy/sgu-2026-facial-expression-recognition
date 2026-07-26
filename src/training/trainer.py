@@ -617,6 +617,8 @@ class Trainer:
             if self.scheduler is not None:
                 if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                     self.scheduler.step(val_loss)
+                elif isinstance(self.scheduler, torch.optim.lr_scheduler.CosineAnnealingWarmRestarts):
+                    self.scheduler.step(ep + 1)
                 else:
                     self.scheduler.step()
 
