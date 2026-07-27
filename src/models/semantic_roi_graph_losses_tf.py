@@ -155,11 +155,11 @@ def semantic_disentanglement_loss(
     if len(semantic_states.shape) == 3:
         if region_mask is not None:
             flat_mask = tf.reshape(tf.cast(region_mask, tf.bool), [-1])
-            tokens = tf.boolean_mask(tf.reshape(semantic_states, [-1, semantic_states.shape[-1]]), flat_mask)
+            tokens = tf.boolean_mask(tf.reshape(semantic_states, [-1, tf.shape(semantic_states)[-1]]), flat_mask)
         else:
-            tokens = tf.reshape(semantic_states, [-1, semantic_states.shape[-1]])
+            tokens = tf.reshape(semantic_states, [-1, tf.shape(semantic_states)[-1]])
     else:
-        tokens = tf.reshape(semantic_states, [-1, semantic_states.shape[-1]])
+        tokens = tf.reshape(semantic_states, [-1, tf.shape(semantic_states)[-1]])
     tokens = tf.cast(tokens, tf.float32)
     if tf.shape(tokens)[0] < 2:
         return tf.zeros((), dtype=tf.float32)
