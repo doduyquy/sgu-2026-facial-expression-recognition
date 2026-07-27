@@ -54,24 +54,23 @@ def augment_spatial_tf(image: tf.Tensor, bbox: tf.Tensor):
     image = tf.cast(image, tf.float32)
     bbox = tf.cast(bbox, tf.float32)
     
-    do_flip = tf.random.uniform([]) < 0.5
-    
-    def apply_flip():
-        flipped_img = tf.image.flip_left_right(image)
-        # Bbox flip: x1_new = 47.0 - x2, x2_new = 47.0 - x1
-        x1 = 47.0 - bbox[:, 2]
-        y1 = bbox[:, 1]
-        x2 = 47.0 - bbox[:, 0]
-        y2 = bbox[:, 3]
-        
-        flipped_bbox = tf.stack([x1, y1, x2, y2], axis=-1)
-        
-        # Swap symmetric pairs: (1, 2), (4, 5), (7, 8)
-        indices = tf.constant([0, 2, 1, 3, 5, 4, 6, 8, 7], dtype=tf.int32)
-        flipped_bbox = tf.gather(flipped_bbox, indices)
-        return flipped_img, flipped_bbox
-        
-    image, bbox = tf.cond(do_flip, apply_flip, lambda: (image, bbox))
+    do_flip = tf.cast(tf.random.uniform([], dtype=tf.float32) < 0.5, tf.float32)
+
+    flipped_img = tf.image.flip_left_right(image)
+    # Bbox flip: x1_new = 47.0 - x2, x2_new = 47.0 - x1
+    x1 = 47.0 - bbox[..., 2]
+    y1 = bbox[..., 1]
+    x2 = 47.0 - bbox[..., 0]
+    y2 = bbox[..., 3]
+
+    flipped_bbox = tf.stack([x1, y1, x2, y2], axis=-1)
+
+    # Swap symmetric pairs: (1, 2), (4, 5), (7, 8)
+    indices = tf.constant([0, 2, 1, 3, 5, 4, 6, 8, 7], dtype=tf.int32)
+    flipped_bbox = tf.gather(flipped_bbox, indices)
+
+    image = do_flip * flipped_img + (1.0 - do_flip) * image
+    bbox = do_flip * flipped_bbox + (1.0 - do_flip) * bbox
     return image, bbox
 
 class FERDatasetTF:
