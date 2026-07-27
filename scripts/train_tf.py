@@ -244,30 +244,17 @@ def main():
         print(f"--> Model built. Trainable params: {model.count_params():,}")
 
         # ---------------------------------------------------------------
-        # Differential Learning Rate (matches PyTorch optimizer.py exactly)
-        # backbone params: lr (base rate)
-        # head params:     lr * 2.0
-        # This is the KEY reason PyTorch trains slower and better.
+        # Full-model training from epoch 1. PyTorch does not use a two-phase
+        # freeze/unfreeze schedule here, so TensorFlow should not either.
         # ---------------------------------------------------------------
         train_cfg = config.get("training", {})
         base_lr = float(train_cfg.get("lr", 3e-4))   # 0.0003 from config
-        head_lr = base_lr * 2.0                        # 0.0006 for head (match PyTorch)
-        backbone_freeze_epochs = int(train_cfg.get("backbone_freeze_epochs", 10))
-        backbone_lr_scale = float(train_cfg.get("backbone_lr_scale", 0.1))
-
-        # Freeze backbone for phase 1
-        if hasattr(model.backbone, 'feature_extractor'):
-            model.backbone.feature_extractor.trainable = False
-        else:
-            model.backbone.trainable = False
-        print(f"--> [Phase 1] Backbone FROZEN for first {backbone_freeze_epochs} epochs.")
-        print(f"    Training head at lr={head_lr:.6f}")
         n_trainable = sum(int(np.prod(v.shape)) for v in model.trainable_variables)
-        print(f"    Trainable params (head only): {n_trainable:,}")
+        print(f"    Trainable params: {n_trainable:,}")
 
-        # Optimizer & scheduler with head LR
+        # Optimizer & scheduler
         optimizer = build_optimizer_tf(config, model)
-        optimizer.learning_rate.assign(head_lr)  # head trains at 2x lr
+        optimizer.learning_rate.assign(base_lr)
         scheduler = build_scheduler_tf(optimizer, config)
 
     # Checkpoint path
@@ -291,8 +278,6 @@ def main():
         save_path=save_path,
         strategy=strategy,
         class_weights=class_weights,
-        backbone_freeze_epochs=backbone_freeze_epochs,
-        backbone_lr_scale=backbone_lr_scale,
     )
 
     # Train
