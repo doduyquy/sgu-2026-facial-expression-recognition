@@ -298,13 +298,12 @@ def topology_alignment_loss(
     labels_int = tf.cast(labels, tf.int32)
     selected_topology = tf.gather(program_topology, labels_int)  # (B, M, R, R)
     if program_attention is not None:
-        b = tf.shape(labels_int)[0]
-        sel_attn = tf.gather(
-            tf.transpose(program_attention, [0, 1, 2])[:, :, :],  # (B, C, M)
-            labels_int, batch_dims=0
-        )  # (B, M)
-        # actually: program_attention[b, labels[b]] -> (B, M)
-        # gather over axis=1
+        # program_attention is (B, C, M). labels_int is (B,)
+        # We want to select the attention for the target class for each batch item -> (B, M)
+        sel_attn = tf.gather(program_attention, labels_int, axis=1, batch_dims=1)
+        
+        # sel_attn is now (B, M)
+        # selected_topology is (B, M, R, R)
         selected_topology = tf.reduce_sum(
             sel_attn[:, :, tf.newaxis, tf.newaxis] * selected_topology, axis=1
         )
