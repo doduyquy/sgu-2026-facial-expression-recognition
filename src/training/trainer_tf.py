@@ -29,6 +29,12 @@ def _spce(labels, logits):
     return tf.keras.losses.sparse_categorical_crossentropy(labels, logits, from_logits=True)
 
 
+def _lr_multiplier_for_name(name: str) -> float:
+    if "backbone" in name:
+        return 1.0
+    return 2.0
+
+
 class TrainerTF:
     """TensorFlow GradientTape training loop for SemanticROIGraphFER."""
 
@@ -233,7 +239,7 @@ class TrainerTF:
             idx = 0
             for v, g in zip(self.model.trainable_variables, grads):
                 if g is not None:
-                    final_grads.append(clipped_grads[idx])
+                    final_grads.append(clipped_grads[idx] * _lr_multiplier_for_name(v.name))
                     idx += 1
                 else:
                     # Explicit zeros prevent optimizer skipping bugs in Keras/XLA
