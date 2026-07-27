@@ -23,6 +23,13 @@ def _get_training_cfg(model) -> Dict:
         return {}
 
 
+def _first_present(*values):
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
 # ---------------------------------------------------------------------------
 # micro_motif_diversity_loss — mirrors PyTorch exactly
 # ---------------------------------------------------------------------------
@@ -454,17 +461,17 @@ def compute_semantic_roi_graph_losses_tf(
         fused_ce_loss = tf.zeros((), dtype=tf.float32)
 
     # --- Auxiliary losses ---
-    semantic_states    = outputs.get("semantic_state_tokens") or outputs.get("region_embeddings")
+    semantic_states    = _first_present(outputs.get("semantic_state_tokens"), outputs.get("region_embeddings"))
     region_mask        = outputs.get("region_mask")
     routing_weights    = outputs.get("semantic_routing_weights")
     interaction_gates  = outputs.get("semantic_interaction_gates")
     program_scores     = outputs.get("semantic_program_scores")
     program_attention  = outputs.get("semantic_program_attention")
-    semantic_latent    = outputs.get("semantic_latent_embedding") or outputs.get("macro_embeddings")
+    semantic_latent    = _first_present(outputs.get("semantic_latent_embedding"), outputs.get("macro_embeddings"))
     cross_region_tokens = outputs.get("cross_region_tokens")
     cross_region_attn  = outputs.get("cross_region_attention")
     prog_topology      = outputs.get("semantic_program_topology")
-    prog_bank          = outputs.get("semantic_program_bank") or model.semantic_program_bank.programs
+    prog_bank          = _first_present(outputs.get("semantic_program_bank"), model.semantic_program_bank.programs)
 
     micro_div_loss  = micro_motif_diversity_loss(model.micro_motif_bank.motifs)
     macro_div_loss  = macro_motif_diversity_loss(prog_bank)

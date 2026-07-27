@@ -200,7 +200,6 @@ class TrainerTF:
     # Distributed Training step
     # ------------------------------------------------------------------
 
-    @tf.function
     def _distributed_train_step(self, batch, epoch_tensor, use_scn_tensor, lam_tensor):
         def step_fn(dist_batch):
             with tf.GradientTape() as tape:
@@ -264,7 +263,6 @@ class TrainerTF:
         acc = self.strategy.reduce(tf.distribute.ReduceOp.MEAN, per_replica_accs, axis=None)
         return loss, acc
 
-    @tf.function
     def _distributed_val_step(self, batch):
         def step_fn(dist_batch):
             cls_loss, logits, labels, _ = self._forward_batch(
