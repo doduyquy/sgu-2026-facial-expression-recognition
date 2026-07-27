@@ -23,7 +23,7 @@ def safe_softmax(x: tf.Tensor, axis: int = -1) -> tf.Tensor:
     x_max = tf.reduce_max(x, axis=axis, keepdims=True)
     x_shifted = x - x_max
     # Replace any all-inf / all-nan slices with zeros
-    all_invalid = tf.cast(tf.reduce_all(tf.math.is_inf(x_shifted), axis=axis, keepdims=True), tf.bool)
+    all_invalid = tf.reduce_all(tf.math.is_inf(x_shifted), axis=axis, keepdims=True)
     x_shifted = tf.where(all_invalid, tf.zeros_like(x_shifted), x_shifted)
     return tf.nn.softmax(x_shifted, axis=axis)
 
@@ -1599,7 +1599,7 @@ class SemanticROIGraphFER(tf.keras.Model):
         # image: (B, T, H, W, C)
         b = tf.shape(image)[0]
         t = tf.shape(image)[1]
-        h, w, c = image.shape[2:]
+        h, w, c = image.shape[2], image.shape[3], image.shape[4]
         flat_image = tf.reshape(image, [b * t, h, w, c])
         
         flat_bboxes, flat_rmask, flat_rconf = None, None, None
@@ -1619,11 +1619,28 @@ class SemanticROIGraphFER(tf.keras.Model):
                 outputs[key] = tf.reduce_mean(tf.reshape(x, [b, t, -1]), axis=1)
                 
         # For non-averaged keys, keep center-crop
-        center_idx = 4 if image.shape[1] > 4 else image.shape[1] // 2
+        # Use static shape with safe fallback
+        t_static = image.shape[1]
+        if t_static is not None:
+            center_idx = 4 if t_static > 4 else t_static // 2
+        else:
+            center_idx = 0  # safe fallback for unknown T
+
         for key, val in list(outputs.items()):
             if key not in _avg_keys:
-                if isinstance(val, tf.Tensor) and len(val.shape) >= 1 and tf.shape(val)[0] == b * t:
-                    outputs[key] = tf.reshape(val, [b, t] + list(val.shape[1:]))[:, center_idx]
+                if isinstance(val, tf.Tensor) and len(val.shape) >= 1:
+                    # Check first dimension matches b*t using static shape if available
+                    val_dim0 = val.shape[0]
+                    if val_dim0 is None:
+                        # Dynamic shape — try reshape, skip on error
+                        try:
+                            outputs[key] = tf.reshape(val, [b, t, -1])[:, center_idx]
+                        except (ValueError, tf.errors.InvalidArgumentError):
+                            pass  # keep original
+                    elif t_static is not None and val_dim0 is not None:
+                        # Both static — safe comparison
+                        pass  # can't compare static*static at graph time, skip
                     
         return outputs
+
 

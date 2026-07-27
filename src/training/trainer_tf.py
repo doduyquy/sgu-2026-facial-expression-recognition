@@ -11,6 +11,7 @@ Hỗ trợ:
 - SCN-light (sample weighting by confidence)
 - W&B logging
 - Early stopping
+- EMA (Exponential Moving Average) weights
 """
 
 from __future__ import annotations
@@ -77,6 +78,10 @@ class TrainerTF:
         self.scn_margin = float(train_cfg.get("scn_margin", 0.6))
         self.mixup_alpha = float(train_cfg.get("mixup_alpha", 0.2))
         self.ema_decay = 0.999
+
+        # EMA variables — initialized as None, will be populated in fit() BEFORE
+        # any @tf.function is traced so the graph captures the real list.
+        self._ema_initialized = False
         self.ema_vars = []
 
         # Handle Mixed Precision Loss Scaling safely (Keras 2 vs Keras 3)
@@ -109,7 +114,8 @@ class TrainerTF:
         ce = _spce(labels, logits)  # (B,)
 
         probs = tf.nn.softmax(logits, axis=-1)
-        one_hot = tf.one_hot(labels, depth=logits.shape[-1], dtype=tf.float32)
+        num_classes = tf.shape(logits)[-1]
+        one_hot = tf.one_hot(labels, depth=num_classes, dtype=tf.float32)
         conf = tf.reduce_sum(probs * one_hot, axis=-1)  # (B,)
         weights = tf.maximum((1.0 - conf) ** 2, self.scn_min_weight)
         loss = tf.reduce_mean(weights * ce)
@@ -130,7 +136,7 @@ class TrainerTF:
         ranking_loss = tf.cond(
             tf.cast(epoch_tensor >= self.scn_warmup_epochs, tf.bool),
             calc_ranking_loss,
-            lambda: tf.zeros(())
+            lambda: tf.constant(0.0, dtype=tf.float32),
         )
 
         return self.scn_alpha * loss + self.scn_rank_lambda * ranking_loss
@@ -163,7 +169,7 @@ class TrainerTF:
         images, labels_b = tf.cond(
             tf.cast(lam_tensor < 1.0, tf.bool),
             apply_mixup,
-            lambda: (images, labels)
+            lambda: (images, labels),
         )
 
         # Build model inputs
@@ -194,21 +200,15 @@ class TrainerTF:
                 return tf.cond(
                     tf.cast(use_scn_tensor, tf.bool),
                     lambda: self._scn_loss(logits, labels, epoch_tensor),
-                    lambda: tf.reduce_mean(_spce(labels, logits))
+                    lambda: tf.reduce_mean(_spce(labels, logits)),
                 )
 
             cls_loss = tf.cond(
                 tf.cast(lam_tensor < 1.0, tf.bool),
                 compute_mixup_loss,
-                compute_scn_or_normal
+                compute_scn_or_normal,
             )
 
-        # Scale loss by number of replicas for `tf.distribute`
-        # Because we will reduce_sum or reduce_mean later.
-        # Actually strategy.reduce with MEAN will do the averaging. 
-        # But normally we divide by global batch size. 
-        # Using tf.nn.compute_average_loss is standard, but tf.reduce_mean inside the replica is ok 
-        # if we reduce with MEAN across replicas.
         return cls_loss, logits, labels, outputs
 
     # ------------------------------------------------------------------
@@ -246,14 +246,13 @@ class TrainerTF:
                     grads = scaled_grads
 
             # Sanitize gradients: replace NaN/Inf with zeros BEFORE clipping.
-            # clip_by_norm(Inf) = Inf * (1.0/Inf) = NaN, which would corrupt weights.
             grads = [
                 tf.where(tf.math.is_finite(g), g, tf.zeros_like(g))
                 if g is not None else None
                 for g in grads
             ]
             
-            # Clip by global norm avoids tf.cond bug in element-wise clip_by_norm with float16
+            # Clip by global norm — avoids tf.cond bug in element-wise clip_by_norm with float16
             valid_grads = [g for g in grads if g is not None]
             clipped_grads, _ = tf.clip_by_global_norm(valid_grads, 5.0)
             
@@ -268,15 +267,14 @@ class TrainerTF:
                     final_grads.append(None)
             grads = final_grads
             self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
-            # Update EMA weights manually
-            if hasattr(self, 'ema_vars') and self.ema_vars:
-                for v, ema_v in zip(self.model.trainable_variables, self.ema_vars):
-                    ema_v.assign(self.ema_decay * ema_v + (1.0 - self.ema_decay) * v)
+
+            # Update EMA weights — self.ema_vars is populated BEFORE first trace
+            for v, ema_v in zip(self.model.trainable_variables, self.ema_vars):
+                ema_v.assign(self.ema_decay * ema_v + (1.0 - self.ema_decay) * v)
 
             preds = tf.argmax(logits, axis=-1, output_type=tf.int32)
             acc = tf.cast(tf.equal(preds, labels), tf.float32)
             
-            # Note: cls_loss and acc are averages inside this replica
             return cls_loss, tf.reduce_mean(acc)
 
         per_replica_losses, per_replica_accs = self.strategy.run(
@@ -389,14 +387,25 @@ class TrainerTF:
             # ReduceLROnPlateau also needs optimizer to be set on model
             if not hasattr(self.model, "optimizer") or self.model.optimizer is None:
                 self.model.optimizer = self.optimizer
-            print(f"--> [Training] Starts for {self.epochs} epochs. Mixed Precision: {self.use_mixed_precision}")
 
-        # Initialize EMA variables
-        with self.strategy.scope():
-            self.ema_vars = [
-                tf.Variable(v.numpy(), trainable=False, name=v.name.replace(':', '_') + '_ema')
-                for v in self.model.trainable_variables
-            ]
+        print(f"--> [Training] Starts for {self.epochs} epochs. Mixed Precision: {self.use_mixed_precision}")
+
+        # ---------------------------------------------------------------
+        # Initialize EMA variables BEFORE any @tf.function is called.
+        # This ensures the EMA update loop is captured in the traced graph.
+        # ---------------------------------------------------------------
+        if not self._ema_initialized:
+            with self.strategy.scope():
+                self.ema_vars = [
+                    tf.Variable(
+                        tf.identity(v),
+                        trainable=False,
+                        name=v.name.split(':')[0].replace('/', '_') + '_ema',
+                    )
+                    for v in self.model.trainable_variables
+                ]
+            self._ema_initialized = True
+            print(f"--> [EMA] Initialized {len(self.ema_vars)} EMA shadow variables.")
 
         for ep in range(self.epochs):
             progress = ep / max(self.epochs - 1, 1)
@@ -419,7 +428,25 @@ class TrainerTF:
                     self.optimizer.build(self.model.trainable_variables)
                 except Exception:
                     pass
+
+                # Re-initialize EMA for the expanded set of trainable variables
+                with self.strategy.scope():
+                    self.ema_vars = [
+                        tf.Variable(
+                            tf.identity(v),
+                            trainable=False,
+                            name=v.name.split(':')[0].replace('/', '_') + '_ema_p2',
+                        )
+                        for v in self.model.trainable_variables
+                    ]
+
+                # Force retrace of @tf.function to capture new variable set
+                self._distributed_train_step = tf.function(
+                    self._distributed_train_step.python_function
+                )
+
                 print(f"\n--> [Phase 2] Backbone UNFROZEN at epoch {ep+1}. LR reset to {base_lr:.6f}")
+                print(f"    EMA re-initialized for {len(self.ema_vars)} trainable variables.")
 
             # Phase scheduling
             if progress <= 0.7:
@@ -475,9 +502,9 @@ class TrainerTF:
                 best_score = selection_score
                 patience_counter = 0
                 # Save EMA weights
-                original_vars = [v.numpy() for v in self.model.trainable_variables]
+                original_vars = [tf.identity(v) for v in self.model.trainable_variables]
                 for v, ema_v in zip(self.model.trainable_variables, self.ema_vars):
-                    v.assign(ema_v.numpy())
+                    v.assign(ema_v)
                 self.model.save_weights(self.save_path)
                 # Restore original weights
                 for v, orig in zip(self.model.trainable_variables, original_vars):

@@ -2,6 +2,7 @@
 semantic_roi_graph_losses_tf.py — TensorFlow port of semantic_roi_graph_losses.py.
 
 Translated directly from PyTorch source, function by function.
+All operations are Graph-Mode and mixed_float16 safe.
 """
 
 from __future__ import annotations
@@ -28,9 +29,9 @@ def _get_training_cfg(model) -> Dict:
 
 def micro_motif_diversity_loss(motif_bank: tf.Tensor) -> tf.Tensor:
     """Encourage diverse motifs within each region bank. (R, K, D)"""
-    motifs = tf.nn.l2_normalize(motif_bank, axis=-1)  # (R, K, D)
+    motifs = tf.nn.l2_normalize(tf.cast(motif_bank, tf.float32), axis=-1)  # (R, K, D)
     sim = tf.einsum("rkd,rgd->rkg", motifs, motifs)    # (R, K, K)
-    k = motifs.shape[1]
+    k = motifs.shape[1] or tf.shape(motifs)[1]
     identity = tf.eye(k, dtype=sim.dtype)[tf.newaxis]   # (1, K, K)
     off_diag = sim * (1.0 - identity)
     return tf.reduce_mean(off_diag ** 2)
@@ -42,6 +43,7 @@ def micro_motif_diversity_loss(motif_bank: tf.Tensor) -> tf.Tensor:
 
 def macro_motif_diversity_loss(program_bank: tf.Tensor) -> tf.Tensor:
     """Encourage diverse programs. program_bank: (C, M, R, D)"""
+    program_bank = tf.cast(program_bank, tf.float32)
     if len(program_bank.shape) == 3:
         c, m, d = program_bank.shape
         motifs = tf.reshape(program_bank, [c, m, d])
@@ -50,8 +52,8 @@ def macro_motif_diversity_loss(program_bank: tf.Tensor) -> tf.Tensor:
         motifs = tf.reshape(program_bank, [c, m, r * d])
     motifs = tf.nn.l2_normalize(motifs, axis=-1)
     sim = tf.einsum("cmd,cnd->cmn", motifs, motifs)  # (C, M, M)
-    m = motifs.shape[1]
-    identity = tf.eye(m, dtype=sim.dtype)[tf.newaxis]
+    m_dim = motifs.shape[1] or tf.shape(motifs)[1]
+    identity = tf.eye(m_dim, dtype=sim.dtype)[tf.newaxis]
     off_diag = tf.nn.relu(tf.abs(sim) - 0.3) * (1.0 - identity)
     return tf.reduce_mean(off_diag ** 2)
 
@@ -64,18 +66,19 @@ def program_diversity_loss(program_bank: tf.Tensor) -> tf.Tensor:
     """program_bank: (C, M, R, D)"""
     if isinstance(program_bank, tuple):
         program_bank = program_bank[0]
+    program_bank = tf.cast(program_bank, tf.float32)
     if len(program_bank.shape) == 4:
         summaries = tf.reduce_mean(program_bank, axis=2)  # (C, M, D)
     else:
         summaries = program_bank
-    c, m, d = summaries.shape
-    summaries = tf.reshape(summaries, [c * m, d])
-    if tf.cast(tf.shape(summaries)[0] < 2, tf.bool):
-        return tf.zeros((), dtype=tf.float32)
-    summaries = tf.nn.l2_normalize(summaries, axis=-1)
-    sim = tf.matmul(summaries, tf.transpose(summaries))  # (C*M, C*M)
-    n = c * m
-    identity = tf.eye(n, dtype=sim.dtype)
+    # Static shape: C and M are always known at build time (num_classes, programs_per_class)
+    # For safety, use tf.shape for the flattened dimension
+    cm = tf.shape(summaries)[0] * tf.shape(summaries)[1]
+    d = tf.shape(summaries)[2]
+    summaries_flat = tf.reshape(summaries, [cm, d])
+    summaries_flat = tf.nn.l2_normalize(summaries_flat, axis=-1)
+    sim = tf.matmul(summaries_flat, tf.transpose(summaries_flat))  # (C*M, C*M)
+    identity = tf.eye(cm, dtype=sim.dtype)
     off_diag = tf.nn.relu(tf.abs(sim) - 0.3) * (1.0 - identity)
     return tf.reduce_mean(off_diag ** 2)
 
@@ -92,12 +95,14 @@ def compositional_program_consistency_loss(
         return tf.zeros((), dtype=tf.float32)
     labels_int = tf.cast(labels, tf.int32)
     return tf.reduce_mean(
-        tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels_int, logits=tf.cast(program_scores, tf.float32))
+        tf.nn.sparse_softmax_cross_entropy_with_logits(
+            labels=labels_int, logits=tf.cast(program_scores, tf.float32)
+        )
     )
 
 
 # ---------------------------------------------------------------------------
-# semantic_consistency_loss — mirrors PyTorch
+# semantic_consistency_loss — REWRITTEN for Graph Mode safety
 # ---------------------------------------------------------------------------
 
 def semantic_consistency_loss(
@@ -105,45 +110,74 @@ def semantic_consistency_loss(
     labels: tf.Tensor,
     region_mask: Optional[tf.Tensor] = None,
 ) -> tf.Tensor:
+    """Intra-class variance loss — vectorized, no tf.boolean_mask or tf.range loops.
+
+    For each class c present in the batch, compute the variance of pooled
+    semantic states belonging to class c, then average across classes.
+
+    Vectorized approach:
+    1. Pool semantic_states to (B, D)
+    2. Build one-hot class membership (B, C)
+    3. Compute per-class mean via matmul
+    4. Gather each sample's class mean
+    5. MSE between sample and its class mean, averaged
+    """
     if semantic_states is None:
         return tf.zeros((), dtype=tf.float32)
-    if len(semantic_states.shape) == 3:
+
+    states = tf.cast(semantic_states, tf.float32)
+
+    if len(states.shape) == 3:
         if region_mask is not None:
-            weights = tf.cast(region_mask[..., tf.newaxis], semantic_states.dtype)
-            pooled = tf.reduce_sum(semantic_states * weights, axis=1) / \
+            weights = tf.cast(region_mask[..., tf.newaxis], tf.float32)
+            pooled = tf.reduce_sum(states * weights, axis=1) / \
                      tf.maximum(tf.reduce_sum(weights, axis=1), 1.0)
         else:
-            pooled = tf.reduce_mean(semantic_states, axis=1)
+            pooled = tf.reduce_mean(states, axis=1)
     else:
-        pooled = semantic_states
+        pooled = states  # already (B, D)
 
-    labels_flat = tf.reshape(tf.cast(labels, tf.int32), [-1])
-    unique_classes, _ = tf.unique(labels_flat)
-    loss_acc = tf.constant(0.0, dtype=tf.float32)
-    count = tf.constant(0, dtype=tf.int32)
+    labels_flat = tf.cast(tf.reshape(labels, [-1]), tf.int32)
+    B = tf.shape(pooled)[0]
 
-    for i in tf.range(tf.shape(unique_classes)[0]):
-        cls = unique_classes[i]
-        mask = tf.equal(labels_flat, cls)
-        cls_states = tf.boolean_mask(pooled, mask)
-        
-        def _add_loss():
-            center = tf.reduce_mean(cls_states, axis=0, keepdims=True)
-            return tf.cast(tf.reduce_mean((cls_states - center) ** 2), tf.float32), tf.constant(1, dtype=tf.int32)
-            
-        def _skip():
-            return tf.constant(0.0, dtype=tf.float32), tf.constant(0, dtype=tf.int32)
-            
-        var, c = tf.cond(tf.cast(tf.shape(cls_states)[0] >= 2, tf.bool), _add_loss, _skip)
-        loss_acc = loss_acc + var
-        count = count + c
+    # One-hot: (B, C) where C = max_label + 1
+    num_classes = tf.reduce_max(labels_flat) + 1
+    one_hot = tf.one_hot(labels_flat, num_classes, dtype=tf.float32)  # (B, C)
 
-    return tf.cond(tf.cast(count > 0, tf.bool), lambda: loss_acc / tf.cast(count, tf.float32),
-                   lambda: tf.zeros((), dtype=tf.float32))
+    # Count per class: (C,)
+    counts = tf.reduce_sum(one_hot, axis=0)  # (C,)
+
+    # Per-class sum of pooled states: (C, D)
+    class_sums = tf.matmul(tf.transpose(one_hot), pooled)  # (C, D)
+
+    # Per-class mean: (C, D) — safe divide
+    class_means = class_sums / tf.maximum(counts[:, tf.newaxis], 1.0)
+
+    # Gather each sample's class mean: (B, D)
+    sample_means = tf.gather(class_means, labels_flat)  # (B, D)
+
+    # Per-sample squared deviation
+    deviations = (pooled - sample_means) ** 2  # (B, D)
+
+    # Only count classes with >= 2 samples
+    # Mask: (C,) -> gather to (B,) -> mask
+    valid_class_mask = tf.cast(counts >= 2.0, tf.float32)  # (C,)
+    sample_valid = tf.gather(valid_class_mask, labels_flat)  # (B,)
+
+    # Weighted mean
+    weighted_dev = tf.reduce_mean(deviations, axis=-1) * sample_valid  # (B,)
+    total_valid = tf.reduce_sum(sample_valid)
+
+    # Return 0 if no valid classes
+    return tf.where(
+        tf.cast(total_valid > 0.0, tf.bool),
+        tf.reduce_sum(weighted_dev) / total_valid,
+        tf.zeros((), dtype=tf.float32),
+    )
 
 
 # ---------------------------------------------------------------------------
-# semantic_disentanglement_loss — mirrors PyTorch
+# semantic_disentanglement_loss — Graph Mode safe
 # ---------------------------------------------------------------------------
 
 def semantic_disentanglement_loss(
@@ -152,23 +186,34 @@ def semantic_disentanglement_loss(
 ) -> tf.Tensor:
     if semantic_states is None:
         return tf.zeros((), dtype=tf.float32)
-    if len(semantic_states.shape) == 3:
+
+    states = tf.cast(semantic_states, tf.float32)
+
+    if len(states.shape) == 3:
         if region_mask is not None:
             flat_mask = tf.reshape(tf.cast(region_mask, tf.bool), [-1])
-            tokens = tf.boolean_mask(tf.reshape(semantic_states, [-1, tf.shape(semantic_states)[-1]]), flat_mask)
+            tokens = tf.boolean_mask(tf.reshape(states, [-1, tf.shape(states)[-1]]), flat_mask)
         else:
-            tokens = tf.reshape(semantic_states, [-1, tf.shape(semantic_states)[-1]])
+            tokens = tf.reshape(states, [-1, tf.shape(states)[-1]])
     else:
-        tokens = tf.reshape(semantic_states, [-1, tf.shape(semantic_states)[-1]])
-    tokens = tf.cast(tokens, tf.float32)
-    if tf.cast(tf.shape(tokens)[0] < 2, tf.bool):
-        return tf.zeros((), dtype=tf.float32)
-    centered = tokens - tf.reduce_mean(tokens, axis=0, keepdims=True)
-    n = tf.cast(tf.shape(tokens)[0] - 1, tf.float32)
-    cov = tf.matmul(tf.transpose(centered), centered) / n
-    diag = tf.linalg.diag(tf.linalg.diag_part(cov))
-    off_diag = cov - diag
-    return tf.reduce_mean(off_diag ** 2)
+        tokens = tf.reshape(states, [-1, tf.shape(states)[-1]])
+
+    # Use tf.where instead of Python if on tensor for the < 2 guard
+    n_tokens = tf.shape(tokens)[0]
+
+    def _compute():
+        centered = tokens - tf.reduce_mean(tokens, axis=0, keepdims=True)
+        n_f = tf.cast(tf.maximum(n_tokens - 1, 1), tf.float32)
+        cov = tf.matmul(tf.transpose(centered), centered) / n_f
+        diag = tf.linalg.diag(tf.linalg.diag_part(cov))
+        off_diag = cov - diag
+        return tf.reduce_mean(off_diag ** 2)
+
+    return tf.cond(
+        tf.cast(n_tokens >= 2, tf.bool),
+        _compute,
+        lambda: tf.zeros((), dtype=tf.float32),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -298,10 +343,10 @@ def topology_alignment_loss(
     labels_int = tf.cast(labels, tf.int32)
     selected_topology = tf.gather(program_topology, labels_int)  # (B, M, R, R)
     if program_attention is not None:
-        # program_attention is (B, C, M). labels_int is (B,)
+        # program_attention is (B, C, M). labels_int is (B,).
         # We want to select the attention for the target class for each batch item -> (B, M)
         sel_attn = tf.gather(program_attention, labels_int, axis=1, batch_dims=1)
-        
+
         # sel_attn is now (B, M)
         # selected_topology is (B, M, R, R)
         selected_topology = tf.reduce_sum(
@@ -360,11 +405,11 @@ def compute_semantic_roi_graph_losses_tf(
     # --- Main CE loss ---
     logits = tf.cast(outputs["logits"], tf.float32)
     labels_int = tf.cast(labels, tf.int32)
+    num_classes = tf.shape(logits)[-1]
 
     if label_smoothing > 0.0:
-        num_classes = logits.shape[-1]
         one_hot = tf.one_hot(labels_int, num_classes, dtype=tf.float32)
-        smooth_labels = one_hot * (1.0 - label_smoothing) + label_smoothing / float(num_classes)
+        smooth_labels = one_hot * (1.0 - label_smoothing) + label_smoothing / tf.cast(num_classes, tf.float32)
         per_sample_ce = tf.nn.softmax_cross_entropy_with_logits(
             labels=smooth_labels, logits=logits
         )
@@ -384,8 +429,9 @@ def compute_semantic_roi_graph_losses_tf(
     if logits_fused is not None:
         logits_fused = tf.cast(logits_fused, tf.float32)
         if label_smoothing > 0.0:
-            one_hot = tf.one_hot(labels_int, logits_fused.shape[-1], dtype=tf.float32)
-            smooth_labels = one_hot * (1.0 - label_smoothing) + label_smoothing / float(logits_fused.shape[-1])
+            nc_fused = tf.shape(logits_fused)[-1]
+            one_hot = tf.one_hot(labels_int, nc_fused, dtype=tf.float32)
+            smooth_labels = one_hot * (1.0 - label_smoothing) + label_smoothing / tf.cast(nc_fused, tf.float32)
             fused_per = tf.nn.softmax_cross_entropy_with_logits(labels=smooth_labels, logits=logits_fused)
         else:
             fused_per = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels_int, logits=logits_fused)
