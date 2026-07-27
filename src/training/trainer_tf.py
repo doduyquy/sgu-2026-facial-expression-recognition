@@ -84,19 +84,15 @@ class TrainerTF:
         self._ema_initialized = False
         self.ema_vars = []
 
-        # Handle Mixed Precision Loss Scaling safely (Keras 2 vs Keras 3)
+        # Mixed Precision flag (for logging only — we do NOT use LossScaleOptimizer)
+        # LossScaleOptimizer creates internal tf.cond nodes that crash under
+        # Keras 3 + mixed_float16 + MirroredStrategy. Instead we handle
+        # gradients manually: cast all grads to float32 before processing.
         self.use_mixed_precision = (
             tf.keras.mixed_precision.global_policy().name == "mixed_float16"
         )
         
         with self.strategy.scope():
-            if self.use_mixed_precision:
-                # If LossScaleOptimizer is available (TF 2.15- / Keras 2)
-                if hasattr(tf.keras.mixed_precision, "LossScaleOptimizer"):
-                    # Avoid re-wrapping if already wrapped
-                    if not isinstance(self.optimizer, tf.keras.mixed_precision.LossScaleOptimizer):
-                        self.optimizer = tf.keras.mixed_precision.LossScaleOptimizer(self.optimizer)
-            
             # Eagerly initialize optimizer variables to prevent them from being created
             # lazily inside tf.cond during the first @tf.function apply_gradients call.
             if hasattr(self.optimizer, "build"):
@@ -222,41 +218,33 @@ class TrainerTF:
                 cls_loss, logits, labels, _ = self._forward_batch(
                     dist_batch, epoch_tensor, use_scn_tensor, lam_tensor, training=True
                 )
-                
-                # Mixed precision loss scaling
-                if hasattr(self.optimizer, "get_scaled_loss"):
-                    scaled_loss = self.optimizer.get_scaled_loss(cls_loss)
-                elif hasattr(self.optimizer, "scale_loss"):
-                    scaled_loss = self.optimizer.scale_loss(cls_loss)
-                else:
-                    scaled_loss = cls_loss
+                # Manual constant loss scaling to prevent float16 underflow,
+                # avoiding the dynamic LossScaleOptimizer which creates tf.cond traps.
+                loss_scale = 1024.0
+                scaled_loss = cls_loss * loss_scale
 
             scaled_grads = tape.gradient(scaled_loss, self.model.trainable_variables)
-            if hasattr(self.optimizer, "get_unscaled_gradients"):
-                grads = self.optimizer.get_unscaled_gradients(scaled_grads)
-            elif hasattr(self.optimizer, "unscale_gradients"):
-                grads = self.optimizer.unscale_gradients(scaled_grads)
-            elif hasattr(self.optimizer, "unscale_grads"):
-                grads = self.optimizer.unscale_grads(scaled_grads)
-            else:
-                if hasattr(self.optimizer, "loss_scale"):
-                    scale = self.optimizer.loss_scale
-                    grads = [g / tf.cast(scale, g.dtype) if g is not None else g for g in scaled_grads]
-                else:
-                    grads = scaled_grads
+            
+            # 1. Unscale and cast ALL gradients to float32 immediately.
+            # This ensures no float16 tensors enter tf.where or optimizer logic.
+            grads = [
+                tf.cast(g, tf.float32) / loss_scale if g is not None else None
+                for g in scaled_grads
+            ]
 
-            # Sanitize gradients: replace NaN/Inf with zeros BEFORE clipping.
+            # 2. Sanitize gradients: replace NaN/Inf with zeros.
+            # Since grads are now float32, tf.where is completely safe.
             grads = [
                 tf.where(tf.math.is_finite(g), g, tf.zeros_like(g))
                 if g is not None else None
                 for g in grads
             ]
             
-            # Clip by global norm — avoids tf.cond bug in element-wise clip_by_norm with float16
+            # 3. Clip by global norm
             valid_grads = [g for g in grads if g is not None]
             clipped_grads, _ = tf.clip_by_global_norm(valid_grads, 5.0)
             
-            # Reconstruct grads with None
+            # 4. Reconstruct grads with None
             final_grads = []
             idx = 0
             for g in grads:
@@ -265,8 +253,8 @@ class TrainerTF:
                     idx += 1
                 else:
                     final_grads.append(None)
-            grads = final_grads
-            self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
+                    
+            self.optimizer.apply_gradients(zip(final_grads, self.model.trainable_variables))
 
             # Update EMA weights — self.ema_vars is populated BEFORE first trace
             for v, ema_v in zip(self.model.trainable_variables, self.ema_vars):
