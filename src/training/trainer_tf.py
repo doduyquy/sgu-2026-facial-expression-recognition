@@ -244,15 +244,16 @@ class TrainerTF:
             valid_grads = [g for g in grads if g is not None]
             clipped_grads, _ = tf.clip_by_global_norm(valid_grads, 5.0)
             
-            # 4. Reconstruct grads with None
+            # 4. Reconstruct grads with zeros instead of None
             final_grads = []
             idx = 0
-            for g in grads:
+            for v, g in zip(self.model.trainable_variables, grads):
                 if g is not None:
                     final_grads.append(clipped_grads[idx])
                     idx += 1
                 else:
-                    final_grads.append(None)
+                    # Explicit zeros prevent optimizer skipping bugs in Keras/XLA
+                    final_grads.append(tf.zeros_like(v, dtype=tf.float32))
                     
             self.optimizer.apply_gradients(zip(final_grads, self.model.trainable_variables))
 
