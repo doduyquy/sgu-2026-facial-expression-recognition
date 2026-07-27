@@ -70,7 +70,7 @@ def program_diversity_loss(program_bank: tf.Tensor) -> tf.Tensor:
         summaries = program_bank
     c, m, d = summaries.shape
     summaries = tf.reshape(summaries, [c * m, d])
-    if summaries.shape[0] < 2:
+    if tf.cast(tf.shape(summaries)[0] < 2, tf.bool):
         return tf.zeros((), dtype=tf.float32)
     summaries = tf.nn.l2_normalize(summaries, axis=-1)
     sim = tf.matmul(summaries, tf.transpose(summaries))  # (C*M, C*M)
@@ -134,11 +134,11 @@ def semantic_consistency_loss(
         def _skip():
             return tf.constant(0.0, dtype=tf.float32), tf.constant(0, dtype=tf.int32)
             
-        var, c = tf.cond(tf.shape(cls_states)[0] >= 2, _add_loss, _skip)
+        var, c = tf.cond(tf.cast(tf.shape(cls_states)[0] >= 2, tf.bool), _add_loss, _skip)
         loss_acc = loss_acc + var
         count = count + c
 
-    return tf.cond(count > 0, lambda: loss_acc / tf.cast(count, tf.float32),
+    return tf.cond(tf.cast(count > 0, tf.bool), lambda: loss_acc / tf.cast(count, tf.float32),
                    lambda: tf.zeros((), dtype=tf.float32))
 
 
@@ -161,7 +161,7 @@ def semantic_disentanglement_loss(
     else:
         tokens = tf.reshape(semantic_states, [-1, tf.shape(semantic_states)[-1]])
     tokens = tf.cast(tokens, tf.float32)
-    if tf.shape(tokens)[0] < 2:
+    if tf.cast(tf.shape(tokens)[0] < 2, tf.bool):
         return tf.zeros((), dtype=tf.float32)
     centered = tokens - tf.reduce_mean(tokens, axis=0, keepdims=True)
     n = tf.cast(tf.shape(tokens)[0] - 1, tf.float32)

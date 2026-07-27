@@ -128,7 +128,7 @@ class TrainerTF:
             return tf.maximum(easy_loss - hard_loss + self.scn_margin, 0.0)
 
         ranking_loss = tf.cond(
-            epoch_tensor >= self.scn_warmup_epochs,
+            tf.cast(epoch_tensor >= self.scn_warmup_epochs, tf.bool),
             calc_ranking_loss,
             lambda: tf.zeros(())
         )
@@ -161,7 +161,7 @@ class TrainerTF:
             return tf.cast(mixed_img, images.dtype), tf.gather(labels, perm)
 
         images, labels_b = tf.cond(
-            lam_tensor < 1.0,
+            tf.cast(lam_tensor < 1.0, tf.bool),
             apply_mixup,
             lambda: (images, labels)
         )
@@ -192,13 +192,13 @@ class TrainerTF:
 
             def compute_scn_or_normal():
                 return tf.cond(
-                    use_scn_tensor,
+                    tf.cast(use_scn_tensor, tf.bool),
                     lambda: self._scn_loss(logits, labels, epoch_tensor),
                     lambda: tf.reduce_mean(_spce(labels, logits))
                 )
 
             cls_loss = tf.cond(
-                lam_tensor < 1.0,
+                tf.cast(lam_tensor < 1.0, tf.bool),
                 compute_mixup_loss,
                 compute_scn_or_normal
             )
