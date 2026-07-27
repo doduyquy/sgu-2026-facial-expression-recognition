@@ -76,8 +76,8 @@ class TrainerTF:
         self.scn_min_weight = float(train_cfg.get("scn_min_weight", 0.2))
         self.scn_margin = float(train_cfg.get("scn_margin", 0.6))
         self.mixup_alpha = float(train_cfg.get("mixup_alpha", 0.2))
-
-        self.ema = tf.train.ExponentialMovingAverage(decay=0.999)
+        self.ema_decay = 0.999
+        self.ema_vars = []
 
         # Handle Mixed Precision Loss Scaling safely (Keras 2 vs Keras 3)
         self.use_mixed_precision = (
@@ -254,9 +254,10 @@ class TrainerTF:
             ]
             grads = [tf.clip_by_norm(g, 5.0) if g is not None else g for g in grads]
             self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
-
-            # Update EMA weights
-            self.ema.apply(self.model.trainable_variables)
+            # Update EMA weights manually
+            if hasattr(self, 'ema_vars') and self.ema_vars:
+                for v, ema_v in zip(self.model.trainable_variables, self.ema_vars):
+                    ema_v.assign(self.ema_decay * ema_v + (1.0 - self.ema_decay) * v)
 
             preds = tf.argmax(logits, axis=-1, output_type=tf.int32)
             acc = tf.cast(tf.equal(preds, labels), tf.float32)
@@ -374,6 +375,14 @@ class TrainerTF:
             # ReduceLROnPlateau also needs optimizer to be set on model
             if not hasattr(self.model, "optimizer") or self.model.optimizer is None:
                 self.model.optimizer = self.optimizer
+            print(f"--> [Training] Starts for {self.epochs} epochs. Mixed Precision: {self.use_mixed_precision}")
+
+        # Initialize EMA variables
+        with self.strategy.scope():
+            self.ema_vars = [
+                tf.Variable(v.read_value(), trainable=False, name=v.name.replace(':', '_') + '_ema')
+                for v in self.model.trainable_variables
+            ]
 
         for ep in range(self.epochs):
             progress = ep / max(self.epochs - 1, 1)
@@ -452,11 +461,9 @@ class TrainerTF:
                 best_score = selection_score
                 patience_counter = 0
                 # Save EMA weights
-                ema_vars = [self.ema.average(v) for v in self.model.trainable_variables]
-                original_vars = [v.numpy() for v in self.model.trainable_variables]
-                for v, ema_v in zip(self.model.trainable_variables, ema_vars):
-                    if ema_v is not None:
-                        v.assign(ema_v)
+                original_vars = [v.read_value() for v in self.model.trainable_variables]
+                for v, ema_v in zip(self.model.trainable_variables, self.ema_vars):
+                    v.assign(ema_v.read_value())
                 self.model.save_weights(self.save_path)
                 # Restore original weights
                 for v, orig in zip(self.model.trainable_variables, original_vars):
