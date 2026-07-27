@@ -184,36 +184,46 @@ def semantic_disentanglement_loss(
     semantic_states: Optional[tf.Tensor],
     region_mask: Optional[tf.Tensor] = None,
 ) -> tf.Tensor:
+    """Semantic disentanglement loss computed with fully static shapes and masking to avoid XLA tf.cond/boolean_mask bugs."""
     if semantic_states is None:
         return tf.zeros((), dtype=tf.float32)
 
     states = tf.cast(semantic_states, tf.float32)
-
+    
     if len(states.shape) == 3:
+        b, r, d = tf.shape(states)[0], tf.shape(states)[1], tf.shape(states)[2]
+        tokens = tf.reshape(states, [-1, d])
         if region_mask is not None:
-            flat_mask = tf.reshape(tf.cast(region_mask, tf.bool), [-1])
-            tokens = tf.boolean_mask(tf.reshape(states, [-1, tf.shape(states)[-1]]), flat_mask)
+            mask = tf.reshape(tf.cast(region_mask, tf.float32), [-1, 1])
         else:
-            tokens = tf.reshape(states, [-1, tf.shape(states)[-1]])
+            mask = tf.ones([b * r, 1], dtype=tf.float32)
     else:
-        tokens = tf.reshape(states, [-1, tf.shape(states)[-1]])
+        d = tf.shape(states)[-1]
+        tokens = tf.reshape(states, [-1, d])
+        mask = tf.ones([tf.shape(tokens)[0], 1], dtype=tf.float32)
 
-    # Use tf.where instead of Python if on tensor for the < 2 guard
-    n_tokens = tf.shape(tokens)[0]
-
-    def _compute():
-        centered = tokens - tf.reduce_mean(tokens, axis=0, keepdims=True)
-        n_f = tf.cast(tf.maximum(n_tokens - 1, 1), tf.float32)
-        cov = tf.matmul(tf.transpose(centered), centered) / n_f
-        diag = tf.linalg.diag(tf.linalg.diag_part(cov))
-        off_diag = cov - diag
-        return tf.reduce_mean(off_diag ** 2)
-
-    return tf.cond(
-        tf.cast(n_tokens >= 2, tf.bool),
-        _compute,
-        lambda: tf.zeros((), dtype=tf.float32),
-    )
+    valid_count = tf.reduce_sum(mask)
+    
+    # We use a mathematical formulation that smoothly goes to 0 if valid_count < 2,
+    # avoiding any tf.cond branches.
+    is_valid = tf.cast(valid_count >= 2.0, tf.float32)
+    safe_count = tf.maximum(valid_count, 2.0)
+    
+    # Compute masked mean
+    mean_token = tf.reduce_sum(tokens * mask, axis=0, keepdims=True) / safe_count
+    
+    # Center valid tokens, zero out invalid ones
+    centered = (tokens - mean_token) * mask
+    
+    # Compute covariance (D, D)
+    n_f = safe_count - 1.0
+    cov = tf.matmul(tf.transpose(centered), centered) / n_f
+    
+    # Off-diagonal squared penalty
+    diag = tf.linalg.diag(tf.linalg.diag_part(cov))
+    off_diag = cov - diag
+    
+    return is_valid * tf.reduce_mean(off_diag ** 2)
 
 
 # ---------------------------------------------------------------------------
