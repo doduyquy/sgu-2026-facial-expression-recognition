@@ -249,10 +249,24 @@ class TrainerTF:
             # clip_by_norm(Inf) = Inf * (1.0/Inf) = NaN, which would corrupt weights.
             grads = [
                 tf.where(tf.math.is_finite(g), g, tf.zeros_like(g))
-                if g is not None else g
+                if g is not None else None
                 for g in grads
             ]
-            grads = [tf.clip_by_norm(g, 5.0) if g is not None else g for g in grads]
+            
+            # Clip by global norm avoids tf.cond bug in element-wise clip_by_norm with float16
+            valid_grads = [g for g in grads if g is not None]
+            clipped_grads, _ = tf.clip_by_global_norm(valid_grads, 5.0)
+            
+            # Reconstruct grads with None
+            final_grads = []
+            idx = 0
+            for g in grads:
+                if g is not None:
+                    final_grads.append(clipped_grads[idx])
+                    idx += 1
+                else:
+                    final_grads.append(None)
+            grads = final_grads
             self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
             # Update EMA weights manually
             if hasattr(self, 'ema_vars') and self.ema_vars:

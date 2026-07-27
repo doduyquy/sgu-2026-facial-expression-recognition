@@ -23,7 +23,7 @@ def safe_softmax(x: tf.Tensor, axis: int = -1) -> tf.Tensor:
     x_max = tf.reduce_max(x, axis=axis, keepdims=True)
     x_shifted = x - x_max
     # Replace any all-inf / all-nan slices with zeros
-    all_invalid = tf.reduce_all(tf.math.is_inf(x_shifted), axis=axis, keepdims=True)
+    all_invalid = tf.cast(tf.reduce_all(tf.math.is_inf(x_shifted), axis=axis, keepdims=True), tf.bool)
     x_shifted = tf.where(all_invalid, tf.zeros_like(x_shifted), x_shifted)
     return tf.nn.softmax(x_shifted, axis=axis)
 
@@ -727,7 +727,7 @@ class SemanticInteractionBlock(tf.keras.layers.Layer):
         if self.dropedge_rate > 0.0 and training:
             keep_prob = 1.0 - self.dropedge_rate
             noise = tf.random.uniform(tf.shape(gates))
-            gates = tf.where(noise < keep_prob, gates / keep_prob, tf.zeros_like(gates))
+            gates = tf.where(tf.cast(noise < keep_prob, tf.bool), gates / keep_prob, tf.zeros_like(gates))
 
         if region_mask is not None:
             pair_mask = tf.cast(region_mask[:, :, tf.newaxis], gates.dtype) * \
@@ -1341,7 +1341,7 @@ class SemanticROIGraphFER(tf.keras.Model):
         # Repair bboxes
         repaired = self.roi_align_layer._validate_bboxes(bboxes)
         canonical = self._canonical_bboxes(batch_size)
-        mask_4 = region_mask[..., tf.newaxis] > 0
+        mask_4 = tf.cast(region_mask[..., tf.newaxis] > 0, tf.bool)
         repaired = tf.where(mask_4, repaired, canonical)
 
         width  = tf.maximum(repaired[..., 2] - repaired[..., 0], 1.0)
@@ -1350,7 +1350,7 @@ class SemanticROIGraphFER(tf.keras.Model):
         area = (width * height) / (size * size)
         area_conf = tf.clip_by_value(area, 0.0, 1.0)
         region_confidence = tf.where(
-            region_mask > 0,
+            tf.cast(region_mask > 0, tf.bool),
             0.5 + 0.5 * area_conf,
             tf.fill(tf.shape(area_conf), 0.05),
         )
@@ -1402,7 +1402,7 @@ class SemanticROIGraphFER(tf.keras.Model):
 
         # Missing region token substitution
         missing_token = tf.cast(tf.reshape(self.missing_region_token, [1, 1, -1]), region_embeddings.dtype)
-        region_valid_mask = region_mask[..., tf.newaxis] > 0
+        region_valid_mask = tf.cast(region_mask[..., tf.newaxis] > 0, tf.bool)
         region_embeddings = tf.where(region_valid_mask, region_embeddings,
                                      tf.broadcast_to(missing_token, tf.shape(region_embeddings)))
 
