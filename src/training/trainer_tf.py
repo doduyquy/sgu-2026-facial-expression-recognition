@@ -326,6 +326,14 @@ class TrainerTF:
         return float(tf.reduce_mean(tf.stack(loss_values)).numpy()), float(tf.reduce_mean(tf.stack(acc_values)).numpy())
 
     def validate(self, epoch: int):
+        # --- SWAP TO EMA WEIGHTS FOR VALIDATION ---
+        current_weights = []
+        if getattr(self, "_ema_initialized", False) and getattr(self, "ema_vars", None) is not None:
+            # Backup current weights and assign EMA weights
+            for v, ema_v in zip(self.model.trainable_variables, self.ema_vars):
+                current_weights.append(v.read_value())
+                v.assign(ema_v.read_value())
+                
         loss_values = []
         acc_values = []
         pred_batches = []
@@ -338,6 +346,11 @@ class TrainerTF:
             acc_values.append(tf.cast(acc, tf.float32))
             pred_batches.append(tf.cast(preds, tf.int32))
             label_batches.append(tf.cast(labels, tf.int32))
+            
+        # --- RESTORE ORIGINAL WEIGHTS ---
+        if current_weights:
+            for v, w in zip(self.model.trainable_variables, current_weights):
+                v.assign(w)
 
         if not loss_values:
             return 0.0, 0.0, 0.0, 0.0

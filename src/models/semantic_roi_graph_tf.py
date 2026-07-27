@@ -341,6 +341,83 @@ class SemanticBackbone(tf.keras.layers.Layer):
         return self.proj(x, training=training)              # (B, H', W', feature_dim)
 
 
+class MiniXceptionBlock(tf.keras.layers.Layer):
+    def __init__(self, out_channels, stride=1, **kwargs):
+        super().__init__(**kwargs)
+        self.stride = stride
+        
+        self.branch = tf.keras.Sequential([
+            tf.keras.layers.Conv2D(out_channels, 1, strides=stride, padding='same', use_bias=False),
+            tf.keras.layers.BatchNormalization()
+        ])
+        
+        self.main = tf.keras.Sequential([
+            tf.keras.layers.ReLU(),
+            tf.keras.layers.SeparableConv2D(out_channels, 3, padding='same', use_bias=False),
+            tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.ReLU(),
+            tf.keras.layers.SeparableConv2D(out_channels, 3, padding='same', use_bias=False),
+            tf.keras.layers.BatchNormalization(),
+        ])
+        
+        if stride > 1:
+            self.pool = tf.keras.layers.MaxPooling2D(3, strides=stride, padding='same')
+        else:
+            self.pool = None
+
+    def call(self, x, training=False):
+        res = self.branch(x, training=training)
+        y = self.main(x, training=training)
+        if self.pool is not None:
+            y = self.pool(y)
+        return res + y
+
+
+class MiniXceptionBackbone(tf.keras.layers.Layer):
+    """
+    Mini-Xception customized for 48x48 input -> 12x12 output.
+    Very lightweight, highly resistant to overfitting on FER datasets from scratch.
+    """
+    def __init__(self, feature_dim=256, **kwargs):
+        super().__init__(**kwargs)
+        self.feature_dim = feature_dim
+        
+        self.stem = tf.keras.Sequential([
+            tf.keras.layers.Conv2D(8, 3, padding='same', use_bias=False),
+            tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.ReLU(),
+            tf.keras.layers.Conv2D(8, 3, padding='same', use_bias=False),
+            tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.ReLU(),
+        ])
+        
+        # M1: 48 -> 24
+        self.m1 = MiniXceptionBlock(16, stride=2)
+        # M2: 24 -> 12
+        self.m2 = MiniXceptionBlock(32, stride=2)
+        # M3: 12 -> 12
+        self.m3 = MiniXceptionBlock(64, stride=1)
+        # M4: 12 -> 12
+        self.m4 = MiniXceptionBlock(128, stride=1)
+        
+        # Projection to feature_dim
+        self.proj = tf.keras.Sequential([
+            tf.keras.layers.Conv2D(feature_dim, 1, padding='same', use_bias=False),
+            tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.ReLU()
+        ])
+
+    def call(self, x, training=False):
+        x = tf.cast(x, tf.float32)
+        x = self.stem(x, training=training)
+        x = self.m1(x, training=training)
+        x = self.m2(x, training=training)
+        x = self.m3(x, training=training)
+        x = self.m4(x, training=training)
+        x = self.proj(x, training=training)
+        return x
+
+
 # ---------------------------------------------------------------------------
 # SemanticRoiAlign — mirrors PyTorch roi_align behavior
 # ---------------------------------------------------------------------------
@@ -1190,11 +1267,14 @@ class SemanticROIGraphFER(tf.keras.Model):
         self.config = config
         self.training_cfg: Dict = {}
 
-        backbone_type = getattr(config, 'backbone_type', 'resnet50')
-        if backbone_type == 'hrnet_w18':
+        if config.backbone_type == "hrnet_w18":
             self.backbone = HRNetBackboneTF(
                 feature_dim=config.feature_dim,
                 use_pretrained=config.use_pretrained,
+            )
+        elif config.backbone_type == "mini_xception":
+            self.backbone = MiniXceptionBackbone(
+                feature_dim=config.feature_dim,
             )
         else:
             self.backbone = SemanticBackbone(
