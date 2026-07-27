@@ -200,6 +200,7 @@ class TrainerTF:
     # Distributed Training step
     # ------------------------------------------------------------------
 
+    @tf.function(reduce_retracing=True)
     def _distributed_train_step(self, batch, epoch_tensor, use_scn_tensor, lam_tensor):
         def step_fn(dist_batch):
             with tf.GradientTape() as tape:
@@ -263,6 +264,7 @@ class TrainerTF:
         acc = self.strategy.reduce(tf.distribute.ReduceOp.MEAN, per_replica_accs, axis=None)
         return loss, acc
 
+    @tf.function(reduce_retracing=True)
     def _distributed_val_step(self, batch):
         def step_fn(dist_batch):
             cls_loss, logits, labels, _ = self._forward_batch(
@@ -298,7 +300,8 @@ class TrainerTF:
     # ------------------------------------------------------------------
 
     def train_one_epoch(self, epoch: int):
-        total_loss, total_acc, n = 0.0, 0.0, 0
+        loss_values = []
+        acc_values = []
 
         use_scn_tensor = tf.constant(getattr(self, "_runtime_use_scn", self.use_scn), dtype=tf.bool)
         use_mixup = getattr(self, "_runtime_use_mixup", False)
@@ -312,32 +315,45 @@ class TrainerTF:
                 use_scn_tensor=use_scn_tensor,
                 lam_tensor=tf.constant(lam, dtype=tf.float32)
             )
-            
-            total_loss += loss.numpy()
-            total_acc += acc.numpy()
-            n += 1
 
-        return total_loss / max(n, 1), total_acc / max(n, 1)
+            loss_values.append(tf.cast(loss, tf.float32))
+            acc_values.append(tf.cast(acc, tf.float32))
+
+        if not loss_values:
+            return 0.0, 0.0
+
+        return float(tf.reduce_mean(tf.stack(loss_values)).numpy()), float(tf.reduce_mean(tf.stack(acc_values)).numpy())
 
     def validate(self, epoch: int):
-        total_loss, total_acc, n = 0.0, 0.0, 0
-        all_preds, all_labels = [], []
+        loss_values = []
+        acc_values = []
+        pred_batches = []
+        label_batches = []
 
         for batch in self.val_dataset:
             loss, acc, preds, labels = self._distributed_val_step(batch)
-            
-            total_loss += loss.numpy()
-            total_acc += acc.numpy()
-            n += 1
-            
-            all_preds.extend(preds.numpy().tolist())
-            all_labels.extend(labels.numpy().tolist())
+
+            loss_values.append(tf.cast(loss, tf.float32))
+            acc_values.append(tf.cast(acc, tf.float32))
+            pred_batches.append(tf.cast(preds, tf.int32))
+            label_batches.append(tf.cast(labels, tf.int32))
+
+        if not loss_values:
+            return 0.0, 0.0, 0.0, 0.0
+
+        all_preds = tf.concat(pred_batches, axis=0).numpy().tolist()
+        all_labels = tf.concat(label_batches, axis=0).numpy().tolist()
 
         from sklearn.metrics import f1_score, balanced_accuracy_score
         macro_f1 = f1_score(all_labels, all_preds, average="macro", zero_division=0)
         bal_acc = balanced_accuracy_score(all_labels, all_preds)
 
-        return total_loss / max(n, 1), total_acc / max(n, 1), macro_f1, bal_acc
+        return (
+            float(tf.reduce_mean(tf.stack(loss_values)).numpy()),
+            float(tf.reduce_mean(tf.stack(acc_values)).numpy()),
+            macro_f1,
+            bal_acc,
+        )
 
     # ------------------------------------------------------------------
     # Full training loop
