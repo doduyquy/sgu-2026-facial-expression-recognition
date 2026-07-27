@@ -154,9 +154,11 @@ def main():
     parser.add_argument("--env", type=str, default="local", choices=["local", "kaggle"])
     args = parser.parse_args()
 
-    # Enable Mixed Precision
-    tf.keras.mixed_precision.set_global_policy("mixed_float16")
-    print("--> [Mixed Precision] Policy set to 'mixed_float16'")
+    # Keep TensorFlow in float32 by default.
+    # Mixed precision can introduce half-typed predicates inside graph control flow
+    # under distributed training, which is fragile for this codebase.
+    tf.keras.mixed_precision.set_global_policy("float32")
+    print("--> [Mixed Precision] Policy set to 'float32'")
 
     # Configure GPU
     gpus = tf.config.list_physical_devices("GPU")
