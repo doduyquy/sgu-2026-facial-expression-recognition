@@ -385,9 +385,9 @@ class TrainerTF:
             if self._phase == 1 and ep >= self.backbone_freeze_epochs:
                 self._phase = 2
                 base_lr = float(self.config.get("training", {}).get("lr", 3e-4))
-                # Unfreeze backbone
-                self.model.backbone.feature_extractor.trainable = True
-                for layer in self.model.backbone.feature_extractor.layers:
+                # Unfreeze entire backbone (works for both ResNet and HRNet)
+                self.model.backbone.trainable = True
+                for layer in self.model.backbone.submodules:
                     layer.trainable = True
                 # Reset optimizer LR to base_lr for full model fine-tuning
                 self.optimizer.learning_rate.assign(base_lr)
