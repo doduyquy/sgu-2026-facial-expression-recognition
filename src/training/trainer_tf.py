@@ -331,8 +331,8 @@ class TrainerTF:
         if getattr(self, "_ema_initialized", False) and getattr(self, "ema_vars", None) is not None:
             # Backup current weights and assign EMA weights
             for v, ema_v in zip(self.model.trainable_variables, self.ema_vars):
-                current_weights.append(v.read_value())
-                v.assign(ema_v.read_value())
+                current_weights.append(tf.identity(v))
+                v.assign(ema_v)
                 
         loss_values = []
         acc_values = []
