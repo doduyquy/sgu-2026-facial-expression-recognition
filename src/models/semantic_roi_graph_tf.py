@@ -239,7 +239,8 @@ class HRNetBackboneTF(tf.keras.layers.Layer):
         
         # Stage2 fusion
         h0, w0 = tf.shape(b0)[1], tf.shape(b0)[2]
-        b0_new = tf.nn.relu(b0 + self.fuse2_1to0(tf.image.resize(b1, [h0, w0]), training=training))
+        b1_resized = tf.cast(tf.image.resize(b1, [h0, w0]), b0.dtype)
+        b0_new = tf.nn.relu(b0 + self.fuse2_1to0(b1_resized, training=training))
         b1_new = tf.nn.relu(b1 + self.fuse2_0to1(b0, training=training))
         b0, b1 = b0_new, b1_new
         
@@ -253,8 +254,8 @@ class HRNetBackboneTF(tf.keras.layers.Layer):
         
         # Final fusion: upsample b1, b2 to b0's resolution, concat
         h0, w0 = tf.shape(b0)[1], tf.shape(b0)[2]
-        b1_up = tf.image.resize(b1, [h0, w0])  # bilinear upsample
-        b2_up = tf.image.resize(b2, [h0, w0])
+        b1_up = tf.cast(tf.image.resize(b1, [h0, w0]), b0.dtype)
+        b2_up = tf.cast(tf.image.resize(b2, [h0, w0]), b0.dtype)
         fused = tf.concat([b0, b1_up, b2_up], axis=-1)  # (B, H, W, 18+36+72=126)
         
         # Project to feature_dim
