@@ -380,7 +380,7 @@ class TrainerTF:
         # Initialize EMA variables
         with self.strategy.scope():
             self.ema_vars = [
-                tf.Variable(v.read_value(), trainable=False, name=v.name.replace(':', '_') + '_ema')
+                tf.Variable(v.numpy(), trainable=False, name=v.name.replace(':', '_') + '_ema')
                 for v in self.model.trainable_variables
             ]
 
@@ -461,9 +461,9 @@ class TrainerTF:
                 best_score = selection_score
                 patience_counter = 0
                 # Save EMA weights
-                original_vars = [v.read_value() for v in self.model.trainable_variables]
+                original_vars = [v.numpy() for v in self.model.trainable_variables]
                 for v, ema_v in zip(self.model.trainable_variables, self.ema_vars):
-                    v.assign(ema_v.read_value())
+                    v.assign(ema_v.numpy())
                 self.model.save_weights(self.save_path)
                 # Restore original weights
                 for v, orig in zip(self.model.trainable_variables, original_vars):
