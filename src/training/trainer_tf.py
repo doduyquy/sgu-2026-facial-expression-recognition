@@ -126,14 +126,9 @@ class TrainerTF:
         hard_loss = tf.reduce_mean(tf.gather(ce, hard_idx))
         easy_loss = tf.reduce_mean(tf.gather(ce, easy_idx))
 
-        def calc_ranking_loss():
-            return tf.maximum(easy_loss - hard_loss + self.scn_margin, 0.0)
-
-        ranking_loss = tf.cond(
-            tf.cast(epoch_tensor >= self.scn_warmup_epochs, tf.bool),
-            calc_ranking_loss,
-            lambda: tf.constant(0.0, dtype=tf.float32),
-        )
+        raw_ranking_loss = tf.maximum(easy_loss - hard_loss + self.scn_margin, 0.0)
+        is_warm = tf.cast(epoch_tensor >= self.scn_warmup_epochs, tf.float32)
+        ranking_loss = is_warm * raw_ranking_loss
 
         return self.scn_alpha * loss + self.scn_rank_lambda * ranking_loss
 
@@ -156,17 +151,16 @@ class TrainerTF:
         labels = tf.cast(labels, tf.int32)
         loss_mode = self.config.get("training", {}).get("loss", "cross_entropy")
 
-        # Mixup
-        def apply_mixup():
-            perm = tf.random.shuffle(tf.range(tf.shape(images)[0]))
-            mixed_img = lam_tensor * tf.cast(images, tf.float32) + (1.0 - lam_tensor) * tf.cast(tf.gather(images, perm), tf.float32)
-            return tf.cast(mixed_img, images.dtype), tf.gather(labels, perm)
+        # Mixup (Unconditional mathematical interpolation to avoid tf.cond backprop bugs with float16)
+        perm = tf.random.shuffle(tf.range(tf.shape(images)[0]))
+        images_b = tf.gather(images, perm)
+        labels_b = tf.gather(labels, perm)
 
-        images, labels_b = tf.cond(
-            tf.cast(lam_tensor < 1.0, tf.bool),
-            apply_mixup,
-            lambda: (images, labels),
-        )
+        lam_cast = tf.cast(lam_tensor, tf.float32)
+        lam_cast_img = tf.reshape(lam_cast, [1, 1, 1, 1])
+        
+        mixed_img = lam_cast_img * tf.cast(images, tf.float32) + (1.0 - lam_cast_img) * tf.cast(images_b, tf.float32)
+        images = tf.cast(mixed_img, images.dtype)
 
         # Build model inputs
         region_mask, region_confidence = None, None
@@ -189,21 +183,16 @@ class TrainerTF:
             )
             cls_loss = loss_dict["loss"]
         else:
-            def compute_mixup_loss():
-                return lam_tensor * tf.reduce_mean(_spce(labels, logits)) + (1.0 - lam_tensor) * tf.reduce_mean(_spce(labels_b, logits))
-
-            def compute_scn_or_normal():
-                return tf.cond(
-                    tf.cast(use_scn_tensor, tf.bool),
-                    lambda: self._scn_loss(logits, labels, epoch_tensor),
-                    lambda: tf.reduce_mean(_spce(labels, logits)),
-                )
-
-            cls_loss = tf.cond(
-                tf.cast(lam_tensor < 1.0, tf.bool),
-                compute_mixup_loss,
-                compute_scn_or_normal,
-            )
+            loss_a = tf.reduce_mean(_spce(labels, logits))
+            loss_b = tf.reduce_mean(_spce(labels_b, logits))
+            
+            scn_loss_val = self._scn_loss(logits, labels, epoch_tensor)
+            
+            # If use_scn_tensor is True, use SCN loss for A. Otherwise SPCE.
+            use_scn_f = tf.cast(use_scn_tensor, tf.float32)
+            base_loss_a = use_scn_f * scn_loss_val + (1.0 - use_scn_f) * loss_a
+            
+            cls_loss = lam_cast * base_loss_a + (1.0 - lam_cast) * loss_b
 
         return cls_loss, logits, labels, outputs
 
