@@ -253,8 +253,11 @@ def main():
         backbone_freeze_epochs = int(train_cfg.get("backbone_freeze_epochs", 10))
         backbone_lr_scale = float(train_cfg.get("backbone_lr_scale", 0.1))
 
-        # Freeze backbone feature_extractor (ResNet50V2) for phase 1
-        model.backbone.feature_extractor.trainable = False
+        # Freeze backbone for phase 1
+        if hasattr(model.backbone, 'feature_extractor'):
+            model.backbone.feature_extractor.trainable = False
+        else:
+            model.backbone.trainable = False
         print(f"--> [Phase 1] Backbone FROZEN for first {backbone_freeze_epochs} epochs.")
         print(f"    Training head at lr={head_lr:.6f}")
         n_trainable = sum(int(np.prod(v.shape)) for v in model.trainable_variables)
