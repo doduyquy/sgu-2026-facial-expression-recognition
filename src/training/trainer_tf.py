@@ -77,6 +77,8 @@ class TrainerTF:
         self.scn_margin = float(train_cfg.get("scn_margin", 0.6))
         self.mixup_alpha = float(train_cfg.get("mixup_alpha", 0.2))
 
+        self.ema = tf.train.ExponentialMovingAverage(decay=0.999)
+
         # Handle Mixed Precision Loss Scaling safely (Keras 2 vs Keras 3)
         self.use_mixed_precision = (
             tf.keras.mixed_precision.global_policy().name == "mixed_float16"
@@ -253,6 +255,9 @@ class TrainerTF:
             grads = [tf.clip_by_norm(g, 5.0) if g is not None else g for g in grads]
             self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
 
+            # Update EMA weights
+            self.ema.apply(self.model.trainable_variables)
+
             preds = tf.argmax(logits, axis=-1, output_type=tf.int32)
             acc = tf.cast(tf.equal(preds, labels), tf.float32)
             
@@ -397,9 +402,20 @@ class TrainerTF:
             if progress <= 0.7:
                 self._runtime_use_scn = False
                 self._runtime_use_mixup = False
+                self._runtime_motif_diversity_weight = float(self.config.get('training', {}).get('micro_motif_diversity_weight', 0.02))
             else:
                 self._runtime_use_scn = True
                 self._runtime_use_mixup = False
+                base_motif_w = float(self.config.get('training', {}).get('micro_motif_diversity_weight', 0.02))
+                self._runtime_motif_diversity_weight = base_motif_w * 1.5  # Phase 3 boost
+
+            base_au_w = float(self.config.get('training', {}).get('au_contrastive_weight', 0.03))
+            if ep < 5:
+                self._runtime_au_contrastive_weight = 0.0
+            elif ep < 10:
+                self._runtime_au_contrastive_weight = base_au_w * ((ep - 4) / 5.0)
+            else:
+                self._runtime_au_contrastive_weight = base_au_w
 
             # Notify model of training progress
             set_prog = getattr(self.model, "set_training_progress", None)
@@ -422,20 +438,29 @@ class TrainerTF:
                 f"val_f1: {macro_f1:.4f}"
             )
 
+            # Selection score
+            selection_score = 0.5 * val_acc + 0.5 * macro_f1
+
             # LR Scheduler
             if self.scheduler is not None:
                 if isinstance(self.scheduler, tf.keras.callbacks.ReduceLROnPlateau):
-                    self.scheduler.on_epoch_end(ep, logs={"val_loss": val_loss})
+                    self.scheduler.on_epoch_end(ep, logs={"selection_score": selection_score})
                 elif hasattr(self.scheduler, "step"):
                     self.scheduler.step()
-
-            # Selection score
-            selection_score = 0.5 * val_acc + 0.5 * macro_f1
 
             if selection_score > best_score:
                 best_score = selection_score
                 patience_counter = 0
+                # Save EMA weights
+                ema_vars = [self.ema.average(v) for v in self.model.trainable_variables]
+                original_vars = [v.numpy() for v in self.model.trainable_variables]
+                for v, ema_v in zip(self.model.trainable_variables, ema_vars):
+                    if ema_v is not None:
+                        v.assign(ema_v)
                 self.model.save_weights(self.save_path)
+                # Restore original weights
+                for v, orig in zip(self.model.trainable_variables, original_vars):
+                    v.assign(orig)
                 print(
                     f"\t--- Save best at ep {ep+1}, "
                     f"score: {selection_score:.4f}, val_acc: {val_acc:.4f}, f1: {macro_f1:.4f}"

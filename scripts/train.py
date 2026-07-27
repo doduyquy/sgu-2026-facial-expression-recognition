@@ -18,7 +18,7 @@ from src.data.dataloader import build_dataloader
 from src.models import get_model # in __init__ gfile
 from src.training.trainer import Trainer
 from src.training.losses import build_loss
-from src.training.optimizer import build_optimizer, build_scheduler
+from src.training.optimizer import build_optimizer
 from src.utils.checkpoint import load_checkpoints
 from src.evaluation.evaluator import evaluate_and_show
 from src.utils.logger_wandb import save_model_to_wandb
@@ -34,7 +34,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--env", type=str, default="local", choices=["local", "kaggle"])
-    parser.add_argument("--resume_path", type=str, default=None, help="Path to checkpoint to resume training")
     args = parser.parse_args()
     # If running on Kaggle, enable CUDA launch blocking for correct stack traces
     if args.env == 'kaggle':
@@ -66,7 +65,6 @@ def main():
     model = get_model(
         name=config['model']['name'],
         config=config)
-    model = model.to(device)
     
 
     # get class_distribution for class_weights (for testing)
@@ -100,16 +98,17 @@ def main():
 
     loss = build_loss(config=config, class_weights=class_weights)
     optimizer = build_optimizer(model=model, config=config)
-    scheduler = build_scheduler(optimizer=optimizer, config=config)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode='min',
+        factor=0.5,
+        patience=5,
+        min_lr=1e-6,
+    )
     
     # set path to save ckpt
     path_save_ckpt = os.path.join(root_path, f"outputs/checkpoints/{config['model'].get('name', 'cnn')}/{run_name}_best.pth")
     os.makedirs(os.path.dirname(path_save_ckpt), exist_ok=True)
-    
-    start_epoch = 0
-    if args.resume_path is not None:
-        start_epoch = load_checkpoints(model, optimizer, args.resume_path, device)
-        print(f"Resuming training from epoch {start_epoch}")
 
     trainer = Trainer(
         model=model,
@@ -123,7 +122,7 @@ def main():
         run_name=run_name,
         save_dir=path_save_ckpt
     )
-    train_losses, val_losses = trainer.fit(start_epoch=start_epoch)
+    train_losses, val_losses = trainer.fit()
 
     # evaluate
     print("\n" + "="*51)

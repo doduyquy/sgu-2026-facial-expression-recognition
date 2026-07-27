@@ -495,7 +495,7 @@ class Trainer:
 
         return epoch_loss, epoch_acc
 
-    def fit(self, start_epoch=0):
+    def fit(self):
         print(f'\n--> Train on {len(self.train_loader.dataset)} samples, validate on {len(self.val_loader.dataset)} samples')
 
         if self.use_wandb:
@@ -512,7 +512,7 @@ class Trainer:
 
         self.ema_model = AveragedModel(self.model, multi_avg_fn=get_ema_multi_avg_fn(0.999))
 
-        for ep in range(start_epoch, self.epochs):
+        for ep in range(self.epochs):
             self._current_epoch = ep
             progress = ep / max(self.epochs - 1, 1)
             
@@ -616,9 +616,7 @@ class Trainer:
 
             if self.scheduler is not None:
                 if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                    self.scheduler.step(selection_score)
-                elif isinstance(self.scheduler, torch.optim.lr_scheduler.CosineAnnealingWarmRestarts):
-                    self.scheduler.step(ep + 1)
+                    self.scheduler.step(val_loss)
                 else:
                     self.scheduler.step()
 

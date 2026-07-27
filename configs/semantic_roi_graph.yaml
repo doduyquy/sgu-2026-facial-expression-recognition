@@ -42,12 +42,8 @@ data:
 
 training:
   epochs: 1000
-  optimizer: "adamw"
-  scheduler: "reduce_lr_on_plateau"
-  lr_factor: 0.5
-  lr_patience: 5
   lr: 0.0003
-  weight_decay: 0.01
+  weight_decay: 0.001 # Revert from 0.003 to prevent embedding collapse
   loss: "semantic_roi_graph"
   label_smoothing: 0.05
   class_weight_mode: "sqrt_inverse"
@@ -92,4 +88,4 @@ training:
   use_entropy_sparsity: false
 
 logging:
-  use_wandb: False
+  use_wandb: true

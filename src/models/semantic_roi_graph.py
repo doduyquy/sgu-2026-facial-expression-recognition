@@ -111,9 +111,9 @@ class ResNet50Backbone(nn.Module):
 
 class HRNetBackbone(nn.Module):
     """HRNet-W18 backbone with multi-resolution fusion and spatial resolution preservation."""
-    def __init__(self, feature_dim: int = 256, use_pretrained: bool = True, hrnet_type: str = 'hrnet_w18'):
+    def __init__(self, feature_dim: int = 256, use_pretrained: bool = True):
         super().__init__()
-        self.hrnet = timm.create_model(hrnet_type, pretrained=use_pretrained, features_only=True)
+        self.hrnet = timm.create_model('hrnet_w18', pretrained=use_pretrained, features_only=True)
         
         if hasattr(self.hrnet, 'conv1'):
             self.hrnet.conv1.stride = (1, 1)
@@ -145,40 +145,6 @@ class HRNetBackbone(nn.Module):
             
         x = torch.cat(fused, dim=1)
         return self.proj(x)
-
-
-class VGG19Backbone(nn.Module):
-    """VGG19-BN backbone tailored for 48x48 images.
-    Extracts features before pool3 to maintain 12x12 resolution with 256 channels.
-    """
-    def __init__(self, feature_dim: int = 256, use_pretrained: bool = True):
-        super().__init__()
-        import torchvision.models as models
-        
-        # Load pretrained VGG19 with BatchNorm
-        weights = models.VGG19_BN_Weights.DEFAULT if use_pretrained else None
-        full_vgg = models.vgg19_bn(weights=weights)
-        
-        # We take features up to the layer BEFORE MaxPool2d at index 26
-        # This keeps the spatial resolution at 12x12 (for 48x48 input)
-        # and outputs exactly 256 channels.
-        self.features = full_vgg.features[:26]
-        
-        self.out_channels = 256
-        
-        # Project if feature_dim is different from 256
-        self.proj = nn.Identity() if feature_dim == 256 else nn.Sequential(
-            nn.Conv2d(256, feature_dim, kernel_size=1, bias=False),
-            nn.BatchNorm2d(feature_dim),
-            nn.GELU()
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if x.shape[1] == 1:
-            x = x.repeat(1, 3, 1, 1)
-        x = self.features(x)
-        return self.proj(x)
-
 
 
 class SemanticRoiAlign(nn.Module):
@@ -832,14 +798,8 @@ class SemanticROIGraphFER(nn.Module):
         super().__init__()
         self.config = config
 
-        if getattr(config, "backbone_type", "resnet50").startswith("hrnet"):
+        if getattr(config, "backbone_type", "resnet50") == "hrnet_w18":
             self.backbone = HRNetBackbone(
-                feature_dim=config.feature_dim,
-                use_pretrained=config.use_pretrained,
-                hrnet_type=config.backbone_type
-            )
-        elif getattr(config, "backbone_type", "resnet50") == "vgg19_bn":
-            self.backbone = VGG19Backbone(
                 feature_dim=config.feature_dim,
                 use_pretrained=config.use_pretrained,
             )

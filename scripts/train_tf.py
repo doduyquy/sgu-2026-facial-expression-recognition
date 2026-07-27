@@ -50,6 +50,13 @@ def build_optimizer_tf(config: dict, model=None):
         opt = tf.keras.optimizers.SGD(
             learning_rate=lr, momentum=momentum
         )
+    elif opt_name == 'adamw':
+        opt = tf.keras.optimizers.AdamW(
+            learning_rate=lr,
+            weight_decay=weight_decay
+        )
+        print(f'--> [Optimizer] AdamW lr={lr} wd={weight_decay}')
+        return opt
     else:
         raise ValueError(f"Unsupported optimizer: {opt_name}")
 
@@ -70,10 +77,12 @@ def build_scheduler_tf(optimizer, config: dict):
         patience = int(train_cfg.get("lr_patience", 5))
         print(f"--> [Scheduler] ReduceLROnPlateau factor={factor} patience={patience}")
         return tf.keras.callbacks.ReduceLROnPlateau(
-            monitor="val_loss",
+            monitor='selection_score',  # Changed from 'val_loss'
             factor=factor,
             patience=patience,
-            mode="min",
+            mode='max',  # Changed from 'min' - we maximize F1/acc score
+            min_delta=0.001,
+            min_lr=1e-6,
         )
 
     elif scheduler_name == "cosine":
@@ -202,6 +211,7 @@ def main():
         from src.models.semantic_roi_graph_tf import SemanticROIGraphFER, SemanticRoiGraphConfig
         model_cfg = SemanticRoiGraphConfig(
             name=model_name,
+            backbone_type=str(config.get('model', {}).get('backbone_type', 'hrnet_w18')),
             num_classes=int(config.get("model", {}).get("num_classes", 7)),
             num_regions=int(config.get("model", {}).get("num_regions", 9)),
             roi_grid=int(config.get("model", {}).get("roi_grid", 4)),
@@ -285,30 +295,44 @@ def main():
 
     print(f"\n--> Training done. Best model saved to: {save_path}")
 
-    # Final evaluation on test set
+    # Final evaluation with TTA on test set
+    print('\n' + '='*51)
+    print('Final Evaluation on Test Set (with TTA)')
+    print('='*51)
     if test_ds is not None:
-        print("\n--> Evaluating on test set...")
         model.load_weights(save_path)
-
         all_preds, all_labels = [], []
         for batch in test_ds:
             if len(batch) >= 3:
-                images, labels, bboxes = batch[0], batch[1], batch[2]
-                outputs = model({"image": images, "bboxes": bboxes}, training=False)
+                images, labels_b, bboxes = batch[0], batch[1], batch[2]
+                # TTA: original + horizontal flip
+                out_orig = model({'image': images, 'bboxes': bboxes}, training=False)
+                flipped = tf.reverse(images, axis=[-2])
+                w = float(images.shape[-2] or 48)
+                x1 = (w - 1.0) - bboxes[..., 2]
+                x2 = (w - 1.0) - bboxes[..., 0]
+                flipped_bboxes = tf.stack([x1, bboxes[..., 1], x2, bboxes[..., 3]], axis=-1)
+                # Swap left/right regions
+                swap = [0, 2, 1, 3, 5, 4, 6, 8, 7]
+                flipped_bboxes = tf.gather(flipped_bboxes, swap, axis=1)
+                out_flip = model({'image': flipped, 'bboxes': flipped_bboxes}, training=False)
+                logits = 0.5 * (tf.cast(out_orig['logits'], tf.float32) + tf.cast(out_flip['logits'], tf.float32))
             else:
-                images, labels = batch[0], batch[1]
+                images, labels_b = batch[0], batch[1]
                 outputs = model(images, training=False)
-
-            preds = tf.argmax(outputs["logits"], axis=-1)
+                logits = tf.cast(outputs['logits'], tf.float32)
+            preds = tf.argmax(logits, axis=-1)
             all_preds.extend(preds.numpy().tolist())
-            all_labels.extend(labels.numpy().tolist())
-
-        from sklearn.metrics import classification_report, accuracy_score
+            all_labels.extend(labels_b.numpy().tolist())
+        
+        from sklearn.metrics import classification_report, accuracy_score, f1_score
         acc = accuracy_score(all_labels, all_preds)
-        print(f"\n--> Test Accuracy: {acc:.4f}")
+        f1 = f1_score(all_labels, all_preds, average='macro', zero_division=0)
+        print(f'\n--> Test Accuracy (TTA): {acc:.4f}')
+        print(f'--> Test Macro-F1 (TTA): {f1:.4f}')
         print(classification_report(
             all_labels, all_preds,
-            target_names=["Angry", "Disgust", "Fear", "Happy", "Sad", "Surprise", "Neutral"],
+            target_names=['Angry', 'Disgust', 'Fear', 'Happy', 'Sad', 'Surprise', 'Neutral'],
             zero_division=0,
         ))
 

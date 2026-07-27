@@ -79,6 +79,187 @@ class SemanticRoiGraphConfig:
     region_dropout_prob: float = 0.0
     program_dim: int = 128
     programs_per_class: int = 4
+    backbone_type: str = 'hrnet_w18'
+
+
+class ResidualBasicBlock(tf.keras.layers.Layer):
+    """BasicBlock with residual connection for HRNet."""
+    def __init__(self, channels, **kwargs):
+        super().__init__(**kwargs)
+        self.conv1 = tf.keras.layers.Conv2D(channels, 3, padding='same', use_bias=False)
+        self.bn1 = tf.keras.layers.BatchNormalization()
+        self.conv2 = tf.keras.layers.Conv2D(channels, 3, padding='same', use_bias=False)
+        self.bn2 = tf.keras.layers.BatchNormalization()
+    
+    def call(self, x, training=False):
+        residual = x
+        out = tf.nn.relu(self.bn1(self.conv1(x), training=training))
+        out = self.bn2(self.conv2(out), training=training)
+        return tf.nn.relu(out + residual)
+
+
+class BottleneckBlock(tf.keras.layers.Layer):
+    """Bottleneck for HRNet Stage1."""
+    def __init__(self, in_channels, out_channels, **kwargs):
+        super().__init__(**kwargs)
+        mid = out_channels // 4
+        self.conv1 = tf.keras.layers.Conv2D(mid, 1, use_bias=False)
+        self.bn1 = tf.keras.layers.BatchNormalization()
+        self.conv2 = tf.keras.layers.Conv2D(mid, 3, padding='same', use_bias=False)
+        self.bn2 = tf.keras.layers.BatchNormalization()
+        self.conv3 = tf.keras.layers.Conv2D(out_channels, 1, use_bias=False)
+        self.bn3 = tf.keras.layers.BatchNormalization()
+        # Shortcut
+        self.shortcut = None
+        if in_channels != out_channels:
+            self.shortcut = tf.keras.Sequential([
+                tf.keras.layers.Conv2D(out_channels, 1, use_bias=False),
+                tf.keras.layers.BatchNormalization()
+            ])
+    
+    def call(self, x, training=False):
+        residual = x if self.shortcut is None else self.shortcut(x, training=training)
+        out = tf.nn.relu(self.bn1(self.conv1(x), training=training))
+        out = tf.nn.relu(self.bn2(self.conv2(out), training=training))
+        out = self.bn3(self.conv3(out), training=training)
+        return tf.nn.relu(out + residual)
+
+
+class HRNetBackboneTF(tf.keras.layers.Layer):
+    """HRNet-W18 backbone implemented in TF/Keras.
+    Mirrors PyTorch HRNetBackbone using timm hrnet_w18.
+    
+    Architecture:
+    - Stem: 2x Conv3x3 (stride=1) -> 64ch
+    - Stage1: 4x Bottleneck -> 256ch
+    - Stage2: 2 branches [W=18, W=36], 1 BasicBlock module each
+    - Stage3: 3 branches [W=18, W=36, W=72], 4 BasicBlock modules each
+    - Fusion: Upsample all to H/4 resolution, concat, project to feature_dim
+    Output: (B, H//4, W//4, feature_dim) -- for 48x48 input -> (B, 12, 12, 256)
+    """
+    def __init__(self, feature_dim=256, use_pretrained=False, **kwargs):
+        super().__init__(**kwargs)
+        self.feature_dim = feature_dim
+        # Branch widths
+        W = [18, 36, 72]  # W18 config
+        
+        # Stem
+        self.stem = tf.keras.Sequential([
+            tf.keras.layers.Conv2D(64, 3, strides=1, padding='same', use_bias=False),
+            tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.ReLU(),
+            tf.keras.layers.Conv2D(64, 3, strides=1, padding='same', use_bias=False),
+            tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.ReLU(),
+        ], name='stem')
+        
+        # Stage1: 4 bottlenecks (64->256)
+        self.layer1 = self._make_layer(64, 256, n_blocks=4, name='layer1')
+        
+        # Transition 1: 256 -> [W[0], W[1]]
+        self.trans1_0 = tf.keras.Sequential([
+            tf.keras.layers.Conv2D(W[0], 3, padding='same', use_bias=False),
+            tf.keras.layers.BatchNormalization(), tf.keras.layers.ReLU()
+        ])
+        self.trans1_1 = tf.keras.Sequential([
+            tf.keras.layers.Conv2D(W[1], 3, strides=2, padding='same', use_bias=False),
+            tf.keras.layers.BatchNormalization(), tf.keras.layers.ReLU()
+        ])
+        
+        # Stage2: 2 branches
+        self.stage2_b0 = self._make_basic_module(W[0], n_blocks=2, name='s2_b0')
+        self.stage2_b1 = self._make_basic_module(W[1], n_blocks=2, name='s2_b1')
+        # Stage2 fuse: b1->b0 (upsample), b0->b1 (downsample)
+        self.fuse2_1to0 = tf.keras.Sequential([
+            tf.keras.layers.Conv2D(W[0], 1, use_bias=False),
+            tf.keras.layers.BatchNormalization()
+        ])
+        self.fuse2_0to1 = tf.keras.Sequential([
+            tf.keras.layers.Conv2D(W[1], 3, strides=2, padding='same', use_bias=False),
+            tf.keras.layers.BatchNormalization()
+        ])
+        
+        # Transition 2: add 3rd branch
+        self.trans2_2 = tf.keras.Sequential([
+            tf.keras.layers.Conv2D(W[2], 3, strides=2, padding='same', use_bias=False),
+            tf.keras.layers.BatchNormalization(), tf.keras.layers.ReLU()
+        ])
+        
+        # Stage3: 3 branches, 4 blocks each
+        self.stage3_b0 = self._make_basic_module(W[0], n_blocks=4, name='s3_b0')
+        self.stage3_b1 = self._make_basic_module(W[1], n_blocks=4, name='s3_b1')
+        self.stage3_b2 = self._make_basic_module(W[2], n_blocks=4, name='s3_b2')
+        # Stage3 fuse layers (3x3 matrix of fusions)
+        total_ch = W[0] + W[1] + W[2]  # 18+36+72=126
+        
+        # Final projection
+        self.proj = tf.keras.Sequential([
+            tf.keras.layers.Conv2D(feature_dim, 1, use_bias=False),
+            tf.keras.layers.BatchNormalization(),
+            tf.keras.layers.ReLU(),
+        ], name='proj')
+        
+        self.W = W
+
+    def _basic_block(self, channels, name=None):
+        """Single BasicBlock: Conv-BN-ReLU-Conv-BN + residual"""
+        return ResidualBasicBlock(channels, name=name)
+
+    def _make_basic_module(self, channels, n_blocks, name=None):
+        """Stack of BasicBlocks"""
+        layers = [ResidualBasicBlock(channels) for _ in range(n_blocks)]
+        return tf.keras.Sequential(layers, name=name)
+
+    def _make_layer(self, in_ch, out_ch, n_blocks, name=None):
+        """Bottleneck layer"""
+        layers = [BottleneckBlock(in_ch, out_ch)]
+        for _ in range(n_blocks - 1):
+            layers.append(BottleneckBlock(out_ch, out_ch))
+        return tf.keras.Sequential(layers, name=name)
+
+    def call(self, x, training=False):
+        # x: (B, H, W, 1)
+        if x.shape[-1] == 1:
+            x = tf.repeat(x, 3, axis=-1)  # grayscale to 3ch
+        x = tf.cast(x, tf.float32)
+        
+        # Stem
+        x = self.stem(x, training=training)  # (B, H, W, 64)
+        
+        # Stage1
+        x = self.layer1(x, training=training)  # (B, H, W, 256)
+        
+        # Transition 1
+        b0 = self.trans1_0(x, training=training)   # (B, H, W, 18)
+        b1 = self.trans1_1(x, training=training)   # (B, H/2, W/2, 36)
+        
+        # Stage2
+        b0 = self.stage2_b0(b0, training=training)
+        b1 = self.stage2_b1(b1, training=training)
+        
+        # Stage2 fusion
+        h0, w0 = tf.shape(b0)[1], tf.shape(b0)[2]
+        b0_new = tf.nn.relu(b0 + self.fuse2_1to0(tf.image.resize(b1, [h0, w0]), training=training))
+        b1_new = tf.nn.relu(b1 + self.fuse2_0to1(b0, training=training))
+        b0, b1 = b0_new, b1_new
+        
+        # Transition 2: create branch 2
+        b2 = self.trans2_2(b1, training=training)  # (B, H/4, W/4, 72)
+        
+        # Stage3
+        b0 = self.stage3_b0(b0, training=training)
+        b1 = self.stage3_b1(b1, training=training)
+        b2 = self.stage3_b2(b2, training=training)
+        
+        # Final fusion: upsample b1, b2 to b0's resolution, concat
+        h0, w0 = tf.shape(b0)[1], tf.shape(b0)[2]
+        b1_up = tf.image.resize(b1, [h0, w0])  # bilinear upsample
+        b2_up = tf.image.resize(b2, [h0, w0])
+        fused = tf.concat([b0, b1_up, b2_up], axis=-1)  # (B, H, W, 18+36+72=126)
+        
+        # Project to feature_dim
+        out = self.proj(fused, training=training)  # (B, H, W, feature_dim)
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -1008,10 +1189,17 @@ class SemanticROIGraphFER(tf.keras.Model):
         self.config = config
         self.training_cfg: Dict = {}
 
-        self.backbone = SemanticBackbone(
-            feature_dim=config.feature_dim,
-            use_pretrained=config.use_pretrained,
-        )
+        backbone_type = getattr(config, 'backbone_type', 'resnet50')
+        if backbone_type == 'hrnet_w18':
+            self.backbone = HRNetBackboneTF(
+                feature_dim=config.feature_dim,
+                use_pretrained=config.use_pretrained,
+            )
+        else:
+            self.backbone = SemanticBackbone(
+                feature_dim=config.feature_dim,
+                use_pretrained=config.use_pretrained,
+            )
         self.roi_align_layer = SemanticRoiAlign(
             roi_grid=config.roi_grid,
             bbox_input_size=config.bbox_input_size,
@@ -1296,7 +1484,7 @@ class SemanticROIGraphFER(tf.keras.Model):
         logits_motif = semantic_program_scores
         logits = (1.0 - structure_gate) * logits_fused + structure_gate * logits_motif
 
-        return {
+        result_dict = {
             "logits": logits,
             "logits_motif": logits_motif,
             "logits_fused": logits_fused,
@@ -1329,6 +1517,17 @@ class SemanticROIGraphFER(tf.keras.Model):
             "micro_motif_bank": micro_motif_bank,
             "macro_motif_bank": semantic_program_bank,
         }
+
+        # Build aux_losses dict (mirrors PyTorch output structure)
+        aux_losses = {
+            "micro_motif_bank": micro_motif_bank,
+            "macro_motif_bank": semantic_program_bank,
+            "micro_motif_attention": micro_motif_attention,
+            "macro_motif_attention": semantic_program_attention,
+        }
+        result_dict["aux_losses"] = aux_losses
+        
+        return result_dict
 
     def call(self, inputs, training: bool = False):
         """Accept (image,) or (image, bboxes) or dict."""

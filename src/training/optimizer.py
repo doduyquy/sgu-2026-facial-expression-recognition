@@ -24,8 +24,6 @@ def build_optimizer(model, config):
 
     if opt_name == 'adam':
         return optim.Adam(param_groups, lr=lr, weight_decay=weight_decay)
-    elif opt_name == 'adamw':
-        return optim.AdamW(param_groups, lr=lr, weight_decay=weight_decay)
     elif opt_name == 'sgd':
         gamma = train_cfg.get('gamma', 0.9) 
         return optim.SGD(param_groups, lr=lr, weight_decay=weight_decay, momentum=gamma)
@@ -43,14 +41,13 @@ def build_scheduler(optimizer, config):
     elif scheduler_name == 'reduce_lr_on_plateau':
         factor = float(config['training'].get('lr_factor', 0.5))
         patience = int(config['training'].get('lr_patience', 5))
-        # mode='max' because trainer will pass selection_score to scheduler
+        # mode='max' because we track val_acc (higher is better)
         print(f"--> [Scheduler] ReduceLROnPlateau (mode=max, factor={factor}, patience={patience})")
         return lr_scheduler.ReduceLROnPlateau(
             optimizer,
             mode='max',
             factor=factor,
             patience=patience,
-            min_lr=1e-6
         )
     elif scheduler_name == 'step':
         # decay(decrease) every n epochs
@@ -64,14 +61,6 @@ def build_scheduler(optimizer, config):
         T_max = config['training'].get('epochs', 101) 
         print(f"--> [Scheduler] CosineAnnealingLR (T_max={T_max})")
         return lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max)
-
-    elif scheduler_name == 'cosine_warm_restarts':
-        # Cosine annealing with warm restarts
-        T_0 = int(config['training'].get('cosine_T0', 20))
-        T_mult = int(config['training'].get('cosine_T_mult', 2))
-        eta_min = float(config['training'].get('cosine_eta_min', 1e-6))
-        print(f"--> [Scheduler] CosineAnnealingWarmRestarts (T_0={T_0}, T_mult={T_mult}, eta_min={eta_min})")
-        return lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=T_0, T_mult=T_mult, eta_min=eta_min)
 
     else:
         raise ValueError(f"Not supported this {scheduler_name} scheduler!") 

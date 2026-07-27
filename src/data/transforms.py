@@ -33,12 +33,9 @@ def build_transform(config, split="train") -> Compose:
             # Non-spatial augmentations to preserve bbox alignment.
             # Horizontal flip is handled synchronously in the dataset.__getitem__ level.
             trans = transforms.Compose([
-                transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2),
-                transforms.RandomApply([transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.5))], p=0.2),
-                transforms.RandomAdjustSharpness(sharpness_factor=2.0, p=0.2),
+                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=(mu,), std=(st,)),
-                transforms.RandomErasing(p=0.25, scale=(0.02, 0.13), ratio=(0.3, 3.3), value=0),
             ])
         else:
             trans = transforms.Compose([
