@@ -216,8 +216,16 @@ def _strip_known_prefixes(state_dict):
 
 
 def _resolve_checkpoint_path(checkpoint_path):
-    if os.path.exists(checkpoint_path):
+    if os.path.isfile(checkpoint_path):
         return checkpoint_path
+
+    if os.path.isdir(checkpoint_path):
+        for root, _, files in os.walk(checkpoint_path):
+            for file in files:
+                if file.endswith('.pth') or file.endswith('.pt'):
+                    found = os.path.join(root, file)
+                    print(f"--> Discovered checkpoint file in directory: {found}")
+                    return found
 
     basename = os.path.basename(checkpoint_path)
     search_roots = [os.getcwd()]
@@ -228,7 +236,7 @@ def _resolve_checkpoint_path(checkpoint_path):
         for current_dir, _, files in os.walk(root):
             if basename in files:
                 found = os.path.join(current_dir, basename)
-                print(f"--> Using discovered init checkpoint: {found}")
+                print(f"--> Using discovered checkpoint: {found}")
                 return found
 
     raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
