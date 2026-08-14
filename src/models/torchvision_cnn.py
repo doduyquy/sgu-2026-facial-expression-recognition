@@ -35,6 +35,9 @@ class TorchvisionCNNFER(nn.Module):
             self.trainable_backbone_layers = [self.trainable_backbone_layers]
         self.checkpoint_path = model_cfg.get("checkpoint_path")
         self.checkpoint_strict = bool(model_cfg.get("checkpoint_strict", True))
+        self.checkpoint_skip_mismatch = bool(
+            model_cfg.get("checkpoint_skip_mismatch", not self.checkpoint_strict)
+        )
 
         weights = self._resolve_weights(model_cfg)
         builder = getattr(models, self.arch, None)
@@ -53,6 +56,7 @@ class TorchvisionCNNFER(nn.Module):
                 self.checkpoint_path,
                 device="cpu",
                 strict=self.checkpoint_strict,
+                skip_mismatch=self.checkpoint_skip_mismatch,
             )
 
         if self.freeze_backbone_on_start:
@@ -122,15 +126,52 @@ class TorchvisionCNNFER(nn.Module):
 
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-    def load_from_checkpoint(self, checkpoint_path, device="cpu", strict=True):
+    @staticmethod
+    def _align_external_state_dict(state_dict, target_state):
+        """Accept bare torchvision checkpoints by mapping conv1.* -> backbone.conv1.*."""
+        if any(key.startswith("backbone.") for key in state_dict):
+            return state_dict
+
+        aligned = {}
+        for key, value in state_dict.items():
+            prefixed_key = f"backbone.{key}"
+            aligned[prefixed_key if prefixed_key in target_state else key] = value
+        return aligned
+
+    @staticmethod
+    def _filter_mismatched_keys(state_dict, target_state):
+        filtered = {}
+        skipped = []
+        for key, value in state_dict.items():
+            target_value = target_state.get(key)
+            if target_value is None:
+                skipped.append((key, "unexpected"))
+                continue
+            if tuple(value.shape) != tuple(target_value.shape):
+                skipped.append((key, f"shape {tuple(value.shape)} != {tuple(target_value.shape)}"))
+                continue
+            filtered[key] = value
+        return filtered, skipped
+
+    def load_from_checkpoint(self, checkpoint_path, device="cpu", strict=True, skip_mismatch=False):
         checkpoint_path = self._resolve_checkpoint_path(checkpoint_path)
         checkpoint = self._safe_torch_load(checkpoint_path, map_location=device)
         state_dict = self._strip_known_prefixes(self._extract_state_dict(checkpoint))
+        target_state = self.state_dict()
+        state_dict = self._align_external_state_dict(state_dict, target_state)
+
+        skipped = []
+        if skip_mismatch:
+            state_dict, skipped = self._filter_mismatched_keys(state_dict, target_state)
+            strict = False
+
         load_result = self.load_state_dict(state_dict, strict=strict)
         print(
             f"--> [TorchvisionCNNFER] Loaded checkpoint: {checkpoint_path} "
-            f"(strict={strict})"
+            f"(strict={strict}, skip_mismatch={skip_mismatch})"
         )
+        if skipped:
+            print(f"--> [TorchvisionCNNFER] Skipped checkpoint keys: {len(skipped)}")
         if getattr(load_result, "missing_keys", None):
             print(f"--> [TorchvisionCNNFER] Missing keys: {len(load_result.missing_keys)}")
         if getattr(load_result, "unexpected_keys", None):

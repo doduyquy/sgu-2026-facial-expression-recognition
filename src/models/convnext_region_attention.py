@@ -954,6 +954,10 @@ class ConvNeXtSpatialTokenizer(nn.Module):
         checkpoint = safe_torch_load(checkpoint_path, map_location=device)
         state_dict = strip_known_prefixes(extract_state_dict(checkpoint))
 
+        if self.feature_extractor_kind == "resnet":
+            self._load_resnet_feature_checkpoint(state_dict)
+            return
+
         features_state = {}
         classifier_state = {}
         skipped = []
@@ -1005,6 +1009,44 @@ class ConvNeXtSpatialTokenizer(nn.Module):
             print(f"--> [ConvNeXtTokenizer] Missing feature keys: {len(missing)}")
         if unexpected:
             print(f"--> [ConvNeXtTokenizer] Unexpected feature keys: {len(unexpected)}")
+        if skipped:
+            print(f"--> [ConvNeXtTokenizer] Skipped checkpoint keys: {len(skipped)}")
+
+    def _load_resnet_feature_checkpoint(self, state_dict):
+        feature_prefixes = ("conv1.", "bn1.", "layer1.", "layer2.", "layer3.", "layer4.")
+        model_prefixes = (
+            "convnext_backbone.backbone.",
+            "convnext_backbone.",
+            "backbone.",
+        )
+        target_state = self.backbone.state_dict()
+        feature_state = {}
+        skipped = []
+
+        for key, value in state_dict.items():
+            name = key
+            changed = True
+            while changed:
+                changed = False
+                for prefix in model_prefixes:
+                    if name.startswith(prefix):
+                        name = name[len(prefix):]
+                        changed = True
+
+            if not name.startswith(feature_prefixes):
+                skipped.append(key)
+                continue
+            if name in target_state and target_state[name].shape == value.shape:
+                feature_state[name] = value
+            else:
+                skipped.append(key)
+
+        missing, unexpected = self.backbone.load_state_dict(feature_state, strict=False)
+        print(f"--> [ConvNeXtTokenizer] ResNet features loaded: {len(feature_state)} tensors")
+        if missing:
+            print(f"--> [ConvNeXtTokenizer] Missing ResNet keys: {len(missing)}")
+        if unexpected:
+            print(f"--> [ConvNeXtTokenizer] Unexpected ResNet keys: {len(unexpected)}")
         if skipped:
             print(f"--> [ConvNeXtTokenizer] Skipped checkpoint keys: {len(skipped)}")
 

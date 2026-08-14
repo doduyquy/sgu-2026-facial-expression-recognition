@@ -281,6 +281,12 @@ def main():
         parser = argparse.ArgumentParser()
         parser.add_argument("--config", type=str, required=True)
         parser.add_argument("--env", type=str, default="local", choices=["local", "kaggle"])
+        parser.add_argument(
+            "--resume",
+            type=str,
+            default=None,
+            help="Path to checkpoint file (.pth) to resume training state (epoch, model, optimizer, scheduler, baseline score)",
+        )
         args = parser.parse_args()
         
         # load config
@@ -324,38 +330,85 @@ def main():
             name=config['model']['name'],
             config=config)
 
+        resume_checkpoint_path = (
+            args.resume
+            or config.get('training', {}).get('resume_checkpoint_path')
+            or config.get('training', {}).get('resume_path')
+        )
         init_checkpoint_path = config.get('training', {}).get('init_checkpoint_path')
-        if init_checkpoint_path:
+
+        start_epoch = 0
+        best_score = None
+        best_val_loss = None
+        best_val_acc = None
+        patience_counter = 0
+        ckpt_loaded = None
+
+        if resume_checkpoint_path:
+            resume_checkpoint_path = _resolve_checkpoint_path(resume_checkpoint_path)
+            if is_main_process():
+                print("\n" + "="*60 + f"\n[RESUME] Loading training checkpoint from: {resume_checkpoint_path}\n" + "="*60)
+            ckpt_loaded = _safe_torch_load(resume_checkpoint_path, map_location="cpu")
+            state_dict = _strip_known_prefixes(_extract_state_dict(ckpt_loaded))
+            incompatible = model.load_state_dict(
+                state_dict,
+                strict=bool(config.get('training', {}).get('init_checkpoint_strict', True)),
+            )
+            if is_main_process():
+                if incompatible.missing_keys:
+                    print(f"[RESUME] Missing keys: {len(incompatible.missing_keys)}")
+                if incompatible.unexpected_keys:
+                    print(f"[RESUME] Unexpected keys: {len(incompatible.unexpected_keys)}")
+
+            saved_epoch = ckpt_loaded.get('epoch', 0)
+            start_epoch = saved_epoch + 1
+            best_score = ckpt_loaded.get('best_score')
+            best_val_loss = ckpt_loaded.get('val_loss')
+            best_val_acc = ckpt_loaded.get('val_accuracy')
+            if best_score is None:
+                monitor = config.get('training', {}).get('monitor', 'val_accuracy')
+                best_score = best_val_loss if monitor == 'val_loss' else best_val_acc
+
+            freeze_epochs = int(config.get('model', {}).get('freeze_backbone_epochs', 0) or 0)
+            unfreeze_backbone = bool(config.get('model', {}).get('unfreeze_backbone', True))
+            if unfreeze_backbone and start_epoch >= freeze_epochs:
+                if hasattr(model, 'unfreeze_backbones'):
+                    model.unfreeze_backbones()
+                elif hasattr(model, 'unfreeze_backbone'):
+                    model.unfreeze_backbone()
+
+        elif init_checkpoint_path:
             init_strict = bool(config.get('training', {}).get('init_checkpoint_strict', True))
             load_model_init_checkpoint(model, init_checkpoint_path, strict=init_strict)
         
 
         # ── Transfer Learning: load pretrained backbone weights ──
-        pretrained_vgg = config['model'].get('pretrained_vgg_path', None)
-        pretrained_resnet = config['model'].get('pretrained_resnet_path', None)
-        
-        if hasattr(model, 'load_pretrained_backbones'):
-            if pretrained_vgg and pretrained_resnet:
-                if is_main_process():
-                    print("\n" + "="*50 + "\n[Transfer Learning] Loading dual pretrained backbones...\n" + "="*50)
-                model.load_pretrained_backbones(pretrained_vgg, pretrained_resnet, device=device)
-                model.freeze_backbones()
-                if is_main_process():
-                    print("="*50 + "\n")
-            elif pretrained_resnet:
-                if is_main_process():
-                    print("\n" + "="*50 + "\n[Transfer Learning] Loading ResNet pretrained backbone...\n" + "="*50)
-                model.load_pretrained_backbones(resnet_ckpt_path=pretrained_resnet, device=device)
-                model.freeze_backbones()
-                if is_main_process():
-                    print("="*50 + "\n")
-            elif pretrained_vgg:
-                if is_main_process():
-                    print("\n" + "="*50 + "\n[Transfer Learning] Loading VGG pretrained backbone...\n" + "="*50)
-                model.load_pretrained_backbones(vgg_ckpt_path=pretrained_vgg, device=device)
-                model.freeze_backbones()
-                if is_main_process():
-                    print("="*50 + "\n")
+        if not resume_checkpoint_path:
+            pretrained_vgg = config['model'].get('pretrained_vgg_path', None)
+            pretrained_resnet = config['model'].get('pretrained_resnet_path', None)
+            
+            if hasattr(model, 'load_pretrained_backbones'):
+                if pretrained_vgg and pretrained_resnet:
+                    if is_main_process():
+                        print("\n" + "="*50 + "\n[Transfer Learning] Loading dual pretrained backbones...\n" + "="*50)
+                    model.load_pretrained_backbones(pretrained_vgg, pretrained_resnet, device=device)
+                    model.freeze_backbones()
+                    if is_main_process():
+                        print("="*50 + "\n")
+                elif pretrained_resnet:
+                    if is_main_process():
+                        print("\n" + "="*50 + "\n[Transfer Learning] Loading ResNet pretrained backbone...\n" + "="*50)
+                    model.load_pretrained_backbones(resnet_ckpt_path=pretrained_resnet, device=device)
+                    model.freeze_backbones()
+                    if is_main_process():
+                        print("="*50 + "\n")
+                elif pretrained_vgg:
+                    if is_main_process():
+                        print("\n" + "="*50 + "\n[Transfer Learning] Loading VGG pretrained backbone...\n" + "="*50)
+                    model.load_pretrained_backbones(vgg_ckpt_path=pretrained_vgg, device=device)
+                    model.freeze_backbones()
+                    if is_main_process():
+                        print("="*50 + "\n")
 
 
         # get class_distribution for class_weights (optional)
@@ -388,8 +441,41 @@ def main():
             )
 
         loss = build_loss(config=config, class_weights=class_weights)
-        optimizer = build_optimizer(model=model, config=config)
+
+        # Build optimizer with appropriate learning rates for resume or fresh training
+        freeze_epochs = int(config.get('model', {}).get('freeze_backbone_epochs', 0) or 0)
+        unfreeze_backbone = bool(config.get('model', {}).get('unfreeze_backbone', True))
+        if resume_checkpoint_path and unfreeze_backbone and start_epoch >= freeze_epochs:
+            finetune_lr = config['training'].get('finetune_lr')
+            visual_extractor_lr = config['training'].get('visual_extractor_lr')
+            if visual_extractor_lr is not None:
+                old_lr = config['training']['lr']
+                config['training']['lr'] = finetune_lr if finetune_lr is not None else old_lr
+                optimizer = build_optimizer(model=model, config=config)
+                config['training']['lr'] = old_lr
+            else:
+                optimizer = build_optimizer(model=model, config=config)
+        else:
+            optimizer = build_optimizer(model=model, config=config)
+
         scheduler = build_scheduler(optimizer=optimizer, config=config)
+
+        if ckpt_loaded is not None and 'optimizer_state_dict' in ckpt_loaded:
+            try:
+                optimizer.load_state_dict(ckpt_loaded['optimizer_state_dict'])
+                if is_main_process():
+                    print("[RESUME] Loaded optimizer state dictionary successfully.")
+            except Exception as e:
+                if is_main_process():
+                    print(f"[RESUME WARNING] Could not load optimizer_state_dict ({e}). Training will proceed with freshly configured optimizer.")
+
+        if resume_checkpoint_path and scheduler is not None and hasattr(scheduler, "last_epoch"):
+            scheduler.last_epoch = start_epoch - 1
+
+        if resume_checkpoint_path and is_main_process():
+            print(f"[RESUME] Resuming from Epoch {start_epoch + 1}/{config['training'].get('epochs', 70)}")
+            print(f"[RESUME] Restored baseline -> best_score: {best_score}, val_acc: {best_val_acc}, val_loss: {best_val_loss}")
+            print("="*60 + "\n")
         
         # set path to save ckpt
         path_save_ckpt = os.path.join(output_dir, f"checkpoints/{config['model'].get('name', 'cnn')}/{run_name}_best.pth")
@@ -408,7 +494,12 @@ def main():
             config=config,
             device=device,
             run_name=run_name,
-            save_dir=path_save_ckpt
+            save_dir=path_save_ckpt,
+            start_epoch=start_epoch,
+            best_score=best_score,
+            best_val_loss=best_val_loss,
+            best_val_acc=best_val_acc,
+            patience_counter=patience_counter,
         )
         train_losses, val_losses = trainer.fit()
 

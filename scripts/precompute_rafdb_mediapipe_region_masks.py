@@ -133,6 +133,16 @@ def mask_path_for_image(root, output_dir, split, image_path):
     return output_dir / split / relative.parent / f"{relative.name}.npy"
 
 
+def is_uniform_fallback_mask(mask_path, atol=1e-4):
+    if not mask_path.exists():
+        return True
+    try:
+        masks = np.load(mask_path)
+    except Exception:
+        return True
+    return bool(masks.ndim == 3 and np.allclose(masks, 1.0, atol=atol))
+
+
 def process_split(face_mesh, root, output_dir, split, args, dtype, writer):
     validate_split(root, split)
     image_paths = list(iter_images(root, split))
@@ -147,7 +157,13 @@ def process_split(face_mesh, root, output_dir, split, args, dtype, writer):
         mask_path = mask_path_for_image(root, output_dir, split, image_path)
         mask_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if mask_path.exists() and not args.overwrite:
+        should_retry_fallback = (
+            args.retry_fallback_only
+            and mask_path.exists()
+            and is_uniform_fallback_mask(mask_path, atol=args.fallback_atol)
+        )
+
+        if mask_path.exists() and not args.overwrite and not should_retry_fallback:
             skipped_count += 1
             mask_mode = "skipped"
         else:
@@ -202,6 +218,17 @@ def parse_args():
         "--geometry-only",
         action="store_true",
         help="Skip MediaPipe and build deterministic geometry masks only.",
+    )
+    parser.add_argument(
+        "--retry-fallback-only",
+        action="store_true",
+        help="Only recompute existing uniform fallback masks; keep successful masks unchanged.",
+    )
+    parser.add_argument(
+        "--fallback-atol",
+        type=float,
+        default=1e-4,
+        help="Tolerance for identifying old uniform fallback masks.",
     )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--log-every", type=int, default=1000)

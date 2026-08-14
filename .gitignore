@@ -27,3 +27,5 @@ zmisc
 dataset/
 outputs/
 notebooks/Agument/
+*.npy
+mediapipe_region_masks/

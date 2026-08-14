@@ -14,7 +14,24 @@ from .sam import SAM
 
 class Trainer:
     """Forward -> Compute loss -> zero_grad -> Backward -> Update weights (step)"""
-    def __init__(self, model, train_loader, val_loader, criterion, optimizer, scheduler, config, device, run_name, save_dir):
+    def __init__(
+        self,
+        model,
+        train_loader,
+        val_loader,
+        criterion,
+        optimizer,
+        scheduler,
+        config,
+        device,
+        run_name,
+        save_dir,
+        start_epoch=0,
+        best_score=None,
+        best_val_loss=None,
+        best_val_acc=None,
+        patience_counter=0,
+    ):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -24,6 +41,11 @@ class Trainer:
         self.device = device
         self.epochs = config['training'].get('epochs', 100)
         self.patience = config['training'].get('patience', 20)
+        self.start_epoch = int(start_epoch)
+        self.resume_best_score = best_score
+        self.resume_best_val_loss = best_val_loss
+        self.resume_best_val_acc = best_val_acc
+        self.resume_patience_counter = int(patience_counter)
         self.model_name = config['model'].get('name', 'simple_cnn')
         self.use_wandb = config['logging'].get('use_wandb', True)
         self.run_name = run_name
@@ -616,18 +638,36 @@ class Trainer:
         if self.use_wandb and self.is_main_process:
             init_wandb(config=self.config, run_name=self.run_name)
 
-        best_score = float("inf") if self.monitor == 'val_loss' else -float("inf")
-        best_val_loss = float("inf")
-        best_val_acc = -float("inf")
-        patience_counter = 0
+        best_score = (
+            self.resume_best_score
+            if self.resume_best_score is not None
+            else (float("inf") if self.monitor == 'val_loss' else -float("inf"))
+        )
+        best_val_loss = (
+            self.resume_best_val_loss
+            if self.resume_best_val_loss is not None
+            else float("inf")
+        )
+        best_val_acc = (
+            self.resume_best_val_acc
+            if self.resume_best_val_acc is not None
+            else -float("inf")
+        )
+        patience_counter = self.resume_patience_counter
         all_train_loss = []
         all_val_loss = []
         self.history = []
 
         if self.is_main_process:
-            print(f'\n--> Start training in total {self.epochs} epochs with {self.device} device. Start...\n')
+            if self.start_epoch > 0:
+                print(
+                    f'\n--> Resuming training from epoch {self.start_epoch + 1}/{self.epochs} '
+                    f'(restored best_score={best_score:.4f}) with {self.device} device. Start...\n'
+                )
+            else:
+                print(f'\n--> Start training in total {self.epochs} epochs with {self.device} device. Start...\n')
 
-        for ep in range(self.epochs):
+        for ep in range(self.start_epoch, self.epochs):
             if self.is_distributed and hasattr(self.train_loader.sampler, "set_epoch"):
                 self.train_loader.sampler.set_epoch(ep)
 
