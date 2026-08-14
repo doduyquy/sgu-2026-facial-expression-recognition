@@ -341,10 +341,32 @@ def main():
             default=None,
             help="Path to checkpoint file (.pth) to resume training state (epoch, model, optimizer, scheduler, baseline score)",
         )
+        parser.add_argument(
+            "--epochs",
+            type=int,
+            default=None,
+            help="Override total epochs in config['training']['epochs']",
+        )
+        parser.add_argument(
+            "--extra_epochs",
+            type=int,
+            default=None,
+            help="Run for N extra epochs beyond the resumed epoch (e.g. 50 extra epochs)",
+        )
+        parser.add_argument(
+            "--patience",
+            type=int,
+            default=None,
+            help="Override early stopping patience",
+        )
         args = parser.parse_args()
         
         # load config
         config = load_config(args.config, args.env)
+        if args.epochs is not None:
+            config['training']['epochs'] = args.epochs
+        if args.patience is not None:
+            config['training']['patience'] = args.patience
         set_seed(config['seed'].get('random_seed', 21) + rank)
         ddp_cfg = config.get('ddp', {})
 
@@ -422,6 +444,11 @@ def main():
             if best_score is None:
                 monitor = config.get('training', {}).get('monitor', 'val_accuracy')
                 best_score = best_val_loss if monitor == 'val_loss' else best_val_acc
+
+            if args.extra_epochs is not None:
+                config['training']['epochs'] = start_epoch + args.extra_epochs
+                if is_main_process():
+                    print(f"[RESUME] Target epochs extended by +{args.extra_epochs} -> Total {config['training']['epochs']} epochs.")
 
             freeze_epochs = int(config.get('model', {}).get('freeze_backbone_epochs', 0) or 0)
             unfreeze_backbone = bool(config.get('model', {}).get('unfreeze_backbone', True))

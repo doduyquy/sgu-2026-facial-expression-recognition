@@ -26,6 +26,10 @@ model:
       left: [1, 2]
       right: [4]
 
+training:
+  epochs: 115
+  patience: 30
+
 paths:
   output_dir: "/kaggle/working/outputs/paper_ablation_strong_c_relation_tokens_080_020_imagenet_seed42_noclean_batch16"
 
