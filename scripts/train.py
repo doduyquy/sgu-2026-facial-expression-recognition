@@ -219,60 +219,73 @@ def _resolve_checkpoint_path(checkpoint_path):
     if not checkpoint_path:
         raise ValueError("No checkpoint path provided.")
 
-    # 1. Exact file or directory check
+    # 1. Exact file check
     if os.path.isfile(checkpoint_path):
         return checkpoint_path
 
+    # 2. Directory check
     if os.path.isdir(checkpoint_path):
+        files_in_dir = []
         for root, _, files in os.walk(checkpoint_path):
             for file in sorted(files):
+                full_p = os.path.join(root, file)
                 if file.endswith('.pth') or file.endswith('.pt'):
-                    found = os.path.join(root, file)
-                    print(f"--> Discovered checkpoint file in directory: {found}")
-                    return found
+                    print(f"--> Discovered checkpoint file in directory: {full_p}")
+                    return full_p
+                files_in_dir.append(full_p)
+        if files_in_dir:
+            print(f"--> Using file found in directory: {files_in_dir[0]}")
+            return files_in_dir[0]
 
-    # 2. Search in search_roots (/kaggle/input, cwd, etc.)
+    # 3. Search in search_roots (/kaggle/input/models, /kaggle/input, cwd, etc.)
     search_roots = []
+    if os.path.exists("/kaggle/input/models"):
+        search_roots.append("/kaggle/input/models")
     if os.path.exists("/kaggle/input"):
         search_roots.append("/kaggle/input")
     search_roots.append(os.getcwd())
 
-    all_ckpts = []
+    all_files = []
+    pth_files = []
     for root_dir in search_roots:
         for current_dir, _, files in os.walk(root_dir):
             for f in sorted(files):
+                full_path = os.path.join(current_dir, f)
+                if full_path not in all_files:
+                    all_files.append(full_path)
                 if f.endswith('.pth') or f.endswith('.pt'):
-                    all_ckpts.append(os.path.join(current_dir, f))
+                    if full_path not in pth_files:
+                        pth_files.append(full_path)
 
-    if all_ckpts:
-        basename = os.path.basename(checkpoint_path)
-        for ckpt in all_ckpts:
-            if os.path.basename(ckpt) == basename:
-                print(f"--> Using discovered checkpoint by exact filename: {ckpt}")
-                return ckpt
+    # Match by partial keywords from the provided path
+    clean_parts = [
+        p.lower()
+        for p in checkpoint_path.replace("\\", "/").split("/")
+        if p and p.lower() not in ("kaggle", "input", "models", "pytorch", "default", "1", "datasets")
+    ]
 
-        # Match by partial keywords from the provided path
-        clean_parts = [
-            p.lower()
-            for p in checkpoint_path.replace("\\", "/").split("/")
-            if p and p.lower() not in ("kaggle", "input", "models", "pytorch", "default", "1")
-        ]
-        for ckpt in all_ckpts:
-            ckpt_lower = ckpt.lower()
-            if any(part in ckpt_lower for part in clean_parts):
-                print(f"--> Using fuzzy-matched checkpoint: {ckpt}")
-                return ckpt
+    # First try matching .pth files by keyword
+    for ckpt in pth_files:
+        ckpt_lower = ckpt.lower()
+        if any(part in ckpt_lower for part in clean_parts):
+            print(f"--> Using matched .pth checkpoint: {ckpt}")
+            return ckpt
 
-        print(f"--> Available checkpoints found on system:\n" + "\n".join(f"    - {c}" for c in all_ckpts))
-        non_cache_candidates = [c for c in all_ckpts if not c.startswith("/root/.cache")]
-        if len(non_cache_candidates) == 1:
-            print(f"--> Automatically selecting candidate checkpoint: {non_cache_candidates[0]}")
-            return non_cache_candidates[0]
+    # Then try matching ANY file under search roots
+    for f in all_files:
+        f_lower = f.lower()
+        if any(part in f_lower for part in clean_parts):
+            print(f"--> Using discovered model file: {f}")
+            return f
 
-    raise FileNotFoundError(
-        f"Checkpoint not found: {checkpoint_path}. "
-        f"Available checkpoints: {all_ckpts if all_ckpts else 'None found'}"
-    )
+    # If any file exists in /kaggle/input/models, pick the first one
+    models_files = [f for f in all_files if "/models/" in f.replace("\\", "/")]
+    if models_files:
+        print(f"--> Discovered model file in /kaggle/input/models: {models_files[0]}")
+        return models_files[0]
+
+    print(f"--> Available files found on system:\n" + "\n".join(f"    - {c}" for c in all_files[:20]))
+    raise FileNotFoundError(f"Checkpoint not found for input: {checkpoint_path}")
 
 
 def load_model_init_checkpoint(model, checkpoint_path, strict=True):
