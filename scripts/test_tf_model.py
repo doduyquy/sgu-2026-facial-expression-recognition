@@ -1,5 +1,5 @@
 """
-test_tf_model.py — Quick smoke test để verify TF port hoạt động đúng.
+test_tf_model.py — Quick smoke test để verify TF model hoạt động đúng.
 
 Chạy: python scripts/test_tf_model.py
 Nếu không có lỗi ImportError / shape error là OK.
@@ -19,22 +19,19 @@ print(f"GPUs available: {tf.config.list_physical_devices('GPU')}\n")
 
 
 def test_backbone():
-    from src.models.semantic_roi_graph_tf import SemanticBackbone
-    backbone = SemanticBackbone(feature_dim=256, use_pretrained=False)
+    from src.models.semantic_roi_graph import ResNet50Backbone
+    backbone = ResNet50Backbone(feature_dim=256, use_pretrained=False)
     dummy = tf.zeros([2, 48, 48, 3])
     out = backbone(dummy, training=False)
-    expected_shape = (2, 6, 6, 256)  # 48 / 8 = 6 (stride-8 from ResNet50V2 conv3)
-    print(f"[Backbone] output shape: {out.shape} (expected ~{expected_shape})")
+    print(f"[Backbone] output shape: {out.shape}")
     assert out.shape[0] == 2 and out.shape[-1] == 256, f"Unexpected backbone shape: {out.shape}"
     print("[Backbone] PASS ✓\n")
 
 
 def test_roi_align():
-    from src.models.semantic_roi_graph_tf import SemanticRoiAlign
+    from src.models.semantic_roi_graph import SemanticRoiAlign
     roi = SemanticRoiAlign(roi_grid=4, bbox_input_size=48, feature_out_size=6)
-    # Feature map: (2, 6, 6, 256) NHWC
     feature_map = tf.random.normal([2, 6, 6, 256])
-    # Bboxes: (2, 9, 4)
     bboxes = tf.random.uniform([2, 9, 4], minval=0, maxval=40)
     out = roi(feature_map, bboxes)
     print(f"[ROI Align] output shape: {out.shape}")
@@ -43,16 +40,16 @@ def test_roi_align():
 
 
 def test_full_model():
-    from src.models.semantic_roi_graph_tf import SemanticROIGraphFER, SemanticRoiGraphConfig
+    from src.models.semantic_roi_graph import SemanticROIGraphFER, SemanticRoiGraphConfig
 
     config = SemanticRoiGraphConfig(use_pretrained=False)
     model = SemanticROIGraphFER(config)
 
-    # Single image (grayscale)
+    # NHWC format (grayscale)
     images = tf.zeros([2, 48, 48, 1])
     bboxes = tf.random.uniform([2, 9, 4], minval=0, maxval=40)
 
-    outputs = model((images, bboxes), training=False)
+    outputs = model(images, bboxes, training=False)
     logits = outputs["logits"]
     print(f"[Full Model] logits shape: {logits.shape}")
     assert logits.shape == (2, 7), f"Unexpected logits shape: {logits.shape}"
@@ -61,8 +58,8 @@ def test_full_model():
 
 
 def test_losses():
-    from src.models.semantic_roi_graph_tf import SemanticROIGraphFER, SemanticRoiGraphConfig
-    from src.models.semantic_roi_graph_losses_tf import compute_semantic_roi_graph_losses_tf
+    from src.models.semantic_roi_graph import SemanticROIGraphFER, SemanticRoiGraphConfig
+    from src.models.semantic_roi_graph_losses import compute_semantic_roi_graph_losses
 
     config = SemanticRoiGraphConfig(use_pretrained=False)
     model = SemanticROIGraphFER(config)
@@ -71,8 +68,8 @@ def test_losses():
     bboxes = tf.random.uniform([4, 9, 4], minval=0, maxval=40)
     labels = tf.constant([0, 1, 2, 3], dtype=tf.int32)
 
-    outputs = model((images, bboxes), training=True)
-    loss_dict = compute_semantic_roi_graph_losses_tf(model, outputs, labels)
+    outputs = model(images, bboxes, training=True)
+    loss_dict = compute_semantic_roi_graph_losses(model, outputs, labels)
     total_loss = loss_dict["loss"]
     print(f"[Losses] Total loss: {total_loss.numpy():.4f}")
     print(f"[Losses] CE loss: {loss_dict['loss_ce'].numpy():.4f}")
@@ -81,7 +78,8 @@ def test_losses():
 
 
 def test_tta():
-    from src.models.semantic_roi_graph_tf import SemanticROIGraphFER, SemanticRoiGraphConfig
+    from src.models.semantic_roi_graph import SemanticROIGraphFER, SemanticRoiGraphConfig
+    from src.models.utils import apply_multi_scale_tta
 
     config = SemanticRoiGraphConfig(use_pretrained=False)
     model = SemanticROIGraphFER(config)
@@ -91,7 +89,7 @@ def test_tta():
     region_mask = tf.ones([2, 9])
     region_confidence = tf.ones([2, 9]) * 0.9
 
-    outputs = model.call_with_tta(images, bboxes, region_mask, region_confidence)
+    outputs = apply_multi_scale_tta(model, images, bboxes, region_mask, region_confidence)
     logits = outputs["logits"]
     print(f"[TTA] logits shape: {logits.shape}")
     assert logits.shape == (2, 7), f"Unexpected TTA logits shape: {logits.shape}"
@@ -100,7 +98,7 @@ def test_tta():
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("  TF Port Smoke Tests")
+    print("  TF Model Smoke Tests")
     print("=" * 60 + "\n")
 
     tests = [

@@ -1,9 +1,7 @@
 # Deep Learning Framework
 tensorflow>=2.13.0
 keras>=2.13.0
-torch
-torchvision
-timm>=0.9.0
+tensorflow-addons
 
 # Data Processing
 numpy
@@ -18,13 +16,6 @@ scikit-learn
 wandb
 PyYAML
 tqdm
-
-# Jupyter Notebook & UI (Optional for Kaggle)
-jupyter
-ipywidgets
-
-# Testing (Optional)
-pytest
 
 # Jupyter Notebook & UI (Optional for Kaggle)
 jupyter

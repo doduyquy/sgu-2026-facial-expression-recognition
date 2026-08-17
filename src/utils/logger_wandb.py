@@ -1,6 +1,5 @@
 import wandb 
 import os
-import torch
 import numpy as np
 import io
 import matplotlib.pyplot as plt
@@ -27,7 +26,7 @@ def log_metrics(metrics_dict, epoch=None):
         wandb.log(metrics_dict, step=epoch)
 
 def log_image_to_wandb(tag, fig):
-    """Log 10 true image and 10 wrong image"""
+    """Log figure to wandb"""
     if wandb.run is not None:
         wandb.log({tag: wandb.Image(fig)})
 
@@ -35,24 +34,34 @@ def log_heatmap_samples(images, labels, preds, node_attn_all, sampling_grid_all,
     """
     Log 10 correct and 10 incorrect heatmap visualizations to WandB.
     Handles both normal (4D) and TenCrop (5D) inputs.
+    
+    Note: images should be in NHWC format for TF.
     """
     if wandb.run is None or node_attn_all is None or sampling_grid_all is None:
         return
 
-    # Handle TenCrop: (B, 10, C, H, W) -> Visualize only the first crop
-    if images.dim() == 5:
-        B, T, C, H, W = images.shape
-        images = images[:, 0] # (B, C, H, W)
+    # Convert to numpy if needed
+    if hasattr(images, 'numpy'):
+        images = images.numpy()
+    if hasattr(node_attn_all, 'numpy'):
+        node_attn_all = node_attn_all.numpy()
+    if hasattr(sampling_grid_all, 'numpy'):
+        sampling_grid_all = sampling_grid_all.numpy()
+    if hasattr(labels, 'numpy'):
+        labels = labels.numpy()
+    if hasattr(preds, 'numpy'):
+        preds = preds.numpy()
+
+    # Handle TenCrop: (B, 10, H, W, C) -> Visualize only the first crop
+    if images.ndim == 5:
+        B, T = images.shape[:2]
+        images = images[:, 0]  # (B, H, W, C)
         
-        # node_attn_all is (B*T*Cands, ...)
-        # sampling_grid_all is (B*T, ...)
         num_cands_per_crop = node_attn_all.shape[0] // (B * T)
+        node_attn_all = node_attn_all.reshape(B, T, num_cands_per_crop, *node_attn_all.shape[1:])[:, 0]
+        node_attn_all = node_attn_all.reshape(B * num_cands_per_crop, *node_attn_all.shape[2:])
         
-        # Reshape and take the first crop's data
-        node_attn_all = node_attn_all.view(B, T, num_cands_per_crop, *node_attn_all.shape[1:])[:, 0]
-        node_attn_all = node_attn_all.reshape(B * num_cands_per_crop, *node_attn_all.shape[1:])
-        
-        sampling_grid_all = sampling_grid_all.view(B, T, *sampling_grid_all.shape[1:])[:, 0]
+        sampling_grid_all = sampling_grid_all.reshape(B, T, *sampling_grid_all.shape[1:])[:, 0]
 
     correct_imgs, incorrect_imgs = [], []
     emotions = ['Angry', 'Disgust', 'Fear', 'Happy', 'Sad', 'Surprise', 'Neutral']
@@ -67,28 +76,28 @@ def log_heatmap_samples(images, labels, preds, node_attn_all, sampling_grid_all,
         if not is_correct and len(incorrect_imgs) >= n_samples: continue
         
         # --- Create Heatmap Image ---
-        img_tensor = images[i]
-        pred_label = preds[i].item()
-        true_label = labels[i].item()
+        img = images[i]  # (H, W, C) NHWC format
+        pred_label = int(preds[i])
+        true_label = int(labels[i])
         
-        # Denormalize
-        img = img_tensor.cpu().numpy().transpose(1, 2, 0)
-        img = (img * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])).clip(0, 1)
+        # Denormalize (assuming mean=0.5, std=0.5)
+        img = (img * 0.5 + 0.5).clip(0, 1)
         
-        # Attention processing: Mean over motifs to get importance per node
-        # sample_attn: (num_cands, num_classes, motifs_per_class, 16)
+        # Attention processing
         sample_attn = node_attn_all[i*num_cands : (i+1)*num_cands]
-        # (num_cands, motifs_per_class, 16) -> (num_cands, 16)
-        attn = sample_attn[:, pred_label].mean(dim=1).flatten().cpu().numpy()
+        attn = sample_attn[:, pred_label].mean(axis=1).flatten()
         attn = (attn - attn.min()) / (attn.max() - attn.min() + 1e-8)
         
         # Grid coords
         sample_grid = sampling_grid_all[i]
-        coords = ((sample_grid.squeeze() + 1) / 2 * 224).cpu().numpy()
+        coords = ((sample_grid.squeeze() + 1) / 2 * 224)
         
         # Plot
         fig, ax = plt.subplots(figsize=(4, 4))
-        ax.imshow(img)
+        if img.shape[-1] == 1:
+            ax.imshow(img.squeeze(-1), cmap='gray')
+        else:
+            ax.imshow(img)
         ax.scatter(coords[:, 0], coords[:, 1], s=attn * 150, c='red', alpha=0.6, edgecolors='white', linewidth=0.5)
         
         title = f"P: {emotions[pred_label]} | T: {emotions[true_label]}"
@@ -113,12 +122,17 @@ def log_heatmap_samples(images, labels, preds, node_attn_all, sampling_grid_all,
         wandb.log({"viz/incorrect_samples": incorrect_imgs}, step=epoch)
 
 def save_model_to_wandb(model_path, model_name="cnn"):
-    """Lưu file pth trực tiếp vào Artifacts"""
+    """Upload checkpoint files to Artifacts"""
     if wandb.run is not None:
         try:
             artifact = wandb.Artifact(name=f"{model_name}_{wandb.run.id}", type="model")
-            artifact.add_file(model_path) 
+            # TF checkpoints have multiple files (.index, .data-00000-of-00001)
+            checkpoint_dir = os.path.dirname(model_path)
+            checkpoint_prefix = os.path.basename(model_path)
+            for f in os.listdir(checkpoint_dir):
+                if f.startswith(checkpoint_prefix):
+                    artifact.add_file(os.path.join(checkpoint_dir, f))
             wandb.log_artifact(artifact)
-            print(f"\t--> [WandB] Send File `{os.path.basename(model_path)}` to cloud successfully!")
+            print(f"\t--> [WandB] Send checkpoint `{checkpoint_prefix}` to cloud successfully!")
         except Exception as e:
             print(f"\t-!- [WandB] Error when upload Model: {e}")

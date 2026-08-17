@@ -6,7 +6,7 @@ Hỗ trợ:
 - Multi-GPU qua tf.distribute.MirroredStrategy
 - Mixed Precision (LossScaleOptimizer)
 - Graph Mode (@tf.function) để tăng tốc độ x5-x10
-- Multi-loss (via compute_semantic_roi_graph_losses_tf)
+- Multi-loss (via compute_semantic_roi_graph_losses)
 - Mixup
 - SCN-light (sample weighting by confidence)
 - W&B logging
@@ -21,7 +21,7 @@ from typing import Dict, Optional
 import numpy as np
 import tensorflow as tf
 
-from src.models.semantic_roi_graph_losses_tf import compute_semantic_roi_graph_losses_tf
+from src.models.semantic_roi_graph_losses import compute_semantic_roi_graph_losses
 
 
 def _spce(labels, logits):
@@ -179,7 +179,7 @@ class TrainerTF:
 
         # Compute loss
         if loss_mode == "semantic_roi_graph":
-            loss_dict = compute_semantic_roi_graph_losses_tf(
+            loss_dict = compute_semantic_roi_graph_losses(
                 self.model, outputs, labels, class_weights=self.class_weights
             )
             cls_loss = loss_dict["loss"]

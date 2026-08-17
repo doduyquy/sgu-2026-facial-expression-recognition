@@ -1,8 +1,7 @@
 import os
 import random
 import numpy as np
-import torch
-import numpy as np
+import tensorflow as tf
 
 def set_seed(seed=21):
     """Setup seed for reproducibility"""
@@ -10,14 +9,11 @@ def set_seed(seed=21):
     os.environ['PYTHONHASHSEED'] = str(seed)
     np.random.seed(seed)
     
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-        
-    # Cấu hình CUDNN cho deterministic behavior
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    tf.random.set_seed(seed)
+    
+    # Cấu hình TF cho deterministic behavior
+    os.environ['TF_DETERMINISTIC_OPS'] = '1'
+    os.environ['TF_CUDNN_DETERMINISTIC'] = '1'
     
     print(f"[OK] Seed set to {seed}")
 
@@ -25,4 +21,4 @@ if __name__ == "__main__":
     set_seed(21)
     print(random.randint(1, 10))
     print(np.random.randint(1, 10))
-    print(torch.randint(1, 10, (1,)).item())
+    print(tf.random.uniform((1,), minval=1, maxval=10, dtype=tf.int32).numpy()[0])

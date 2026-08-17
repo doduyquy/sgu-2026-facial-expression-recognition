@@ -4,8 +4,7 @@ from .semantic_roi_graph import SemanticROIGraphFER, SemanticRoiGraphConfig
 def get_model(name, config):
     """
     Model factory.
-    Supported: 'motif_graph_fer'  — Hybrid CNN + GATConv + Motif model.
-               'semantic_roi_graph_fer' — Semantic ROI Graph FER model.
+    Supported: 'semantic_roi_graph_fer' — Semantic ROI Graph FER model (TensorFlow).
     """
     if name == 'semantic_roi_graph_fer':
         model_cfg = config.get('model').copy()
@@ -19,5 +18,5 @@ def get_model(name, config):
     else:
         raise ValueError(
             f"Model '{name}' not found. "
-            "Supported models: ['motif_graph_fer', 'semantic_roi_graph_fer']"
+            "Supported models: ['semantic_roi_graph_fer']"
         )

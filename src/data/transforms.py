@@ -1,9 +1,6 @@
-from torchvision.transforms import Compose
-import torch
-from torchvision import transforms
+import tensorflow as tf
 
-
-def build_transform(config, split="train") -> Compose:
+def build_transform(config, split="train"):
     """Build transforms for train / val / test.
 
     Fix 1: config key is 'input_size' (not 'image_size'). Falls back to
@@ -18,9 +15,8 @@ def build_transform(config, split="train") -> Compose:
         split: 'train' | 'val' | 'test'
 
     Returns:
-        Compose transform pipeline
+        tf.data compatible transform function
     """
-    # Fix 1: accept both key names
     data_cfg = config.get('data', {})
     image_size = data_cfg.get('input_size', data_cfg.get('image_size', 48))
     mu = 0.5
@@ -28,83 +24,46 @@ def build_transform(config, split="train") -> Compose:
 
     use_semantic_masks = bool(data_cfg.get('use_semantic_masks', False))
 
-    if split == "train":
-        if use_semantic_masks:
-            # Non-spatial augmentations to preserve bbox alignment.
-            # Horizontal flip is handled synchronously in the dataset.__getitem__ level.
-            trans = transforms.Compose([
-                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=(mu,), std=(st,)),
-            ])
+    def transform_fn(image):
+        # Convert to float and scale [0, 1]
+        image = tf.cast(image, tf.float32) / 255.0
+
+        if split == "train":
+            if use_semantic_masks:
+                # Non-spatial augmentations to preserve bbox alignment.
+                # Horizontal flip and Affine are handled synchronously in the dataset generator.
+                image = tf.image.random_brightness(image, 0.2)
+                image = tf.image.random_contrast(image, 0.8, 1.2)
+                image = tf.image.random_saturation(image, 0.8, 1.2)
+            else:
+                # Standard path without bounding boxes
+                image = tf.image.resize(image, [int(image_size * 1.2), int(image_size * 1.2)])
+                image = tf.image.random_crop(image, [image_size, image_size, tf.shape(image)[-1]])
+                image = tf.image.random_flip_left_right(image)
         else:
-            trans = transforms.Compose([
-                transforms.RandomResizedCrop(image_size, scale=(0.8, 1.2)),
-                transforms.RandomApply([transforms.RandomAffine(0, translate=(0.2, 0.2))], p=0.5),
-                transforms.RandomHorizontalFlip(p=0.5),
-                transforms.RandomApply([transforms.RandomRotation(10)], p=0.5),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=(mu,), std=(st,)),
-            ])
-    else:
-        if use_semantic_masks:
-            # Fix 6: no TenCrop — semantic bbox coords are in original image space
-            # and would be wrong after any spatial crop. Simple resize preserves coords.
-            trans = transforms.Compose([
-                transforms.Resize((image_size, image_size)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=(mu,), std=(st,)),
-            ])
-        else:
-            # TenCrop TTA for models that do not use bounding boxes.
-            # Note: TenCrop order is [tl, tr, bl, br, center, ...flips].
-            # Center crop is at index 4, NOT image.size(1)//2 = 5.
-            larger = int(image_size * 56 / 48)
-            trans = transforms.Compose([
-                transforms.Resize((larger, larger)),
-                transforms.TenCrop(image_size),
-                transforms.Lambda(lambda crops: torch.stack(
-                    [transforms.ToTensor()(c) for c in crops]
-                )),
-                transforms.Lambda(lambda tensors: torch.stack(
-                    [transforms.Normalize(mean=(mu,), std=(st,))(t) for t in tensors]
-                )),
-            ])
+            if use_semantic_masks:
+                # No TenCrop — semantic bbox coords are in original image space
+                # and would be wrong after any spatial crop. Simple resize preserves coords.
+                image = tf.image.resize(image, [image_size, image_size])
+            else:
+                # TenCrop TTA for models that do not use bounding boxes.
+                larger = int(image_size * 56 / 48)
+                image = tf.image.resize(image, [larger, larger])
+                h, w = larger, larger
+                th, tw = image_size, image_size
 
-    return trans
+                tl = tf.image.crop_to_bounding_box(image, 0, 0, th, tw)
+                tr = tf.image.crop_to_bounding_box(image, 0, w - tw, th, tw)
+                bl = tf.image.crop_to_bounding_box(image, h - th, 0, th, tw)
+                br = tf.image.crop_to_bounding_box(image, h - th, w - tw, th, tw)
+                center = tf.image.crop_to_bounding_box(image, (h - th) // 2, (w - tw) // 2, th, tw)
 
+                crops = [tl, tr, bl, br, center]
+                flips = [tf.image.flip_left_right(c) for c in crops]
+                image = tf.stack(crops + flips, axis=0) # [10, th, tw, C]
 
+        # Normalize
+        image = (image - mu) / st
+        return image
 
-
-# With transfer learning: VGG hay ResNet:
-# mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-
-if __name__ == "__main__":
-    import numpy as np
-    from PIL import Image
-
-    # create random array
-    dummy_pixels = np.random.randint(0, 256, (48, 48), dtype=np.uint8)
-
-    # convert uint8 array to PIL image grayscale ('L' mode)
-    dummy_image = Image.fromarray(dummy_pixels)
-    
-    # expect: L (48, 48) --> ok
-    print("Before transform: ", dummy_image.mode, dummy_image.size)
-
-    # create a mock config
-    mock_config = {
-        'data':{
-            'image_size': 48 # change to 224 if using VGG, Q use 48 for basic CNN
-        }
-    }
-
-    train_trans = build_transform(mock_config, split="train")
-    out_tensor = train_trans(dummy_image)
-
-    # 6. Kiểm tra kết quả
-    print("Tensor after Transform:")
-    print("   - shape = ", out_tensor.shape)       # Kỳ vọng: [1, 48, 48]
-    print("   - float32? .dtype = ", out_tensor.dtype)     # Kỳ vọng: torch.float32
-    print(f"   - Max (scale & normalize) = {out_tensor.max().item():.3f}")  # Kỳ vọng xoay quanh ~ 1.0
-    print(f"   - Min (scale & normalize) = {out_tensor.min().item():.3f}")  # Kỳ vọng xoay quanh ~ -1.0
+    return transform_fn

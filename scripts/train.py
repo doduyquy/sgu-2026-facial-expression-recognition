@@ -1,6 +1,7 @@
 import os
 import wandb
-import torch
+import tensorflow as tf
+import numpy as np
 import argparse
 from pathlib import Path
 import sys
@@ -15,14 +16,14 @@ from src.utils.seed import set_seed
 from src.utils.logger_wandb import init_wandb
 
 from src.data.dataloader import build_dataloader
-from src.models import get_model # in __init__ gfile
-from src.training.trainer import Trainer
+from src.models import get_model
+from src.training.trainer_tf import TrainerTF as Trainer
 from src.training.losses import build_loss
-from src.training.optimizer import build_optimizer
+from src.training.optimizer import build_optimizer, ReduceLROnPlateau
 from src.utils.checkpoint import load_checkpoints
 from src.evaluation.evaluator import evaluate_and_show
 from src.utils.logger_wandb import save_model_to_wandb
-from src.utils.data_stats import get_class_distribution # testing: class weight
+from src.utils.data_stats import get_class_distribution
 
 from datetime import datetime
 #-------------------------------------------------------------
@@ -35,13 +36,15 @@ def main():
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--env", type=str, default="local", choices=["local", "kaggle"])
     args = parser.parse_args()
-    # If running on Kaggle, enable CUDA launch blocking for correct stack traces
-    if args.env == 'kaggle':
-        os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
-    # device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  
-    print("--- Use device:", device)
+    # Check GPU
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        print(f"--- Found {len(gpus)} GPU(s)")
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+    else:
+        print("--- No GPU found, using CPU")
     
     # load config
     config = load_config(args.config, args.env)
@@ -65,13 +68,12 @@ def main():
     model = get_model(
         name=config['model']['name'],
         config=config)
-    
 
-    # get class_distribution for class_weights (for testing)
+    # get class_distribution for class_weights
     trainset_path = os.path.join(data_path, "train.csv")
     train_class_distribution = get_class_distribution(trainset_path)
     train_class_distribution_np = train_class_distribution.values
-    class_counts = torch.tensor(train_class_distribution_np, dtype=torch.float)
+    class_counts = tf.constant(train_class_distribution_np, dtype=tf.float32)
 
     class_weight_mode = config['training'].get('class_weight_mode', 'inverse')
     use_class_weights = config['training'].get('use_class_weights', True)
@@ -80,25 +82,22 @@ def main():
     if use_class_weights:
         if class_weight_mode == 'manual':
             manual_weights = config['training'].get('manual_class_weights', [1.2, 2.0, 1.5, 0.8, 0.8, 1.0, 1.0])
-            class_weights = torch.tensor(manual_weights, dtype=torch.float)
+            class_weights = tf.constant(manual_weights, dtype=tf.float32)
         elif class_weight_mode == 'sqrt_inverse':
-            class_weights = 1.0 / torch.sqrt(class_counts)
+            class_weights = 1.0 / tf.sqrt(class_counts)
         elif class_weight_mode == 'inverse':
             class_weights = 1.0 / class_counts
         else:
             raise ValueError(f"Unsupported class_weight_mode: {class_weight_mode}")
 
-        class_weights = class_weights / class_weights.sum()
-        class_weights = class_weights.to(device)
+        class_weights = class_weights / tf.reduce_sum(class_weights)
         print(f"--- Class weight mode: {class_weight_mode}")
-        print(f"--- Class weights: {class_weights}")
+        print(f"--- Class weights: {class_weights.numpy()}")
     else:
         print("--- Class weights disabled")
 
-
-    loss = build_loss(config=config, class_weights=class_weights)
     optimizer = build_optimizer(model=model, config=config)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    scheduler = ReduceLROnPlateau(
         optimizer,
         mode='min',
         factor=0.5,
@@ -107,20 +106,19 @@ def main():
     )
     
     # set path to save ckpt
-    path_save_ckpt = os.path.join(root_path, f"outputs/checkpoints/{config['model'].get('name', 'cnn')}/{run_name}_best.pth")
+    path_save_ckpt = os.path.join(root_path, f"outputs/checkpoints/{config['model'].get('name', 'cnn')}/{run_name}_best")
     os.makedirs(os.path.dirname(path_save_ckpt), exist_ok=True)
 
     trainer = Trainer(
         model=model,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        criterion=loss,
+        train_dataset=train_loader,
+        val_dataset=val_loader,
         optimizer=optimizer,
         scheduler=scheduler,
         config=config,
-        device=device,
         run_name=run_name,
-        save_dir=path_save_ckpt
+        save_path=path_save_ckpt,
+        class_weights=class_weights
     )
     train_losses, val_losses = trainer.fit()
 
@@ -129,24 +127,21 @@ def main():
     print("Evaluate in test set")
     print("="*51)
     
-    # Get path of file best  
-    load_checkpoints(model, optimizer, path_save_ckpt, device)
+    # Load best checkpoint
+    load_checkpoints(model, optimizer, path_save_ckpt)
     
-    eval_dir_path = os.path.join(root_path ,"outputs/figures")
+    eval_dir_path = os.path.join(root_path, "outputs/figures")
     os.makedirs(eval_dir_path, exist_ok=True)
-    print(f"Evaluatoin save path: {eval_dir_path}")
-
+    print(f"Evaluation save path: {eval_dir_path}")
 
     # test data path
     testset_path = os.path.join(data_path, "test.csv")
-    evaluate_and_show(model, test_loader, testset_path, device, eval_dir_path, use_tta=True)
+    evaluate_and_show(model, test_loader, testset_path, eval_dir_path, use_tta=True)
     
     # upload best ckpt to wandb
     if config['logging'].get('use_wandb', True):
         print("\n\t--> Uploading best ckpt to WandB, please wait...")
         save_model_to_wandb(path_save_ckpt)
-        
-        # Đóng cửa sổ WandB, tránh bị kẹt quá trình upload trên hệ thống ngầm của Kaggle
         wandb.finish()
 
     print("\n\t\tDONE!\n")
