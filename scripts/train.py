@@ -17,7 +17,7 @@ from src.utils.logger_wandb import init_wandb
 
 from src.data.dataloader import build_dataloader
 from src.models import get_model
-from src.training.trainer_tf import TrainerTF as Trainer
+from src.training.trainer import Trainer
 from src.training.losses import build_loss
 from src.training.optimizer import build_optimizer, ReduceLROnPlateau
 from src.utils.checkpoint import load_checkpoints

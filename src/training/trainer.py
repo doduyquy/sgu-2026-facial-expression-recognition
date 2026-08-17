@@ -35,7 +35,7 @@ def _lr_multiplier_for_name(name: str) -> float:
     return 2.0
 
 
-class TrainerTF:
+class Trainer:
     """TensorFlow GradientTape training loop for SemanticROIGraphFER."""
 
     def __init__(
@@ -139,13 +139,22 @@ class TrainerTF:
 
     def _forward_batch(self, batch, epoch_tensor: tf.Tensor, use_scn_tensor: tf.Tensor, lam_tensor: tf.Tensor, training: bool = True):
         """Unpack batch and call model. Returns (loss, logits, labels)."""
-        if len(batch) == 4:
+        if isinstance(batch, dict):
+            images = batch["image"]
+            labels = batch["label"]
+            bboxes = batch.get("bboxes", None)
+            region_mask = batch.get("region_mask", None)
+            region_confidence = batch.get("region_confidence", None)
+            semantic_meta = None
+            if region_mask is not None:
+                semantic_meta = {"region_mask": region_mask, "region_confidence": region_confidence}
+        elif len(batch) == 4:
             images, labels, bboxes, semantic_meta = batch
         elif len(batch) == 3:
             images, labels, bboxes = batch
             semantic_meta = None
         else:
-            images, labels = batch
+            images, labels = batch[:2]
             bboxes = None
             semantic_meta = None
 
