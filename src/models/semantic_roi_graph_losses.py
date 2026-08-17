@@ -489,8 +489,8 @@ def compute_semantic_roi_graph_losses(
     cross_region_attention = outputs.get("cross_region_attention")
     program_topology = outputs.get("semantic_program_topology")
 
-    micro_diversity_loss = micro_motif_diversity_loss(lambda: base_model.micro_motif_bank)
-    macro_diversity_loss = macro_motif_diversity_loss(lambda: base_model.semantic_program_bank)
+    micro_diversity_loss = micro_motif_diversity_loss(base_model.micro_motif_bank.motifs)
+    macro_diversity_loss = macro_motif_diversity_loss(base_model.semantic_program_bank.programs)
     
     contrastive_source = semantic_states if semantic_states is not None else semantic_latent
     contrastive_region_mask = region_mask if contrastive_source is not None and len(contrastive_source.shape) == 3 else None
