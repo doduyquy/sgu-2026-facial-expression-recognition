@@ -89,8 +89,11 @@ class ResNet50Backbone(tf.keras.Model):
         ])
 
     def call(self, x, training=False):
-        if tf.shape(x)[-1] == 1:
-            x = tf.tile(x, [1, 1, 1, 3])
+        x = tf.cond(
+            tf.equal(tf.shape(x)[-1], 1),
+            lambda: tf.tile(x, [1, 1, 1, 3]),
+            lambda: x
+        )
         x = self.feature_extractor(x, training=training)
         return self.proj(x, training=training)
 
