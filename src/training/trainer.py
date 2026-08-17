@@ -178,12 +178,13 @@ class Trainer:
             region_mask = semantic_meta.get("region_mask")
             region_confidence = semantic_meta.get("region_confidence")
 
-        if bboxes is not None:
-            model_inputs = (images, bboxes, region_mask, region_confidence)
-        else:
-            model_inputs = images
-
-        outputs = self.model(model_inputs, training=training)
+        outputs = self.model(
+            image=images, 
+            bboxes=bboxes, 
+            region_mask=region_mask, 
+            region_confidence=region_confidence, 
+            training=training
+        )
         logits = tf.cast(outputs["logits"], tf.float32)
 
         # Compute loss
