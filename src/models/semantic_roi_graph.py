@@ -526,7 +526,12 @@ class SemanticProgramExecutor(tf.keras.layers.Layer):
             topology_sim = tf.ones_like(region_sim)
             
         composition_summary = self.program_summary_proj(tf.reduce_mean(cross_region_tokens, axis=1), training=training)
-        program_summary = self.program_summary_proj(tf.reduce_mean(program_bank, axis=2), training=training)
+        
+        pb_mean = tf.reduce_mean(program_bank, axis=2)
+        pb_shape = tf.shape(pb_mean)
+        pb_flat = tf.reshape(pb_mean, [-1, pb_shape[-1]])
+        program_summary_flat = self.program_summary_proj(pb_flat, training=training)
+        program_summary = tf.reshape(program_summary_flat, pb_shape)
         composition_sim = tf.einsum("bd,cmd->bcm", tf.math.l2_normalize(composition_summary, axis=-1), tf.math.l2_normalize(program_summary, axis=-1))
         
         w = tf.nn.softplus(self.sim_weights)
