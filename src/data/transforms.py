@@ -34,7 +34,6 @@ def build_transform(config, split="train"):
                 # Horizontal flip and Affine are handled synchronously in the dataset generator.
                 image = tf.image.random_brightness(image, 0.2)
                 image = tf.image.random_contrast(image, 0.8, 1.2)
-                image = tf.image.random_saturation(image, 0.8, 1.2)
             else:
                 # Standard path without bounding boxes
                 image = tf.image.resize(image, [int(image_size * 1.2), int(image_size * 1.2)])
