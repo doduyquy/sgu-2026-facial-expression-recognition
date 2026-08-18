@@ -12,8 +12,8 @@ def set_seed(seed=21):
     tf.random.set_seed(seed)
     
     # Cấu hình TF cho deterministic behavior
-    os.environ['TF_DETERMINISTIC_OPS'] = '1'
-    os.environ['TF_CUDNN_DETERMINISTIC'] = '1'
+    # os.environ['TF_DETERMINISTIC_OPS'] = '1'  # Gây lỗi với CropAndResizeBackpropImage
+    # os.environ['TF_CUDNN_DETERMINISTIC'] = '1'
     
     print(f"[OK] Seed set to {seed}")
 
