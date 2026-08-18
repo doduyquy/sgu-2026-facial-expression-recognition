@@ -683,6 +683,18 @@ class SemanticROIGraphFER(tf.keras.Model):
         logits = (1 - structure_gate) * logits_fused + structure_gate * semantic_program_outputs["program_scores"]
         
         return {
-            "logits": logits, "logits_motif": semantic_program_outputs["program_scores"],
-            "logits_fused": logits_fused, "structure_gate": structure_gate
+            "logits": logits,
+            "logits_motif": semantic_program_outputs["program_scores"],
+            "logits_fused": logits_fused,
+            "structure_gate": structure_gate,
+            "semantic_states": interaction_states,
+            "region_mask": region_mask,
+            "semantic_routing_weights": compositional_outputs["routing_weights"],
+            "semantic_interaction_gates": semantic_interaction_gates,
+            "semantic_program_scores": semantic_program_outputs["program_scores"],
+            "semantic_program_attention": semantic_program_outputs["program_attention"],
+            "semantic_latent_embedding": compositional_outputs["emotion_latent"],
+            "cross_region_tokens": cross_region_outputs["cross_region_tokens"],
+            "cross_region_attention": cross_region_outputs["composition_attn"],
+            "semantic_program_topology": semantic_program_topology
         }
