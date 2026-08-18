@@ -489,7 +489,7 @@ class Trainer:
                 if isinstance(self.scheduler, tf.keras.callbacks.ReduceLROnPlateau):
                     self.scheduler.on_epoch_end(ep, logs={"selection_score": selection_score})
                 elif hasattr(self.scheduler, "step"):
-                    self.scheduler.step()
+                    self.scheduler.step(selection_score)
 
             if selection_score > best_score:
                 best_score = selection_score
