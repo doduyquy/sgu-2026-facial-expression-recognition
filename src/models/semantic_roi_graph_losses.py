@@ -29,9 +29,8 @@ def _get_training_cfg(model) -> Dict:
         return {}
 
 
-def micro_motif_diversity_loss(motif_bank_fn: Callable) -> tf.Tensor:
+def micro_motif_diversity_loss(motifs: tf.Tensor) -> tf.Tensor:
     """Encourage diverse motifs within each semantic region bank."""
-    motifs = motif_bank_fn()  # (R, K, D)
     shape = tf.shape(motifs)
     r, k, d = shape[0], shape[1], shape[2]
     
@@ -44,9 +43,8 @@ def micro_motif_diversity_loss(motif_bank_fn: Callable) -> tf.Tensor:
     return tf.reduce_mean(tf.square(off_diag))
 
 
-def macro_motif_diversity_loss(motif_bank_fn: Callable) -> tf.Tensor:
+def macro_motif_diversity_loss(motifs: tf.Tensor) -> tf.Tensor:
     """Encourage diverse macro motifs across class topology prototypes."""
-    motifs = motif_bank_fn()  # (C, M, R, D)
     if isinstance(motifs, tuple) or isinstance(motifs, list):
         motifs = motifs[0]
         
