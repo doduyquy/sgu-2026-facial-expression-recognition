@@ -106,7 +106,7 @@ def main():
     )
     
     # set path to save ckpt
-    path_save_ckpt = os.path.join(root_path, f"outputs/checkpoints/{config['model'].get('name', 'cnn')}/{run_name}_best")
+    path_save_ckpt = os.path.join(root_path, f"outputs/checkpoints/{config['model'].get('name', 'cnn')}/{run_name}_best.weights.h5")
     os.makedirs(os.path.dirname(path_save_ckpt), exist_ok=True)
 
     trainer = Trainer(
