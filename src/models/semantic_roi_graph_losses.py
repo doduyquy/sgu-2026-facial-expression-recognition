@@ -210,6 +210,7 @@ def semantic_consistency_loss(
     region_mask: Optional[tf.Tensor] = None,
 ) -> tf.Tensor:
     """Encourage samples from the same class to share similar semantic facial states."""
+    if semantic_states is None: return tf.constant(0.0, dtype=tf.float32)
     if len(semantic_states.shape) == 3:
         if region_mask is not None:
             weights = tf.expand_dims(tf.cast(region_mask, semantic_states.dtype), -1)
@@ -260,6 +261,7 @@ def semantic_disentanglement_loss(
     region_mask: Optional[tf.Tensor] = None,
 ) -> tf.Tensor:
     """Reduce redundancy across semantic state channels."""
+    if semantic_states is None: return tf.constant(0.0, dtype=tf.float32)
     if len(semantic_states.shape) == 3:
         if region_mask is not None:
             flat_mask = tf.reshape(region_mask, [-1]) > 0
