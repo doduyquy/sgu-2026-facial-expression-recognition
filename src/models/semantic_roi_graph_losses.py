@@ -68,14 +68,13 @@ def macro_motif_diversity_loss(motifs: tf.Tensor) -> tf.Tensor:
     return tf.reduce_mean(tf.square(off_diag))
 
 
-def motif_diversity_loss(motif_bank_fn: Callable) -> tf.Tensor:
+def motif_diversity_loss(motifs: tf.Tensor) -> tf.Tensor:
     """Backward-compatible alias for macro motif diversity."""
-    motifs = motif_bank_fn()
     if isinstance(motifs, tuple) or isinstance(motifs, list):
         motifs = motifs[0]
     if len(motifs.shape) == 3:
-        return micro_motif_diversity_loss(lambda: motifs)
-    return macro_motif_diversity_loss(lambda: motifs)
+        return micro_motif_diversity_loss(motifs)
+    return macro_motif_diversity_loss(motifs)
 
 
 def compositional_program_consistency_loss(program_scores: Optional[tf.Tensor], labels: tf.Tensor) -> tf.Tensor:
@@ -176,10 +175,8 @@ def semantic_program_sparsity_loss(
         return tf.reduce_sum(vals) / float(len(vals))
 
 
-def program_diversity_loss(program_bank: Union[tf.Tensor, Callable]) -> tf.Tensor:
+def program_diversity_loss(program_bank: tf.Tensor) -> tf.Tensor:
     """Encourage different semantic facial programs to specialize."""
-    if callable(program_bank):
-        program_bank = program_bank()
     if isinstance(program_bank, tuple) or isinstance(program_bank, list):
         program_bank = program_bank[0]
 
@@ -520,7 +517,7 @@ def compute_semantic_roi_graph_losses(
         cross_region_attention=cross_region_attention,
         mode=sparsity_mode,
     )
-    diversity_loss = program_diversity_loss(lambda: base_model.semantic_program_bank)
+    diversity_loss = program_diversity_loss(base_model.semantic_program_bank.programs)
 
     def _flag(name: str, default: bool = True) -> bool:
         return bool(training_cfg.get(name, default))
