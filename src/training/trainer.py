@@ -94,6 +94,21 @@ class Trainer:
         )
         
         with self.strategy.scope():
+            # Run a dummy batch to fully build all dynamic model layers (like Sequential/Dense)
+            # BEFORE initializing the optimizer slot variables.
+            for dummy_batch in train_dataset.take(1):
+                try:
+                    self.model(
+                        image=dummy_batch["image"],
+                        bboxes=dummy_batch.get("bboxes", None),
+                        region_mask=dummy_batch.get("region_mask", None),
+                        region_confidence=dummy_batch.get("region_confidence", None),
+                        training=False
+                    )
+                except Exception as e:
+                    print(f"Warning: Eager dummy pass failed: {e}")
+                break
+                
             # Eagerly initialize optimizer variables to prevent them from being created
             # lazily inside tf.cond during the first @tf.function apply_gradients call.
             if hasattr(self.optimizer, "build"):
