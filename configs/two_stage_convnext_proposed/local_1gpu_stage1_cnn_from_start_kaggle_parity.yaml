@@ -20,7 +20,7 @@ data:
   batch_size: 16
   num_workers: 2
   use_clean_filter: true
-  bad_row_indices_path: "outputs/bad_row_indices_drop345_mediapipe_failed.txt"
+  bad_row_indices_path: "dataset/bad_row_indices_drop345_mediapipe_failed.txt"
 
 training:
   optimizer: "sam"
