@@ -1,0 +1,152 @@
+# One clean config for the full local 3-GPU recipe:
+# Stage 1: train clean ConvNeXt-Tiny CNN base from ImageNet.
+# Stage 2: train MGR mask-guided region attention learned-only from Stage 1.
+#
+# Expected server layout:
+#   data/fer13-split/{train.csv,val.csv,test.csv}
+#   data/mediapipe_region_masks/{train,val,test}
+#
+# Run:
+#   python scripts/run_two_stage_e2e.py --plan-config two_stage_convnext_proposed/local_3gpu_cnn_then_mgr_learned_only_full_one_file
+#
+# Global batch is 48. With 3 GPUs and ddp.batch_size_is_global=true, each GPU
+# receives batch 16, matching the old single-GPU effective batch.
+
+runner:
+  env: "local"
+  mode: "full"
+  phase1_gpus: "3"
+  phase2_gpus: "3"
+  no_merge: false
+
+  phase1_config: "two_stage_convnext_proposed/_generated_local3gpu_cnn_then_mgr_phase1"
+  phase2_base_config: "two_stage_convnext_proposed/_generated_local3gpu_cnn_then_mgr_phase2.yaml"
+  phase2_temp_name: "two_stage_convnext_proposed/_generated_local3gpu_cnn_then_mgr_phase2_with_ckpt.yaml"
+
+phase1_yaml:
+  _base_: "../convnext_tiny_fer2013_sam_cosine_from_start.yaml"
+
+  paths:
+    data_path: "data/fer13-split"
+    output_dir: "outputs/two_stage_local3gpu_cnn_then_mgr/phase1_cnn"
+
+  model:
+    name: "convnext_tiny_fer2013"
+    arch: "convnext_tiny"
+    pretrained: true
+    weights: "DEFAULT"
+    checkpoint_path: null
+    checkpoint_strict: false
+
+  data:
+    batch_size: 48
+    num_workers: 6
+    use_clean_filter: true
+    bad_row_indices_path: "outputs/bad_row_indices_drop345_mediapipe_failed.txt"
+
+  training:
+    optimizer: "sam"
+    base_optimizer: "adamw"
+    sam_rho: 0.03
+    sam_adaptive: false
+    lr: 0.0002
+    finetune_lr: 0.00008
+    visual_extractor_lr: 0.000008
+    scheduler: "cosine"
+    epochs: 60
+    patience: 15
+    use_amp: false
+    monitor: "val_accuracy"
+
+  ddp:
+    batch_size_is_global: true
+    find_unused_parameters: false
+    broadcast_buffers: true
+    sync_batchnorm: false
+
+  logging:
+    use_wandb: false
+    project_name: "FER2013"
+
+phase2_yaml:
+  _base_: "../convnext_tiny_mask_guided_region_attention_7462_sam_continue_learned_only.yaml"
+
+  paths:
+    data_path: "data/fer13-split"
+    output_dir: "outputs/two_stage_local3gpu_cnn_then_mgr/phase2_mgr_learned_only"
+
+  model:
+    name: "convnext_tiny_mask_guided_region_attention"
+    arch: "convnext_tiny"
+    pretrained: false
+    weights: null
+    checkpoint_path: null
+    checkpoint_strict: false
+
+    use_source_classifier: false
+    logit_fusion: "attention"
+    finetune_logit_fusion: "attention"
+    source_logit_weight: 0.0
+    attention_logit_weight: 1.0
+    use_clip_dictionary: false
+    use_learnable_clip_region_tokens: false
+
+    mask_guided_attention: true
+    mask_attention_alpha: 0.3
+    mask_floor: 0.05
+    mask_dir: "data/mediapipe_region_masks"
+
+    freeze_backbone_epochs: 4
+    unfreeze_backbone: true
+    unfreeze_backbone_scope: "all"
+    freeze_unfrozen_batchnorm: true
+
+  data:
+    batch_size: 48
+    num_workers: 6
+    use_clean_filter: true
+    bad_row_indices_path: "outputs/bad_row_indices_drop345_mediapipe_failed.txt"
+    mask_dir: "data/mediapipe_region_masks"
+
+  training:
+    optimizer: "sam"
+    base_optimizer: "adamw"
+    sam_rho: 0.03
+    sam_adaptive: false
+    lr: 0.00008
+    finetune_lr: 0.00004
+    visual_extractor_lr: 0.000002
+    weight_decay: 0.02
+    scheduler: "cosine"
+    epochs: 240
+    patience: 0
+    use_amp: false
+    monitor: "val_accuracy"
+
+  lr_escape:
+    enabled: true
+    # Phase 2 is launched as a separate train run. Stage 1 has 60 epochs, so
+    # FER2013_SGU global epoch 81 maps to Phase 2 epoch 21.
+    start_epoch: 21
+    min_delta: 0.001
+    plateau_patience: 18
+    max_cycles: 2
+    level1_duration: 5
+    level2_duration: 4
+    level1_head_lr_multiplier: 2.0
+    level1_backbone_lr_multiplier: 1.5
+    level2_head_lr_multiplier: 3.0
+    level2_backbone_lr_multiplier: 1.5
+    cap_head_lr: 0.0001
+    cap_backbone_lr: 0.000005
+    cooldown_epochs: 12
+
+  ddp:
+    batch_size_is_global: true
+    find_unused_parameters: false
+    broadcast_buffers: true
+    sync_batchnorm: false
+
+  logging:
+    use_wandb: false
+    project_name: "FER2013"
