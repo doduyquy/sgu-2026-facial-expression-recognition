@@ -133,11 +133,237 @@ class Trainer:
         ):
             print("[Trainer] AMP requested, but disabled for SAM to keep its two-step gradient flow correct.")
 
+        self.lr_escape_cfg = config.get('lr_escape', {})
+        self.lr_escape_enabled = bool(self.lr_escape_cfg.get('enabled', False))
+        self.lr_escape_state = {
+            "mode": "normal",
+            "escape_level": 0,
+            "escape_epoch_counter": 0,
+            "plateau_counter": 0,
+            "cycles_used": 0,
+            "cooldown_remaining": 0,
+            "best_val_loss": float("inf"),
+            "prev_train_loss": float("inf"),
+            "snapshot": None,
+        }
+        if self.lr_escape_enabled and self.is_main_process:
+            print(
+                "[Trainer] LR escape enabled: "
+                f"start_epoch={self.lr_escape_cfg.get('start_epoch', 1)}, "
+                f"plateau_patience={self.lr_escape_cfg.get('plateau_patience', 18)}, "
+                f"max_cycles={self.lr_escape_cfg.get('max_cycles', 2)}."
+            )
+
     def _unwrap_model(self):
         return self.model.module if hasattr(self.model, "module") else self.model
 
     def _current_lrs(self):
         return [float(group.get('lr', 0.0)) for group in self.optimizer.param_groups]
+
+    def _set_lrs(self, lrs):
+        for group, lr in zip(self.optimizer.param_groups, lrs):
+            group['lr'] = float(lr)
+
+    def _lr_escape_adjusted_lrs(self, lrs):
+        level = int(self.lr_escape_state.get("escape_level", 0))
+        if level <= 0:
+            return list(lrs)
+
+        if level == 1:
+            head_mult = float(self.lr_escape_cfg.get("level1_head_lr_multiplier", 2.0))
+            visual_mult = float(self.lr_escape_cfg.get("level1_backbone_lr_multiplier", 1.5))
+        else:
+            head_mult = float(self.lr_escape_cfg.get("level2_head_lr_multiplier", 3.0))
+            visual_mult = float(self.lr_escape_cfg.get("level2_backbone_lr_multiplier", 1.5))
+
+        cap_head = float(self.lr_escape_cfg.get("cap_head_lr", 1e-4))
+        cap_visual = float(self.lr_escape_cfg.get("cap_backbone_lr", 5e-6))
+        adjusted = []
+        for idx, lr in enumerate(lrs):
+            if idx == 0:
+                adjusted.append(min(float(lr) * head_mult, cap_head))
+            else:
+                adjusted.append(min(float(lr) * visual_mult, cap_visual))
+        return adjusted
+
+    def _maybe_apply_lr_escape_for_epoch(self, epoch_index):
+        if not self.lr_escape_enabled:
+            return False, self._current_lrs(), self._current_lrs()
+
+        start_epoch = int(self.lr_escape_cfg.get("start_epoch", 1))
+        if (epoch_index + 1) < start_epoch:
+            return False, self._current_lrs(), self._current_lrs()
+
+        if int(self.lr_escape_state.get("escape_level", 0)) <= 0:
+            return False, self._current_lrs(), self._current_lrs()
+
+        base_lrs = self._current_lrs()
+        adjusted_lrs = self._lr_escape_adjusted_lrs(base_lrs)
+        self._set_lrs(adjusted_lrs)
+        if self.is_main_process:
+            print(
+                f"[LR_ESCAPE] Epoch {epoch_index + 1}: "
+                f"Level {self.lr_escape_state['escape_level']} train LR "
+                f"{base_lrs} -> {adjusted_lrs}"
+            )
+        return True, base_lrs, adjusted_lrs
+
+    def _rollback_to_best_checkpoint(self):
+        if self.is_distributed:
+            dist.barrier()
+
+        if not os.path.exists(self.path_save_ckpt):
+            if self.is_main_process:
+                print(f"[LR_ESCAPE] Rollback skipped; checkpoint not found: {self.path_save_ckpt}")
+            return False
+
+        checkpoint = torch.load(self.path_save_ckpt, map_location=self.device)
+        self._unwrap_model().load_state_dict(checkpoint["model_state_dict"], strict=True)
+        if "optimizer_state_dict" in checkpoint:
+            try:
+                self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            except Exception as exc:
+                if self.is_main_process:
+                    print(f"[LR_ESCAPE] Optimizer rollback warning: {exc}")
+
+        if self.is_main_process:
+            print(f"[LR_ESCAPE] Rollback: restored best checkpoint {self.path_save_ckpt}")
+        return True
+
+    def _update_lr_escape_state(
+        self,
+        epoch_index,
+        train_loss,
+        val_loss,
+        best_score,
+        best_val_loss,
+        best_val_acc,
+        patience_counter,
+    ):
+        if not self.lr_escape_enabled:
+            return best_score, best_val_loss, best_val_acc, patience_counter, False
+
+        start_epoch = int(self.lr_escape_cfg.get("start_epoch", 1))
+        if (epoch_index + 1) < start_epoch:
+            return best_score, best_val_loss, best_val_acc, patience_counter, False
+
+        state = self.lr_escape_state
+        min_delta = float(self.lr_escape_cfg.get("min_delta", 0.001))
+        max_cycles = int(self.lr_escape_cfg.get("max_cycles", 2))
+        val_loss = float(val_loss)
+        train_loss = float(train_loss)
+        reset_patience = False
+
+        is_overfitting = (
+            train_loss < state["prev_train_loss"]
+            and val_loss > state["best_val_loss"]
+        )
+        state["prev_train_loss"] = train_loss
+
+        if state["mode"] == "normal":
+            if state["cooldown_remaining"] > 0:
+                state["cooldown_remaining"] -= 1
+                if val_loss < state["best_val_loss"] - min_delta:
+                    state["best_val_loss"] = val_loss
+                    state["plateau_counter"] = 0
+                    reset_patience = True
+                return best_score, best_val_loss, best_val_acc, patience_counter, reset_patience
+
+            improved_loss = val_loss < state["best_val_loss"] - min_delta
+            if improved_loss:
+                state["best_val_loss"] = val_loss
+                state["plateau_counter"] = 0
+            else:
+                state["plateau_counter"] += 1
+
+            plateau_patience = int(self.lr_escape_cfg.get("plateau_patience", 18))
+            if (
+                state["plateau_counter"] >= plateau_patience
+                and not is_overfitting
+                and state["cycles_used"] < max_cycles
+            ):
+                state["snapshot"] = {
+                    "best_val_loss": state["best_val_loss"],
+                    "best_score": best_score,
+                    "best_val_acc": best_val_acc,
+                    "patience_counter": patience_counter,
+                    "prev_train_loss": state["prev_train_loss"],
+                }
+                state["mode"] = "escaping"
+                state["escape_level"] = 1
+                state["escape_epoch_counter"] = 0
+                reset_patience = True
+                if self.is_main_process:
+                    print(
+                        f"[LR_ESCAPE] Cycle {state['cycles_used'] + 1}/{max_cycles}: "
+                        f"entering Level 1 at epoch {epoch_index + 1} "
+                        f"(plateau {state['plateau_counter']} eps, "
+                        f"best_val_loss={state['best_val_loss']:.5f})"
+                    )
+            return best_score, best_val_loss, best_val_acc, patience_counter, reset_patience
+
+        state["escape_epoch_counter"] += 1
+        pre_best = state["snapshot"]["best_val_loss"]
+        escaped_improved = val_loss < pre_best - min_delta
+
+        if escaped_improved:
+            completed_level = state["escape_level"]
+            cooldown = int(self.lr_escape_cfg.get("cooldown_epochs", 12))
+            state["best_val_loss"] = val_loss
+            state["plateau_counter"] = 0
+            state["cycles_used"] += 1
+            state["mode"] = "normal"
+            state["escape_level"] = 0
+            state["escape_epoch_counter"] = 0
+            state["cooldown_remaining"] = cooldown
+            state["snapshot"] = None
+            reset_patience = True
+            if self.is_main_process:
+                print(
+                    f"[LR_ESCAPE] Level {completed_level} succeeded at epoch {epoch_index + 1}! "
+                    f"val_loss={val_loss:.5f} < pre_escape={pre_best:.5f}. "
+                    f"Entering cooldown ({cooldown} eps)."
+                )
+            return best_score, best_val_loss, best_val_acc, patience_counter, reset_patience
+
+        if state["escape_level"] == 1:
+            duration = int(self.lr_escape_cfg.get("level1_duration", 5))
+            if state["escape_epoch_counter"] >= duration:
+                state["escape_level"] = 2
+                state["escape_epoch_counter"] = 0
+                reset_patience = True
+                if self.is_main_process:
+                    print(
+                        f"[LR_ESCAPE] Level 1 failed after {duration} eps. "
+                        f"Escalating to Level 2 at epoch {epoch_index + 1}."
+                    )
+
+        elif state["escape_level"] == 2:
+            duration = int(self.lr_escape_cfg.get("level2_duration", 4))
+            if state["escape_epoch_counter"] >= duration:
+                snap = state["snapshot"]
+                self._rollback_to_best_checkpoint()
+                best_score = snap["best_score"]
+                best_val_acc = snap["best_val_acc"]
+                best_val_loss = snap["best_val_loss"]
+                patience_counter = snap["patience_counter"]
+                state["best_val_loss"] = snap["best_val_loss"]
+                state["prev_train_loss"] = snap["prev_train_loss"]
+                state["cycles_used"] += 1
+                state["mode"] = "normal"
+                state["escape_level"] = 0
+                state["escape_epoch_counter"] = 0
+                state["plateau_counter"] = 0
+                state["cooldown_remaining"] = 0
+                state["snapshot"] = None
+                reset_patience = True
+                if self.is_main_process:
+                    print(
+                        f"[LR_ESCAPE] Cycle failed at epoch {epoch_index + 1}. "
+                        f"Rollback complete. Cycles used: {state['cycles_used']}/{max_cycles}."
+                    )
+
+        return best_score, best_val_loss, best_val_acc, patience_counter, reset_patience
 
     @staticmethod
     def _lr_metric_dict(prefix, lrs):
@@ -712,6 +938,10 @@ class Trainer:
                             f"{rebuild_msg} and reset patience."
                         )
 
+            lr_escape_active, lr_base_lrs_for_epoch, lr_train_lrs = (
+                self._maybe_apply_lr_escape_for_epoch(ep)
+            )
+
             (
                 train_loss,
                 train_acc,
@@ -751,6 +981,9 @@ class Trainer:
             scheduler_stepped = False
             if self.scheduler is not None:
                 scheduler_stepped = True
+                if lr_escape_active:
+                    self._set_lrs(lr_base_lrs_for_epoch)
+                    lr_before_scheduler = self._current_lrs()
                 if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                     self.scheduler.step(val_loss)
                 else:
@@ -793,7 +1026,28 @@ class Trainer:
                 patience_counter += 1
                 if self.is_main_process:
                     print(f"\t-!- No improvement: {patience_counter}/{self.patience}")
-                if patience_counter >= self.patience:
+
+            (
+                best_score,
+                best_val_loss,
+                best_val_acc,
+                patience_counter,
+                lr_escape_reset_patience,
+            ) = self._update_lr_escape_state(
+                epoch_index=ep,
+                train_loss=train_loss,
+                val_loss=val_loss,
+                best_score=best_score,
+                best_val_loss=best_val_loss,
+                best_val_acc=best_val_acc,
+                patience_counter=patience_counter,
+            )
+            if lr_escape_reset_patience:
+                patience_counter = 0
+                should_stop = False
+
+            if not improved:
+                if self.patience > 0 and patience_counter >= self.patience:
                     if self.is_main_process:
                         print(f"\t-_- Early stopping at ep={ep+1}")
                     should_stop = True
@@ -815,11 +1069,19 @@ class Trainer:
                     "improved": int(improved),
                     "patience_counter": int(patience_counter),
                     "lr_head": lr_after_scheduler[0] if lr_after_scheduler else 0.0,
+                    "lr_train_head": lr_train_lrs[0] if lr_train_lrs else 0.0,
                     "lr_visual_extractor": (
                         lr_after_scheduler[1]
                         if len(lr_after_scheduler) > 1
                         else 0.0
                     ),
+                    "lr_train_visual_extractor": (
+                        lr_train_lrs[1]
+                        if len(lr_train_lrs) > 1
+                        else 0.0
+                    ),
+                    "lr_escape_level": int(self.lr_escape_state.get("escape_level", 0)),
+                    "lr_escape_cycles_used": int(self.lr_escape_state.get("cycles_used", 0)),
                     "phase_transitioned": int(phase_transitioned),
                     "skipped_nonfinite_batches": int(self.skipped_nonfinite_batches),
                 }
@@ -853,11 +1115,20 @@ class Trainer:
                     "EarlyStopping/Patience": self.patience,
                     "Learning_Rate": lr_after_scheduler[0] if lr_after_scheduler else 0.0,
                     "Learning_Rate/Head": lr_after_scheduler[0] if lr_after_scheduler else 0.0,
+                    "Learning_Rate/Train_Head": lr_train_lrs[0] if lr_train_lrs else 0.0,
                     "Learning_Rate/Visual_Extractor": (
                         lr_after_scheduler[1]
                         if len(lr_after_scheduler) > 1
                         else 0.0
                     ),
+                    "Learning_Rate/Train_Visual_Extractor": (
+                        lr_train_lrs[1]
+                        if len(lr_train_lrs) > 1
+                        else 0.0
+                    ),
+                    "LR_Escape/Level": int(self.lr_escape_state.get("escape_level", 0)),
+                    "LR_Escape/Cycles_Used": int(self.lr_escape_state.get("cycles_used", 0)),
+                    "LR_Escape/Plateau_Counter": int(self.lr_escape_state.get("plateau_counter", 0)),
                     "Scheduler/Stepped": int(scheduler_stepped),
                     "Scheduler/LR_Reduced": int(scheduler_reduced),
                     "Scheduler/Factor": float(train_cfg.get('lr_factor', 0.0)),

@@ -7,6 +7,7 @@ import subprocess
 import yaml
 import json
 import csv
+import atexit
 from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
@@ -14,6 +15,12 @@ import matplotlib.pyplot as plt
 
 def get_args():
     parser = argparse.ArgumentParser(description="Run 2-stage training in a single execution and merge histories.")
+    parser.add_argument(
+        "--plan-config",
+        type=str,
+        default=None,
+        help="YAML plan config under configs/ that fills the two-stage runner arguments.",
+    )
     parser.add_argument("--env", type=str, default="kaggle", choices=["local", "kaggle"])
     parser.add_argument(
         "--mode",
@@ -79,6 +86,107 @@ def get_args():
         help="Number of GPUs for phase 2. Use auto to launch DDP on all visible GPUs.",
     )
     return parser.parse_args()
+
+def resolve_plan_config_path(project_root, plan_config):
+    raw_path = Path(str(plan_config))
+    candidates = []
+    names = [raw_path]
+    if raw_path.suffix not in {".yaml", ".yml"}:
+        names.append(Path(f"{raw_path}.yaml"))
+
+    for name in names:
+        candidates.append(name)
+        if not name.is_absolute():
+            candidates.append(project_root / "configs" / name)
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+
+    tried = ", ".join(str(path) for path in candidates)
+    raise FileNotFoundError(f"Plan config not found: {plan_config}. Tried: {tried}")
+
+def apply_plan_config(args, project_root):
+    if not args.plan_config:
+        return args
+
+    plan_path = resolve_plan_config_path(project_root, args.plan_config)
+    with open(plan_path, "r", encoding="utf-8") as f:
+        plan_root = yaml.safe_load(f) or {}
+
+    plan = plan_root
+    if isinstance(plan.get("runner"), dict):
+        plan = plan["runner"]
+
+    allowed_keys = {
+        "env",
+        "mode",
+        "phase1_config",
+        "phase2_base_config",
+        "phase1_checkpoint",
+        "phase2_init_checkpoint",
+        "phase1_history_json",
+        "phase2_temp_name",
+        "no_merge",
+        "phase1_gpus",
+        "phase2_gpus",
+    }
+    for key, value in plan.items():
+        normalized_key = str(key).replace("-", "_")
+        if normalized_key in allowed_keys and value is not None:
+            setattr(args, normalized_key, value)
+
+    args._plan_config_path = plan_path
+    args._plan_config_data = plan_root
+    print(f"--> Loaded two-stage plan config: {plan_path.as_posix()}")
+    return args
+
+def config_arg_to_path(project_root, config_arg):
+    raw_path = Path(str(config_arg))
+    if raw_path.suffix not in {".yaml", ".yml"}:
+        raw_path = Path(f"{raw_path}.yaml")
+    if raw_path.is_absolute():
+        return raw_path
+    return project_root / "configs" / raw_path
+
+def materialize_inline_plan_configs(args, project_root):
+    plan = getattr(args, "_plan_config_data", None)
+    if not isinstance(plan, dict):
+        return []
+
+    generated_paths = []
+    phase1_yaml = plan.get("phase1_yaml")
+    phase2_yaml = plan.get("phase2_yaml")
+
+    if isinstance(phase1_yaml, dict):
+        phase1_path = config_arg_to_path(project_root, args.phase1_config)
+        phase1_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(phase1_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(phase1_yaml, f, sort_keys=False)
+        generated_paths.append(phase1_path)
+        print(f"--> Generated inline Phase 1 config: {phase1_path.as_posix()}")
+
+    if isinstance(phase2_yaml, dict):
+        phase2_path = config_arg_to_path(project_root, args.phase2_base_config)
+        phase2_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(phase2_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(phase2_yaml, f, sort_keys=False)
+        generated_paths.append(phase2_path)
+        print(f"--> Generated inline Phase 2 base config: {phase2_path.as_posix()}")
+
+    if generated_paths:
+        def cleanup_generated_configs(paths):
+            for path in paths:
+                try:
+                    if path.exists():
+                        print(f"--> Cleaning up generated inline config: {path.as_posix()}")
+                        path.unlink()
+                except OSError as exc:
+                    print(f"[WARN] Could not remove generated config {path}: {exc}")
+
+        atexit.register(cleanup_generated_configs, generated_paths)
+
+    return generated_paths
 
 def find_latest_history_dir(output_dir, model_name):
     pattern = os.path.join(output_dir, "training_curves", f"{model_name}_*")
@@ -272,6 +380,9 @@ def merge_and_plot_histories(phase1_dir, phase2_dir, output_dir):
 
 def main():
     args = get_args()
+    project_root = Path(__file__).resolve().parents[1]
+    args = apply_plan_config(args, project_root)
+    materialize_inline_plan_configs(args, project_root)
     print(f"--> Starting Two-Stage training runner (mode: {args.mode}, env: {args.env})...")
     
     # 1. Check GPU count to decide DDP or single GPU
@@ -284,11 +395,16 @@ def main():
     print(f"--> Phase 1 launcher: {' '.join(phase1_cmd_prefix)}")
     print(f"--> Phase 2 launcher: {' '.join(phase2_cmd_prefix)}")
 
-    project_root = Path(__file__).resolve().parents[1]
-    output_dir = resolve_output_dir(project_root, args.env)
+    env_output_dir = resolve_output_dir(project_root, args.env)
         
     # Phase 1: Train clean ConvNeXt-Tiny FER2013
     phase1_config = args.phase1_config
+    output_dir = resolve_training_output_dir(
+        project_root,
+        phase1_config,
+        args.env,
+        env_output_dir,
+    )
     phase1_cmd = phase1_cmd_prefix + ["--env", args.env, "--config", phase1_config]
     
     if args.mode in {"full", "phase1"}:
