@@ -37,8 +37,8 @@ phase1_yaml:
   data:
     batch_size: 64
     num_workers: 8
-    use_clean_filter: true
-    bad_row_indices_path: "outputs/bad_row_indices_drop345_mediapipe_failed.txt"
+    use_clean_filter: false
+    bad_row_indices_path: null
 
   training:
     optimizer: "sam"
@@ -100,8 +100,8 @@ phase2_yaml:
   data:
     batch_size: 64
     num_workers: 8
-    use_clean_filter: true
-    bad_row_indices_path: "outputs/bad_row_indices_drop345_mediapipe_failed.txt"
+    use_clean_filter: false
+    bad_row_indices_path: null
     mask_dir: "outputs/mediapipe_failed_retry_masks/merged_mediapipe_region_masks"
 
   training:
