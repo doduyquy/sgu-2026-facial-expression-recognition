@@ -1,0 +1,41 @@
+_base_: "../convnext_tiny_fer2013_sam_cosine_from_start.yaml"
+
+# Stage 1 only: reproduce the Kaggle ConvNeXt-Tiny CNN base run on one V100.
+# Run:
+#   CUDA_VISIBLE_DEVICES=0 python -m scripts.train --env local --config two_stage_convnext_proposed/local_1gpu_stage1_cnn_from_start_kaggle_parity
+
+paths:
+  data_path: "dataset/fer13-split"
+  output_dir: "outputs/stage1_1gpu_cnn_from_start_kaggle_parity"
+
+model:
+  name: "convnext_tiny_fer2013"
+  arch: "convnext_tiny"
+  pretrained: true
+  weights: "DEFAULT"
+  checkpoint_path: null
+  checkpoint_strict: false
+
+data:
+  batch_size: 16
+  num_workers: 2
+  use_clean_filter: true
+  bad_row_indices_path: "outputs/bad_row_indices_drop345_mediapipe_failed.txt"
+
+training:
+  optimizer: "sam"
+  base_optimizer: "adamw"
+  sam_rho: 0.03
+  sam_adaptive: false
+  lr: 0.0002
+  finetune_lr: 0.00008
+  visual_extractor_lr: 0.000008
+  scheduler: "cosine"
+  epochs: 60
+  patience: 15
+  use_amp: false
+  monitor: "val_accuracy"
+
+logging:
+  use_wandb: false
+  project_name: "FER2013"
