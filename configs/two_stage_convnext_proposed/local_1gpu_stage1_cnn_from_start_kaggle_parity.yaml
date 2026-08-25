@@ -31,8 +31,8 @@ training:
   finetune_lr: 0.00008
   visual_extractor_lr: 0.000008
   scheduler: "cosine"
-  epochs: 60
-  patience: 15
+  epochs: 100
+  patience: 0
   use_amp: false
   monitor: "val_accuracy"
 
