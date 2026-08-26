@@ -495,7 +495,7 @@ class Trainer:
 
         return epoch_loss, epoch_acc
 
-    def fit(self):
+    def fit(self, start_epoch: int = 0):
         print(f'\n--> Train on {len(self.train_loader.dataset)} samples, validate on {len(self.val_loader.dataset)} samples')
 
         if self.use_wandb:
@@ -508,11 +508,11 @@ class Trainer:
         all_train_loss = []
         all_val_loss = []
 
-        print(f'\n--> Start training in total {self.epochs} epochs with {self.device} device. Start...\n')
+        print(f'\n--> Start training in total {self.epochs} epochs (starting from epoch {start_epoch}) with {self.device} device. Start...\n')
 
         self.ema_model = AveragedModel(self.model, multi_avg_fn=get_ema_multi_avg_fn(0.999))
 
-        for ep in range(self.epochs):
+        for ep in range(start_epoch, self.epochs):
             self._current_epoch = ep
             progress = ep / max(self.epochs - 1, 1)
             
