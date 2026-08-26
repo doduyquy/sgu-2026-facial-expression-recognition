@@ -833,7 +833,7 @@ class SemanticROIGraphFER(nn.Module):
             state_dim=config.semantic_state_dim,
             hidden_dim=max(config.semantic_state_dim * 2, 32),
             dropout=config.dropout,
-            dropedge_rate=0.5,
+            dropedge_rate=0.25,  # Reduced from 0.5 — 9 nodes is small, 50% drops too much info
         )
 
         self.micro_motif_bank = MicroSemanticMotifBank(

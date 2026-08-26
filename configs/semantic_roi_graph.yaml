@@ -16,7 +16,7 @@ model:
   macro_layers: 2
   attn_heads: 4
   dropout: 0.25 # Revert from 0.35 to fix Mode Collapse
-  label_smoothing: 0.05
+  label_smoothing: 0.1 # Increased from 0.05 — FER2013 has ~10-20% noisy labels
   region_dropout_prob: 0.0 # Revert from 0.1 to fix Graph corruption
   relation_temperature: 0.07
   # Semantic compositional model hyperparameters
@@ -45,7 +45,7 @@ training:
   lr: 0.0003
   weight_decay: 0.001 # Revert from 0.003 to prevent embedding collapse
   loss: "semantic_roi_graph"
-  label_smoothing: 0.05
+  label_smoothing: 0.1
   class_weight_mode: "sqrt_inverse"
   use_class_weights: true
   use_sce: false

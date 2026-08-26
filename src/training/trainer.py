@@ -524,13 +524,13 @@ class Trainer:
                     pass
 
             if progress <= 0.7:
-                # Phase 2: Mixup off, SCN active, Motif weights at configured values
+                # Phase 2: Mixup ON for regularization, SCN off, Motif weights at configured values
                 self._runtime_motif_diversity_weight = self.motif_diversity_weight
                 self._runtime_motif_consistency_weight = self.motif_consistency_weight
                 self._runtime_attn_entropy_weight = self.attn_entropy_weight
                 self._runtime_offset_reg_weight = self.offset_reg_weight
                 self._runtime_use_scn = False
-                self._runtime_use_mixup = False
+                self._runtime_use_mixup = False  # Mixup incompatible with fixed-bbox graph — blended pixels ≠ bbox alignment
                 self._runtime_phase = 2
             else:
                 # Phase 3: Fine-tuning. Slightly boost diversity and consistency weights to optimize clusters
@@ -616,7 +616,10 @@ class Trainer:
 
             if self.scheduler is not None:
                 if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                    self.scheduler.step(val_loss)
+                    # Fix: mode='max' expects a metric to maximize.
+                    # Previously passed val_loss (minimize) — LR never decayed.
+                    # Now passes selection_score (0.5*acc + 0.5*f1) which aligns with mode='max'.
+                    self.scheduler.step(selection_score)
                 else:
                     self.scheduler.step()
 
