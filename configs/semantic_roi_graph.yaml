@@ -17,7 +17,7 @@ model:
   attn_heads: 4
   dropout: 0.25 # Revert from 0.35 to fix Mode Collapse
   label_smoothing: 0.1 # Increased from 0.05 — FER2013 has ~10-20% noisy labels
-  region_dropout_prob: 0.15 # Re-enabled — now safe with min_keep=4 guard (was 0.0 due to old crash bug)
+  region_dropout_prob: 0.0 # Re-enabled — now safe with min_keep=4 guard (was 0.0 due to old crash bug)
   relation_temperature: 0.07
   # Semantic compositional model hyperparameters
   semantic_state_dim: 128
