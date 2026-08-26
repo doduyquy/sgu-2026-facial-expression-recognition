@@ -1,4 +1,4 @@
-﻿"""
+"""
 Loss functions for Semantic ROI Graph FER model.
 
 This module provides standalone loss functions for the dual-level
@@ -333,9 +333,19 @@ def region_supervised_contrastive_loss(
     logits_mask = torch.ones_like(mask) - torch.eye(mask.shape[0], device=mask.device)
     mask = mask * logits_mask
 
-    exp_sim = torch.exp(sim) * logits_mask
-    log_prob = sim - torch.log(exp_sim.sum(dim=1, keepdim=True) + 1e-8)
-    mean_log_prob_pos = (mask * log_prob).sum(dim=1) / (mask.sum(dim=1) + 1e-8)
+    # Numerical stability: subtract max before exponentiating
+    logits_max, _ = torch.max(sim, dim=1, keepdim=True)
+    sim_shifted = sim - logits_max.detach()
+    exp_sim = torch.exp(sim_shifted) * logits_mask
+    log_prob = sim_shifted - torch.log(exp_sim.sum(dim=1, keepdim=True).clamp_min(1e-8))
+    
+    # Only compute loss for samples that have at least 1 other positive in the batch
+    pos_count = mask.sum(dim=1)
+    has_pos = pos_count > 0
+    if not has_pos.any():
+        return torch.tensor(0.0, device=embeddings.device)
+        
+    mean_log_prob_pos = (mask * log_prob).sum(dim=1)[has_pos] / pos_count[has_pos]
     return -mean_log_prob_pos.mean()
 
 

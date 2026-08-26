@@ -18,7 +18,7 @@ from src.data.dataloader import build_dataloader
 from src.models import get_model # in __init__ gfile
 from src.training.trainer import Trainer
 from src.training.losses import build_loss
-from src.training.optimizer import build_optimizer
+from src.training.optimizer import build_optimizer, build_scheduler
 from src.utils.checkpoint import load_checkpoints
 from src.evaluation.evaluator import evaluate_and_show
 from src.utils.logger_wandb import save_model_to_wandb
@@ -100,13 +100,7 @@ def main():
 
     loss = build_loss(config=config, class_weights=class_weights)
     optimizer = build_optimizer(model=model, config=config)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode='min',
-        factor=0.5,
-        patience=5,
-        min_lr=1e-6,
-    )
+    scheduler = build_scheduler(optimizer=optimizer, config=config)
     
     # set path to save ckpt
     path_save_ckpt = os.path.join(root_path, f"outputs/checkpoints/{config['model'].get('name', 'cnn')}/{run_name}_best.pth")
