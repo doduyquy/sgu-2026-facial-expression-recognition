@@ -1126,8 +1126,21 @@ class SemanticROIGraphFER(nn.Module):
         else:
             region_confidence = region_confidence.to(device=image.device, dtype=image.dtype)
 
-        if self.training:
+        if self.training and self.region_dropout_prob > 0.0:
+            # Safe region dropout: simulate occlusion (hand over mouth, hair over eyes)
+            # but ALWAYS keep at least min_keep regions alive to prevent empty-graph NaN.
+            min_keep = max(4, self.config.num_regions // 2)  # keep ≥4 of 9 regions
             drop_mask = (torch.rand(batch_size, self.config.num_regions, device=image.device) > self.region_dropout_prob).to(image.dtype)
+            # Guard: if too few regions survive, randomly restore some dropped ones
+            alive_count = drop_mask.sum(dim=1, keepdim=True)  # (B, 1)
+            too_few = (alive_count < min_keep).squeeze(1)      # (B,)
+            if too_few.any():
+                for bi in too_few.nonzero(as_tuple=False).squeeze(-1):
+                    dead_idx = (drop_mask[bi] == 0).nonzero(as_tuple=False).squeeze(-1)
+                    n_restore = min_keep - int(drop_mask[bi].sum().item())
+                    if n_restore > 0 and dead_idx.numel() > 0:
+                        restore_idx = dead_idx[torch.randperm(dead_idx.numel(), device=image.device)[:n_restore]]
+                        drop_mask[bi, restore_idx] = 1.0
             region_mask = region_mask * drop_mask
             region_confidence = region_confidence * drop_mask
 
