@@ -287,14 +287,23 @@ class Trainer:
                     w_other = self.config.get('training', {}).get(f'{k}_weight', 0.1)
                     loss = loss + float(w_other) * v
 
+            # NaN/Inf Loss Guard: Prevent corrupted loss from triggering backward
+            if torch.isnan(loss) or torch.isinf(loss):
+                print(f"[Warning] NaN/Inf detected in loss ({loss.item() if hasattr(loss, 'item') else loss}) at batch. Skipping batch.")
+                self.optimizer.zero_grad()
+                continue
+
             loss.backward()
-            try:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
-            except Exception:
-                pass
-                
+
+            # NaN/Inf Gradient Guard: Clip gradients and ensure they are finite before updating weights
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
+            if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+                print(f"[Warning] NaN/Inf detected in grad_norm ({grad_norm}) at epoch {getattr(self, '_current_epoch', 0)+1}. Skipping optimizer step.")
+                self.optimizer.zero_grad()
+                continue
+
             self.optimizer.step()
-                
+
             if hasattr(self, 'ema_model'):
                 self.ema_model.update_parameters(self.model)
 
@@ -616,10 +625,7 @@ class Trainer:
 
             if self.scheduler is not None:
                 if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                    # Fix: mode='max' expects a metric to maximize.
-                    # Previously passed val_loss (minimize) — LR never decayed.
-                    # Now passes selection_score (0.5*acc + 0.5*f1) which aligns with mode='max'.
-                    self.scheduler.step(selection_score)
+                    self.scheduler.step(val_loss)
                 else:
                     self.scheduler.step()
 

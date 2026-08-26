@@ -14,14 +14,13 @@ import timm
 # Loss helpers moved to src/models/semantic_roi_graph_losses.py
 
 def safe_softmax(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
-    """A numerically stable softmax that prevents NaN when vectors are fully masked."""
-    x_max = x.max(dim=dim, keepdim=True)[0]
-    x_shifted = x - x_max
-    # Handle the case where x was all -inf (which results in NaN after subtraction)
-    # or if the user used a very large negative number (like -1e9) which resolves to 0.
-    all_invalid = torch.isinf(x_shifted).all(dim=dim, keepdim=True) | torch.isnan(x_shifted).all(dim=dim, keepdim=True)
-    x_shifted = torch.where(all_invalid, torch.zeros_like(x_shifted), x_shifted)
-    return F.softmax(x_shifted, dim=dim)
+    """A numerically stable softmax that prevents NaN when vectors are fully masked or have large values."""
+    x_max = x.max(dim=dim, keepdim=True)[0].detach()
+    x_max = torch.where(torch.isneginf(x_max) | torch.isnan(x_max), torch.zeros_like(x_max), x_max)
+    x_shifted = (x - x_max).clamp(min=-50.0, max=0.0)
+    exp_x = torch.exp(x_shifted)
+    denom = exp_x.sum(dim=dim, keepdim=True).clamp_min(1e-8)
+    return exp_x / denom
 
 
 DEFAULT_SEMANTIC_REGIONS = (
@@ -182,8 +181,8 @@ class CoordinateAttention(nn.Module):
         self.bn1 = nn.BatchNorm2d(mip)
         self.act = nn.GELU()
 
-        self.conv_h = nn.Conv2d(mip, in_channels, kernel_size=1, stride=1, padding=0, bias=False)
-        self.conv_w = nn.Conv2d(mip, in_channels, kernel_size=1, stride=1, padding=0, bias=False)
+        self.conv_h = nn.Conv2d(mip, in_channels, kernel_size=1, stride=1, padding=0)
+        self.conv_w = nn.Conv2d(mip, in_channels, kernel_size=1, stride=1, padding=0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         identity = x
@@ -212,7 +211,7 @@ class AsymmetricERFBlock(nn.Module):
     reducing FLOPs by 33% and enhancing directional facial edge feature extraction.
     """
 
-    def __init__(self, channels: int, groups: int = 4, dropout: float = 0.1):
+    def __init__(self, channels: int, groups: int = 4, dropout: float = 0.0):
         super().__init__()
         self.conv_1x3 = nn.Conv2d(
             channels, channels, kernel_size=(1, 3), stride=1, padding=(0, 1),
@@ -233,7 +232,10 @@ class AsymmetricERFBlock(nn.Module):
         # Weak bottleneck pointwise projection
         self.conv_pointwise = nn.Conv2d(channels, channels, kernel_size=1, bias=False)
         self.bn3 = nn.BatchNorm2d(channels)
-        self.dropout = nn.Dropout2d(dropout) if dropout > 0.0 else nn.Identity()
+        
+        # Zero-init residual projection so neck starts as clean identity mapping
+        nn.init.zeros_(self.bn3.weight)
+        nn.init.zeros_(self.bn3.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         residual = x
@@ -241,8 +243,7 @@ class AsymmetricERFBlock(nn.Module):
         out = self.act2(self.bn2(self.conv_3x1(out)))
         out = self.shuffle(out)
         out = self.bn3(self.conv_pointwise(out))
-        out = self.dropout(out)
-        return F.gelu(residual + out)
+        return residual + out
 
 
 class FacialDeformationAttentionNeck(nn.Module):
@@ -252,7 +253,7 @@ class FacialDeformationAttentionNeck(nn.Module):
     prior to Semantic ROI Alignment and Global Context pooling.
     """
 
-    def __init__(self, channels: int = 256, groups: int = 4, dropout: float = 0.1):
+    def __init__(self, channels: int = 256, groups: int = 4, dropout: float = 0.0):
         super().__init__()
         self.asym_block = AsymmetricERFBlock(channels=channels, groups=groups, dropout=dropout)
         self.coord_att = CoordinateAttention(in_channels=channels, reduction=16)
@@ -851,7 +852,7 @@ class SemanticProgramExecutor(nn.Module):
         
         # Fix: Gradient Explosion during Temperature Scaling.
         # Clamp compatibility to avoid logsumexp gradient blowup while preserving relative order
-        compatibility = (total_sim / self.temperature).clamp(-50, 50)
+        compatibility = (total_sim / self.temperature).clamp(-30.0, 30.0)
         
         program_attention = safe_softmax(compatibility, dim=-1)
         class_scores = torch.logsumexp(compatibility, dim=-1)
@@ -932,7 +933,7 @@ class SemanticROIGraphFER(nn.Module):
             self.facial_attention_neck = FacialDeformationAttentionNeck(
                 channels=config.feature_dim,
                 groups=neck_groups,
-                dropout=config.dropout,
+                dropout=0.0,
             )
         else:
             self.facial_attention_neck = nn.Identity()
@@ -963,7 +964,7 @@ class SemanticROIGraphFER(nn.Module):
             state_dim=config.semantic_state_dim,
             hidden_dim=max(config.semantic_state_dim * 2, 32),
             dropout=config.dropout,
-            dropedge_rate=0.25,  # Reduced from 0.5 — 9 nodes is small, 50% drops too much info
+            dropedge_rate=0.5,
         )
 
         self.micro_motif_bank = MicroSemanticMotifBank(

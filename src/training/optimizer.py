@@ -42,11 +42,11 @@ def build_scheduler(optimizer, config):
         factor = float(config['training'].get('lr_factor', 0.5))
         patience = int(config['training'].get('lr_patience', config['training'].get('patience', 5)))
         min_lr = float(config['training'].get('min_lr', 1e-6))
-        # mode='max' because we track selection_score (higher is better)
-        print(f"--> [Scheduler] ReduceLROnPlateau (mode=max, factor={factor}, patience={patience}, min_lr={min_lr})")
+        # mode='min' because we track val_loss (lower is better)
+        print(f"--> [Scheduler] ReduceLROnPlateau (mode=min, factor={factor}, patience={patience}, min_lr={min_lr})")
         return lr_scheduler.ReduceLROnPlateau(
             optimizer,
-            mode='max',
+            mode='min',
             factor=factor,
             patience=patience,
             min_lr=min_lr,
