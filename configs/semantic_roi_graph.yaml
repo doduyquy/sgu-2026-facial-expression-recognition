@@ -29,7 +29,7 @@ model:
   programs_per_class: 4
   program_dim: 128
   fusion_scale: 0.4
-  use_facial_attention_neck: true
+  use_facial_attention_neck: False
   neck_groups: 4
 
 data:
