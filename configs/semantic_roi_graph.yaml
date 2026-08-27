@@ -16,8 +16,8 @@ model:
   macro_layers: 2
   attn_heads: 4
   dropout: 0.25 # Revert from 0.35 to fix Mode Collapse
-  label_smoothing: 0.1
-  region_dropout_prob: 0.1
+  label_smoothing: 0.05
+  region_dropout_prob: 0.0 # Revert from 0.1 to fix Graph corruption
   relation_temperature: 0.07
   # Semantic compositional model hyperparameters
   semantic_state_dim: 128
@@ -29,8 +29,6 @@ model:
   programs_per_class: 4
   program_dim: 128
   fusion_scale: 0.4
-  use_facial_attention_neck: True
-  neck_groups: 4
 
 data:
   batch_size: 64
@@ -47,10 +45,9 @@ training:
   lr: 0.0003
   weight_decay: 0.001 # Revert from 0.003 to prevent embedding collapse
   loss: "semantic_roi_graph"
-  label_smoothing: 0.1
+  label_smoothing: 0.05
   class_weight_mode: "sqrt_inverse"
   use_class_weights: true
-  lr_patience: 7
   use_sce: false
   sce_alpha: 1.0
   sce_beta: 1.0
@@ -91,4 +88,4 @@ training:
   use_entropy_sparsity: false
 
 logging:
-  use_wandb: True
+  use_wandb: true

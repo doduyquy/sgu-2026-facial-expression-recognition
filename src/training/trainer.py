@@ -287,23 +287,13 @@ class Trainer:
                     w_other = self.config.get('training', {}).get(f'{k}_weight', 0.1)
                     loss = loss + float(w_other) * v
 
-            # NaN/Inf Loss Guard: Prevent corrupted loss from triggering backward
-            if torch.isnan(loss) or torch.isinf(loss):
-                print(f"[Warning] NaN/Inf detected in loss ({loss.item() if hasattr(loss, 'item') else loss}) at batch. Skipping batch.")
-                self.optimizer.zero_grad()
-                continue
-
             loss.backward()
-
-            # NaN/Inf Gradient Guard: Clip gradients and ensure they are finite before updating weights
-            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
-            if torch.isnan(grad_norm) or torch.isinf(grad_norm):
-                print(f"[Warning] NaN/Inf detected in grad_norm ({grad_norm}) at epoch {getattr(self, '_current_epoch', 0)+1}. Skipping optimizer step.")
-                self.optimizer.zero_grad()
-                continue
-
+            try:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
+            except Exception:
+                pass
+                
             self.optimizer.step()
-
             if hasattr(self, 'ema_model'):
                 self.ema_model.update_parameters(self.model)
 
@@ -504,7 +494,7 @@ class Trainer:
 
         return epoch_loss, epoch_acc
 
-    def fit(self, start_epoch: int = 0):
+    def fit(self):
         print(f'\n--> Train on {len(self.train_loader.dataset)} samples, validate on {len(self.val_loader.dataset)} samples')
 
         if self.use_wandb:
@@ -517,11 +507,11 @@ class Trainer:
         all_train_loss = []
         all_val_loss = []
 
-        print(f'\n--> Start training in total {self.epochs} epochs (starting from epoch {start_epoch}) with {self.device} device. Start...\n')
+        print(f'\n--> Start training in total {self.epochs} epochs with {self.device} device. Start...\n')
 
         self.ema_model = AveragedModel(self.model, multi_avg_fn=get_ema_multi_avg_fn(0.999))
 
-        for ep in range(start_epoch, self.epochs):
+        for ep in range(self.epochs):
             self._current_epoch = ep
             progress = ep / max(self.epochs - 1, 1)
             
@@ -533,13 +523,13 @@ class Trainer:
                     pass
 
             if progress <= 0.7:
-                # Phase 2: Mixup ON for regularization, SCN off, Motif weights at configured values
+                # Phase 2: Mixup off, SCN active, Motif weights at configured values
                 self._runtime_motif_diversity_weight = self.motif_diversity_weight
                 self._runtime_motif_consistency_weight = self.motif_consistency_weight
                 self._runtime_attn_entropy_weight = self.attn_entropy_weight
                 self._runtime_offset_reg_weight = self.offset_reg_weight
                 self._runtime_use_scn = False
-                self._runtime_use_mixup = False  # Mixup incompatible with fixed-bbox graph — blended pixels ≠ bbox alignment
+                self._runtime_use_mixup = False
                 self._runtime_phase = 2
             else:
                 # Phase 3: Fine-tuning. Slightly boost diversity and consistency weights to optimize clusters

@@ -184,30 +184,6 @@ class FER2013(Dataset):
                         new_bboxes[r] = [x1_n, y1_n, x2_n, y2_n]
                 bboxes = new_bboxes
 
-            # Synchronized Random Erasing (Occlusion Simulation)
-            # Safe for hard masks: does NOT move pixels, only fills a rectangle with 0.
-            # Simulates natural occlusions (hand over mouth, hair over eyes, glasses glare).
-            if self.split == "train" and isinstance(image, torch.Tensor) and np.random.rand() < 0.3:
-                _, img_h, img_w = image.shape
-                eh = np.random.randint(5, 13)   # 5-12 px height (~10-25% of 48)
-                ew = np.random.randint(5, 13)   # 5-12 px width
-                ey = np.random.randint(0, img_h - eh)
-                ex = np.random.randint(0, img_w - ew)
-                image[:, ey:ey+eh, ex:ex+ew] = 0.0  # fill with mean (0 after normalize)
-
-                # Invalidate regions whose bbox is >60% occluded by the erased rectangle
-                for r in range(self.num_regions):
-                    if region_mask[r] == 0:
-                        continue
-                    rx1, ry1, rx2, ry2 = bboxes[r]
-                    overlap_w = max(0.0, min(float(rx2), float(ex + ew)) - max(float(rx1), float(ex)))
-                    overlap_h = max(0.0, min(float(ry2), float(ey + eh)) - max(float(ry1), float(ey)))
-                    overlap_area = overlap_w * overlap_h
-                    region_area = max((rx2 - rx1) * (ry2 - ry1), 1.0)
-                    if overlap_area / region_area > 0.6:
-                        region_mask[r] = 0.0
-                        region_confidence[r] = 0.0
-
             semantic_meta = {
                 "detect_success": np.array(detect_success, dtype=np.bool_),
                 "fallback_used": np.array(fallback_used, dtype=np.bool_),

@@ -14,13 +14,14 @@ import timm
 # Loss helpers moved to src/models/semantic_roi_graph_losses.py
 
 def safe_softmax(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
-    """A numerically stable softmax that prevents NaN when vectors are fully masked or have large values."""
-    x_max = x.max(dim=dim, keepdim=True)[0].detach()
-    x_max = torch.where(torch.isneginf(x_max) | torch.isnan(x_max), torch.zeros_like(x_max), x_max)
-    x_shifted = (x - x_max).clamp(min=-50.0, max=0.0)
-    exp_x = torch.exp(x_shifted)
-    denom = exp_x.sum(dim=dim, keepdim=True).clamp_min(1e-8)
-    return exp_x / denom
+    """A numerically stable softmax that prevents NaN when vectors are fully masked."""
+    x_max = x.max(dim=dim, keepdim=True)[0]
+    x_shifted = x - x_max
+    # Handle the case where x was all -inf (which results in NaN after subtraction)
+    # or if the user used a very large negative number (like -1e9) which resolves to 0.
+    all_invalid = torch.isinf(x_shifted).all(dim=dim, keepdim=True) | torch.isnan(x_shifted).all(dim=dim, keepdim=True)
+    x_shifted = torch.where(all_invalid, torch.zeros_like(x_shifted), x_shifted)
+    return F.softmax(x_shifted, dim=dim)
 
 
 DEFAULT_SEMANTIC_REGIONS = (
@@ -68,8 +69,6 @@ class SemanticRoiGraphConfig:
     region_dropout_prob: float = 0.0
     program_dim: int = 128
     programs_per_class: int = 4
-    use_facial_attention_neck: bool = True
-    neck_groups: int = 4
 
 
 class ResNet50Backbone(nn.Module):
@@ -145,123 +144,6 @@ class HRNetBackbone(nn.Module):
             
         x = torch.cat(fused, dim=1)
         return self.proj(x)
-
-
-class ChannelShuffle(nn.Module):
-    """Channel Shuffle operation for Group Convolution."""
-
-    def __init__(self, groups: int):
-        super().__init__()
-        self.groups = int(groups)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        b, c, h, w = x.shape
-        if self.groups <= 1 or c % self.groups != 0:
-            return x
-        channels_per_group = c // self.groups
-        x = x.view(b, self.groups, channels_per_group, h, w)
-        x = x.transpose(1, 2).contiguous()
-        return x.view(b, c, h, w)
-
-
-class CoordinateAttention(nn.Module):
-    """
-    Coordinate Attention for Efficient Facial Deformation Perception.
-    Decomposes spatial pooling into horizontal (1xW) and vertical (Hx1) features
-    to capture directional Action Units (smile width, jaw height, eye squinting).
-    """
-
-    def __init__(self, in_channels: int, reduction: int = 16):
-        super().__init__()
-        mip = max(8, in_channels // reduction)
-        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
-        self.pool_w = nn.AdaptiveAvgPool2d((1, None))
-
-        self.conv1 = nn.Conv2d(in_channels, mip, kernel_size=1, stride=1, padding=0, bias=False)
-        self.bn1 = nn.BatchNorm2d(mip)
-        self.act = nn.GELU()
-
-        self.conv_h = nn.Conv2d(mip, in_channels, kernel_size=1, stride=1, padding=0)
-        self.conv_w = nn.Conv2d(mip, in_channels, kernel_size=1, stride=1, padding=0)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        identity = x
-        n, c, h, w = x.shape
-
-        x_h = self.pool_h(x)                       # (N, C, H, 1)
-        x_w = self.pool_w(x).permute(0, 1, 3, 2)   # (N, C, W, 1)
-
-        y = torch.cat([x_h, x_w], dim=2)           # (N, C, H+W, 1)
-        y = self.act(self.bn1(self.conv1(y)))
-
-        x_h, x_w = torch.split(y, [h, w], dim=2)
-        x_w = x_w.permute(0, 1, 3, 2)
-
-        a_h = torch.sigmoid(self.conv_h(x_h))
-        a_w = torch.sigmoid(self.conv_w(x_w))
-
-        out = identity * a_h * a_w
-        return out
-
-
-class AsymmetricERFBlock(nn.Module):
-    """
-    Asymmetric Group Residual Convolution Block (ERFNet-inspired).
-    Decomposes 3x3 into 1x3 (horizontal) + 3x1 (vertical) with Group Convolutions,
-    reducing FLOPs by 33% and enhancing directional facial edge feature extraction.
-    """
-
-    def __init__(self, channels: int, groups: int = 4, dropout: float = 0.0):
-        super().__init__()
-        self.conv_1x3 = nn.Conv2d(
-            channels, channels, kernel_size=(1, 3), stride=1, padding=(0, 1),
-            groups=groups, bias=False
-        )
-        self.bn1 = nn.BatchNorm2d(channels)
-        self.act1 = nn.GELU()
-
-        self.conv_3x1 = nn.Conv2d(
-            channels, channels, kernel_size=(3, 1), stride=1, padding=(1, 0),
-            groups=groups, bias=False
-        )
-        self.bn2 = nn.BatchNorm2d(channels)
-        self.act2 = nn.GELU()
-
-        self.shuffle = ChannelShuffle(groups)
-
-        # Weak bottleneck pointwise projection
-        self.conv_pointwise = nn.Conv2d(channels, channels, kernel_size=1, bias=False)
-        self.bn3 = nn.BatchNorm2d(channels)
-        
-        # Zero-init residual projection so neck starts as clean identity mapping
-        nn.init.zeros_(self.bn3.weight)
-        nn.init.zeros_(self.bn3.bias)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = x
-        out = self.act1(self.bn1(self.conv_1x3(x)))
-        out = self.act2(self.bn2(self.conv_3x1(out)))
-        out = self.shuffle(out)
-        out = self.bn3(self.conv_pointwise(out))
-        return residual + out
-
-
-class FacialDeformationAttentionNeck(nn.Module):
-    """
-    Neck module combining Asymmetric Group Residual Blocks and Coordinate Attention.
-    Enhances spatial resolution quality and directional facial deformations
-    prior to Semantic ROI Alignment and Global Context pooling.
-    """
-
-    def __init__(self, channels: int = 256, groups: int = 4, dropout: float = 0.0):
-        super().__init__()
-        self.asym_block = AsymmetricERFBlock(channels=channels, groups=groups, dropout=dropout)
-        self.coord_att = CoordinateAttention(in_channels=channels, reduction=16)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.asym_block(x)
-        x = self.coord_att(x)
-        return x
 
 
 class SemanticRoiAlign(nn.Module):
@@ -585,8 +467,7 @@ class SemanticInteractionBlock(nn.Module):
 
         messages = self.edge_message(pair_input)
         interaction_tensor = gates.unsqueeze(-1) * messages
-        gate_denom = gates.sum(dim=2, keepdim=True).clamp_min(1e-4)
-        interaction_summary = interaction_tensor.sum(dim=2) / gate_denom
+        interaction_summary = interaction_tensor.sum(dim=2) / (gates.sum(dim=2, keepdim=True) + 1e-6)
         updated_states = self.norm(semantic_states + interaction_summary)
         return updated_states, interaction_tensor, gates
 
@@ -852,7 +733,7 @@ class SemanticProgramExecutor(nn.Module):
         
         # Fix: Gradient Explosion during Temperature Scaling.
         # Clamp compatibility to avoid logsumexp gradient blowup while preserving relative order
-        compatibility = (total_sim / self.temperature).clamp(-30.0, 30.0)
+        compatibility = (total_sim / self.temperature).clamp(-50, 50)
         
         program_attention = safe_softmax(compatibility, dim=-1)
         class_scores = torch.logsumexp(compatibility, dim=-1)
@@ -926,18 +807,6 @@ class SemanticROIGraphFER(nn.Module):
                 feature_dim=config.feature_dim,
                 use_pretrained=config.use_pretrained,
             )
-
-        self.use_facial_attention_neck = getattr(config, "use_facial_attention_neck", True)
-        if self.use_facial_attention_neck:
-            neck_groups = getattr(config, "neck_groups", 4)
-            self.facial_attention_neck = FacialDeformationAttentionNeck(
-                channels=config.feature_dim,
-                groups=neck_groups,
-                dropout=0.0,
-            )
-        else:
-            self.facial_attention_neck = nn.Identity()
-
         self.roi_align = SemanticRoiAlign(
             roi_grid=config.roi_grid,
             bbox_input_size=config.bbox_input_size,
@@ -1241,7 +1110,6 @@ class SemanticROIGraphFER(nn.Module):
 
         batch_size = image.size(0)
         feature_map = self.backbone(image)
-        feature_map = self.facial_attention_neck(feature_map)
         bboxes, computed_mask, computed_confidence, invalid_indices = self._prepare_regions(
             bboxes,
             batch_size=batch_size,
@@ -1258,21 +1126,8 @@ class SemanticROIGraphFER(nn.Module):
         else:
             region_confidence = region_confidence.to(device=image.device, dtype=image.dtype)
 
-        if self.training and self.region_dropout_prob > 0.0:
-            # Safe region dropout: simulate occlusion (hand over mouth, hair over eyes)
-            # but ALWAYS keep at least min_keep regions alive to prevent empty-graph NaN.
-            min_keep = max(4, self.config.num_regions // 2)  # keep ≥4 of 9 regions
+        if self.training:
             drop_mask = (torch.rand(batch_size, self.config.num_regions, device=image.device) > self.region_dropout_prob).to(image.dtype)
-            # Guard: if too few regions survive, randomly restore some dropped ones
-            alive_count = drop_mask.sum(dim=1, keepdim=True)  # (B, 1)
-            too_few = (alive_count < min_keep).squeeze(1)      # (B,)
-            if too_few.any():
-                for bi in too_few.nonzero(as_tuple=False).squeeze(-1):
-                    dead_idx = (drop_mask[bi] == 0).nonzero(as_tuple=False).squeeze(-1)
-                    n_restore = min_keep - int(drop_mask[bi].sum().item())
-                    if n_restore > 0 and dead_idx.numel() > 0:
-                        restore_idx = dead_idx[torch.randperm(dead_idx.numel(), device=image.device)[:n_restore]]
-                        drop_mask[bi, restore_idx] = 1.0
             region_mask = region_mask * drop_mask
             region_confidence = region_confidence * drop_mask
 
