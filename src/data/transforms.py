@@ -1,6 +1,19 @@
 from torchvision.transforms import Compose
 import torch
 from torchvision import transforms
+import random
+
+
+class GaussianNoise:
+    """Add random Gaussian noise to a tensor. Safe for bbox-based models (pixel-only)."""
+    def __init__(self, std: float = 0.05, p: float = 0.3):
+        self.std = std
+        self.p = p
+
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        if random.random() < self.p:
+            return x + torch.randn_like(x) * self.std
+        return x
 
 
 def build_transform(config, split="train") -> Compose:
@@ -31,11 +44,12 @@ def build_transform(config, split="train") -> Compose:
     if split == "train":
         if use_semantic_masks:
             # Non-spatial augmentations to preserve bbox alignment.
-            # Horizontal flip is handled synchronously in the dataset.__getitem__ level.
+            # Horizontal flip & affine are handled synchronously in dataset.__getitem__.
             trans = transforms.Compose([
-                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+                transforms.ColorJitter(brightness=0.3, contrast=0.3),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=(mu,), std=(st,)),
+                GaussianNoise(std=0.05, p=0.3),
             ])
         else:
             trans = transforms.Compose([
