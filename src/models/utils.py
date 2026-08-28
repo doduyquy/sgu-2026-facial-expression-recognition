@@ -9,14 +9,12 @@ import torch.nn.functional as F
 
 
 def safe_softmax(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
-    """A numerically stable softmax that prevents NaN when vectors are fully masked."""
-    x_max = x.max(dim=dim, keepdim=True)[0]
-    x_shifted = x - x_max
-    # Handle the case where x was all -inf (which results in NaN after subtraction)
-    # or if the user used a very large negative number (like -1e9) which resolves to 0.
-    all_invalid = torch.isinf(x_shifted).all(dim=dim, keepdim=True) | torch.isnan(x_shifted).all(dim=dim, keepdim=True)
-    x_shifted = torch.where(all_invalid, torch.zeros_like(x_shifted), x_shifted)
-    return F.softmax(x_shifted, dim=dim)
+    """A numerically stable softmax that prevents NaN when vectors are fully masked or have large values."""
+    x_max = x.max(dim=dim, keepdim=True)[0].detach()
+    x_shifted = torch.clamp(x - x_max, min=-50.0, max=0.0)
+    exp_x = torch.exp(x_shifted)
+    denom = exp_x.sum(dim=dim, keepdim=True).clamp_min(1e-8)
+    return exp_x / denom
 
 def apply_horizontal_flip_tta(model, images, bboxes=None, region_mask=None, region_confidence=None):
     """Run model with Horizontal Flip TTA."""

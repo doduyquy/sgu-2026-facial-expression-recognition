@@ -287,9 +287,19 @@ class Trainer:
                     w_other = self.config.get('training', {}).get(f'{k}_weight', 0.1)
                     loss = loss + float(w_other) * v
 
+            # NaN / Inf Loss Guard
+            if torch.isnan(loss) or torch.isinf(loss):
+                print(f"[WARNING] Skipping batch due to NaN/Inf loss: {loss.item()}")
+                self.optimizer.zero_grad()
+                continue
+
             loss.backward()
             try:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
+                if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+                    print(f"[WARNING] Skipping optimizer step due to NaN/Inf gradient norm: {grad_norm}")
+                    self.optimizer.zero_grad()
+                    continue
             except Exception:
                 pass
                 

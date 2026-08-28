@@ -14,14 +14,12 @@ import timm
 # Loss helpers moved to src/models/semantic_roi_graph_losses.py
 
 def safe_softmax(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
-    """A numerically stable softmax that prevents NaN when vectors are fully masked."""
-    x_max = x.max(dim=dim, keepdim=True)[0]
-    x_shifted = x - x_max
-    # Handle the case where x was all -inf (which results in NaN after subtraction)
-    # or if the user used a very large negative number (like -1e9) which resolves to 0.
-    all_invalid = torch.isinf(x_shifted).all(dim=dim, keepdim=True) | torch.isnan(x_shifted).all(dim=dim, keepdim=True)
-    x_shifted = torch.where(all_invalid, torch.zeros_like(x_shifted), x_shifted)
-    return F.softmax(x_shifted, dim=dim)
+    """A numerically stable softmax that prevents NaN when vectors are fully masked or have large values."""
+    x_max = x.max(dim=dim, keepdim=True)[0].detach()
+    x_shifted = torch.clamp(x - x_max, min=-50.0, max=0.0)
+    exp_x = torch.exp(x_shifted)
+    denom = exp_x.sum(dim=dim, keepdim=True).clamp_min(1e-8)
+    return exp_x / denom
 
 
 DEFAULT_SEMANTIC_REGIONS = (
@@ -587,7 +585,7 @@ class SemanticInteractionBlock(nn.Module):
 
         messages = self.edge_message(pair_input)
         interaction_tensor = gates.unsqueeze(-1) * messages
-        interaction_summary = interaction_tensor.sum(dim=2) / (gates.sum(dim=2, keepdim=True) + 1e-6)
+        interaction_summary = interaction_tensor.sum(dim=2) / (gates.sum(dim=2, keepdim=True).clamp_min(1e-4))
         updated_states = self.norm(semantic_states + interaction_summary)
         return updated_states, interaction_tensor, gates
 
@@ -853,7 +851,7 @@ class SemanticProgramExecutor(nn.Module):
         
         # Fix: Gradient Explosion during Temperature Scaling.
         # Clamp compatibility to avoid logsumexp gradient blowup while preserving relative order
-        compatibility = (total_sim / self.temperature).clamp(-50, 50)
+        compatibility = (total_sim / self.temperature).clamp(-30.0, 30.0)
         
         program_attention = safe_softmax(compatibility, dim=-1)
         class_scores = torch.logsumexp(compatibility, dim=-1)
@@ -1259,8 +1257,14 @@ class SemanticROIGraphFER(nn.Module):
         else:
             region_confidence = region_confidence.to(device=image.device, dtype=image.dtype)
 
-        if self.training:
-            drop_mask = (torch.rand(batch_size, self.config.num_regions, device=image.device) > self.region_dropout_prob).to(image.dtype)
+        if self.training and self.region_dropout_prob > 0.0:
+            drop_prob = min(float(self.region_dropout_prob), 0.3)
+            drop_mask = (torch.rand(batch_size, self.config.num_regions, device=image.device) > drop_prob).to(image.dtype)
+            # Guarantee at least 4 regions remain active per sample to prevent graph collapse & NaN
+            num_active = (region_mask * drop_mask).sum(dim=-1, keepdim=True)
+            needs_rescue = num_active < 4.0
+            if needs_rescue.any():
+                drop_mask = torch.where(needs_rescue, torch.ones_like(drop_mask), drop_mask)
             region_mask = region_mask * drop_mask
             region_confidence = region_confidence * drop_mask
 
