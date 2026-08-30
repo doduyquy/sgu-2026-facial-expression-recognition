@@ -9,6 +9,7 @@ import torch.nn.functional as F
 import torchvision
 from torchvision.ops import roi_align
 import timm
+import numpy as np
 
 
 # Loss helpers moved to src/models/semantic_roi_graph_losses.py
@@ -69,6 +70,10 @@ class SemanticRoiGraphConfig:
     programs_per_class: int = 4
     use_facial_attention_neck: bool = True
     neck_groups: int = 4
+    enable_logit_alignment: bool = True
+    enable_manifold_mixup: bool = True
+    manifold_mixup_prob: float = 0.5
+    manifold_mixup_alpha: float = 0.2
 
 
 class ResNet50Backbone(nn.Module):
@@ -1032,7 +1037,18 @@ class SemanticROIGraphFER(nn.Module):
         # Per-class gate: each emotion class learns its own graph-vs-global balance.
         # Init with -0.5 → sigmoid(-0.5) ≈ 0.38, slightly below 0.5 to favour the graph branch early.
         self.semantic_structure_gate = nn.Parameter(torch.full((config.num_classes,), -0.5))
-        
+
+        # Solution 1: Logit Scale Alignment (LayerNorm per branch + learnable logit scale)
+        self.enable_logit_alignment = bool(getattr(config, "enable_logit_alignment", True))
+        if self.enable_logit_alignment:
+            self.fused_logit_norm = nn.LayerNorm(config.num_classes)
+            self.motif_logit_norm = nn.LayerNorm(config.num_classes)
+            self.logit_scale = nn.Parameter(torch.tensor(8.0))
+
+        # Solution 2: Semantic Manifold Mixup (Feature-level graph mixup, 100% bbox-safe)
+        self.enable_manifold_mixup = bool(getattr(config, "enable_manifold_mixup", True))
+        self.manifold_mixup_prob = float(getattr(config, "manifold_mixup_prob", 0.5))
+        self.manifold_mixup_alpha = float(getattr(config, "manifold_mixup_alpha", 0.2))
 
         # Backward-compatible aliases for older checkpoints and callers.
         self.macro_motif_bank = self.semantic_program_bank
@@ -1049,7 +1065,7 @@ class SemanticROIGraphFER(nn.Module):
         )
         self.region_dropout_prob = float(getattr(config, "region_dropout_prob", 0.05))
 
-    def load_state_dict(self, state_dict, strict=True):
+    def load_state_dict(self, state_dict, strict=False):
         """Backward-compatible: upgrade scalar semantic_structure_gate from old checkpoints."""
         key = "semantic_structure_gate"
         if key in state_dict:
@@ -1280,6 +1296,22 @@ class SemanticROIGraphFER(nn.Module):
         region_confidence = region_confidence * region_mask
 
         semantic_state_tokens = self.semantic_state_encoder(region_embeddings)
+        global_semantic_context = self.global_context(feature_map)
+
+        # Solution 2: Semantic Manifold Mixup (Feature-Level Mixup, 100% bbox-safe)
+        mixup_lam = 1.0
+        mixup_perm = None
+        if self.training and self.enable_manifold_mixup and self.manifold_mixup_prob > 0.0:
+            if torch.rand(1).item() < self.manifold_mixup_prob:
+                alpha = self.manifold_mixup_alpha
+                mixup_lam = float(np.random.beta(alpha, alpha))
+                if mixup_lam < 0.5:
+                    mixup_lam = 1.0 - mixup_lam
+                mixup_perm = torch.randperm(batch_size, device=image.device)
+
+                semantic_state_tokens = mixup_lam * semantic_state_tokens + (1.0 - mixup_lam) * semantic_state_tokens[mixup_perm]
+                global_semantic_context = mixup_lam * global_semantic_context + (1.0 - mixup_lam) * global_semantic_context[mixup_perm]
+
         micro_motif_bank = self.micro_motif_bank()
         micro_motif_attention, semantic_motif_tokens = self.micro_motif_matcher(semantic_state_tokens, micro_motif_bank)
 
@@ -1334,20 +1366,29 @@ class SemanticROIGraphFER(nn.Module):
         semantic_program_composition_scores = semantic_program_outputs["composition_score"]
         semantic_program_routing_entropy = semantic_program_outputs["routing_entropy"]
 
-        global_semantic_context = self.global_context(feature_map)
         fused_latent = self.global_fusion(torch.cat([semantic_latent_embedding, global_semantic_context], dim=-1))
         logits_fused = self.semantic_classifier(fused_latent)
 
         # Per-class gate: shape (1, num_classes) — each emotion learns its own balance
         structure_gate = torch.sigmoid(self.semantic_structure_gate).view(1, -1)
         logits_motif = semantic_program_scores
-        logits = (1 - structure_gate) * logits_fused + structure_gate * logits_motif
+
+        # Solution 1: Logit Scale Alignment (Standardized blending)
+        if self.enable_logit_alignment:
+            logits_fused_norm = self.fused_logit_norm(logits_fused)
+            logits_motif_norm = self.motif_logit_norm(logits_motif)
+            blended_norm = (1.0 - structure_gate) * logits_fused_norm + structure_gate * logits_motif_norm
+            logits = self.logit_scale * blended_norm
+        else:
+            logits = (1.0 - structure_gate) * logits_fused + structure_gate * logits_motif
 
         return {
             "logits": logits,
             "logits_motif": logits_motif,
             "logits_fused": logits_fused,
             "structure_gate": structure_gate,
+            "mixup_lam": mixup_lam,
+            "mixup_perm": mixup_perm,
             
             "micro_node_features": micro_node_features,
             "micro_motif_attention": micro_motif_attention,

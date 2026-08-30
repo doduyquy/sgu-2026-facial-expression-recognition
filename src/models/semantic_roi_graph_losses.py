@@ -438,21 +438,45 @@ def compute_semantic_roi_graph_losses(
         program_diversity_weight = float(training_cfg.get("program_diversity_weight", 0.05))
 
     label_smoothing = float(training_cfg.get("label_smoothing", 0.0))
-    try:
-        ce_loss = F.cross_entropy(logits, labels, label_smoothing=label_smoothing, weight=class_weights)
-    except TypeError:
-        ce_loss = F.cross_entropy(logits, labels, weight=class_weights)
-
-    # Fused branch auxiliary CE (Scenario C/D)
     logits_fused = outputs.get("logits_fused")
     fused_aux_ce_weight = float(training_cfg.get("fused_aux_ce_weight", 0.0))
-    if logits_fused is not None:
+
+    mixup_lam = float(outputs.get("mixup_lam", 1.0))
+    mixup_perm = outputs.get("mixup_perm", None)
+
+    if mixup_perm is not None and mixup_lam < 1.0:
+        labels_b = labels[mixup_perm]
         try:
-            fused_ce_loss = F.cross_entropy(logits_fused, labels, label_smoothing=label_smoothing, weight=class_weights)
+            ce_loss_a = F.cross_entropy(logits, labels, label_smoothing=label_smoothing, weight=class_weights)
+            ce_loss_b = F.cross_entropy(logits, labels_b, label_smoothing=label_smoothing, weight=class_weights)
         except TypeError:
-            fused_ce_loss = F.cross_entropy(logits_fused, labels, weight=class_weights)
+            ce_loss_a = F.cross_entropy(logits, labels, weight=class_weights)
+            ce_loss_b = F.cross_entropy(logits, labels_b, weight=class_weights)
+        ce_loss = mixup_lam * ce_loss_a + (1.0 - mixup_lam) * ce_loss_b
+
+        if logits_fused is not None:
+            try:
+                fused_a = F.cross_entropy(logits_fused, labels, label_smoothing=label_smoothing, weight=class_weights)
+                fused_b = F.cross_entropy(logits_fused, labels_b, label_smoothing=label_smoothing, weight=class_weights)
+            except TypeError:
+                fused_a = F.cross_entropy(logits_fused, labels, weight=class_weights)
+                fused_b = F.cross_entropy(logits_fused, labels_b, weight=class_weights)
+            fused_ce_loss = mixup_lam * fused_a + (1.0 - mixup_lam) * fused_b
+        else:
+            fused_ce_loss = torch.tensor(0.0, device=labels.device)
     else:
-        fused_ce_loss = torch.tensor(0.0, device=labels.device)
+        try:
+            ce_loss = F.cross_entropy(logits, labels, label_smoothing=label_smoothing, weight=class_weights)
+        except TypeError:
+            ce_loss = F.cross_entropy(logits, labels, weight=class_weights)
+
+        if logits_fused is not None:
+            try:
+                fused_ce_loss = F.cross_entropy(logits_fused, labels, label_smoothing=label_smoothing, weight=class_weights)
+            except TypeError:
+                fused_ce_loss = F.cross_entropy(logits_fused, labels, weight=class_weights)
+        else:
+            fused_ce_loss = torch.tensor(0.0, device=labels.device)
 
     base_model = _unwrap_model(model)
 

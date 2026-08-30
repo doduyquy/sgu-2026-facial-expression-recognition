@@ -29,8 +29,12 @@ model:
   programs_per_class: 4
   program_dim: 128
   fusion_scale: 0.4
-  use_facial_attention_neck: true
+  use_facial_attention_neck: False
   neck_groups: 4
+  enable_logit_alignment: true
+  enable_manifold_mixup: true
+  manifold_mixup_prob: 0.5
+  manifold_mixup_alpha: 0.2
 
 data:
   batch_size: 64
@@ -47,9 +51,10 @@ training:
   lr: 0.0003
   weight_decay: 0.001 # Revert from 0.003 to prevent embedding collapse
   loss: "semantic_roi_graph"
-  label_smoothing: 0.05
+  label_smoothing: 0.1
   class_weight_mode: "sqrt_inverse"
   use_class_weights: true
+  lr_patience: 7
   use_sce: false
   sce_alpha: 1.0
   sce_beta: 1.0
