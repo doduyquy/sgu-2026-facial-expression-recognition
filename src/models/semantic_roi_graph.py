@@ -72,7 +72,7 @@ class SemanticRoiGraphConfig:
     neck_groups: int = 4
     enable_logit_alignment: bool = True
     enable_manifold_mixup: bool = True
-    manifold_mixup_prob: float = 0.5
+    manifold_mixup_prob: float = 0.3
     manifold_mixup_alpha: float = 0.2
 
 
@@ -1047,7 +1047,7 @@ class SemanticROIGraphFER(nn.Module):
 
         # Solution 2: Semantic Manifold Mixup (Feature-level graph mixup, 100% bbox-safe)
         self.enable_manifold_mixup = bool(getattr(config, "enable_manifold_mixup", True))
-        self.manifold_mixup_prob = float(getattr(config, "manifold_mixup_prob", 0.5))
+        self.manifold_mixup_prob = float(getattr(config, "manifold_mixup_prob", 0.3))
         self.manifold_mixup_alpha = float(getattr(config, "manifold_mixup_alpha", 0.2))
 
         # Backward-compatible aliases for older checkpoints and callers.

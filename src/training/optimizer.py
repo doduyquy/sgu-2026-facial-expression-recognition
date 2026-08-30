@@ -62,6 +62,19 @@ def build_scheduler(optimizer, config):
         print(f"--> [Scheduler] CosineAnnealingLR (T_max={T_max})")
         return lr_scheduler.CosineAnnealingLR(optimizer, T_max=T_max)
 
+    elif scheduler_name in ['cosine_warm_restart', 'cosine_annealing_warm_restart', 'cosine_restarts', 'cosine_restart']:
+        # Cosine Annealing with Warm Restarts
+        T_0 = int(config['training'].get('T_0', 30))
+        T_mult = int(config['training'].get('T_mult', 2))
+        eta_min = float(config['training'].get('eta_min', config['training'].get('min_lr', 1e-6)))
+        print(f"--> [Scheduler] CosineAnnealingWarmRestarts (T_0={T_0}, T_mult={T_mult}, eta_min={eta_min})")
+        return lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=T_0,
+            T_mult=T_mult,
+            eta_min=eta_min,
+        )
+
     else:
         raise ValueError(f"Not supported this {scheduler_name} scheduler!") 
 

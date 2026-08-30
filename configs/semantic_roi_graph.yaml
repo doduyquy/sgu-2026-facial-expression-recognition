@@ -29,11 +29,11 @@ model:
   programs_per_class: 4
   program_dim: 128
   fusion_scale: 0.4
-  use_facial_attention_neck: False
+  use_facial_attention_neck: true
   neck_groups: 4
   enable_logit_alignment: true
   enable_manifold_mixup: true
-  manifold_mixup_prob: 0.5
+  manifold_mixup_prob: 0.3
   manifold_mixup_alpha: 0.2
 
 data:
@@ -54,6 +54,10 @@ training:
   label_smoothing: 0.1
   class_weight_mode: "sqrt_inverse"
   use_class_weights: true
+  scheduler: "cosine_annealing_warm_restart"
+  T_0: 30
+  T_mult: 2
+  eta_min: 0.000001
   lr_patience: 7
   use_sce: false
   sce_alpha: 1.0
