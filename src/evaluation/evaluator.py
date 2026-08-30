@@ -8,7 +8,7 @@ from src.evaluation.metrics import compute_metrics, plot_confusion_matrix
 from src.utils.data_stats import get_class_distribution
 from src.models.utils import apply_horizontal_flip_tta
 
-def evaluate_and_show(model, test_loader, testset_path, device, save_dir, use_tta=False) -> None:
+def evaluate_and_show(model, test_loader, testset_path, device, save_dir, use_tta=True, logit_bias=None, run_tag="") -> None:
     """Test set, 10 ảnh đoán đúng, 10 ảnh đoán sai và Visualize and log to wandb"""
     model.eval()
     
@@ -20,7 +20,7 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir, use_tt
 
     os.makedirs(save_dir, exist_ok=True)
     with torch.no_grad():
-        for batch in tqdm(test_loader, desc="Evaluate test set..."):
+        for batch in tqdm(test_loader, desc=f"Evaluate test set {run_tag}...".strip()):
             # Support DataLoader returning (images, labels) or (images, labels, bboxes)
             # or (images, labels, bboxes, semantic_meta)
             semantic_meta = None
@@ -68,6 +68,9 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir, use_tt
                     outputs = model(images)
 
             logits = outputs["logits"] if isinstance(outputs, dict) else (outputs[0] if isinstance(outputs, (list, tuple)) else outputs)
+            if logit_bias is not None:
+                bias_tensor = torch.as_tensor(logit_bias, dtype=logits.dtype, device=logits.device).view(1, -1)
+                logits = logits + bias_tensor
             _, preds = torch.max(logits, 1)
             
             imgs_cpu = images.cpu()

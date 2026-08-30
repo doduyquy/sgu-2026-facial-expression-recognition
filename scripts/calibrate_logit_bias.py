@@ -199,17 +199,35 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--env", type=str, default="local", choices=["local", "kaggle"])
-    parser.add_argument("--checkpoint", type=str, required=True)
+    parser.add_argument("--checkpoint", "--ckpt", type=str, required=True, dest="checkpoint", help="Path to checkpoint .pth file")
     parser.add_argument("--save_path", type=str, default=None)
-    parser.add_argument("--eval_test", action="store_true")
+    parser.add_argument("--eval_test", action="store_true", default=True, help="Evaluate on test set before and after calibration")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     config = load_config(args.config, args.env)
-    calib_cfg = config.get("calibration", {})
-
-    if not calib_cfg.get("enable_logit_bias", False):
-        raise ValueError("Calibration is disabled in config. Set calibration.enable_logit_bias=true")
+    
+    # Default calibration configuration if not present in config yaml
+    default_calib_cfg = {
+        "enable_logit_bias": True,
+        "metric": "hybrid",
+        "search_on": "val",
+        "class_names": ["angry", "disgust", "fear", "happy", "sad", "surprise", "neutral"],
+        "bias_grid": {
+            "fear": [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+            "sad": [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+            "neutral": [-0.8, -0.6, -0.4, -0.2, 0.0],
+            "angry": [0.0, 0.2, 0.4],
+            "disgust": [0.0, 0.2, 0.4],
+            "surprise": [0.0],
+            "happy": [0.0],
+        },
+        "tune_classes": ["fear", "sad", "neutral", "angry"],
+        "save_path": "outputs/calibration_logit_bias.json",
+    }
+    calib_cfg = config.get("calibration", default_calib_cfg)
+    if not calib_cfg.get("enable_logit_bias", True):
+        calib_cfg["enable_logit_bias"] = True
 
     # data path and root path for each platform
     if config["env"]["platform"] == "kaggle":
@@ -224,13 +242,18 @@ def main():
     model = get_model(name=config["model"]["name"], config=config)
     model.to(device)
 
+    print(f"--> Loading checkpoint from {args.checkpoint}")
     ckpt = torch.load(args.checkpoint, map_location=device)
-    model.load_state_dict(ckpt["model_state_dict"])
+    state_dict = ckpt["model_state_dict"] if isinstance(ckpt, dict) and "model_state_dict" in ckpt else ckpt
+    model.load_state_dict(state_dict, strict=False)
 
     search_on = calib_cfg.get("search_on", "val")
     search_loader = val_loader if search_on == "val" else test_loader
 
+    print(f"\n[Calibration] Collecting predictions on {search_on} set...")
     logits, labels = collect_logits_and_labels(model, search_loader, device)
+    
+    print("[Calibration] Searching optimal logit bias vector...")
     result = search_best_logit_bias(logits, labels, calib_cfg)
 
     save_path = args.save_path or calib_cfg.get("save_path", "calibration_logit_bias.json")
@@ -244,10 +267,14 @@ def main():
         os.makedirs(eval_dir_path, exist_ok=True)
         testset_path = os.path.join(data_path, "test.csv")
 
-        print("\n[Calibration] Evaluate test raw logits...")
+        print("\n=======================================================")
+        print("[Calibration] Step 1: Evaluating Test RAW Logits...")
+        print("=======================================================")
         evaluate_and_show(model, test_loader, testset_path, device, eval_dir_path, logit_bias=None, run_tag="raw")
 
-        print("\n[Calibration] Evaluate test with calibrated bias...")
+        print("\n=======================================================")
+        print("[Calibration] Step 2: Evaluating Test with CALIBRATED Bias...")
+        print("=======================================================")
         logit_bias = load_logit_bias(save_path, num_classes=logits.shape[1])
         evaluate_and_show(model, test_loader, testset_path, device, eval_dir_path, logit_bias=logit_bias, run_tag="calibrated")
 

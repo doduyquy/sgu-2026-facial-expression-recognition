@@ -96,3 +96,19 @@ training:
 
 logging:
   use_wandb: true
+
+calibration:
+  enable_logit_bias: true
+  metric: "hybrid" # or "acc"
+  search_on: "val" # Search on validation set, test on test set
+  class_names: ["angry", "disgust", "fear", "happy", "sad", "surprise", "neutral"]
+  bias_grid:
+    fear: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    sad: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    neutral: [-0.8, -0.6, -0.4, -0.2, 0.0]
+    angry: [0.0, 0.2, 0.4]
+    disgust: [0.0, 0.2, 0.4]
+    surprise: [0.0]
+    happy: [0.0]
+  tune_classes: ["fear", "sad", "neutral", "angry"]
+  save_path: "outputs/calibration_logit_bias.json"
