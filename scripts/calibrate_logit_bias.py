@@ -144,29 +144,59 @@ def build_bias_candidates(calib_cfg):
 
 def search_best_logit_bias(logits, labels, calib_cfg):
     metric_name = calib_cfg.get("metric", "hybrid")
-    candidates = build_bias_candidates(calib_cfg)
-
     base_metrics = compute_metrics_from_logits(logits, labels, class_bias=None)
-
-    best_bias = np.zeros(logits.shape[1], dtype=np.float32)
+    
+    num_classes = logits.shape[1]
+    best_bias = np.zeros(num_classes, dtype=np.float32)
     best_metrics = base_metrics
     best_score = base_metrics[metric_name]
 
-    results = []
+    # Measure dynamic range of logits to scale bias steps appropriately
+    logits_np = logits.detach().cpu().numpy() if isinstance(logits, torch.Tensor) else np.asarray(logits)
+    logit_std = float(np.std(logits_np))
+    scale_factor = max(1.0, logit_std * 0.35)
+    
+    print(f"[Calibration] Logits dynamic std: {logit_std:.3f}, search step scale: {scale_factor:.3f}")
+    print(f"[Calibration] Base {calib_cfg.get('search_on', 'val')} metrics: Acc={base_metrics['acc']*100:.2f}%, F1={base_metrics['macro_f1']*100:.2f}%, Hybrid={base_metrics['hybrid']*100:.2f}%")
 
+    results = []
+    
+    # 1. Grid Search on specified or adaptive candidates
+    candidates = build_bias_candidates(calib_cfg)
     for bias in candidates:
         metrics = compute_metrics_from_logits(logits, labels, class_bias=bias)
         score = metrics[metric_name]
-
-        results.append({
-            "bias": bias.tolist(),
-            **metrics,
-        })
-
+        results.append({"bias": bias.tolist(), **metrics})
         if score > best_score:
             best_score = score
             best_bias = bias.copy()
             best_metrics = metrics
+
+    # 2. Multi-Pass Scale-Adapted Coordinate Descent Search
+    # Coarse steps then fine steps
+    for step_range in [np.linspace(-2.0, 2.0, 17), np.linspace(-0.8, 0.8, 17)]:
+        steps = step_range * scale_factor
+        current_bias = best_bias.copy()
+        for iteration in range(3):
+            improved = False
+            for c in range(num_classes):
+                for s in steps:
+                    trial_bias = current_bias.copy()
+                    trial_bias[c] = s
+                    metrics = compute_metrics_from_logits(logits, labels, class_bias=trial_bias)
+                    score = metrics[metric_name]
+                    results.append({"bias": trial_bias.tolist(), **metrics})
+                    if score > best_score:
+                        best_score = score
+                        best_bias = trial_bias.copy()
+                        current_bias = trial_bias.copy()
+                        best_metrics = metrics
+                        improved = True
+            if not improved:
+                break
+
+    print(f"[Calibration] Optimized {calib_cfg.get('search_on', 'val')} metrics: Acc={best_metrics['acc']*100:.2f}%, F1={best_metrics['macro_f1']*100:.2f}%, Hybrid={best_metrics['hybrid']*100:.2f}%")
+    print(f"[Calibration] Optimal bias vector: {np.round(best_bias, 3).tolist()}")
 
     return {
         "base_metrics": base_metrics,
@@ -174,7 +204,7 @@ def search_best_logit_bias(logits, labels, calib_cfg):
         "best_metrics": best_metrics,
         "best_score": float(best_score),
         "metric": metric_name,
-        "num_candidates": len(candidates),
+        "num_candidates": len(results),
         "top_results": sorted(results, key=lambda x: x[metric_name], reverse=True)[:20],
     }
 
