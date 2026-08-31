@@ -130,19 +130,23 @@ class FER2013(Dataset):
 
                 bboxes = flipped_bboxes
 
-            # Synchronized Random Affine (Rotation, Translation, Scale)
+            # Synchronized Subtle Random Affine (Rotation, Translation, Scale)
+            # Tightened to sub-pixel ranges to preserve sharp Action Unit edges in 48x48
             if self.split == "train" and np.random.rand() < 0.5:
-                angle_deg = np.random.uniform(-10.0, 10.0)
-                tx = np.random.uniform(-4.8, 4.8)  # up to 10% translation
-                ty = np.random.uniform(-4.8, 4.8)
-                scale = np.random.uniform(0.9, 1.1)
+                angle_deg = float(np.random.uniform(-4.0, 4.0))
+                tx = float(np.random.uniform(-1.5, 1.5))
+                ty = float(np.random.uniform(-1.5, 1.5))
+                scale = float(np.random.uniform(0.97, 1.03))
+
+                tx_shift = float(int(np.round(tx)))
+                ty_shift = float(int(np.round(ty)))
 
                 import torchvision.transforms.functional as TF
                 # TF.affine works on both PIL Image and Tensor
                 image = TF.affine(
                     image,
                     angle=angle_deg,
-                    translate=[int(tx), int(ty)],
+                    translate=[int(tx_shift), int(ty_shift)],
                     scale=scale,
                     shear=0,
                     interpolation=TF.InterpolationMode.BILINEAR
@@ -168,8 +172,8 @@ class FER2013(Dataset):
                     ])
                     dx = corners[:, 0] - cx
                     dy = corners[:, 1] - cy
-                    x_new = dx * scale * cos_t + dy * scale * sin_t + cx + tx
-                    y_new = -dx * scale * sin_t + dy * scale * cos_t + cy + ty
+                    x_new = dx * scale * cos_t + dy * scale * sin_t + cx + tx_shift
+                    y_new = -dx * scale * sin_t + dy * scale * cos_t + cy + ty_shift
                     
                     x1_n = np.clip(np.min(x_new), 0.0, 47.0)
                     y1_n = np.clip(np.min(y_new), 0.0, 47.0)

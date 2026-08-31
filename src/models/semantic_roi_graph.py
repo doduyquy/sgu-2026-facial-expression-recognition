@@ -1075,6 +1075,19 @@ class SemanticROIGraphFER(nn.Module):
                 state_dict[key] = old.detach().view(1).expand(self.config.num_classes).clone()
         return super().load_state_dict(state_dict, strict=strict)
 
+    def set_training_progress(self, progress: float) -> None:
+        """Dynamically adapt mixup probability and auxiliary decay factor during training.
+        progress: float from 0.0 (start) to 1.0 (end).
+        """
+        self.training_progress = float(np.clip(progress, 0.0, 1.0))
+        # Anneal mixup from initial (0.3) down to 0.15 in the second half of training
+        base_mixup = float(getattr(self.config, "manifold_mixup_prob", 0.3))
+        if self.training_progress > 0.4:
+            decay_factor = 1.0 - 0.5 * (self.training_progress - 0.4) / 0.6  # 1.0 -> 0.5
+            self.manifold_mixup_prob = base_mixup * decay_factor
+        else:
+            self.manifold_mixup_prob = base_mixup
+
     def _canonical_bboxes(self, batch_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
         boxes = SemanticRoiAlign._canonical_region_boxes(self.config.bbox_input_size, device, dtype)
         return boxes.unsqueeze(0).expand(batch_size, -1, -1).contiguous()
