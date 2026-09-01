@@ -55,7 +55,7 @@ class SemanticRoiGraphConfig:
     hyperedge_count: int = 4
     router_hidden_dim: int = 256          # was 64
     use_pretrained: bool = True
-    backbone_out_size: int = 12
+    backbone_out_size: int = 24
     bbox_input_size: int = 48
     micro_layers: int = 2
     macro_layers: int = 2
@@ -115,8 +115,9 @@ class ResNet50Backbone(nn.Module):
 
 class HRNetBackbone(nn.Module):
     """HRNet-W18 backbone with multi-resolution fusion and spatial resolution preservation."""
-    def __init__(self, feature_dim: int = 256, use_pretrained: bool = True):
+    def __init__(self, feature_dim: int = 256, use_pretrained: bool = True, out_size: int = 24):
         super().__init__()
+        self.out_size = int(out_size)
         self.hrnet = timm.create_model('hrnet_w18', pretrained=use_pretrained, features_only=True)
         
         if hasattr(self.hrnet, 'conv1'):
@@ -139,8 +140,8 @@ class HRNetBackbone(nn.Module):
             x = x.repeat(1, 3, 1, 1)
             
         feats = self.hrnet(x)
-        # Fuse multi-resolution features by resizing all to 12x12
-        target_size = (12, 12)
+        # Fuse multi-resolution features by resizing all to target_size (e.g. 24x24 or 12x12)
+        target_size = (self.out_size, self.out_size)
         fused = []
         for f in feats:
             if f.shape[2:] != target_size:
@@ -924,6 +925,7 @@ class SemanticROIGraphFER(nn.Module):
             self.backbone = HRNetBackbone(
                 feature_dim=config.feature_dim,
                 use_pretrained=config.use_pretrained,
+                out_size=getattr(config, "backbone_out_size", 24),
             )
         else:
             self.backbone = ResNet50Backbone(
