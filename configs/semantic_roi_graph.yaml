@@ -29,7 +29,7 @@ model:
   programs_per_class: 4
   program_dim: 128
   fusion_scale: 0.4
-  use_facial_attention_neck: False
+  use_facial_attention_neck: True
   neck_groups: 4
   enable_logit_alignment: true
   enable_manifold_mixup: true
@@ -49,9 +49,9 @@ data:
 training:
   epochs: 1000
   lr: 0.0003
-  weight_decay: 0.001 # Revert from 0.003 to prevent embedding collapse
+  weight_decay: 0.0015 # Regularization to prevent noisy label memorization
   loss: "semantic_roi_graph"
-  label_smoothing: 0.1
+  label_smoothing: 0.12 # Stronger protection against FER2013 label noise
   class_weight_mode: "sqrt_inverse"
   use_class_weights: true
   scheduler: "cosine_annealing_warm_restart"

@@ -130,13 +130,13 @@ class FER2013(Dataset):
 
                 bboxes = flipped_bboxes
 
-            # Synchronized Subtle Random Affine (Rotation, Translation, Scale)
-            # Tightened to sub-pixel ranges to preserve sharp Action Unit edges in 48x48
+            # Synchronized Balanced Random Affine (Rotation, Translation, Scale)
+            # Balanced range to robustly prevent memorization while keeping ROI masks on facial AUs
             if self.split == "train" and np.random.rand() < 0.5:
-                angle_deg = float(np.random.uniform(-4.0, 4.0))
-                tx = float(np.random.uniform(-1.5, 1.5))
-                ty = float(np.random.uniform(-1.5, 1.5))
-                scale = float(np.random.uniform(0.97, 1.03))
+                angle_deg = float(np.random.uniform(-7.0, 7.0))
+                tx = float(np.random.uniform(-3.0, 3.0))
+                ty = float(np.random.uniform(-3.0, 3.0))
+                scale = float(np.random.uniform(0.95, 1.05))
 
                 tx_shift = float(int(np.round(tx)))
                 ty_shift = float(int(np.round(ty)))
