@@ -22,7 +22,7 @@ model:
 
 training:
   epochs: 101
-  patience: 20
+  patience: 30
   weight_decay: 0.0001
   loss: 'cross_entropy'
   optimizer: "adam"       # adam(*) | sgd 
