@@ -130,13 +130,12 @@ class FER2013(Dataset):
 
                 bboxes = flipped_bboxes
 
-            # Synchronized Balanced Random Affine (Rotation, Translation, Scale)
-            # Balanced range to robustly prevent memorization while keeping ROI masks on facial AUs
+            # Synchronized Random Affine (Rotation, Translation, Scale)
             if self.split == "train" and np.random.rand() < 0.5:
-                angle_deg = float(np.random.uniform(-7.0, 7.0))
-                tx = float(np.random.uniform(-3.0, 3.0))
-                ty = float(np.random.uniform(-3.0, 3.0))
-                scale = float(np.random.uniform(0.95, 1.05))
+                angle_deg = float(np.random.uniform(-10.0, 10.0))
+                tx = float(np.random.uniform(-4.8, 4.8))  # up to 10% translation
+                ty = float(np.random.uniform(-4.8, 4.8))
+                scale = float(np.random.uniform(0.9, 1.1))
 
                 tx_shift = float(int(np.round(tx)))
                 ty_shift = float(int(np.round(ty)))
