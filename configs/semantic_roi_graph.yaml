@@ -37,7 +37,7 @@ model:
   manifold_mixup_alpha: 0.2
 
 data:
-  batch_size: 64
+  batch_size: 32
   num_workers: 2
   input_size: 48
   in_channels: 1
@@ -48,7 +48,7 @@ data:
 
 training:
   epochs: 1000
-  lr: 0.0003
+  lr: 0.0002
   weight_decay: 0.0015 # Regularization to prevent noisy label memorization
   loss: "semantic_roi_graph"
   label_smoothing: 0.12 # Stronger protection against FER2013 label noise
