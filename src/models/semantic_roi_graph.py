@@ -966,6 +966,11 @@ class SemanticROIGraphFER(nn.Module):
             hidden_dim=max(config.feature_dim // 2, config.semantic_state_dim * 2),
             dropout=config.dropout,
         )
+        # Breakthrough 2: Learnable Anatomical Region Positional Embedding
+        # Injects 2D facial topology coordinates into the 9 region state tokens
+        self.region_pos_embed = nn.Parameter(torch.zeros(1, config.num_regions, config.semantic_state_dim))
+        nn.init.trunc_normal_(self.region_pos_embed, std=0.02)
+
         self.semantic_interaction_block = SemanticInteractionBlock(
             state_dim=config.semantic_state_dim,
             hidden_dim=max(config.semantic_state_dim * 2, 32),
@@ -1303,6 +1308,8 @@ class SemanticROIGraphFER(nn.Module):
         region_confidence = region_confidence * region_mask
 
         semantic_state_tokens = self.semantic_state_encoder(region_embeddings)
+        # Breakthrough 2: Add Learnable Region Positional Embedding
+        semantic_state_tokens = semantic_state_tokens + self.region_pos_embed
         global_semantic_context = self.global_context(feature_map)
 
         # Solution 2: Semantic Manifold Mixup (Feature-Level Mixup, 100% bbox-safe)
