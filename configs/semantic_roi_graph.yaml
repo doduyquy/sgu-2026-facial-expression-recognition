@@ -100,7 +100,7 @@ training:
   use_entropy_sparsity: false
 
 logging:
-  use_wandb: False
+  use_wandb: True
 
 calibration:
   enable_logit_bias: true
