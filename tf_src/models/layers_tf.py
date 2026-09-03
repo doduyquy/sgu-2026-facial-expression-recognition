@@ -458,11 +458,9 @@ class SemanticProgramExecutorTF(layers.Layer):
             trainable=True
         )
 
-        self.program_summary_proj = tf.keras.Sequential([
-            layers.Dense(state_dim),
-            layers.LayerNormalization(epsilon=1e-5),
-            layers.Activation('gelu'),
-        ])
+        self.summary_dense = layers.Dense(state_dim)
+        self.summary_norm = layers.LayerNormalization(epsilon=1e-5)
+        self.summary_act = layers.Activation('gelu')
 
         # Dynamic structure weights: region_sim (1.0), topology_sim (0.5), composition_sim (0.25)
         sim_init = np.tile(np.array([[[[1.0, 0.5, 0.25]]]], dtype=np.float32), (1, num_classes, 1, 1))
@@ -472,6 +470,10 @@ class SemanticProgramExecutorTF(layers.Layer):
             initializer=tf.constant_initializer(sim_init),
             trainable=True
         )
+
+    def _project_program_summary(self, x: tf.Tensor) -> tf.Tensor:
+        """Project program summary across arbitrary tensor ranks (*, D)."""
+        return self.summary_act(self.summary_norm(self.summary_dense(x)))
 
     def call(self, semantic_states: tf.Tensor, cross_region_tokens: tf.Tensor, region_mask: Optional[tf.Tensor] = None, interaction_gates: Optional[tf.Tensor] = None, routing_weights: Optional[tf.Tensor] = None) -> Dict[str, tf.Tensor]:
         state_norm = tf.math.l2_normalize(semantic_states, axis=-1)
@@ -494,8 +496,8 @@ class SemanticProgramExecutorTF(layers.Layer):
             topology_sim = tf.ones_like(region_sim)
 
         # 3. Composition similarity
-        comp_summary = self.program_summary_proj(tf.reduce_mean(cross_region_tokens, axis=1))
-        prog_summary = self.program_summary_proj(tf.reduce_mean(self.programs, axis=2))
+        comp_summary = self._project_program_summary(tf.reduce_mean(cross_region_tokens, axis=1)) # (B, 128)
+        prog_summary = self._project_program_summary(tf.reduce_mean(self.programs, axis=2))       # (C, M, 128)
         composition_sim = tf.einsum("bd,cmd->bcm", tf.math.l2_normalize(comp_summary, axis=-1), tf.math.l2_normalize(prog_summary, axis=-1))
 
         # Dynamic combination with softplus
