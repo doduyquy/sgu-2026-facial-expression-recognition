@@ -19,7 +19,9 @@ from tf_src.models.losses_tf import compute_semantic_roi_graph_losses_tf
 
 def test_pipeline():
     print("--> [1/4] Loading default configuration...")
-    config_path = ROOT_DIR / "tf_src/configs/semantic_roi_graph_tf.yaml"
+    config_path = ROOT_DIR / "configs/semantic_roi_graph_tf.yaml"
+    if not config_path.exists():
+        config_path = ROOT_DIR / "tf_src/configs/semantic_roi_graph_tf.yaml"
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 

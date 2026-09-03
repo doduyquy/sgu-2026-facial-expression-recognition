@@ -18,7 +18,7 @@ from tf_src.evaluation.evaluator_tf import evaluate_test_set_tf
 
 def main():
     parser = argparse.ArgumentParser(description="Train Semantic ROI Graph FER in TensorFlow")
-    parser.add_argument("--config", type=str, default="tf_src/configs/semantic_roi_graph_tf.yaml", help="Path to config YAML")
+    parser.add_argument("--config", type=str, default="configs/semantic_roi_graph_tf.yaml", help="Path to config YAML")
     parser.add_argument("--env", type=str, default="local", choices=["local", "kaggle"], help="Environment: local or kaggle")
     parser.add_argument("--data_dir", type=str, default=None, help="Override FER2013 data split folder")
     parser.add_argument("--masks_dir", type=str, default=None, help="Override semantic masks folder")
@@ -35,7 +35,20 @@ def main():
         except RuntimeError as e:
             print(f"--> [GPU] Memory growth notice: {e}")
 
-    with open(args.config, "r") as f:
+    # Smart config path resolution
+    cfg_path = Path(args.config)
+    if not cfg_path.exists():
+        for candidate in [
+            Path("configs") / cfg_path.name,
+            Path("tf_src/configs") / cfg_path.name,
+            Path("../configs") / cfg_path.name,
+        ]:
+            if candidate.exists():
+                cfg_path = candidate
+                break
+
+    print(f"--> [Config] Loading: {cfg_path}")
+    with open(cfg_path, "r") as f:
         config = yaml.safe_load(f)
 
     data_dir = args.data_dir or config.get("data", {}).get("data_dir", "dataset/fer13-split")
