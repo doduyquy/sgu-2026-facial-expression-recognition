@@ -19,18 +19,65 @@ from tf_src.evaluation.evaluator_tf import evaluate_test_set_tf
 def main():
     parser = argparse.ArgumentParser(description="Train Semantic ROI Graph FER in TensorFlow")
     parser.add_argument("--config", type=str, default="tf_src/configs/semantic_roi_graph_tf.yaml", help="Path to config YAML")
+    parser.add_argument("--env", type=str, default="local", choices=["local", "kaggle"], help="Environment: local or kaggle")
     parser.add_argument("--data_dir", type=str, default=None, help="Override FER2013 data split folder")
     parser.add_argument("--masks_dir", type=str, default=None, help="Override semantic masks folder")
-    args = parser.parse_args()
+    parser.add_argument("--save_dir", type=str, default=None, help="Override checkpoint save directory")
+    args, _ = parser.parse_known_args()
+
+    # Enable GPU memory growth if available
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        try:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            print(f"--> [GPU] Found {len(gpus)} GPU(s), memory growth enabled.")
+        except RuntimeError as e:
+            print(f"--> [GPU] Memory growth notice: {e}")
 
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
 
     data_dir = args.data_dir or config.get("data", {}).get("data_dir", "dataset/fer13-split")
     masks_dir = args.masks_dir or config.get("data", {}).get("semantic_masks_dir", None)
+    save_dir = args.save_dir or "outputs/checkpoints_tf"
+
+    if args.env == "kaggle":
+        # Resolve Kaggle dataset paths automatically if default path does not exist
+        candidates_data = [
+            Path("/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"),
+            Path("/kaggle/input/datasets/doduyquynii/fer13-split"),
+            Path("/kaggle/input/fer13-split/fer13-split"),
+            Path("/kaggle/input/fer13-split"),
+        ]
+        if not Path(data_dir).exists():
+            for c in candidates_data:
+                if (c / "train.csv").exists():
+                    data_dir = str(c)
+                    print(f"--> [Kaggle] Auto-detected FER2013 data path: {data_dir}")
+                    break
+
+        candidates_masks = [
+            Path("/kaggle/input/datasets/pha1t2/maskfer2013/semantic_masks"),
+            Path("/kaggle/input/maskfer2013/semantic_masks"),
+            Path("/kaggle/input/semantic_masks"),
+        ]
+        if masks_dir is None or not Path(masks_dir).exists():
+            for m in candidates_masks:
+                if m.exists():
+                    masks_dir = str(m)
+                    print(f"--> [Kaggle] Auto-detected semantic masks path: {masks_dir}")
+                    break
+
+        if args.save_dir is None:
+            save_dir = "/kaggle/working/outputs/checkpoints_tf"
+
     batch_size = int(config.get("data", {}).get("batch_size", 64))
 
     print(f"--> Initializing TensorFlow Data Loaders (batch_size={batch_size})...")
+    print(f"    Data Dir : {data_dir}")
+    print(f"    Masks Dir: {masks_dir}")
+    print(f"    Save Dir : {save_dir}")
     train_loader = create_tf_dataloader(
         data_path=data_dir,
         split="train",
@@ -71,6 +118,7 @@ def main():
         val_dataset=val_loader,
         optimizer=optimizer,
         config=config,
+        save_dir=save_dir,
     )
 
     # Run training
@@ -80,7 +128,7 @@ def main():
     print("\n===================================================")
     print("Evaluate on FER2013 Test Set with Horizontal Flip TTA")
     print("===================================================")
-    evaluate_test_set_tf(model, test_loader, weights_path=best_weights)
+    evaluate_test_set_tf(model, test_loader, weights_path=best_weights, save_dir=save_dir)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,88 @@
+model:
+  name: "semantic_roi_graph_fer_tf"
+  backbone_type: "hrnet_w18" # "hrnet_w18" or "resnet50"
+  num_classes: 7
+  num_regions: 9
+  roi_grid: 4
+  feature_dim: 256
+  micro_motifs_per_region: 8
+  macro_motifs_per_class: 4
+  use_pretrained: true
+  backbone_out_size: 12
+  bbox_input_size: 48
+  micro_layers: 2
+  macro_layers: 2
+  attn_heads: 4
+  dropout: 0.25
+  label_smoothing: 0.1
+  region_dropout_prob: 0.0
+  relation_temperature: 0.07
+  semantic_state_dim: 128
+  semantic_latent_dim: 256
+  semantic_attn_heads: 4
+  hyperedge_count: 4
+  router_hidden_dim: 256
+  cross_region_compositions: 8
+  programs_per_class: 4
+  program_dim: 128
+  fusion_scale: 0.4
+  use_facial_attention_neck: false
+  neck_groups: 4
+  enable_logit_alignment: true
+  enable_manifold_mixup: true
+  manifold_mixup_prob: 0.3
+  manifold_mixup_alpha: 0.2
+
+data:
+  batch_size: 64
+  input_size: 48
+  in_channels: 1
+  use_semantic_masks: true
+  data_dir: "dataset/fer13-split"
+  semantic_masks_dir: "/kaggle/input/datasets/pha1t2/maskfer2013/semantic_masks"
+
+training:
+  epochs: 1000
+  optimizer: "adamw"
+  lr: 0.0003
+  weight_decay: 0.001
+  loss: "semantic_roi_graph"
+  label_smoothing: 0.1
+  class_weight_mode: "sqrt_inverse"
+  use_class_weights: true
+  scheduler: "cosine_annealing_warm_restart"
+  T_0: 30
+  T_mult: 2
+  eta_min: 0.000001
+  patience: 35
+  lr_patience: 7
+  gradient_clip_norm: 5.0
+  use_ema: true
+  ema_decay: 0.999
+
+  # Auxiliary loss flags
+  enable_micro_diversity: true
+  enable_macro_diversity: false
+  enable_region_contrastive: true
+  enable_semantic_consistency: true
+  enable_compositional_program: true
+  enable_semantic_disentanglement: true
+  enable_region_coordination: false
+  enable_topology_alignment: false
+  enable_program_sparsity: true
+  enable_program_diversity: true
+  enable_fused_aux_ce: true
+
+  # Auxiliary loss weights
+  micro_motif_diversity_weight: 0.02
+  macro_motif_diversity_weight: 0.02
+  semantic_consistency_weight: 0.03
+  compositional_program_weight: 0.02
+  program_diversity_weight: 0.01
+  fused_aux_ce_weight: 0.2
+  region_contrastive_weight: 0.04
+  semantic_disentanglement_weight: 0.02
+  program_sparsity_weight: 0.02
+
+logging:
+  use_wandb: false

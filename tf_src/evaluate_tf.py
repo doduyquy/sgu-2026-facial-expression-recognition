@@ -16,17 +16,47 @@ from tf_src.evaluation.evaluator_tf import evaluate_test_set_tf
 def main():
     parser = argparse.ArgumentParser(description="Evaluate Semantic ROI Graph FER in TensorFlow")
     parser.add_argument("--config", type=str, default="tf_src/configs/semantic_roi_graph_tf.yaml")
+    parser.add_argument("--env", type=str, default="local", choices=["local", "kaggle"], help="Environment: local or kaggle")
     parser.add_argument("--weights", type=str, required=True, help="Path to .weights.h5 checkpoint")
     parser.add_argument("--data_dir", type=str, default=None)
     parser.add_argument("--masks_dir", type=str, default=None)
-    parser.add_argument("--save_dir", type=str, default="outputs/evaluation_tf")
-    args = parser.parse_args()
+    parser.add_argument("--save_dir", type=str, default=None)
+    args, _ = parser.parse_known_args()
 
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
 
     data_dir = args.data_dir or config.get("data", {}).get("data_dir", "dataset/fer13-split")
     masks_dir = args.masks_dir or config.get("data", {}).get("semantic_masks_dir", None)
+    save_dir = args.save_dir or "outputs/evaluation_tf"
+
+    if args.env == "kaggle":
+        candidates_data = [
+            Path("/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split"),
+            Path("/kaggle/input/datasets/doduyquynii/fer13-split"),
+            Path("/kaggle/input/fer13-split/fer13-split"),
+            Path("/kaggle/input/fer13-split"),
+        ]
+        if not Path(data_dir).exists():
+            for c in candidates_data:
+                if (c / "test.csv").exists():
+                    data_dir = str(c)
+                    break
+
+        candidates_masks = [
+            Path("/kaggle/input/datasets/pha1t2/maskfer2013/semantic_masks"),
+            Path("/kaggle/input/maskfer2013/semantic_masks"),
+            Path("/kaggle/input/semantic_masks"),
+        ]
+        if masks_dir is None or not Path(masks_dir).exists():
+            for m in candidates_masks:
+                if m.exists():
+                    masks_dir = str(m)
+                    break
+
+        if args.save_dir is None:
+            save_dir = "/kaggle/working/outputs/evaluation_tf"
+
     batch_size = int(config.get("data", {}).get("batch_size", 64))
 
     print(f"--> Initializing TensorFlow Test Data Loader from {data_dir}...")
@@ -52,7 +82,7 @@ def main():
     model.load_weights(args.weights)
 
     print("--> Running test evaluation with Horizontal Flip TTA...")
-    evaluate_test_set_tf(model, test_loader, save_dir=args.save_dir)
+    evaluate_test_set_tf(model, test_loader, save_dir=save_dir)
 
 
 if __name__ == "__main__":
