@@ -1151,15 +1151,63 @@ class SemanticROIGraphFER(nn.Module):
         region_mask: Optional[torch.Tensor] = None,
         region_confidence: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Public forward: dispatches to TTA or single-image path.
-        
-        NOTE: Built-in TTA removed. TTA is now handled exclusively by
-        apply_multi_scale_tta() in src/models/utils.py during evaluation.
-        This ensures clean (non-inflated) val_acc during training and
-        halves validation compute time.
-        """
+        """Public forward: dispatches to TTA or single-image path."""
         if image.dim() == 5:
             return self._forward_tta(image, bboxes, region_mask, region_confidence)
+            
+        if not self.training and bboxes is not None:
+            # 1. Forward original image and bboxes
+            outputs_orig = self._forward_single(image, bboxes, region_mask, region_confidence)
+            
+            # 2. Horizontal Flip TTA: flip image along width dimension (dim=-1)
+            flipped_image = torch.flip(image, dims=[-1])
+            
+            # Flip bboxes: x1_new = (w - 1.0) - x2, x2_new = (w - 1.0) - x1
+            w = float(self.config.bbox_input_size)
+            flipped_bboxes = bboxes.clone()
+            flipped_bboxes[..., 0] = (w - 1.0) - bboxes[..., 2]
+            flipped_bboxes[..., 2] = (w - 1.0) - bboxes[..., 0]
+            
+            # Swap symmetric left/right regions: 
+            # 1 (left eyebrow) <-> 2 (right eyebrow)
+            # 4 (left eye) <-> 5 (right eye)
+            # 7 (left mouth corner) <-> 8 (right mouth corner)
+            swap_pairs = [(1, 2), (4, 5), (7, 8)]
+            for idx_l, idx_r in swap_pairs:
+                tmp = flipped_bboxes[:, idx_l].clone()
+                flipped_bboxes[:, idx_l] = flipped_bboxes[:, idx_r]
+                flipped_bboxes[:, idx_r] = tmp
+                
+            flipped_region_mask = None
+            if region_mask is not None:
+                flipped_region_mask = region_mask.clone()
+                for idx_l, idx_r in swap_pairs:
+                    tmp = flipped_region_mask[:, idx_l].clone()
+                    flipped_region_mask[:, idx_l] = flipped_region_mask[:, idx_r]
+                    flipped_region_mask[:, idx_r] = tmp
+                    
+            flipped_region_confidence = None
+            if region_confidence is not None:
+                flipped_region_confidence = region_confidence.clone()
+                for idx_l, idx_r in swap_pairs:
+                    tmp = flipped_region_confidence[:, idx_l].clone()
+                    flipped_region_confidence[:, idx_l] = flipped_region_confidence[:, idx_r]
+                    flipped_region_confidence[:, idx_r] = tmp
+                    
+            # 3. Forward flipped image and bboxes
+            outputs_flipped = self._forward_single(
+                flipped_image, flipped_bboxes, flipped_region_mask, flipped_region_confidence
+            )
+            
+            # 4. Average predictions for logit/probability keys
+            avg_outputs = {}
+            _avg_keys = ("logits", "logits_motif", "logits_fused", "semantic_program_scores")
+            for k, val in outputs_orig.items():
+                if k in _avg_keys and torch.is_tensor(val) and k in outputs_flipped:
+                    avg_outputs[k] = 0.5 * (val + outputs_flipped[k])
+                else:
+                    avg_outputs[k] = val
+            return avg_outputs
 
         return self._forward_single(image, bboxes, region_mask, region_confidence)
 
