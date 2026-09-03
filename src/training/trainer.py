@@ -366,6 +366,31 @@ class Trainer:
             bal_acc = float(np.mean(per_recall))
         return macro_f1, bal_acc, per_recall, per_f1
 
+    def _sync_ema_bn(self):
+        """Copy BatchNorm running statistics from training model to EMA model.
+        
+        PyTorch's AveragedModel.update_parameters() only updates weight params,
+        NOT the running_mean/running_var of BatchNorm layers. Without this sync,
+        the EMA model evaluates with stale/initial BN statistics, causing
+        severely degraded validation accuracy.
+        """
+        if not hasattr(self, 'ema_model'):
+            return
+        src_modules = dict(self.model.named_modules())
+        for name, ema_module in self.ema_model.named_modules():
+            # AveragedModel wraps model under .module
+            src_name = name.replace("module.", "", 1) if name.startswith("module.") else name
+            if src_name not in src_modules:
+                continue
+            src_module = src_modules[src_name]
+            if hasattr(src_module, 'running_mean') and hasattr(ema_module, 'running_mean'):
+                if src_module.running_mean is not None:
+                    ema_module.running_mean.copy_(src_module.running_mean)
+                if src_module.running_var is not None:
+                    ema_module.running_var.copy_(src_module.running_var)
+                if hasattr(src_module, 'num_batches_tracked') and hasattr(ema_module, 'num_batches_tracked'):
+                    ema_module.num_batches_tracked.copy_(src_module.num_batches_tracked)
+
     def validate(self):
         eval_model = getattr(self, 'ema_model', self.model)
         eval_model.eval()
@@ -560,6 +585,7 @@ class Trainer:
                 self._runtime_au_contrastive_weight = self.au_contrastive_weight
 
             train_loss, train_acc = self.train_one_epoch()
+            self._sync_ema_bn()  # Fix: Copy BN stats from model → EMA before validation
             val_loss, val_acc = self.validate()
 
             all_train_loss.append(train_loss)

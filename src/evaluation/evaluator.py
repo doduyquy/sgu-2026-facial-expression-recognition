@@ -67,7 +67,7 @@ def evaluate_and_show(model, test_loader, testset_path, device, save_dir, use_tt
                 else:
                     outputs = model(images)
 
-            logits = outputs["logits"] if isinstance(outputs, dict) else (outputs[0] if isinstance(outputs, (list, tuple)) else outputs)
+            logits = outputs.get("logits_fused", outputs.get("logits")) if isinstance(outputs, dict) else (outputs[0] if isinstance(outputs, (list, tuple)) else outputs)
             if logit_bias is not None:
                 bias_tensor = torch.as_tensor(logit_bias, dtype=logits.dtype, device=logits.device).view(1, -1)
                 logits = logits + bias_tensor
