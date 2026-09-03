@@ -125,13 +125,13 @@ class SemanticROIGraphFERTF(Model):
         self.structure_gate = self.add_weight(
             name="structure_gate",
             shape=(1, self.num_classes),
-            initializer=tf.zeros_initializer(),
+            initializer="zeros",
             trainable=True
         )
         self.logit_scale = self.add_weight(
             name="logit_scale",
             shape=(1,),
-            initializer=tf.ones_initializer(),
+            initializer="ones",
             trainable=True
         )
 

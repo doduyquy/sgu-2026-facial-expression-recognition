@@ -9,6 +9,7 @@ Anti-Overfitting Features:
 """
 
 from typing import Tuple, Dict, Optional
+import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers
 
@@ -464,10 +465,11 @@ class SemanticProgramExecutorTF(layers.Layer):
         ])
 
         # Dynamic structure weights: region_sim (1.0), topology_sim (0.5), composition_sim (0.25)
+        sim_init = np.tile(np.array([[[[1.0, 0.5, 0.25]]]], dtype=np.float32), (1, num_classes, 1, 1))
         self.sim_weights = self.add_weight(
             name="sim_weights",
             shape=(1, num_classes, 1, 3),
-            initializer=tf.constant_initializer([[[[1.0, 0.5, 0.25]]]]),
+            initializer=tf.constant_initializer(sim_init),
             trainable=True
         )
 
