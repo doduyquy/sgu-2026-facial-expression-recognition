@@ -23,17 +23,25 @@ def main():
     parser.add_argument("--save_dir", type=str, default=None)
     args, _ = parser.parse_known_args()
 
-    cfg_path = Path(args.config)
-    if not cfg_path.exists():
-        for candidate in [
-            Path("configs") / cfg_path.name,
-            Path("tf_src/configs") / cfg_path.name,
-            Path("../configs") / cfg_path.name,
-        ]:
-            if candidate.exists():
-                cfg_path = candidate
-                break
+    def _find_config(raw_str: str) -> Path:
+        p = Path(raw_str)
+        stem = p.stem if p.suffix in [".yaml", ".yml"] else p.name
+        candidates = [
+            p,
+            p.with_suffix(".yaml"),
+            Path("configs") / f"{stem}.yaml",
+            Path("configs") / stem,
+            Path("tf_src/configs") / f"{stem}.yaml",
+            Path("../configs") / f"{stem}.yaml",
+            Path("/kaggle/working/sgu-2026-facial-expression-recognition/configs") / f"{stem}.yaml",
+            Path("/kaggle/working/configs") / f"{stem}.yaml",
+        ]
+        for cand in candidates:
+            if cand.is_file():
+                return cand.resolve()
+        return p.with_suffix(".yaml")
 
+    cfg_path = _find_config(args.config)
     print(f"--> [Config] Loading: {cfg_path}")
     with open(cfg_path, "r") as f:
         config = yaml.safe_load(f)
