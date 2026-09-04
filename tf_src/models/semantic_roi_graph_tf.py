@@ -159,21 +159,31 @@ class SemanticROIGraphFERTF(Model):
 
         # Semantic Manifold Mixup (Feature-Level Mixup, 100% bbox-safe)
         mixup_lam = tf.constant(1.0, dtype=tf.float32)
-        mixup_perm = None
+        mixup_perm = tf.range(batch_size)
+
         if training and self.enable_manifold_mixup and self.manifold_mixup_prob > 0.0:
-            rand_val = tf.random.uniform([], 0.0, 1.0)
-            if rand_val < self.manifold_mixup_prob:
+            def _apply_mixup():
                 alpha = self.manifold_mixup_alpha
                 gamma_a = tf.random.gamma([], alpha, 1.0)
                 gamma_b = tf.random.gamma([], alpha, 1.0)
                 lam = gamma_a / (gamma_a + gamma_b + 1e-8)
-                mixup_lam = tf.where(lam < 0.5, 1.0 - lam, lam)
-                mixup_perm = tf.random.shuffle(tf.range(batch_size))
+                lam_clamped = tf.where(lam < 0.5, 1.0 - lam, lam)
+                perm = tf.random.shuffle(tf.range(batch_size))
 
-                semantic_states_perm = tf.gather(semantic_states, mixup_perm)
-                global_ctx_perm = tf.gather(global_ctx, mixup_perm)
-                semantic_states = mixup_lam * semantic_states + (1.0 - mixup_lam) * semantic_states_perm
-                global_ctx = mixup_lam * global_ctx + (1.0 - mixup_lam) * global_ctx_perm
+                s_perm = tf.gather(semantic_states, perm)
+                g_perm = tf.gather(global_ctx, perm)
+                s_mixed = lam_clamped * semantic_states + (1.0 - lam_clamped) * s_perm
+                g_mixed = lam_clamped * global_ctx + (1.0 - lam_clamped) * g_perm
+                return s_mixed, g_mixed, lam_clamped, perm
+
+            def _no_mixup():
+                return semantic_states, global_ctx, mixup_lam, mixup_perm
+
+            semantic_states, global_ctx, mixup_lam, mixup_perm = tf.cond(
+                tf.random.uniform([]) < self.manifold_mixup_prob,
+                _apply_mixup,
+                _no_mixup,
+            )
 
         micro_attn, motif_tokens = self.motif_matcher(semantic_states) # (B, 9, 128)
 
