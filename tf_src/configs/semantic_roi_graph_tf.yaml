@@ -60,16 +60,16 @@ training:
   use_ema: true
   ema_decay: 0.999
 
-  # Auxiliary loss flags
+  # Auxiliary loss flags (streamlined preset matching golden 72.92%)
   enable_micro_diversity: true
   enable_macro_diversity: false
-  enable_region_contrastive: true
-  enable_semantic_consistency: true
+  enable_region_contrastive: false # Disabled: avoids gradient fighting
+  enable_semantic_consistency: false # Disabled: redundant centroid penalty
   enable_compositional_program: true
-  enable_semantic_disentanglement: true
+  enable_semantic_disentanglement: false # Disabled: forces artificial orthogonality
   enable_region_coordination: false
   enable_topology_alignment: false
-  enable_program_sparsity: true
+  enable_program_sparsity: false # Disabled: prevents gradient choking
   enable_program_diversity: true
   enable_fused_aux_ce: true
 

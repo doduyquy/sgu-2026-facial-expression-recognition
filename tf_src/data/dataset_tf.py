@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Tuple, Optional
 import numpy as np
 import pandas as pd
+import cv2
 import tensorflow as tf
 
 
@@ -85,30 +86,41 @@ def augment_sample_np(image, label, bboxes, mask, conf):
 
     # 2. Synchronized Random Affine (50% prob)
     if np.random.rand() < 0.5:
-        angle = np.random.uniform(-10.0, 10.0)
-        tx = np.random.uniform(-4.0, 4.0)
-        ty = np.random.uniform(-4.0, 4.0)
-        scale = np.random.uniform(0.9, 1.1)
+        angle = float(np.random.uniform(-10.0, 10.0))
+        tx = float(np.random.uniform(-4.0, 4.0))
+        ty = float(np.random.uniform(-4.0, 4.0))
+        scale = float(np.random.uniform(0.9, 1.1))
 
-        # Simple 2D affine on image
-        theta = np.radians(angle)
-        cos_t, sin_t = np.cos(theta), np.sin(theta)
         cx, cy = 23.5, 23.5
+        M = cv2.getRotationMatrix2D((cx, cy), angle, scale)
+        M[0, 2] += tx
+        M[1, 2] += ty
 
+        # Transform 2D image synchronously
+        img_2d = image[:, :, 0] if image.ndim == 3 else image
+        img_warped = cv2.warpAffine(
+            img_2d, M, (48, 48), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT
+        )
+        image = img_warped.reshape(48, 48, 1)
+
+        # Transform bboxes with the exact same transformation matrix M
         new_boxes = bboxes.copy()
         for r in range(9):
             if mask[r] == 0:
                 continue
             x1, y1, x2, y2 = bboxes[r]
-            corners = np.array([[x1, y1], [x2, y1], [x1, y2], [x2, y2]])
-            dx = corners[:, 0] - cx
-            dy = corners[:, 1] - cy
-            x_new = dx * scale * cos_t + dy * scale * sin_t + cx + tx
-            y_new = -dx * scale * sin_t + dy * scale * cos_t + cy + ty
-            x1_n = np.clip(np.min(x_new), 0.0, 47.0)
-            y1_n = np.clip(np.min(y_new), 0.0, 47.0)
-            x2_n = np.clip(np.max(x_new), 0.0, 47.0)
-            y2_n = np.clip(np.max(y_new), 0.0, 47.0)
+            corners = np.array(
+                [[x1, y1, 1.0], [x2, y1, 1.0], [x1, y2, 1.0], [x2, y2, 1.0]],
+                dtype=np.float32,
+            )
+            transformed = corners @ M.T
+            x_coords = transformed[:, 0]
+            y_coords = transformed[:, 1]
+
+            x1_n = float(np.clip(np.min(x_coords), 0.0, 47.0))
+            y1_n = float(np.clip(np.min(y_coords), 0.0, 47.0))
+            x2_n = float(np.clip(np.max(x_coords), 0.0, 47.0))
+            y2_n = float(np.clip(np.max(y_coords), 0.0, 47.0))
 
             if (x2_n - x1_n < 2.0) or (y2_n - y1_n < 2.0):
                 mask[r] = 0.0
@@ -116,6 +128,12 @@ def augment_sample_np(image, label, bboxes, mask, conf):
             else:
                 new_boxes[r] = [x1_n, y1_n, x2_n, y2_n]
         bboxes = new_boxes
+
+    # 3. Photometric / Color Augmentation (Random Contrast & Brightness)
+    if np.random.rand() < 0.5:
+        contrast = float(np.random.uniform(0.8, 1.2))
+        brightness = float(np.random.uniform(-0.1, 0.1))
+        image = np.clip(image * contrast + brightness, -1.0, 1.0)
 
     return image.astype(np.float32), label, bboxes.astype(np.float32), mask.astype(np.float32), conf.astype(np.float32)
 

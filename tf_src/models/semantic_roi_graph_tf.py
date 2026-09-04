@@ -156,10 +156,29 @@ class SemanticROIGraphFERTF(Model):
 
         # 3. State encoding & motif matching
         semantic_states = self.state_encoder(region_embeddings, training=training) # (B, 9, 128)
+
+        # Semantic Manifold Mixup (Feature-Level Mixup, 100% bbox-safe)
+        mixup_lam = tf.constant(1.0, dtype=tf.float32)
+        mixup_perm = None
+        if training and self.enable_manifold_mixup and self.manifold_mixup_prob > 0.0:
+            rand_val = tf.random.uniform([], 0.0, 1.0)
+            if rand_val < self.manifold_mixup_prob:
+                alpha = self.manifold_mixup_alpha
+                gamma_a = tf.random.gamma([], alpha, 1.0)
+                gamma_b = tf.random.gamma([], alpha, 1.0)
+                lam = gamma_a / (gamma_a + gamma_b + 1e-8)
+                mixup_lam = tf.where(lam < 0.5, 1.0 - lam, lam)
+                mixup_perm = tf.random.shuffle(tf.range(batch_size))
+
+                semantic_states_perm = tf.gather(semantic_states, mixup_perm)
+                global_ctx_perm = tf.gather(global_ctx, mixup_perm)
+                semantic_states = mixup_lam * semantic_states + (1.0 - mixup_lam) * semantic_states_perm
+                global_ctx = mixup_lam * global_ctx + (1.0 - mixup_lam) * global_ctx_perm
+
         micro_attn, motif_tokens = self.motif_matcher(semantic_states) # (B, 9, 128)
 
         # 4. Pairwise interaction & higher-order composition
-        interaction_states, _, gates = self.interaction_block(motif_tokens, region_mask=region_mask, training=training)
+        interaction_states, _, raw_gates = self.interaction_block(motif_tokens, region_mask=region_mask, training=training)
         comp_out = self.composition_graph(interaction_states, region_mask=region_mask, region_confidence=region_confidence, training=training)
         cross_tokens = comp_out["cross_region_tokens"] # (B, 8, 128)
 
@@ -176,7 +195,7 @@ class SemanticROIGraphFERTF(Model):
             composed_states,
             cross_tokens,
             region_mask=region_mask,
-            interaction_gates=gates,
+            interaction_gates=raw_gates,
             routing_weights=routing_weights
         )
         logits_motif = prog_out["program_scores"] # (B, 7)
@@ -203,6 +222,8 @@ class SemanticROIGraphFERTF(Model):
             "semantic_states": semantic_states,
             "cross_region_tokens": cross_tokens,
             "emotion_latent": emotion_latent,
+            "mixup_lam": mixup_lam,
+            "mixup_perm": mixup_perm,
         }
 
     def _flip_bboxes(self, bboxes: tf.Tensor) -> tf.Tensor:

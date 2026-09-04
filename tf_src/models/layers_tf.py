@@ -286,22 +286,24 @@ class SemanticInteractionBlockTF(layers.Layer):
         right = tf.tile(tf.expand_dims(semantic_states, 1), [1, r, 1, 1])
         pair_input = tf.concat([left, right, left - right, left * right], axis=-1)
 
-        gates = tf.squeeze(self.edge_gate(pair_input, training=training), axis=-1) + 0.1
+        raw_gates = tf.squeeze(self.edge_gate(pair_input, training=training), axis=-1) + 0.1
 
-        # DropEdge during training to prevent over-smoothing
+        # Computational fix: Mask out invalid regions from interaction
+        if region_mask is not None:
+            pair_mask = tf.expand_dims(region_mask, -1) * tf.expand_dims(region_mask, -2)
+            raw_gates = raw_gates * pair_mask
+
+        # Graph DropEdge for message passing to prevent over-smoothing
+        gates = raw_gates
         if training and self.dropedge_rate > 0.0:
             mask = tf.cast(tf.random.uniform(tf.shape(gates)) > self.dropedge_rate, tf.float32)
             gates = gates * mask / (1.0 - self.dropedge_rate)
-
-        if region_mask is not None:
-            pair_mask = tf.expand_dims(region_mask, -1) * tf.expand_dims(region_mask, -2)
-            gates = gates * pair_mask
 
         messages = self.edge_message(pair_input, training=training)
         interaction_tensor = tf.expand_dims(gates, -1) * messages
         interaction_summary = tf.reduce_sum(interaction_tensor, axis=2) / tf.maximum(tf.reduce_sum(gates, axis=2, keepdims=True), 1e-4)
         updated_states = self.norm(semantic_states + interaction_summary)
-        return updated_states, interaction_tensor, gates
+        return updated_states, interaction_tensor, raw_gates
 
 
 class CrossRegionCompositionGraphTF(layers.Layer):
@@ -492,6 +494,7 @@ class SemanticProgramExecutorTF(layers.Layer):
             target_topo = tf.expand_dims(tf.sigmoid(self.topology_logits), 0)
             topology_mse = tf.square(observed - target_topo)
             topology_sim = 1.0 - tf.reduce_mean(topology_mse, axis=[-1, -2])
+            topology_sim = tf.clip_by_value(topology_sim, 0.0, 1.0)
         else:
             topology_sim = tf.ones_like(region_sim)
 
