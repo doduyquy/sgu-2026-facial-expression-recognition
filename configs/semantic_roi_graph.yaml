@@ -64,21 +64,22 @@ training:
   sce_alpha: 1.0
   sce_beta: 1.0
 
-  # ── Loss enable flags (light preset) ──────────────────────────────────────
-  # Only 3 auxiliary losses are active. All others disabled to reduce overfit.
+  # ── Loss enable flags (streamlined preset) ──────────────────────────────────
+  # Retain only synergistic losses: Micro Diversity, Compositional Program, Program Diversity, Fused Aux CE.
+  # Disabled conflicting losses that cause gradient fighting and plateau:
   enable_micro_diversity: true
   enable_macro_diversity: false # Redundant, replaced by program_diversity
-  enable_region_contrastive: true
-  enable_semantic_consistency: true
+  enable_region_contrastive: false # Disabled: fights small-sample minority classes
+  enable_semantic_consistency: false # Disabled: redundant centroid penalty
   enable_compositional_program: true
-  enable_semantic_disentanglement: true
+  enable_semantic_disentanglement: false # Disabled: forces artificial orthogonality
   enable_region_coordination: false
   enable_topology_alignment: false
   enable_region_composition_contrastive: false
-  enable_program_sparsity: True
+  enable_program_sparsity: false # Disabled: prevents gradient choking
   enable_program_diversity: true
 
-  # Scenario E-base: fused branch disabled
+  # Fused branch supervision
   enable_fused_aux_ce: true
 
   # ── Weights for enabled losses ─────────────────────────────────────────────

@@ -576,24 +576,25 @@ class SemanticInteractionBlock(nn.Module):
         right = semantic_states.unsqueeze(1).expand(b, r, r, s)
         pair_input = torch.cat([left, right, left - right, left * right], dim=-1)
         
-        gates = self.edge_gate(pair_input).squeeze(-1) + 0.1
-        
-        # Kịch bản 2: Graph DropEdge
-        # Randomly sever connections between facial regions during training
-        # to prevent over-smoothing and force robust path discovery.
-        if self.dropedge_rate > 0.0:
-            gates = F.dropout(gates, p=self.dropedge_rate, training=self.training)
+        raw_gates = self.edge_gate(pair_input).squeeze(-1) + 0.1
         
         # Computational fix: Mask out invalid regions from interaction
         if region_mask is not None:
             pair_mask = region_mask.unsqueeze(-1) * region_mask.unsqueeze(-2)
-            gates = gates * pair_mask
+            raw_gates = raw_gates * pair_mask
+
+        # Kịch bản 2: Graph DropEdge for message passing
+        # Randomly sever connections between facial regions during training
+        # to prevent over-smoothing and force robust path discovery.
+        gates = raw_gates
+        if self.dropedge_rate > 0.0:
+            gates = F.dropout(gates, p=self.dropedge_rate, training=self.training)
 
         messages = self.edge_message(pair_input)
         interaction_tensor = gates.unsqueeze(-1) * messages
         interaction_summary = interaction_tensor.sum(dim=2) / (gates.sum(dim=2, keepdim=True).clamp_min(1e-4))
         updated_states = self.norm(semantic_states + interaction_summary)
-        return updated_states, interaction_tensor, gates
+        return updated_states, interaction_tensor, raw_gates
 
 
 class CrossRegionCompositionGraph(nn.Module):
@@ -834,6 +835,7 @@ class SemanticProgramExecutor(nn.Module):
                 topology_sim = 1.0 - (topology_mse.sum(dim=(-1, -2)) / pair_mask.sum(dim=(-1, -2)).clamp_min(1.0))
             else:
                 topology_sim = 1.0 - topology_mse.mean(dim=(-1, -2))
+            topology_sim = torch.clamp(topology_sim, min=0.0, max=1.0)
         else:
             topology_sim = torch.ones_like(region_sim)
 
@@ -1042,8 +1044,8 @@ class SemanticROIGraphFER(nn.Module):
         )
 
         # Per-class gate: each emotion class learns its own graph-vs-global balance.
-        # Init with -0.5 → sigmoid(-0.5) ≈ 0.38, slightly below 0.5 to favour the graph branch early.
-        self.semantic_structure_gate = nn.Parameter(torch.full((config.num_classes,), -0.5))
+        # Init with 0.0 → sigmoid(0.0) = 0.50 (balanced 50% graph, 50% global).
+        self.semantic_structure_gate = nn.Parameter(torch.zeros(config.num_classes))
 
         # Solution 1: Logit Scale Alignment (LayerNorm per branch + learnable logit scale)
         self.enable_logit_alignment = bool(getattr(config, "enable_logit_alignment", True))
@@ -1308,8 +1310,9 @@ class SemanticROIGraphFER(nn.Module):
         region_confidence = region_confidence * region_mask
 
         semantic_state_tokens = self.semantic_state_encoder(region_embeddings)
-        # Breakthrough 2: Add Learnable Region Positional Embedding
-        semantic_state_tokens = semantic_state_tokens + self.region_pos_embed
+        # Revert to clean 72.92%: Disable region_pos_embed to preserve raw micro-expression sensitivity
+        if getattr(self.config, "use_region_pos_embed", False) and hasattr(self, "region_pos_embed"):
+            semantic_state_tokens = semantic_state_tokens + self.region_pos_embed
         global_semantic_context = self.global_context(feature_map)
 
         # Solution 2: Semantic Manifold Mixup (Feature-Level Mixup, 100% bbox-safe)
