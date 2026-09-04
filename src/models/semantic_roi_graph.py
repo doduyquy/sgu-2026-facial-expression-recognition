@@ -1043,9 +1043,9 @@ class SemanticROIGraphFER(nn.Module):
             nn.GELU(),
         )
 
-        # Per-class gate: each emotion class learns its own graph-vs-global balance.
-        # Init with 0.0 → sigmoid(0.0) = 0.50 (balanced 50% graph, 50% global).
-        self.semantic_structure_gate = nn.Parameter(torch.zeros(config.num_classes))
+        # Per-class residual gate: initialized with -0.8473 → sigmoid(-0.8473) ≈ 0.30
+        # logits = logits_fused + structure_gate * logits_motif
+        self.semantic_structure_gate = nn.Parameter(torch.full((config.num_classes,), -0.8473))
 
         # Solution 1: Logit Scale Alignment (LayerNorm per branch + learnable logit scale)
         self.enable_logit_alignment = bool(getattr(config, "enable_logit_alignment", True))
@@ -1390,14 +1390,15 @@ class SemanticROIGraphFER(nn.Module):
         structure_gate = torch.sigmoid(self.semantic_structure_gate).view(1, -1)
         logits_motif = semantic_program_scores
 
-        # Solution 1: Logit Scale Alignment (Standardized blending)
+        # Residual Logit Blending:
+        # logits_fused (global branch) retains 100% capacity (protecting neutral & happy),
+        # while logits_motif (graph branch) provides fine-grained Action Unit corrections scaled by structure_gate (~0.30).
         if self.enable_logit_alignment:
             logits_fused_norm = self.fused_logit_norm(logits_fused)
             logits_motif_norm = self.motif_logit_norm(logits_motif)
-            blended_norm = (1.0 - structure_gate) * logits_fused_norm + structure_gate * logits_motif_norm
-            logits = self.logit_scale * blended_norm
+            logits = logits_fused_norm + structure_gate * logits_motif_norm
         else:
-            logits = (1.0 - structure_gate) * logits_fused + structure_gate * logits_motif
+            logits = logits_fused + structure_gate * logits_motif
 
         return {
             "logits": logits,

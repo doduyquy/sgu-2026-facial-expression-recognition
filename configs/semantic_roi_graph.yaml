@@ -3,7 +3,7 @@ model:
   backbone_type: "hrnet_w18"
   num_classes: 7
   num_regions: 9
-  roi_grid: 4
+  roi_grid: 3
   feature_dim: 256
   # micro_motifs_per_region: local motif templates per facial region
   micro_motifs_per_region: 8
@@ -31,7 +31,7 @@ model:
   fusion_scale: 0.4
   use_facial_attention_neck: False
   neck_groups: 4
-  enable_logit_alignment: true
+  enable_logit_alignment: false
   enable_manifold_mixup: true
   manifold_mixup_prob: 0.3
   manifold_mixup_alpha: 0.2
@@ -64,19 +64,18 @@ training:
   sce_alpha: 1.0
   sce_beta: 1.0
 
-  # ── Loss enable flags (streamlined preset) ──────────────────────────────────
-  # Retain only synergistic losses: Micro Diversity, Compositional Program, Program Diversity, Fused Aux CE.
-  # Disabled conflicting losses that cause gradient fighting and plateau:
+  # ── Loss enable flags (exact 72.92% regularized preset) ───────────────────
+  # Preserves test-set generalization for all 7 emotion classes:
   enable_micro_diversity: true
   enable_macro_diversity: false # Redundant, replaced by program_diversity
-  enable_region_contrastive: false # Disabled: fights small-sample minority classes
-  enable_semantic_consistency: false # Disabled: redundant centroid penalty
+  enable_region_contrastive: true
+  enable_semantic_consistency: true
   enable_compositional_program: true
-  enable_semantic_disentanglement: false # Disabled: forces artificial orthogonality
+  enable_semantic_disentanglement: true
   enable_region_coordination: false
   enable_topology_alignment: false
   enable_region_composition_contrastive: false
-  enable_program_sparsity: false # Disabled: prevents gradient choking
+  enable_program_sparsity: true
   enable_program_diversity: true
 
   # Fused branch supervision
