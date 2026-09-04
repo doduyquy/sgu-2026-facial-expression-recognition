@@ -109,7 +109,8 @@ class TrainerTF:
 
         trainable_vars = self.model.trainable_variables
         gradients = tape.gradient(total_loss, trainable_vars)
-        self.optimizer.apply_gradients(zip(gradients, trainable_vars))
+        grads_and_vars = [(g, v) for g, v in zip(gradients, trainable_vars) if g is not None]
+        self.optimizer.apply_gradients(grads_and_vars)
 
         preds = tf.argmax(outputs["logits"], axis=1, output_type=tf.int32)
         corrects = tf.reduce_sum(tf.cast(tf.equal(preds, labels), tf.float32))
@@ -184,7 +185,22 @@ class TrainerTF:
 
         print(f"\n--> Start TensorFlow training for {self.epochs} epochs with patience={self.patience}...")
 
+        # Compute cycle restart epoch boundaries to prevent premature early stopping
+        t_0 = int(self.train_cfg.get("T_0", 30))
+        t_mult = int(self.train_cfg.get("T_mult", 2))
+        restart_epochs = set()
+        cur_ep = t_0 + 1
+        cur_len = t_0 * t_mult
+        while cur_ep <= self.epochs:
+            restart_epochs.add(cur_ep)
+            cur_ep += cur_len
+            cur_len = int(cur_len * t_mult)
+
         for epoch in range(1, self.epochs + 1):
+            if epoch in restart_epochs:
+                print(f"\t--> [Cosine Restart] Cycle boundary reached at Ep {epoch}. Resetting patience counter.")
+                patience_counter = 0
+
             train_loss, train_acc = self.train_one_epoch()
             val_loss, val_acc, macro_f1 = self.validate()
 

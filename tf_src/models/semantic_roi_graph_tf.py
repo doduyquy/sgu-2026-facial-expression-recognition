@@ -46,7 +46,7 @@ class SemanticROIGraphFERTF(Model):
         if backbone_type == "hrnet_w18":
             self.backbone = HRNetW18TF(feature_dim=self.feature_dim, out_size=out_size)
         else:
-            self.backbone = ResNet50TF(feature_dim=self.feature_dim)
+            self.backbone = ResNet50TF(feature_dim=self.feature_dim, use_pretrained=bool(m_cfg.get("use_pretrained", True)))
 
         # 2. ROI Alignment & Micro Reasoner
         self.roi_align = SemanticRoiAlignTF(
@@ -108,16 +108,19 @@ class SemanticROIGraphFERTF(Model):
         self.global_gap = layers.GlobalAveragePooling2D()
         self.global_context = tf.keras.Sequential([
             layers.Dense(self.latent_dim),
-            layers.LayerNormalization(epsilon=1e-5),
             layers.Activation('gelu'),
+            layers.Dropout(float(m_cfg.get("dropout", 0.25))),
         ])
         self.global_fusion = tf.keras.Sequential([
             layers.Dense(self.latent_dim),
             layers.LayerNormalization(epsilon=1e-5),
             layers.Activation('gelu'),
-            layers.Dropout(float(m_cfg.get("dropout", 0.25))),
         ])
-        self.classifier = layers.Dense(self.num_classes)
+        self.classifier = tf.keras.Sequential([
+            layers.Dense(self.latent_dim, activation='gelu'),
+            layers.Dropout(float(m_cfg.get("dropout", 0.25))),
+            layers.Dense(self.num_classes),
+        ])
 
         # 7. Logit Alignment & Ensembling
         self.fused_logit_norm = layers.LayerNormalization(epsilon=1e-5)
@@ -131,7 +134,7 @@ class SemanticROIGraphFERTF(Model):
         self.logit_scale = self.add_weight(
             name="logit_scale",
             shape=(1,),
-            initializer="ones",
+            initializer=tf.constant_initializer(8.0),
             trainable=True
         )
 
@@ -148,7 +151,7 @@ class SemanticROIGraphFERTF(Model):
 
         # 1. Feature extraction
         feature_map = self.backbone(images, training=training) # (B, 12, 12, 256)
-        global_ctx = self.global_context(self.global_gap(feature_map)) # (B, 256)
+        global_ctx = self.global_context(self.global_gap(feature_map), training=training) # (B, 256)
 
         # 2. ROI extraction & micro reasoning
         roi_nodes = self.roi_align(feature_map, bboxes) # (B, 9, 16, 256)
@@ -212,7 +215,7 @@ class SemanticROIGraphFERTF(Model):
 
         # 7. Global fusion -> logits_fused
         fused_latent = self.global_fusion(tf.concat([emotion_latent, global_ctx], axis=-1), training=training)
-        logits_fused = self.classifier(fused_latent) # (B, 7)
+        logits_fused = self.classifier(fused_latent, training=training) # (B, 7)
 
         # 8. Logit Alignment & Ensembling
         gate = tf.sigmoid(self.structure_gate) # (1, 7)

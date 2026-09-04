@@ -18,6 +18,8 @@ def evaluate_test_set_tf(
     test_dataset: tf.data.Dataset,
     weights_path: Optional[str] = None,
     save_dir: str = "outputs/evaluation_tf",
+    logit_bias: Optional[np.ndarray] = None,
+    run_tag: Optional[str] = None,
 ) -> Dict[str, float]:
     """Run evaluation on the test set and print full classification metrics."""
     if weights_path is not None:
@@ -30,7 +32,9 @@ def evaluate_test_set_tf(
     all_preds = []
     all_targets = []
 
-    print("--> Evaluating test set with Horizontal Flip TTA...")
+    bias_tf = tf.constant(logit_bias, dtype=tf.float32) if logit_bias is not None else None
+    tag_str = f" [{run_tag}]" if run_tag else ""
+    print(f"--> Evaluating test set with Horizontal Flip TTA{tag_str}...")
     for inputs, labels in test_dataset:
         images = inputs["images"]
         bboxes = inputs["bboxes"]
@@ -42,6 +46,8 @@ def evaluate_test_set_tf(
             images, bboxes, region_mask=region_mask, region_confidence=region_confidence, training=False
         )
         logits = outputs["logits"]
+        if bias_tf is not None:
+            logits = logits + bias_tf
         preds = tf.argmax(logits, axis=1, output_type=tf.int32).numpy()
         targets = labels.numpy()
 
@@ -56,13 +62,14 @@ def evaluate_test_set_tf(
     report_df = pd.DataFrame(report_dict).transpose()
 
     print("\n" + "=" * 50)
-    print(f"--> Test Accuracy: {acc * 100:.2f}%")
+    print(f"--> Test Accuracy{tag_str}: {acc * 100:.2f}%")
     print("=" * 50)
-    print(f"--> Classification Report:\n{report_df.to_string()}\n")
+    print(f"--> Classification Report{tag_str}:\n{report_df.to_string()}\n")
 
     # Save metrics report
-    report_df.to_csv(save_path / "test_classification_report.csv")
+    prefix = f"{run_tag}_" if run_tag else ""
+    report_df.to_csv(save_path / f"{prefix}test_classification_report.csv")
     cm = confusion_matrix(y_true, y_pred)
-    np.save(save_path / "test_confusion_matrix.npy", cm)
+    np.save(save_path / f"{prefix}test_confusion_matrix.npy", cm)
 
     return {"accuracy": acc, "report": report_dict}

@@ -21,6 +21,7 @@ def main():
     parser.add_argument("--data_dir", type=str, default=None)
     parser.add_argument("--masks_dir", type=str, default=None)
     parser.add_argument("--save_dir", type=str, default=None)
+    parser.add_argument("--bias", type=str, default=None, help="Path to calibration_logit_bias_tf.json")
     args, _ = parser.parse_known_args()
 
     def _find_config(raw_str: str) -> Path:
@@ -101,8 +102,20 @@ def main():
     print(f"--> Loading weights from {args.weights}...")
     model.load_weights(args.weights)
 
+    logit_bias = None
+    run_tag = "raw"
+    if args.bias:
+        import json
+        import numpy as np
+        print(f"--> Loading logit bias from {args.bias}...")
+        with open(args.bias, "r", encoding="utf-8") as f:
+            bias_data = json.load(f)
+        logit_bias = np.array(bias_data["best_bias"], dtype=np.float32)
+        run_tag = "calibrated"
+        print(f"    Loaded bias vector: {np.round(logit_bias, 3).tolist()}")
+
     print("--> Running test evaluation with Horizontal Flip TTA...")
-    evaluate_test_set_tf(model, test_loader, save_dir=save_dir)
+    evaluate_test_set_tf(model, test_loader, save_dir=save_dir, logit_bias=logit_bias, run_tag=run_tag)
 
 
 if __name__ == "__main__":

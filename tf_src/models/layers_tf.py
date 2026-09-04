@@ -493,7 +493,12 @@ class SemanticProgramExecutorTF(layers.Layer):
             observed = tf.expand_dims(tf.expand_dims(interaction_gates, 1), 1)
             target_topo = tf.expand_dims(tf.sigmoid(self.topology_logits), 0)
             topology_mse = tf.square(observed - target_topo)
-            topology_sim = 1.0 - tf.reduce_mean(topology_mse, axis=[-1, -2])
+            if region_mask is not None:
+                pair_mask = tf.expand_dims(tf.expand_dims(tf.expand_dims(region_mask, -1) * tf.expand_dims(region_mask, -2), 1), 1)
+                topology_mse = topology_mse * pair_mask
+                topology_sim = 1.0 - (tf.reduce_sum(topology_mse, axis=[-1, -2]) / tf.maximum(tf.reduce_sum(pair_mask, axis=[-1, -2]), 1.0))
+            else:
+                topology_sim = 1.0 - tf.reduce_mean(topology_mse, axis=[-1, -2])
             topology_sim = tf.clip_by_value(topology_sim, 0.0, 1.0)
         else:
             topology_sim = tf.ones_like(region_sim)
