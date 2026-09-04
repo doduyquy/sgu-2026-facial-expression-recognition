@@ -56,7 +56,10 @@ class TrainerTF:
     def _init_ema(self):
         """Initialize EMA weights tracking."""
         if self.use_ema and self.ema_weights is None:
-            self.ema_weights = [tf.Variable(w.read_value(), trainable=False) for w in self.model.trainable_variables]
+            self.ema_weights = [
+                tf.Variable(tf.convert_to_tensor(w), trainable=False)
+                for w in self.model.trainable_variables
+            ]
 
     def _update_ema(self):
         """Update EMA parameters with decay=0.999."""
@@ -65,13 +68,13 @@ class TrainerTF:
         if self.ema_weights is None:
             self._init_ema()
         for ema_w, model_w in zip(self.ema_weights, self.model.trainable_variables):
-            ema_w.assign(self.ema_decay * ema_w + (1.0 - self.ema_decay) * model_w)
+            ema_w.assign(self.ema_decay * ema_w + (1.0 - self.ema_decay) * tf.convert_to_tensor(model_w))
 
     def _apply_ema_weights(self):
         """Temporarily apply EMA weights to model for validation."""
         if not self.use_ema or self.ema_weights is None:
             return None
-        backup_weights = [w.read_value() for w in self.model.trainable_variables]
+        backup_weights = [tf.convert_to_tensor(w) for w in self.model.trainable_variables]
         for model_w, ema_w in zip(self.model.trainable_variables, self.ema_weights):
             model_w.assign(ema_w)
         return backup_weights
