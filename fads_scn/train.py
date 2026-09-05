@@ -61,6 +61,10 @@ def main():
     # Environment-specific path resolution
     if args.env == "kaggle":
         kaggle_candidate_paths = [
+            "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split",
+            "/kaggle/input/datasets/doduyquynii/fer13-split",
+            "/kaggle/input/fer13-split/fer13-split",
+            "/kaggle/input/fer13-split",
             "/kaggle/input/sgu-2026-facial-expression-recognition/dataset/fer13-split",
             "/kaggle/input/sgu-2026-facial-expression-recognition/fer13-split",
             "/kaggle/input/fer2013/dataset/fer13-split",

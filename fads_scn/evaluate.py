@@ -57,6 +57,16 @@ def main():
 
     # Build dataset
     data_path = cfg["data"].get("data_path", "dataset/fer13-split")
+    kaggle_candidate_paths = [
+        "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split",
+        "/kaggle/input/datasets/doduyquynii/fer13-split",
+        "/kaggle/input/fer13-split/fer13-split",
+        "/kaggle/input/fer13-split",
+    ]
+    for p in kaggle_candidate_paths:
+        if os.path.exists(p):
+            data_path = p
+            break
     tf = build_transforms(args.split)
     ds = PureImageFER2013(data_path=data_path, split=args.split, transform=tf)
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=2)
