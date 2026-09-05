@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
-from tqdm import tqdm
 
 from ..evaluation.evaluator import evaluate_model
 from ..data.dataset import EMOTION_NAMES
@@ -113,8 +112,7 @@ class AttentiveSCNTrainer:
         correct = 0
         relabelled_this_epoch = 0
 
-        pbar = tqdm(self.train_loader, desc=f"Epoch {epoch+1}/{self.epochs}")
-        for images, targets, indices in pbar:
+        for images, targets, indices in self.train_loader:
             images = images.to(self.device, non_blocking=True)
             targets = targets.to(self.device, non_blocking=True)
             B = images.size(0)
@@ -161,12 +159,6 @@ class AttentiveSCNTrainer:
             correct += (preds == targets).sum().item()
             total_loss += loss.item() * B
             total_samples += B
-
-            pbar.set_postfix({
-                "loss": f"{loss.item():.4f}",
-                "acc": f"{correct/total_samples:.4f}",
-                "alpha": f"{loss_dict['mean_alpha']:.2f}",
-            })
 
         self.scheduler.step()
         epoch_loss = total_loss / max(1, total_samples)
