@@ -1,0 +1,47 @@
+model:
+  name: "attentive_scn_fer"
+  backbone: "resnet50"            # options: resnet18, resnet34, resnet50, convnext_femto
+  num_classes: 7
+  in_channels: 1                 # 48x48 grayscale
+  embed_dim: 256
+  num_attn_heads: 4              # 4 spatial attention heads discovering eyes, brows, mouth automatically
+  dropout: 0.25
+  use_pretrained: true
+  pretrained_weights_path: ""    # Optional: path to facial-pretrained weights (.pth)
+
+scn:
+  margin: 0.15                   # Margin gamma for rank regularization
+  clean_ratio: 0.70              # Top 70% lowest loss treated as confident/clean
+  rank_loss_weight: 0.10         # Weight lambda for rank regularization loss
+  rank_warmup_epochs: 5          # Start enforcing rank loss after epoch 5
+  relabel_epoch: 15              # Start dynamic relabeling after epoch 15
+  relabel_threshold: 0.80        # Confidence threshold to update noisy labels
+
+data:
+  data_path: "dataset/fer13-split"
+  batch_size: 64
+  num_workers: 2
+  input_size: 48
+  use_random_erasing: true       # Mask small random patches to force multi-region focus
+  erasing_prob: 0.30
+
+training:
+  epochs: 150
+  lr: 0.0003
+  weight_decay: 0.001
+  label_smoothing: 0.05
+  scheduler: "cosine_annealing_warm_restart"
+  T_0: 30
+  T_mult: 2
+  eta_min: 0.000001
+  patience: 35
+  use_ema: true
+  ema_decay: 0.999
+  clip_grad_norm: 2.0
+  use_class_weights: true
+  class_weight_mode: "sqrt_inverse"
+  output_dir: "outputs/fads_scn"
+
+logging:
+  wandb_project: "fer2013-fads-scn"
+  wandb_mode: "disabled"
