@@ -33,6 +33,7 @@ def parse_args():
         help="Execution environment",
     )
     parser.add_argument("--epochs", type=int, default=None, help="Override epochs")
+    parser.add_argument("--patience", type=int, default=None, help="Override early stopping patience")
     parser.add_argument("--batch_size", type=int, default=None, help="Override batch size")
     parser.add_argument("--lr", type=float, default=None, help="Override learning rate")
     parser.add_argument("--device", type=str, default=None, help="Device (cuda or cpu)")
@@ -53,6 +54,8 @@ def main():
     # Overrides
     if args.epochs is not None:
         cfg["training"]["epochs"] = args.epochs
+    if args.patience is not None:
+        cfg["training"]["patience"] = args.patience
     if args.batch_size is not None:
         cfg["data"]["batch_size"] = args.batch_size
     if args.lr is not None:
