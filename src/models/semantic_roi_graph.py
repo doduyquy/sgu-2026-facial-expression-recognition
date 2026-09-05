@@ -1043,9 +1043,18 @@ class SemanticROIGraphFER(nn.Module):
             nn.GELU(),
         )
 
-        # Per-class residual gate: initialized with -0.8473 → sigmoid(-0.8473) ≈ 0.30
+        # Idea 1: Class-Aware Adaptive Residual Gate Initialization
+        # Biological rationale based on Facial Action Units:
+        # - angry (0.40), disgust (0.45), fear (0.40): Strong localized AU deformations → high graph weight.
+        # - happy (0.10), neutral (0.10): Global relaxation / broad smile → low graph interference to protect 90%+ recall.
+        # - sad (0.25), surprise (0.35): Balanced combination of global posture & localized cues.
         # logits = logits_fused + structure_gate * logits_motif
-        self.semantic_structure_gate = nn.Parameter(torch.full((config.num_classes,), -0.8473))
+        if config.num_classes == 7:
+            target_gates = torch.tensor([0.40, 0.45, 0.40, 0.10, 0.25, 0.35, 0.10], dtype=torch.float32)
+            init_logits = torch.log(target_gates / (1.0 - target_gates))
+            self.semantic_structure_gate = nn.Parameter(init_logits)
+        else:
+            self.semantic_structure_gate = nn.Parameter(torch.full((config.num_classes,), -0.8473))
 
         # Solution 1: Logit Scale Alignment (LayerNorm per branch + learnable logit scale)
         self.enable_logit_alignment = bool(getattr(config, "enable_logit_alignment", True))
