@@ -29,10 +29,10 @@ def test_pure_image_forward_backward():
     model.train()
 
     # 2. Synthetic Batch: PURE IMAGES ONLY! (No bboxes, no masks, no landmarks)
-    B = 4
+    B = 8
     imgs = torch.randn(B, 1, 48, 48)
-    labels = torch.tensor([0, 3, 4, 6], dtype=torch.long)
-    print(f"Input shape: {imgs.shape} (Pure Images: Batch=4, Channels=1, 48x48)")
+    labels = torch.randint(0, 7, (B,))
+    print(f"Input shape: {imgs.shape} (Pure Images: Batch={B}, Channels=1, 48x48)")
 
     # 3. Forward Pass
     outputs = model(imgs, use_tta=False)

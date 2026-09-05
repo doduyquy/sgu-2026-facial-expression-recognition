@@ -68,15 +68,20 @@ class SCNLoss(nn.Module):
             label_smoothing=self.label_smoothing,
             reduction="none",
         )
+        base_ce = ce_loss_per_sample.mean()
 
         # 2. SCN Weighted Cross-Entropy Loss
-        # Downweights mislabeled/noisy samples (low alpha)
-        weighted_ce = (alpha * ce_loss_per_sample).sum() / (alpha.sum() + 1e-6)
+        # CRITICAL: Detach alpha so that minimizing classification loss does NOT pull alpha -> 0.
+        # Alpha is exclusively trained by the Rank Regularization Loss.
+        alpha_weights = alpha.detach()
+        weighted_ce = (alpha_weights * ce_loss_per_sample).sum() / (alpha_weights.sum() + 1e-6)
+
+        # Dual-anchor classification loss (base CE ensures constant gradient flow for all classes)
+        cls_loss = 0.5 * base_ce + 0.5 * weighted_ce
 
         # 3. Rank Regularization Loss
         # Enforces that clean samples (low CE loss) have higher alpha than noisy samples (high CE loss)
-        if current_epoch >= rank_warmup_epochs and B > 4:
-            # Sort batch samples by loss ascending
+        if B > 4:
             sorted_indices = torch.argsort(ce_loss_per_sample.detach())
             k_clean = max(1, int(B * self.clean_ratio))
             k_noisy = B - k_clean
@@ -92,11 +97,12 @@ class SCNLoss(nn.Module):
             rank_loss = torch.tensor(0.0, device=logits.device)
 
         # Total multi-objective loss
-        total_loss = weighted_ce + (self.rank_loss_weight * rank_loss) + (self.div_loss_weight * div_loss)
+        total_loss = cls_loss + (self.rank_loss_weight * rank_loss) + (self.div_loss_weight * div_loss)
 
         return {
             "loss": total_loss,
             "weighted_ce": weighted_ce.item(),
+            "base_ce": base_ce.item(),
             "rank_loss": rank_loss.item() if isinstance(rank_loss, torch.Tensor) else float(rank_loss),
             "div_loss": div_loss.item() if isinstance(div_loss, torch.Tensor) else float(div_loss),
             "mean_alpha": alpha.mean().item(),

@@ -48,8 +48,10 @@ class SCNHead(nn.Module):
             features: [B, embed_dim]
         Returns:
             logits: [B, num_classes]
-            alpha: [B, 1] sample confidence weights in range (0, 1)
+            alpha: [B, 1] sample confidence weights in safe range [0.10, 1.00]
         """
         logits = self.classifier(features)
-        alpha = self.importance_gate(features)
+        raw_alpha = self.importance_gate(features)
+        # Bounded in [0.10, 1.00] to strictly prevent gradient vanishing or mode collapse
+        alpha = 0.10 + 0.90 * raw_alpha
         return logits, alpha

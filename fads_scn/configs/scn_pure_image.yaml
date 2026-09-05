@@ -13,7 +13,7 @@ scn:
   margin: 0.15                   # Margin gamma for rank regularization
   clean_ratio: 0.70              # Top 70% lowest loss treated as confident/clean
   rank_loss_weight: 0.10         # Weight lambda for rank regularization loss
-  rank_warmup_epochs: 5          # Start enforcing rank loss after epoch 5
+  rank_warmup_epochs: 0          # Active from epoch 0
   relabel_epoch: 15              # Start dynamic relabeling after epoch 15
   relabel_threshold: 0.80        # Confidence threshold to update noisy labels
 
