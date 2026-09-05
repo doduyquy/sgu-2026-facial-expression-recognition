@@ -1,9 +1,9 @@
 model:
   name: "semantic_roi_graph_fer_tf"
-  backbone_type: "hrnet_w18"
+  backbone_type: "resnet50" # "resnet50" with 100% official ImageNet pretraining
   num_classes: 7
   num_regions: 9
-  roi_grid: 4
+  roi_grid: 3
   feature_dim: 256
   micro_motifs_per_region: 8
   macro_motifs_per_class: 4
@@ -14,7 +14,7 @@ model:
   macro_layers: 2
   attn_heads: 4
   dropout: 0.25
-  label_smoothing: 0.1
+  label_smoothing: 0.05
   region_dropout_prob: 0.0
   relation_temperature: 0.07
   semantic_state_dim: 128
@@ -28,7 +28,7 @@ model:
   fusion_scale: 0.4
   use_facial_attention_neck: false
   neck_groups: 4
-  enable_logit_alignment: true
+  enable_logit_alignment: false
   enable_manifold_mixup: true
   manifold_mixup_prob: 0.3
   manifold_mixup_alpha: 0.2
@@ -60,16 +60,16 @@ training:
   use_ema: true
   ema_decay: 0.999
 
-  # Auxiliary loss flags (streamlined preset matching golden 72.92%)
+  # Auxiliary loss flags (exact 72.92% regularized preset from PyTorch commit 14a7298f)
   enable_micro_diversity: true
   enable_macro_diversity: false
-  enable_region_contrastive: false # Disabled: avoids gradient fighting
-  enable_semantic_consistency: false # Disabled: redundant centroid penalty
+  enable_region_contrastive: true
+  enable_semantic_consistency: true
   enable_compositional_program: true
-  enable_semantic_disentanglement: false # Disabled: forces artificial orthogonality
+  enable_semantic_disentanglement: true
   enable_region_coordination: false
   enable_topology_alignment: false
-  enable_program_sparsity: false # Disabled: prevents gradient choking
+  enable_program_sparsity: true
   enable_program_diversity: true
   enable_fused_aux_ce: true
 

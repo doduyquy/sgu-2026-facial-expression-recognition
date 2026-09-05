@@ -50,12 +50,12 @@ class SemanticROIGraphFERTF(Model):
 
         # 2. ROI Alignment & Micro Reasoner
         self.roi_align = SemanticRoiAlignTF(
-            roi_grid=int(m_cfg.get("roi_grid", 4)),
+            roi_grid=int(m_cfg.get("roi_grid", 3)),
             bbox_input_size=int(m_cfg.get("bbox_input_size", 48)),
         )
         self.micro_reasoner = MicroGraphReasonerTF(
             dim=self.feature_dim,
-            num_nodes=int(m_cfg.get("roi_grid", 4)) ** 2,
+            num_nodes=int(m_cfg.get("roi_grid", 3)) ** 2,
             layers_count=int(m_cfg.get("micro_layers", 2)),
             heads=int(m_cfg.get("attn_heads", 4)),
             dropout=float(m_cfg.get("dropout", 0.25)),
@@ -128,7 +128,7 @@ class SemanticROIGraphFERTF(Model):
         self.structure_gate = self.add_weight(
             name="structure_gate",
             shape=(1, self.num_classes),
-            initializer="zeros",
+            initializer=tf.constant_initializer(-0.8473),
             trainable=True
         )
         self.logit_scale = self.add_weight(
@@ -217,15 +217,14 @@ class SemanticROIGraphFERTF(Model):
         fused_latent = self.global_fusion(tf.concat([emotion_latent, global_ctx], axis=-1), training=training)
         logits_fused = self.classifier(fused_latent, training=training) # (B, 7)
 
-        # 8. Logit Alignment & Ensembling
+        # 8. Residual Logit Blending (matches PyTorch 72.92% commit 14a7298f)
         gate = tf.sigmoid(self.structure_gate) # (1, 7)
         if self.enable_logit_alignment:
             fused_norm = self.fused_logit_norm(logits_fused)
             motif_norm = self.motif_logit_norm(logits_motif)
-            blended = (1.0 - gate) * fused_norm + gate * motif_norm
-            logits = self.logit_scale * blended
+            logits = fused_norm + gate * motif_norm
         else:
-            logits = (1.0 - gate) * logits_fused + gate * logits_motif
+            logits = logits_fused + gate * logits_motif
 
         return {
             "logits": logits,

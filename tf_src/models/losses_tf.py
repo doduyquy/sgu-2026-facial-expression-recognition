@@ -67,6 +67,22 @@ def semantic_consistency_loss(latent_embeddings: tf.Tensor, labels: tf.Tensor, n
     return tf.where(valid_classes > 0.0, total_loss / valid_classes, 0.0)
 
 
+def semantic_disentanglement_loss(semantic_states: tf.Tensor) -> tf.Tensor:
+    """Reduce feature redundancy across semantic state dimensions."""
+    tokens = tf.reshape(semantic_states, [-1, tf.shape(semantic_states)[-1]])
+    tokens_norm = tf.math.l2_normalize(tokens, axis=0) # across samples
+    corr = tf.matmul(tokens_norm, tokens_norm, transpose_a=True)
+    d = tf.shape(corr)[0]
+    identity = tf.eye(d)
+    off_diag = corr * (1.0 - identity)
+    return tf.reduce_mean(tf.square(off_diag))
+
+
+def program_sparsity_loss(cross_region_tokens: tf.Tensor) -> tf.Tensor:
+    """Encourage sparse, non-redundant compositional token activations."""
+    return -tf.reduce_mean(tf.square(tf.nn.softmax(cross_region_tokens, axis=-1)))
+
+
 def compute_semantic_roi_graph_losses_tf(
     model: tf.keras.Model,
     outputs: Dict[str, tf.Tensor],
@@ -175,6 +191,20 @@ def compute_semantic_roi_graph_losses_tf(
         w_consist = float(train_cfg.get("semantic_consistency_weight", 0.03))
         total_loss = total_loss + w_consist * loss_consist
         loss_dict["loss_consist"] = loss_consist
+
+    # 7. Semantic Disentanglement Loss (anti-overfitting feature redundancy penalty)
+    if train_cfg.get("enable_semantic_disentanglement", False) and "semantic_states" in outputs:
+        loss_disent = semantic_disentanglement_loss(outputs["semantic_states"])
+        w_disent = float(train_cfg.get("semantic_disentanglement_weight", 0.02))
+        total_loss = total_loss + w_disent * loss_disent
+        loss_dict["loss_disent"] = loss_disent
+
+    # 8. Program Sparsity Loss (anti-memorization load-balancing penalty)
+    if train_cfg.get("enable_program_sparsity", False) and "cross_region_tokens" in outputs:
+        loss_sparse = program_sparsity_loss(outputs["cross_region_tokens"])
+        w_sparse = float(train_cfg.get("program_sparsity_weight", 0.02))
+        total_loss = total_loss + w_sparse * loss_sparse
+        loss_dict["loss_sparse"] = loss_sparse
 
     loss_dict["loss"] = total_loss
     return loss_dict
