@@ -2,12 +2,13 @@ import torch
 import torch.nn as nn
 from .backbones import FacialBackbone
 from .spatial_attention import MultiHeadSpatialAttention
+from .latent_graph import LatentGraphReasoner
 from .scn_head import SCNHead
 
 
 class AttentiveSCNFER(nn.Module):
     """
-    Pure Image-Based Attentive Self-Cure Network for Facial Expression Recognition (FER).
+    Pure Image-Based Attentive Self-Cure Network with Latent Dynamic Graph Reasoning for FER.
     Zero dependency on bounding boxes, landmarks, or pre-extracted masks.
     
     Architecture Pipeline:
@@ -18,10 +19,16 @@ class AttentiveSCNFER(nn.Module):
           │ Feature Map F ∈ R^{B × C × 12 × 12}
           ├──► Global Average Pooling + Linear ──► f_global ∈ R^{B × D}
           │
-          └──► MultiHeadSpatialAttention ────────► f_local ∈ R^{B × D} + Attention Maps
+          └──► MultiHeadSpatialAttention ────────► M Soft Regional Tokens {h_m} + Attention Maps
+                 │
+                 ▼
+               Latent Dynamic Graph Reasoner ──► Dual-factor Dynamic Adjacency + Residual GCN
+                 │
+                 ▼
+               Node Importance Readout ─────────► f_graph ∈ R^{B × D}
           │
           ▼
-        Fusion: LayerNorm(f_global + f_local) ──► f_fused ∈ R^{B × D}
+        Fusion: LayerNorm(f_global + gate * f_graph) ──► f_fused ∈ R^{B × D}
           │
           ▼
         SCNHead:
@@ -35,7 +42,8 @@ class AttentiveSCNFER(nn.Module):
         num_classes: int = 7,
         in_channels: int = 1,
         embed_dim: int = 256,
-        num_attn_heads: int = 4,
+        num_attn_heads: int = 8,
+        use_latent_graph: bool = True,
         dropout: float = 0.25,
         use_pretrained: bool = True,
         pretrained_weights_path: str = "",
@@ -44,6 +52,8 @@ class AttentiveSCNFER(nn.Module):
         self.num_classes = num_classes
         self.in_channels = in_channels
         self.embed_dim = embed_dim
+        self.num_attn_heads = num_attn_heads
+        self.use_latent_graph = use_latent_graph
 
         # 1. Backbone adapted for 48x48
         self.backbone = FacialBackbone(
@@ -74,11 +84,21 @@ class AttentiveSCNFER(nn.Module):
             dropout=dropout,
         )
 
-        # 4. Fusion Layer
+        # 4. Latent Dynamic Graph Reasoner (Message passing between soft semantic nodes)
+        if self.use_latent_graph:
+            self.latent_graph = LatentGraphReasoner(
+                embed_dim=embed_dim,
+                num_nodes=num_attn_heads,
+                dropout=dropout,
+            )
+        else:
+            self.latent_graph = None
+
+        # 5. Fusion Layer
         self.fusion_norm = nn.LayerNorm(embed_dim)
         self.fusion_gate = nn.Parameter(torch.tensor([0.5], dtype=torch.float32))
 
-        # 5. SCN Head (Classifier + Confidence Weight)
+        # 6. SCN Head (Classifier + Confidence Weight)
         self.scn_head = SCNHead(
             embed_dim=embed_dim,
             num_classes=num_classes,
@@ -93,12 +113,20 @@ class AttentiveSCNFER(nn.Module):
         # Global feature: [B, D]
         f_global = self.global_proj(feat_map)
 
-        # Local spatial feature & attention maps: [B, D]
-        f_local, attn_maps, div_loss = self.spatial_attention(feat_map)
+        # Local spatial feature & attention maps & soft node tokens: [B, M, D]
+        f_local, attn_maps, div_loss, head_feats = self.spatial_attention(feat_map)
+
+        # Latent Dynamic Graph Reasoning over soft tokens
+        if self.use_latent_graph and self.latent_graph is not None:
+            f_rep, adj_matrix, sparsity_loss = self.latent_graph(head_feats, attn_maps)
+        else:
+            f_rep = f_local
+            adj_matrix = None
+            sparsity_loss = torch.tensor(0.0, device=x.device)
 
         # Gated residual fusion
         gate = torch.sigmoid(self.fusion_gate)
-        f_fused = self.fusion_norm(f_global + gate * f_local)
+        f_fused = self.fusion_norm(f_global + gate * f_rep)
 
         # SCN Head
         logits, alpha = self.scn_head(f_fused)
@@ -108,6 +136,8 @@ class AttentiveSCNFER(nn.Module):
             "alpha": alpha,
             "attn_maps": attn_maps,
             "diversity_loss": div_loss,
+            "adj_matrix": adj_matrix,
+            "sparsity_loss": sparsity_loss,
             "features": f_fused,
         }
 
@@ -136,7 +166,10 @@ class AttentiveSCNFER(nn.Module):
                 "alpha": avg_alpha,
                 "attn_maps": out_orig["attn_maps"],
                 "diversity_loss": out_orig["diversity_loss"],
+                "adj_matrix": out_orig["adj_matrix"],
+                "sparsity_loss": out_orig["sparsity_loss"],
                 "features": out_orig["features"],
             }
         else:
             return self._forward_single(x)
+

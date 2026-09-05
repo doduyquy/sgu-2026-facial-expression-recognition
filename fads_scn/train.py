@@ -110,7 +110,8 @@ def main():
         num_classes=m_cfg.get("num_classes", 7),
         in_channels=m_cfg.get("in_channels", 1),
         embed_dim=m_cfg.get("embed_dim", 256),
-        num_attn_heads=m_cfg.get("num_attn_heads", 4),
+        num_attn_heads=m_cfg.get("num_attn_heads", 8),
+        use_latent_graph=m_cfg.get("use_latent_graph", True),
         dropout=m_cfg.get("dropout", 0.25),
         use_pretrained=m_cfg.get("use_pretrained", True),
         pretrained_weights_path=m_cfg.get("pretrained_weights_path", ""),
@@ -124,6 +125,8 @@ def main():
         margin=scn_cfg.get("margin", 0.15),
         clean_ratio=scn_cfg.get("clean_ratio", 0.70),
         rank_loss_weight=scn_cfg.get("rank_loss_weight", 0.10),
+        div_loss_weight=scn_cfg.get("div_loss_weight", 0.05),
+        sparsity_loss_weight=scn_cfg.get("sparsity_loss_weight", 0.0),
         class_weights=class_weights,
     )
 

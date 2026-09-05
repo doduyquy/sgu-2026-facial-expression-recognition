@@ -23,6 +23,7 @@ class SCNLoss(nn.Module):
         clean_ratio: float = 0.70,
         rank_loss_weight: float = 0.10,
         div_loss_weight: float = 0.05,
+        sparsity_loss_weight: float = 0.0,
         class_weights: torch.Tensor = None,
     ):
         super().__init__()
@@ -32,6 +33,7 @@ class SCNLoss(nn.Module):
         self.clean_ratio = clean_ratio
         self.rank_loss_weight = rank_loss_weight
         self.div_loss_weight = div_loss_weight
+        self.sparsity_loss_weight = sparsity_loss_weight
 
         if class_weights is not None:
             self.register_buffer("class_weights", class_weights.float())
@@ -97,7 +99,10 @@ class SCNLoss(nn.Module):
             rank_loss = torch.tensor(0.0, device=logits.device)
 
         # Total multi-objective loss
+        sparsity_loss = outputs.get("sparsity_loss", torch.tensor(0.0, device=logits.device))
         total_loss = cls_loss + (self.rank_loss_weight * rank_loss) + (self.div_loss_weight * div_loss)
+        if self.sparsity_loss_weight > 0 and sparsity_loss is not None:
+            total_loss = total_loss + (self.sparsity_loss_weight * sparsity_loss)
 
         return {
             "loss": total_loss,
@@ -105,6 +110,7 @@ class SCNLoss(nn.Module):
             "base_ce": base_ce.item(),
             "rank_loss": rank_loss.item() if isinstance(rank_loss, torch.Tensor) else float(rank_loss),
             "div_loss": div_loss.item() if isinstance(div_loss, torch.Tensor) else float(div_loss),
+            "sparsity_loss": sparsity_loss.item() if isinstance(sparsity_loss, torch.Tensor) and sparsity_loss is not None else 0.0,
             "mean_alpha": alpha.mean().item(),
             "ce_per_sample": ce_loss_per_sample.detach(),
         }

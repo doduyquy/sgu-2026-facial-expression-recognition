@@ -94,4 +94,4 @@ class MultiHeadSpatialAttention(nn.Module):
         # Off-diagonal elements should be close to zero
         diversity_loss = ((sim_matrix - identity) ** 2).sum(dim=(-1, -2)).mean() / (self.num_heads * (self.num_heads - 1) + 1e-6)
 
-        return f_local, attn_maps, diversity_loss
+        return f_local, attn_maps, diversity_loss, head_feats

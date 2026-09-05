@@ -4,7 +4,8 @@ model:
   num_classes: 7
   in_channels: 1                 # 48x48 grayscale
   embed_dim: 256
-  num_attn_heads: 4              # 4 spatial attention heads discovering eyes, brows, mouth automatically
+  num_attn_heads: 8              # 8 soft semantic tokens acting as dynamic graph nodes
+  use_latent_graph: true         # Latent Dynamic Graph reasoning over soft tokens
   dropout: 0.25
   use_pretrained: true
   pretrained_weights_path: ""    # Optional: path to facial-pretrained weights (.pth)
@@ -13,6 +14,8 @@ scn:
   margin: 0.15                   # Margin gamma for rank regularization
   clean_ratio: 0.70              # Top 70% lowest loss treated as confident/clean
   rank_loss_weight: 0.10         # Weight lambda for rank regularization loss
+  div_loss_weight: 0.05          # Spatial head diversity regularizer
+  sparsity_loss_weight: 0.0      # Edge sparsity regularizer
   rank_warmup_epochs: 0          # Active from epoch 0
   relabel_epoch: 15              # Start dynamic relabeling after epoch 15
   relabel_threshold: 0.80        # Confidence threshold to update noisy labels
