@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision.models as models
 
 
@@ -56,14 +57,16 @@ class FacialBackbone(nn.Module):
             bias=False,
         )
 
-        # Transfer pretrained weights to 1-channel conv
+        # Transfer pretrained weights to new 3x3 conv1
         if use_pretrained:
             with torch.no_grad():
                 if in_channels == 1:
-                    new_conv1.weight.copy_(orig_conv1.weight.mean(dim=1, keepdim=True))
+                    kernel_1ch_7x7 = orig_conv1.weight.mean(dim=1, keepdim=True)
+                    kernel_1ch_3x3 = F.interpolate(kernel_1ch_7x7, size=(3, 3), mode='bilinear', align_corners=False)
+                    new_conv1.weight.copy_(kernel_1ch_3x3)
                 elif in_channels == 3:
-                    # Resize 7x7 kernel to 3x3 or take center 3x3
-                    new_conv1.weight.copy_(orig_conv1.weight[:, :, 2:5, 2:5])
+                    kernel_3ch_3x3 = F.interpolate(orig_conv1.weight, size=(3, 3), mode='bilinear', align_corners=False)
+                    new_conv1.weight.copy_(kernel_3ch_3x3)
 
         self.conv1 = new_conv1
         self.bn1 = base.bn1
