@@ -223,34 +223,12 @@ class AttentiveSCNTrainer:
                 )
                 print(f"  [BEST] New best model saved! Val Acc: {val_acc*100:.2f}%, F1: {val_f1*100:.2f}% -> {best_path}")
 
-                # Save confusion matrix plot for validation set
-                cm_val_path = self.output_dir / "confusion_matrix_val_best.png"
-                try:
-                    plot_confusion_matrix(
-                        val_metrics["confusion_matrix"],
-                        EMOTION_NAMES,
-                        cm_val_path,
-                        title=f"Val Confusion Matrix (Ep {epoch+1} | Acc: {val_acc*100:.2f}% | F1: {val_f1*100:.2f}%)",
-                    )
-                except Exception as e:
-                    print(f"  [Warning] Could not plot Val confusion matrix: {e}")
-
                 # Optional: evaluate test set immediately on best checkpoint
                 if self.test_loader is not None:
                     test_metrics = evaluate_model(eval_model, self.test_loader, self.device, use_tta=True)
-                    cm_test_path = self.output_dir / "confusion_matrix_test_best.png"
-                    try:
-                        plot_confusion_matrix(
-                            test_metrics["confusion_matrix"],
-                            EMOTION_NAMES,
-                            cm_test_path,
-                            title=f"Test Confusion Matrix (Ep {epoch+1} | Acc: {test_metrics['accuracy']*100:.2f}% | F1: {test_metrics['macro_f1']*100:.2f}%)",
-                        )
-                    except Exception as e:
-                        print(f"  [Warning] Could not plot Test confusion matrix: {e}")
                     print(
                         f"  [Test Set @ Ep {epoch+1}] Acc: {test_metrics['accuracy']*100:.2f}% "
-                        f"| F1: {test_metrics['macro_f1']*100:.2f}% | CM saved -> {cm_test_path.name}"
+                        f"| F1: {test_metrics['macro_f1']*100:.2f}%"
                     )
             else:
                 self.patience_counter += 1
@@ -258,11 +236,57 @@ class AttentiveSCNTrainer:
                     print(f"\nEarly stopping triggered after {self.patience} epochs without improvement.")
                     break
 
-        print(
-            f"\n[DONE] Training Complete! Best Epoch: {self.best_epoch} | "
-            f"Best Val Acc: {self.best_val_acc*100:.2f}% | Best Macro F1: {self.best_macro_f1*100:.2f}%\n"
-            f"Artifacts saved in: {self.output_dir}\n"
-            f"  - Best Checkpoint: {self.output_dir / 'attentive_scn_best.pth'}\n"
-            f"  - Val Confusion Matrix: {self.output_dir / 'confusion_matrix_val_best.png'}\n"
-            f"  - Test Confusion Matrix: {self.output_dir / 'confusion_matrix_test_best.png'}\n"
-        )
+        # ============================================================
+        # Post-Training: Load Best Checkpoint & Export Confusion Matrices
+        # ============================================================
+        best_path = self.output_dir / "attentive_scn_best.pth"
+        if best_path.exists():
+            print(f"\n[EVALUATION] Training finished. Loading best model from {best_path} to export confusion matrices...")
+            checkpoint = torch.load(best_path, map_location=self.device)
+            eval_model = self.model
+            eval_model.load_state_dict(checkpoint["state_dict"])
+            eval_model.eval()
+
+            # 1. Export Best Validation Confusion Matrix
+            val_metrics = evaluate_model(eval_model, self.val_loader, self.device, use_tta=True)
+            cm_val_path = self.output_dir / "confusion_matrix_val_best.png"
+            try:
+                plot_confusion_matrix(
+                    val_metrics["confusion_matrix"],
+                    EMOTION_NAMES,
+                    cm_val_path,
+                    title=f"Val Confusion Matrix (Best Ep {self.best_epoch} | Acc: {val_metrics['accuracy']*100:.2f}% | F1: {val_metrics['macro_f1']*100:.2f}%)",
+                )
+                print(f"  [Exported] Val Confusion Matrix -> {cm_val_path.name}")
+            except Exception as e:
+                print(f"  [Warning] Could not export Val confusion matrix: {e}")
+
+            # 2. Export Best Test Confusion Matrix
+            cm_test_path = None
+            if self.test_loader is not None:
+                test_metrics = evaluate_model(eval_model, self.test_loader, self.device, use_tta=True)
+                cm_test_path = self.output_dir / "confusion_matrix_test_best.png"
+                try:
+                    plot_confusion_matrix(
+                        test_metrics["confusion_matrix"],
+                        EMOTION_NAMES,
+                        cm_test_path,
+                        title=f"Test Confusion Matrix (Best Ep {self.best_epoch} | Acc: {test_metrics['accuracy']*100:.2f}% | F1: {test_metrics['macro_f1']*100:.2f}%)",
+                    )
+                    print(f"  [Exported] Test Confusion Matrix -> {cm_test_path.name}")
+                except Exception as e:
+                    print(f"  [Warning] Could not export Test confusion matrix: {e}")
+
+            print(
+                f"\n[DONE] Training Complete! Best Epoch: {self.best_epoch} | "
+                f"Best Val Acc: {self.best_val_acc*100:.2f}% | Best Macro F1: {self.best_macro_f1*100:.2f}%\n"
+                f"Saved Artifacts in {self.output_dir}:\n"
+                f"  - Best Weights: {best_path.name}\n"
+                f"  - Val CM: {cm_val_path.name}\n"
+                + (f"  - Test CM: {cm_test_path.name}\n" if cm_test_path is not None else "")
+            )
+        else:
+            print(
+                f"\n[DONE] Training Complete! Best Epoch: {self.best_epoch} | "
+                f"Best Val Acc: {self.best_val_acc*100:.2f}% | Best Macro F1: {self.best_macro_f1*100:.2f}%\n"
+            )
