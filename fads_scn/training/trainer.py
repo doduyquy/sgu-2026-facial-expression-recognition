@@ -5,9 +5,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CosineAnnealingLR
 
-from ..evaluation.evaluator import evaluate_model
+from ..evaluation.evaluator import evaluate_model, plot_confusion_matrix
 from ..data.dataset import EMOTION_NAMES
 
 
@@ -69,9 +69,11 @@ class AttentiveSCNTrainer:
 
         # SCN parameters
         scn_cfg = self.cfg.get("scn", {})
-        self.rank_warmup_epochs = scn_cfg.get("rank_warmup_epochs", 5)
-        self.relabel_epoch = scn_cfg.get("relabel_epoch", 15)
-        self.relabel_threshold = scn_cfg.get("relabel_threshold", 0.80)
+        self.rank_warmup_epochs = scn_cfg.get("rank_warmup_epochs", 0)
+        self.enable_relabel = scn_cfg.get("enable_relabel", False)
+        self.relabel_epoch = scn_cfg.get("relabel_epoch", 20)
+        self.relabel_threshold = scn_cfg.get("relabel_threshold", 0.90)
+        self.relabel_max_alpha = scn_cfg.get("relabel_max_alpha", 0.20)
 
         # Output dir
         self.output_dir = Path(train_cfg.get("output_dir", "outputs/fads_scn"))
@@ -83,15 +85,24 @@ class AttentiveSCNTrainer:
             lr=self.lr,
             weight_decay=self.weight_decay,
         )
-        t_0 = train_cfg.get("T_0", 30)
-        t_mult = train_cfg.get("T_mult", 2)
+        scheduler_type = train_cfg.get("scheduler", "cosine_annealing")
         eta_min = train_cfg.get("eta_min", 1e-6)
-        self.scheduler = CosineAnnealingWarmRestarts(
-            self.optimizer,
-            T_0=t_0,
-            T_mult=t_mult,
-            eta_min=eta_min,
-        )
+        if scheduler_type == "cosine_annealing_warm_restart":
+            t_0 = train_cfg.get("T_0", 30)
+            t_mult = train_cfg.get("T_mult", 2)
+            self.scheduler = CosineAnnealingWarmRestarts(
+                self.optimizer,
+                T_0=t_0,
+                T_mult=t_mult,
+                eta_min=eta_min,
+            )
+        else:
+            # Default: Smooth CosineAnnealingLR across full epochs (no shock restart)
+            self.scheduler = CosineAnnealingLR(
+                self.optimizer,
+                T_max=self.epochs,
+                eta_min=eta_min,
+            )
 
         # EMA
         use_ema = train_cfg.get("use_ema", True)
@@ -136,8 +147,8 @@ class AttentiveSCNTrainer:
             if self.ema is not None:
                 self.ema.update(self.model)
 
-            # SCN Dynamic Relabeling
-            if epoch >= self.relabel_epoch:
+            # SCN Dynamic Relabeling (safe mode: only when enable_relabel is True)
+            if self.enable_relabel and epoch >= self.relabel_epoch:
                 with torch.no_grad():
                     probs = torch.softmax(outputs["logits"], dim=-1)
                     max_probs, pred_classes = torch.max(probs, dim=-1)
@@ -147,7 +158,7 @@ class AttentiveSCNTrainer:
                         if (
                             max_probs[i].item() > self.relabel_threshold
                             and pred_classes[i].item() != targets[i].item()
-                            and alphas[i].item() < 0.40
+                            and alphas[i].item() < self.relabel_max_alpha
                         ):
                             idx = int(indices[i].item())
                             new_lbl = int(pred_classes[i].item())
@@ -212,12 +223,34 @@ class AttentiveSCNTrainer:
                 )
                 print(f"  [BEST] New best model saved! Val Acc: {val_acc*100:.2f}%, F1: {val_f1*100:.2f}% -> {best_path}")
 
+                # Save confusion matrix plot for validation set
+                cm_val_path = self.output_dir / "confusion_matrix_val_best.png"
+                try:
+                    plot_confusion_matrix(
+                        val_metrics["confusion_matrix"],
+                        EMOTION_NAMES,
+                        cm_val_path,
+                        title=f"Val Confusion Matrix (Ep {epoch+1} | Acc: {val_acc*100:.2f}% | F1: {val_f1*100:.2f}%)",
+                    )
+                except Exception as e:
+                    print(f"  [Warning] Could not plot Val confusion matrix: {e}")
+
                 # Optional: evaluate test set immediately on best checkpoint
                 if self.test_loader is not None:
                     test_metrics = evaluate_model(eval_model, self.test_loader, self.device, use_tta=True)
+                    cm_test_path = self.output_dir / "confusion_matrix_test_best.png"
+                    try:
+                        plot_confusion_matrix(
+                            test_metrics["confusion_matrix"],
+                            EMOTION_NAMES,
+                            cm_test_path,
+                            title=f"Test Confusion Matrix (Ep {epoch+1} | Acc: {test_metrics['accuracy']*100:.2f}% | F1: {test_metrics['macro_f1']*100:.2f}%)",
+                        )
+                    except Exception as e:
+                        print(f"  [Warning] Could not plot Test confusion matrix: {e}")
                     print(
                         f"  [Test Set @ Ep {epoch+1}] Acc: {test_metrics['accuracy']*100:.2f}% "
-                        f"| F1: {test_metrics['macro_f1']*100:.2f}%"
+                        f"| F1: {test_metrics['macro_f1']*100:.2f}% | CM saved -> {cm_test_path.name}"
                     )
             else:
                 self.patience_counter += 1
@@ -228,4 +261,8 @@ class AttentiveSCNTrainer:
         print(
             f"\n[DONE] Training Complete! Best Epoch: {self.best_epoch} | "
             f"Best Val Acc: {self.best_val_acc*100:.2f}% | Best Macro F1: {self.best_macro_f1*100:.2f}%\n"
+            f"Artifacts saved in: {self.output_dir}\n"
+            f"  - Best Checkpoint: {self.output_dir / 'attentive_scn_best.pth'}\n"
+            f"  - Val Confusion Matrix: {self.output_dir / 'confusion_matrix_val_best.png'}\n"
+            f"  - Test Confusion Matrix: {self.output_dir / 'confusion_matrix_test_best.png'}\n"
         )

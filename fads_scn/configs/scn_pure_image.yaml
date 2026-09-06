@@ -6,7 +6,7 @@ model:
   embed_dim: 256
   num_attn_heads: 8              # 8 soft semantic tokens acting as dynamic graph nodes
   use_latent_graph: true         # Latent Dynamic Graph reasoning over soft tokens
-  dropout: 0.25
+  dropout: 0.30
   use_pretrained: true
   pretrained_weights_path: ""    # Optional: path to facial-pretrained weights (.pth)
 
@@ -17,8 +17,10 @@ scn:
   div_loss_weight: 0.05          # Spatial head diversity regularizer
   sparsity_loss_weight: 0.0      # Edge sparsity regularizer
   rank_warmup_epochs: 0          # Active from epoch 0
-  relabel_epoch: 15              # Start dynamic relabeling after epoch 15
-  relabel_threshold: 0.80        # Confidence threshold to update noisy labels
+  enable_relabel: false          # Safe mode: Disable permanent label rewriting to prevent label drift / confirmation bias
+  relabel_epoch: 25              # (If enabled) Start dynamic relabeling after epoch 25
+  relabel_threshold: 0.90        # (If enabled) Ultra-high confidence threshold (>= 90%)
+  relabel_max_alpha: 0.20        # (If enabled) Only relabel if alpha is extremely low (< 0.20)
 
 data:
   data_path: "dataset/fer13-split"
@@ -29,15 +31,13 @@ data:
   erasing_prob: 0.30
 
 training:
-  epochs: 200
+  epochs: 150
   lr: 0.0003
-  weight_decay: 0.001
+  weight_decay: 0.002
   label_smoothing: 0.05
-  scheduler: "cosine_annealing_warm_restart"
-  T_0: 30
-  T_mult: 2
+  scheduler: "cosine_annealing"  # Smooth CosineAnnealingLR (decay 0.0003 -> 1e-6 without shock restart)
   eta_min: 0.000001
-  patience: 25
+  patience: 30
   use_ema: true
   ema_decay: 0.999
   clip_grad_norm: 2.0
