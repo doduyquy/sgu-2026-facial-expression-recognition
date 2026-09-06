@@ -79,6 +79,12 @@ class AttentiveSCNTrainer:
         self.output_dir = Path(train_cfg.get("output_dir", "outputs/fads_scn"))
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Mixup Augmentation parameters
+        data_cfg = self.cfg.get("data", {})
+        self.use_mixup = data_cfg.get("use_mixup", True)
+        self.mixup_alpha = data_cfg.get("mixup_alpha", 0.2)
+        self.mixup_prob = data_cfg.get("mixup_prob", 0.5)
+
         # Optimizer & Scheduler
         self.optimizer = AdamW(
             self.model.parameters(),
@@ -128,12 +134,27 @@ class AttentiveSCNTrainer:
             targets = targets.to(self.device, non_blocking=True)
             B = images.size(0)
 
+            # Mixup Data Augmentation
+            if self.use_mixup and np.random.rand() < self.mixup_prob and self.mixup_alpha > 0 and B > 1:
+                lam = float(np.random.beta(self.mixup_alpha, self.mixup_alpha))
+                if lam < 0.5:
+                    lam = 1.0 - lam
+                index = torch.randperm(B, device=self.device)
+                mixed_images = lam * images + (1.0 - lam) * images[index]
+                targets_b = targets[index]
+            else:
+                mixed_images = images
+                targets_b = None
+                lam = 1.0
+
             self.optimizer.zero_grad()
 
-            outputs = self.model(images, use_tta=False)
+            outputs = self.model(mixed_images, use_tta=False)
             loss_dict = self.criterion(
                 outputs,
                 targets,
+                targets_b=targets_b,
+                lam=lam,
                 current_epoch=epoch,
                 rank_warmup_epochs=self.rank_warmup_epochs,
             )
@@ -167,7 +188,11 @@ class AttentiveSCNTrainer:
                                 relabelled_this_epoch += 1
 
             preds = torch.argmax(outputs["logits"], dim=-1)
-            correct += (preds == targets).sum().item()
+            if targets_b is not None and lam < 1.0:
+                correct_step = (lam * (preds == targets).float() + (1.0 - lam) * (preds == targets_b).float()).sum().item()
+            else:
+                correct_step = (preds == targets).sum().item()
+            correct += correct_step
             total_loss += loss.item() * B
             total_samples += B
 
@@ -179,6 +204,8 @@ class AttentiveSCNTrainer:
     def fit(self):
         print(f"\n[START] Starting Attentive-SCN Training on {self.device}")
         print(f"Total Epochs: {self.epochs} | Batch Size: {self.train_loader.batch_size} | LR: {self.lr}")
+        if self.use_mixup:
+            print(f"Data Augmentation: Mixup enabled (alpha={self.mixup_alpha}, prob={self.mixup_prob})")
         print(f"Output Directory: {self.output_dir}\n")
 
         for epoch in range(self.epochs):

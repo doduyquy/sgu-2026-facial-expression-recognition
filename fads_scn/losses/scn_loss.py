@@ -44,6 +44,8 @@ class SCNLoss(nn.Module):
         self,
         outputs: dict,
         targets: torch.Tensor,
+        targets_b: torch.Tensor = None,
+        lam: float = 1.0,
         current_epoch: int = 0,
         rank_warmup_epochs: int = 5,
     ):
@@ -51,6 +53,8 @@ class SCNLoss(nn.Module):
         Args:
             outputs: dict containing 'logits' [B, 7], 'alpha' [B, 1], 'diversity_loss' scalar
             targets: ground truth class indices [B]
+            targets_b: optional second ground truth indices for Mixup [B]
+            lam: float mixing ratio for Mixup in [0, 1]
             current_epoch: int current training epoch
             rank_warmup_epochs: int epochs before activating rank loss
         Returns:
@@ -61,15 +65,31 @@ class SCNLoss(nn.Module):
         div_loss = outputs.get("diversity_loss", torch.tensor(0.0, device=logits.device))
         B = logits.shape[0]
 
-        # 1. Per-sample Cross-Entropy Loss with Label Smoothing
-        # ce_loss_per_sample: [B]
-        ce_loss_per_sample = F.cross_entropy(
-            logits,
-            targets,
-            weight=self.class_weights,
-            label_smoothing=self.label_smoothing,
-            reduction="none",
-        )
+        # 1. Per-sample Cross-Entropy Loss with Label Smoothing & Mixup
+        if targets_b is not None and lam < 1.0:
+            ce_a = F.cross_entropy(
+                logits,
+                targets,
+                weight=self.class_weights,
+                label_smoothing=self.label_smoothing,
+                reduction="none",
+            )
+            ce_b = F.cross_entropy(
+                logits,
+                targets_b,
+                weight=self.class_weights,
+                label_smoothing=self.label_smoothing,
+                reduction="none",
+            )
+            ce_loss_per_sample = lam * ce_a + (1.0 - lam) * ce_b
+        else:
+            ce_loss_per_sample = F.cross_entropy(
+                logits,
+                targets,
+                weight=self.class_weights,
+                label_smoothing=self.label_smoothing,
+                reduction="none",
+            )
         base_ce = ce_loss_per_sample.mean()
 
         # 2. SCN Weighted Cross-Entropy Loss
