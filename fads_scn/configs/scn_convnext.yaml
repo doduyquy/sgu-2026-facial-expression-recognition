@@ -1,6 +1,6 @@
 model:
   name: "attentive_scn_fer"
-  backbone: "densenet121"         # options: densenet121, convnext_tiny, convnext_small, resnet50, resnet34, resnet18
+  backbone: "convnext_tiny"       # Modernized 2020s CNN with 7x7 depthwise conv, GELU, LayerNorm
   num_classes: 7
   in_channels: 1                 # 48x48 grayscale
   embed_dim: 256
@@ -46,7 +46,7 @@ training:
   clip_grad_norm: 2.0
   use_class_weights: true
   class_weight_mode: "sqrt_inverse"
-  output_dir: "outputs/fads_scn"
+  output_dir: "outputs/fads_scn_convnext"
 
 logging:
   wandb_project: "fer2013-fads-scn"

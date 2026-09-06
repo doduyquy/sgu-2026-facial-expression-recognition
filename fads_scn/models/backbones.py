@@ -28,44 +28,99 @@ class FacialBackbone(nn.Module):
         self.backbone_name = backbone_name.lower()
         self.in_channels = in_channels
 
-        if "densenet121" in self.backbone_name:
+        if "convnext_tiny" in self.backbone_name or "convnext_t" in self.backbone_name:
+            weights = models.ConvNeXt_Tiny_Weights.DEFAULT if use_pretrained else None
+            base = models.convnext_tiny(weights=weights)
+            self.out_channels = 768
+            self.backbone_type = "convnext"
+        elif "convnext_small" in self.backbone_name or "convnext_s" in self.backbone_name:
+            weights = models.ConvNeXt_Small_Weights.DEFAULT if use_pretrained else None
+            base = models.convnext_small(weights=weights)
+            self.out_channels = 768
+            self.backbone_type = "convnext"
+        elif "densenet121" in self.backbone_name:
             weights = models.DenseNet121_Weights.DEFAULT if use_pretrained else None
             base = models.densenet121(weights=weights)
             self.out_channels = 1024
-            self.is_densenet = True
+            self.backbone_type = "densenet"
         elif "densenet169" in self.backbone_name:
             weights = models.DenseNet169_Weights.DEFAULT if use_pretrained else None
             base = models.densenet169(weights=weights)
             self.out_channels = 1664
-            self.is_densenet = True
+            self.backbone_type = "densenet"
         elif "densenet201" in self.backbone_name:
             weights = models.DenseNet201_Weights.DEFAULT if use_pretrained else None
             base = models.densenet201(weights=weights)
             self.out_channels = 1920
-            self.is_densenet = True
+            self.backbone_type = "densenet"
         elif "resnet50" in self.backbone_name:
             weights = models.ResNet50_Weights.DEFAULT if use_pretrained else None
             base = models.resnet50(weights=weights)
             self.out_channels = 2048
-            self.is_densenet = False
+            self.backbone_type = "resnet"
         elif "resnet34" in self.backbone_name:
             weights = models.ResNet34_Weights.DEFAULT if use_pretrained else None
             base = models.resnet34(weights=weights)
             self.out_channels = 512
-            self.is_densenet = False
+            self.backbone_type = "resnet"
         elif "resnet18" in self.backbone_name:
             weights = models.ResNet18_Weights.DEFAULT if use_pretrained else None
             base = models.resnet18(weights=weights)
             self.out_channels = 512
-            self.is_densenet = False
+            self.backbone_type = "resnet"
         else:
-            # Fallback to resnet34
-            weights = models.ResNet34_Weights.DEFAULT if use_pretrained else None
-            base = models.resnet34(weights=weights)
-            self.out_channels = 512
-            self.is_densenet = False
+            # Default fallback to densenet121
+            weights = models.DenseNet121_Weights.DEFAULT if use_pretrained else None
+            base = models.densenet121(weights=weights)
+            self.out_channels = 1024
+            self.backbone_type = "densenet"
 
-        if self.is_densenet:
+        if self.backbone_type == "convnext":
+            # Adapt ConvNeXt for small 48x48 facial images
+            features = base.features
+            orig_conv0 = features[0][0]
+            new_conv0 = nn.Conv2d(
+                in_channels,
+                orig_conv0.out_channels,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                bias=orig_conv0.bias is not None,
+            )
+            if use_pretrained:
+                with torch.no_grad():
+                    if in_channels == 1:
+                        kernel_1ch_4x4 = orig_conv0.weight.mean(dim=1, keepdim=True)
+                        kernel_1ch_3x3 = F.interpolate(kernel_1ch_4x4, size=(3, 3), mode='bilinear', align_corners=False)
+                        new_conv0.weight.copy_(kernel_1ch_3x3)
+                    elif in_channels == 3:
+                        kernel_3ch_3x3 = F.interpolate(orig_conv0.weight, size=(3, 3), mode='bilinear', align_corners=False)
+                        new_conv0.weight.copy_(kernel_3ch_3x3)
+                    if orig_conv0.bias is not None:
+                        new_conv0.bias.copy_(orig_conv0.bias)
+            features[0][0] = new_conv0
+
+            # Modify Stage 6 downsample to stride 1 to keep 12x12 feature map
+            if target_feat_size == 12:
+                orig_ds6 = features[6][1]
+                new_ds6 = nn.Conv2d(
+                    orig_ds6.in_channels,
+                    orig_ds6.out_channels,
+                    kernel_size=3,
+                    stride=1,
+                    padding=1,
+                    bias=orig_ds6.bias is not None,
+                )
+                if use_pretrained:
+                    with torch.no_grad():
+                        kernel_3x3 = F.interpolate(orig_ds6.weight, size=(3, 3), mode='bilinear', align_corners=False)
+                        new_ds6.weight.copy_(kernel_3x3)
+                        if orig_ds6.bias is not None:
+                            new_ds6.bias.copy_(orig_ds6.bias)
+                features[6][1] = new_ds6
+
+            self.features = features
+        elif self.backbone_type == "densenet":
             # Adapt DenseNet for small 48x48 facial images
             features = base.features
             orig_conv0 = features.conv0
@@ -163,7 +218,9 @@ class FacialBackbone(nn.Module):
         Input: [B, in_channels, 48, 48]
         Output: Feature Map F of shape [B, out_channels, 12, 12]
         """
-        if self.is_densenet:
+        if self.backbone_type == "convnext":
+            return self.features(x)
+        elif self.backbone_type == "densenet":
             out = self.features(x)
             out = F.relu(out, inplace=True)
             return out
