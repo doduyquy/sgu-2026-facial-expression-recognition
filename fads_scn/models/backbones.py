@@ -28,58 +28,108 @@ class FacialBackbone(nn.Module):
         self.backbone_name = backbone_name.lower()
         self.in_channels = in_channels
 
-        if "resnet50" in self.backbone_name:
+        if "densenet121" in self.backbone_name:
+            weights = models.DenseNet121_Weights.DEFAULT if use_pretrained else None
+            base = models.densenet121(weights=weights)
+            self.out_channels = 1024
+            self.is_densenet = True
+        elif "densenet169" in self.backbone_name:
+            weights = models.DenseNet169_Weights.DEFAULT if use_pretrained else None
+            base = models.densenet169(weights=weights)
+            self.out_channels = 1664
+            self.is_densenet = True
+        elif "densenet201" in self.backbone_name:
+            weights = models.DenseNet201_Weights.DEFAULT if use_pretrained else None
+            base = models.densenet201(weights=weights)
+            self.out_channels = 1920
+            self.is_densenet = True
+        elif "resnet50" in self.backbone_name:
             weights = models.ResNet50_Weights.DEFAULT if use_pretrained else None
             base = models.resnet50(weights=weights)
             self.out_channels = 2048
+            self.is_densenet = False
         elif "resnet34" in self.backbone_name:
             weights = models.ResNet34_Weights.DEFAULT if use_pretrained else None
             base = models.resnet34(weights=weights)
             self.out_channels = 512
+            self.is_densenet = False
         elif "resnet18" in self.backbone_name:
             weights = models.ResNet18_Weights.DEFAULT if use_pretrained else None
             base = models.resnet18(weights=weights)
             self.out_channels = 512
+            self.is_densenet = False
         else:
             # Fallback to resnet34
             weights = models.ResNet34_Weights.DEFAULT if use_pretrained else None
             base = models.resnet34(weights=weights)
             self.out_channels = 512
+            self.is_densenet = False
 
-        # Adapt first conv for small 48x48 grayscale face images
-        orig_conv1 = base.conv1
-        new_conv1 = nn.Conv2d(
-            in_channels,
-            orig_conv1.out_channels,
-            kernel_size=3,
-            stride=1,
-            padding=1,
-            bias=False,
-        )
+        if self.is_densenet:
+            # Adapt DenseNet for small 48x48 facial images
+            features = base.features
+            orig_conv0 = features.conv0
+            new_conv0 = nn.Conv2d(
+                in_channels,
+                orig_conv0.out_channels,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                bias=False,
+            )
+            if use_pretrained:
+                with torch.no_grad():
+                    if in_channels == 1:
+                        kernel_1ch_7x7 = orig_conv0.weight.mean(dim=1, keepdim=True)
+                        kernel_1ch_3x3 = F.interpolate(kernel_1ch_7x7, size=(3, 3), mode='bilinear', align_corners=False)
+                        new_conv0.weight.copy_(kernel_1ch_3x3)
+                    elif in_channels == 3:
+                        kernel_3ch_3x3 = F.interpolate(orig_conv0.weight, size=(3, 3), mode='bilinear', align_corners=False)
+                        new_conv0.weight.copy_(kernel_3ch_3x3)
 
-        # Transfer pretrained weights to new 3x3 conv1
-        if use_pretrained:
-            with torch.no_grad():
-                if in_channels == 1:
-                    kernel_1ch_7x7 = orig_conv1.weight.mean(dim=1, keepdim=True)
-                    kernel_1ch_3x3 = F.interpolate(kernel_1ch_7x7, size=(3, 3), mode='bilinear', align_corners=False)
-                    new_conv1.weight.copy_(kernel_1ch_3x3)
-                elif in_channels == 3:
-                    kernel_3ch_3x3 = F.interpolate(orig_conv1.weight, size=(3, 3), mode='bilinear', align_corners=False)
-                    new_conv1.weight.copy_(kernel_3ch_3x3)
+            features.conv0 = new_conv0
+            features.pool0 = nn.Identity()  # Remove early maxpool to preserve facial detail
 
-        self.conv1 = new_conv1
-        self.bn1 = base.bn1
-        self.relu = base.relu
-        # Remove early maxpool to preserve facial detail
-        self.layer1 = base.layer1  # 48x48
-        self.layer2 = base.layer2  # 24x24
-        self.layer3 = base.layer3  # 12x12
-        self.layer4 = base.layer4  # 6x6 -> if stride 1 in layer4: 12x12
+            # Modify transition3 pool to identity to keep 12x12 feature map
+            if target_feat_size == 12 and hasattr(features, "transition3"):
+                features.transition3.pool = nn.Identity()
 
-        # Modify layer4 first block stride to 1 to maintain 12x12 feature map
-        if target_feat_size == 12:
-            self._set_layer_stride1(self.layer4)
+            self.features = features
+        else:
+            # Adapt ResNet for small 48x48 facial images
+            orig_conv1 = base.conv1
+            new_conv1 = nn.Conv2d(
+                in_channels,
+                orig_conv1.out_channels,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                bias=False,
+            )
+
+            # Transfer pretrained weights to new 3x3 conv1
+            if use_pretrained:
+                with torch.no_grad():
+                    if in_channels == 1:
+                        kernel_1ch_7x7 = orig_conv1.weight.mean(dim=1, keepdim=True)
+                        kernel_1ch_3x3 = F.interpolate(kernel_1ch_7x7, size=(3, 3), mode='bilinear', align_corners=False)
+                        new_conv1.weight.copy_(kernel_1ch_3x3)
+                    elif in_channels == 3:
+                        kernel_3ch_3x3 = F.interpolate(orig_conv1.weight, size=(3, 3), mode='bilinear', align_corners=False)
+                        new_conv1.weight.copy_(kernel_3ch_3x3)
+
+            self.conv1 = new_conv1
+            self.bn1 = base.bn1
+            self.relu = base.relu
+            # Remove early maxpool to preserve facial detail
+            self.layer1 = base.layer1  # 48x48
+            self.layer2 = base.layer2  # 24x24
+            self.layer3 = base.layer3  # 12x12
+            self.layer4 = base.layer4  # 6x6 -> if stride 1 in layer4: 12x12
+
+            # Modify layer4 first block stride to 1 to maintain 12x12 feature map
+            if target_feat_size == 12:
+                self._set_layer_stride1(self.layer4)
 
         # Load custom facial pre-trained weights if provided
         if pretrained_weights_path and os.path.exists(pretrained_weights_path):
@@ -113,12 +163,17 @@ class FacialBackbone(nn.Module):
         Input: [B, in_channels, 48, 48]
         Output: Feature Map F of shape [B, out_channels, 12, 12]
         """
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
+        if self.is_densenet:
+            out = self.features(x)
+            out = F.relu(out, inplace=True)
+            return out
+        else:
+            x = self.conv1(x)
+            x = self.bn1(x)
+            x = self.relu(x)
 
-        x = self.layer1(x)  # [B, C1, 48, 48]
-        x = self.layer2(x)  # [B, C2, 24, 24]
-        x = self.layer3(x)  # [B, C3, 12, 12]
-        x = self.layer4(x)  # [B, C4, 12, 12]
-        return x
+            x = self.layer1(x)  # [B, C1, 48, 48]
+            x = self.layer2(x)  # [B, C2, 24, 24]
+            x = self.layer3(x)  # [B, C3, 12, 12]
+            x = self.layer4(x)  # [B, C4, 12, 12]
+            return x
