@@ -17,7 +17,7 @@ scn:
   div_loss_weight: 0.05          # Spatial head diversity regularizer
   sparsity_loss_weight: 0.0      # Edge sparsity regularizer
   rank_warmup_epochs: 0          # Active from epoch 0
-  enable_relabel: true          # Safe mode: Disable permanent label rewriting to prevent label drift / confirmation bias
+  enable_relabel: false          # Safe mode: Disable permanent label rewriting to prevent label drift / confirmation bias
   relabel_epoch: 25              # (If enabled) Start dynamic relabeling after epoch 25
   relabel_threshold: 0.90        # (If enabled) Ultra-high confidence threshold (>= 90%)
   relabel_max_alpha: 0.20        # (If enabled) Only relabel if alpha is extremely low (< 0.20)

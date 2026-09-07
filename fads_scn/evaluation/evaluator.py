@@ -1,20 +1,23 @@
 import numpy as np
 import torch
+import torch.nn.functional as F
 from sklearn.metrics import classification_report, confusion_matrix, f1_score, accuracy_score
 from ..data.dataset import EMOTION_NAMES
 
 
 @torch.no_grad()
-def evaluate_model(model, dataloader, device, use_tta: bool = True):
+def evaluate_model(model, dataloader, device, use_tta: bool = True, criterion=None):
     """
     Evaluate model on a dataloader.
     Returns:
-        metrics: dict with 'accuracy', 'macro_f1', 'hybrid_score', 'per_class_acc', 'report', 'confusion_matrix'
+        metrics: dict with 'loss', 'accuracy', 'macro_f1', 'hybrid_score', 'per_class_acc', 'report', 'confusion_matrix'
     """
     model.eval()
     all_preds = []
     all_targets = []
     all_alphas = []
+    total_loss = 0.0
+    total_samples = 0
 
     for batch in dataloader:
         if len(batch) == 3:
@@ -24,10 +27,20 @@ def evaluate_model(model, dataloader, device, use_tta: bool = True):
 
         images = images.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
+        B = targets.size(0)
 
         outputs = model(images, use_tta=use_tta)
         logits = outputs["logits"]
         preds = torch.argmax(logits, dim=-1)
+
+        if criterion is not None:
+            loss_dict = criterion(outputs, targets)
+            batch_loss = loss_dict["loss"].item() if isinstance(loss_dict, dict) else loss_dict.item()
+        else:
+            batch_loss = F.cross_entropy(logits, targets).item()
+
+        total_loss += batch_loss * B
+        total_samples += B
 
         all_preds.extend(preds.cpu().numpy().tolist())
         all_targets.extend(targets.cpu().numpy().tolist())
@@ -37,6 +50,7 @@ def evaluate_model(model, dataloader, device, use_tta: bool = True):
     all_preds = np.array(all_preds)
     all_targets = np.array(all_targets)
 
+    avg_loss = float(total_loss / max(1, total_samples))
     acc = float(accuracy_score(all_targets, all_preds))
     macro_f1 = float(f1_score(all_targets, all_preds, average="macro", zero_division=0))
     hybrid_score = float(acc * macro_f1)
@@ -63,6 +77,7 @@ def evaluate_model(model, dataloader, device, use_tta: bool = True):
     )
 
     return {
+        "loss": avg_loss,
         "accuracy": acc,
         "macro_f1": macro_f1,
         "hybrid_score": hybrid_score,

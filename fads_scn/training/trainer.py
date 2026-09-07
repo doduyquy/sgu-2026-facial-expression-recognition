@@ -216,7 +216,8 @@ class AttentiveSCNTrainer:
             if self.ema is not None:
                 self.ema.sync_bn(self.model)
 
-            val_metrics = evaluate_model(eval_model, self.val_loader, self.device, use_tta=True)
+            val_metrics = evaluate_model(eval_model, self.val_loader, self.device, use_tta=True, criterion=self.criterion)
+            val_loss = val_metrics["loss"]
             val_acc = val_metrics["accuracy"]
             val_f1 = val_metrics["macro_f1"]
             hybrid_score = val_metrics["hybrid_score"]
@@ -224,7 +225,7 @@ class AttentiveSCNTrainer:
             print(
                 f"Ep {epoch+1:03d}/{self.epochs} | "
                 f"Train Loss: {train_loss:.4f} Acc: {train_acc:.4f} | "
-                f"Val Acc: {val_acc*100:.2f}% F1: {val_f1*100:.2f}% Score: {hybrid_score:.4f}"
+                f"Val Loss: {val_loss:.4f} Acc: {val_acc*100:.2f}% F1: {val_f1*100:.2f}% Score: {hybrid_score:.4f}"
                 + (f" | Relabelled: {relabelled}" if relabelled > 0 else "")
             )
 
@@ -241,6 +242,7 @@ class AttentiveSCNTrainer:
                     {
                         "epoch": epoch + 1,
                         "state_dict": eval_model.state_dict(),
+                        "val_loss": val_loss,
                         "val_acc": val_acc,
                         "macro_f1": val_f1,
                         "hybrid_score": hybrid_score,
@@ -248,13 +250,14 @@ class AttentiveSCNTrainer:
                     },
                     best_path,
                 )
-                print(f"  [BEST] New best model saved! Val Acc: {val_acc*100:.2f}%, F1: {val_f1*100:.2f}% -> {best_path}")
+                print(f"  [BEST] New best model saved! Val Loss: {val_loss:.4f}, Val Acc: {val_acc*100:.2f}%, F1: {val_f1*100:.2f}% -> {best_path}")
 
                 # Optional: evaluate test set immediately on best checkpoint
                 if self.test_loader is not None:
-                    test_metrics = evaluate_model(eval_model, self.test_loader, self.device, use_tta=True)
+                    test_metrics = evaluate_model(eval_model, self.test_loader, self.device, use_tta=True, criterion=self.criterion)
+                    test_loss = test_metrics["loss"]
                     print(
-                        f"  [Test Set @ Ep {epoch+1}] Acc: {test_metrics['accuracy']*100:.2f}% "
+                        f"  [Test Set @ Ep {epoch+1}] Loss: {test_loss:.4f} | Acc: {test_metrics['accuracy']*100:.2f}% "
                         f"| F1: {test_metrics['macro_f1']*100:.2f}%"
                     )
             else:
@@ -275,14 +278,14 @@ class AttentiveSCNTrainer:
             eval_model.eval()
 
             # 1. Export Best Validation Confusion Matrix
-            val_metrics = evaluate_model(eval_model, self.val_loader, self.device, use_tta=True)
+            val_metrics = evaluate_model(eval_model, self.val_loader, self.device, use_tta=True, criterion=self.criterion)
             cm_val_path = self.output_dir / "confusion_matrix_val_best.png"
             try:
                 plot_confusion_matrix(
                     val_metrics["confusion_matrix"],
                     EMOTION_NAMES,
                     cm_val_path,
-                    title=f"Val Confusion Matrix (Best Ep {self.best_epoch} | Acc: {val_metrics['accuracy']*100:.2f}% | F1: {val_metrics['macro_f1']*100:.2f}%)",
+                    title=f"Val Confusion Matrix (Best Ep {self.best_epoch} | Loss: {val_metrics['loss']:.4f} | Acc: {val_metrics['accuracy']*100:.2f}% | F1: {val_metrics['macro_f1']*100:.2f}%)",
                 )
                 print(f"  [Exported] Val Confusion Matrix -> {cm_val_path.name}")
             except Exception as e:
@@ -291,14 +294,14 @@ class AttentiveSCNTrainer:
             # 2. Export Best Test Confusion Matrix
             cm_test_path = None
             if self.test_loader is not None:
-                test_metrics = evaluate_model(eval_model, self.test_loader, self.device, use_tta=True)
+                test_metrics = evaluate_model(eval_model, self.test_loader, self.device, use_tta=True, criterion=self.criterion)
                 cm_test_path = self.output_dir / "confusion_matrix_test_best.png"
                 try:
                     plot_confusion_matrix(
                         test_metrics["confusion_matrix"],
                         EMOTION_NAMES,
                         cm_test_path,
-                        title=f"Test Confusion Matrix (Best Ep {self.best_epoch} | Acc: {test_metrics['accuracy']*100:.2f}% | F1: {test_metrics['macro_f1']*100:.2f}%)",
+                        title=f"Test Confusion Matrix (Best Ep {self.best_epoch} | Loss: {test_metrics['loss']:.4f} | Acc: {test_metrics['accuracy']*100:.2f}% | F1: {test_metrics['macro_f1']*100:.2f}%)",
                     )
                     print(f"  [Exported] Test Confusion Matrix -> {cm_test_path.name}")
                 except Exception as e:
