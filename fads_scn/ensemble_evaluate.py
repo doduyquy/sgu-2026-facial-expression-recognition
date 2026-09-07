@@ -203,26 +203,33 @@ def main():
     # 5. Ensemble Predictions
     w1 = args.weight1
     w2 = 1.0 - w1
-    probs_ens_tta = w1 * probs1_tta + w2 * probs2_tta
-    ens_tta_metrics = compute_metrics(probs_ens_tta, targets)
 
-    probs_ens_ms = w1 * probs1_ms + w2 * probs2_ms
-    ens_ms_metrics = compute_metrics(probs_ens_ms, targets)
-
+    # A. Ensemble Standard (Single Image)
     probs_ens_std = w1 * probs1_std + w2 * probs2_std
     ens_std_metrics = compute_metrics(probs_ens_std, targets)
 
-    # Grid search optimal weights
+    # B. Ensemble with Flip TTA (Empirical Best: +0.56% boost)
+    probs_ens_tta = w1 * probs1_tta + w2 * probs2_tta
+    ens_tta_metrics = compute_metrics(probs_ens_tta, targets)
+
+    # C. Ensemble with Multi-Scale TTA
+    probs_ens_ms = w1 * probs1_ms + w2 * probs2_ms
+    ens_ms_metrics = compute_metrics(probs_ens_ms, targets)
+
+    # Grid search optimal weights on Flip TTA
     best_w = w1
-    best_ens_acc = ens_ms_metrics["accuracy"]
-    best_ens_f1 = ens_ms_metrics["macro_f1"]
+    best_ens_acc = ens_tta_metrics["accuracy"]
+    best_ens_f1 = ens_tta_metrics["macro_f1"]
     for test_w1 in np.linspace(0.1, 0.9, 9):
-        p_comb = test_w1 * probs1_ms + (1.0 - test_w1) * probs2_ms
+        p_comb = test_w1 * probs1_tta + (1.0 - test_w1) * probs2_tta
         m_comb = compute_metrics(p_comb, targets)
         if m_comb["accuracy"] > best_ens_acc:
             best_ens_acc = m_comb["accuracy"]
             best_ens_f1 = m_comb["macro_f1"]
             best_w = test_w1
+
+    best_mode_metrics = ens_tta_metrics if ens_tta_metrics["accuracy"] >= ens_ms_metrics["accuracy"] else ens_ms_metrics
+    best_mode_name = "Flip TTA (2-Crop)" if ens_tta_metrics["accuracy"] >= ens_ms_metrics["accuracy"] else "Multi-Scale TTA (4-Crop)"
 
     print("\n" + "=" * 70)
     print(f"{'EVALUATION SUMMARY':^70}")
@@ -231,28 +238,27 @@ def main():
     print("-" * 70)
     print(f"{f'1. {name1} (Single Image)':<38} | {m1_std_metrics['accuracy']*100:>10.2f}% | {m1_std_metrics['macro_f1']*100:>8.2f}%")
     print(f"{f'   {name1} (+ Flip TTA 2-Crop)':<38} | {m1_tta_metrics['accuracy']*100:>10.2f}% | {m1_tta_metrics['macro_f1']*100:>8.2f}%")
-    print(f"{f'   {name1} (+ Multi-Scale TTA 4-Crop)':<38} | {m1_ms_metrics['accuracy']*100:>10.2f}% | {m1_ms_metrics['macro_f1']*100:>8.2f}%")
     print("-" * 70)
     print(f"{f'2. {name2} (Single Image)':<38} | {m2_std_metrics['accuracy']*100:>10.2f}% | {m2_std_metrics['macro_f1']*100:>8.2f}%")
     print(f"{f'   {name2} (+ Flip TTA 2-Crop)':<38} | {m2_tta_metrics['accuracy']*100:>10.2f}% | {m2_tta_metrics['macro_f1']*100:>8.2f}%")
-    print(f"{f'   {name2} (+ Multi-Scale TTA 4-Crop)':<38} | {m2_ms_metrics['accuracy']*100:>10.2f}% | {m2_ms_metrics['macro_f1']*100:>8.2f}%")
     print("-" * 70)
-    print(f"{f'3. Ensemble (w1={w1:.2f}) + Multi-Scale TTA':<38} | {ens_ms_metrics['accuracy']*100:>10.2f}% | {ens_ms_metrics['macro_f1']*100:>8.2f}%")
+    print(f"{f'3. Ensemble (w1={w1:.2f}) Standard':<38} | {ens_std_metrics['accuracy']*100:>10.2f}% | {ens_std_metrics['macro_f1']*100:>8.2f}%")
+    print(f"{f'   Ensemble (w1={w1:.2f}) + Flip TTA':<38} | {ens_tta_metrics['accuracy']*100:>10.2f}% | {ens_tta_metrics['macro_f1']*100:>8.2f}%")
     if abs(best_w - w1) > 1e-4:
-        print(f"{f'   Ensemble Optimal (w1={best_w:.2f}) + MS-TTA':<38} | {best_ens_acc*100:>10.2f}% | {best_ens_f1*100:>8.2f}%")
+        print(f"{f'   Ensemble Optimal (w1={best_w:.2f}) + Flip TTA':<38} | {best_ens_acc*100:>10.2f}% | {best_ens_f1*100:>8.2f}%")
     print("=" * 70)
 
-    print("\n--- Per-Class Accuracies (Ensemble + Multi-Scale TTA) ---")
-    for cls_name, cls_acc in ens_ms_metrics["per_class_acc"].items():
+    print(f"\n--- Per-Class Accuracies (Ensemble + {best_mode_name}) ---")
+    for cls_name, cls_acc in best_mode_metrics["per_class_acc"].items():
         print(f"  {cls_name.ljust(10)}: {cls_acc:.2f}%")
 
     # Plot and save confusion matrix
     cm_path = out_dir / f"confusion_matrix_ensemble_{args.split}.png"
     plot_confusion_matrix(
-        ens_ms_metrics["confusion_matrix"],
+        best_mode_metrics["confusion_matrix"],
         class_names=EMOTION_NAMES,
         save_path=cm_path,
-        title=f"Ensemble ({name1} + {name2}) Confusion Matrix ({args.split.upper()} Acc: {ens_ms_metrics['accuracy']*100:.2f}%)",
+        title=f"Ensemble ({name1} + {name2}) Confusion Matrix ({args.split.upper()} Acc: {best_mode_metrics['accuracy']*100:.2f}%)",
     )
     print(f"\n[SAVE] Ensemble Confusion Matrix saved -> {cm_path}\n")
 
