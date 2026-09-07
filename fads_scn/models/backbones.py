@@ -23,10 +23,12 @@ class FacialBackbone(nn.Module):
         use_pretrained: bool = True,
         pretrained_weights_path: str = "",
         target_feat_size: int = 12,
+        stem_init: str = "mean",
     ):
         super().__init__()
         self.backbone_name = backbone_name.lower()
         self.in_channels = in_channels
+        self.stem_init = stem_init.lower()
 
         if "convnext_tiny" in self.backbone_name or "convnext_t" in self.backbone_name:
             weights = models.ConvNeXt_Tiny_Weights.DEFAULT if use_pretrained else None
@@ -90,7 +92,10 @@ class FacialBackbone(nn.Module):
             if use_pretrained:
                 with torch.no_grad():
                     if in_channels == 1:
-                        kernel_1ch_4x4 = orig_conv0.weight.mean(dim=1, keepdim=True)
+                        if self.stem_init in ("sum", "mean_scaled", "scaled_mean", "mean_x3"):
+                            kernel_1ch_4x4 = orig_conv0.weight.sum(dim=1, keepdim=True)
+                        else:
+                            kernel_1ch_4x4 = orig_conv0.weight.mean(dim=1, keepdim=True)
                         kernel_1ch_3x3 = F.interpolate(kernel_1ch_4x4, size=(3, 3), mode='bilinear', align_corners=False)
                         new_conv0.weight.copy_(kernel_1ch_3x3)
                     elif in_channels == 3:

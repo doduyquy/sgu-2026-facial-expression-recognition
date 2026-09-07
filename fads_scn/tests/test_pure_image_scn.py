@@ -11,6 +11,53 @@ from fads_scn.models.attentive_scn_model import AttentiveSCNFER
 from fads_scn.losses.scn_loss import SCNLoss
 
 
+def test_scn_rank_warmup_blocks_rank_loss():
+    B = 8
+    outputs = {
+        "logits": torch.zeros(B, 7),
+        "alpha": torch.full((B, 1), 0.5),
+        "diversity_loss": torch.tensor(0.0),
+        "sparsity_loss": torch.tensor(0.0),
+    }
+    labels = torch.arange(B) % 7
+    criterion = SCNLoss(num_classes=7, margin=0.2, clean_ratio=0.5, rank_loss_weight=1.0)
+
+    before_warmup = criterion(outputs, labels, current_epoch=0, rank_warmup_epochs=5)
+    after_warmup = criterion(outputs, labels, current_epoch=5, rank_warmup_epochs=5)
+
+    assert before_warmup["rank_loss"] == 0.0
+    assert before_warmup["rank_active"] is False
+    assert after_warmup["rank_loss"] > 0.0
+    assert after_warmup["rank_active"] is True
+
+
+def test_scn_mixup_disables_rank_and_weighted_ce():
+    B = 8
+    outputs = {
+        "logits": torch.zeros(B, 7),
+        "alpha": torch.full((B, 1), 0.5),
+        "diversity_loss": torch.tensor(0.0),
+        "sparsity_loss": torch.tensor(0.0),
+    }
+    labels = torch.arange(B) % 7
+    labels_b = (labels + 1) % 7
+    criterion = SCNLoss(num_classes=7, margin=0.2, clean_ratio=0.5, rank_loss_weight=1.0)
+
+    loss_dict = criterion(
+        outputs,
+        labels,
+        targets_b=labels_b,
+        lam=0.7,
+        current_epoch=10,
+        rank_warmup_epochs=0,
+    )
+
+    assert loss_dict["mixup_active"] is True
+    assert loss_dict["rank_active"] is False
+    assert loss_dict["rank_loss"] == 0.0
+    assert abs(loss_dict["weighted_ce"] - loss_dict["base_ce"]) < 1e-6
+
+
 def test_pure_image_forward_backward():
     print("==================================================")
     print("[TEST] Running Unit Test: Pure Image-Based Attentive-SCN")

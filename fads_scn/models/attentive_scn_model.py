@@ -50,6 +50,7 @@ class AttentiveSCNFER(nn.Module):
         cosface_margin: float = 0.20,
         use_pretrained: bool = True,
         pretrained_weights_path: str = "",
+        stem_init: str = "mean",
     ):
         super().__init__()
         self.num_classes = num_classes
@@ -65,6 +66,7 @@ class AttentiveSCNFER(nn.Module):
             use_pretrained=use_pretrained,
             pretrained_weights_path=pretrained_weights_path,
             target_feat_size=12,
+            stem_init=stem_init,
         )
 
         backbone_out_ch = self.backbone.out_channels
@@ -208,4 +210,3 @@ class AttentiveSCNFER(nn.Module):
                 }
         else:
             return self._forward_single(x, targets=targets, targets_b=targets_b, lam=lam)
-

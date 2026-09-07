@@ -55,13 +55,10 @@ class CosFaceClassifier(nn.Module):
         cosine = F.linear(features_norm, weight_norm)
 
         # 3. Additive margin during training
-        if self.training and targets is not None:
+        mixup_active = targets_b is not None and lam < 1.0
+        if self.training and targets is not None and not mixup_active:
             one_hot_a = F.one_hot(targets, self.num_classes).float()
-            if targets_b is not None and lam < 1.0:
-                one_hot_b = F.one_hot(targets_b, self.num_classes).float()
-                margin_mask = lam * one_hot_a + (1.0 - lam) * one_hot_b
-            else:
-                margin_mask = one_hot_a
+            margin_mask = one_hot_a
 
             margin_cosine = cosine - (margin_mask * self.margin)
             margin_cosine = torch.clamp(margin_cosine, -1.0, 1.0)
@@ -159,4 +156,3 @@ class SCNHead(nn.Module):
         # Bounded in [0.10, 1.00] to strictly prevent gradient vanishing or mode collapse
         alpha = 0.10 + 0.90 * raw_alpha
         return logits, alpha
-

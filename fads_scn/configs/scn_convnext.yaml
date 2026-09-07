@@ -1,3 +1,6 @@
+seed:
+  random_seed: 42
+
 model:
   name: "attentive_scn_fer"
   backbone: "convnext_tiny"       # Modernized 2020s CNN with 7x7 depthwise conv, GELU, LayerNorm
@@ -11,6 +14,7 @@ model:
   cosface_scale: 30.0            # Hypersphere scale factor s = 30.0
   cosface_margin: 0.20           # Additive angular margin m = 0.20
   use_pretrained: true
+  stem_init: "mean"              # Try "mean_scaled" to preserve RGB pretrained activation scale
   pretrained_weights_path: ""    # Optional: path to facial-pretrained weights (.pth)
 
 scn:
@@ -47,9 +51,28 @@ training:
   use_ema: true
   ema_decay: 0.999
   clip_grad_norm: 2.0
+  no_weight_decay_norm_bias: true
+  eval_test_on_best_epoch: false
   use_class_weights: true
   class_weight_mode: "sqrt_inverse"
   output_dir: "outputs/fads_scn_convnext"
+
+calibration:
+  enable_logit_bias: true
+  metric: "hybrid"               # Search objective: acc, macro_f1, balanced_acc, or hybrid
+  search_on: "val"               # Search bias on validation, then apply to test
+  use_tta: "flip"                # none, flip, or multiscale
+  class_names: ["angry", "disgust", "fear", "happy", "sad", "surprise", "neutral"]
+  bias_grid:
+    fear: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    sad: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    neutral: [-0.8, -0.6, -0.4, -0.2, 0.0]
+    angry: [0.0, 0.2, 0.4]
+    disgust: [0.0, 0.2, 0.4]
+    surprise: [0.0]
+    happy: [0.0]
+  tune_classes: ["fear", "sad", "neutral", "angry"]
+  save_path: "outputs/fads_scn_convnext/calibration_logit_bias.json"
 
 logging:
   wandb_project: "fer2013-fads-scn"

@@ -82,6 +82,19 @@ class LatentGraphReasoner(nn.Module):
         centers = torch.stack([c_x, c_y], dim=-1)  # [B, M, 2]
         return centers
 
+    @staticmethod
+    def edge_entropy_loss(adj_matrix: torch.Tensor) -> torch.Tensor:
+        """Normalized edge entropy; uniform rows are penalized more than sharp rows."""
+        num_nodes = adj_matrix.size(-1)
+        safe_adj = adj_matrix.clamp_min(torch.finfo(adj_matrix.dtype).eps)
+        entropy_terms = torch.where(
+            adj_matrix > 0,
+            adj_matrix * safe_adj.log(),
+            torch.zeros_like(adj_matrix),
+        )
+        entropy = -entropy_terms.sum(dim=-1)
+        return entropy.mean() / math.log(max(num_nodes, 2))
+
     def forward(self, node_tokens: torch.Tensor, attn_maps: torch.Tensor):
         """
         Args:
@@ -127,6 +140,6 @@ class LatentGraphReasoner(nn.Module):
         f_graph = (beta * h2).sum(dim=1)  # [B, D]
 
         # 7. Sparsity regularizer (penalizes overly uniform/diffuse edges)
-        sparsity_loss = (adj_matrix ** 2).sum(dim=-1).mean()
+        sparsity_loss = self.edge_entropy_loss(adj_matrix)
 
         return f_graph, adj_matrix, sparsity_loss

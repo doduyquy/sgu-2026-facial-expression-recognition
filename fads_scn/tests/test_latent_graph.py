@@ -31,6 +31,20 @@ def test_latent_graph_reasoner_standalone():
     print("  [PASS] LatentGraphReasoner standalone forward & stochastic matrix verified.")
 
 
+def test_sparsity_loss_penalizes_diffuse_edges():
+    M = 4
+    uniform_adj = torch.full((2, M, M), 1.0 / M)
+    peaked_adj = torch.zeros(2, M, M)
+    peaked_adj[:, :, 0] = 1.0
+
+    uniform_loss = LatentGraphReasoner.edge_entropy_loss(uniform_adj)
+    peaked_loss = LatentGraphReasoner.edge_entropy_loss(peaked_adj)
+
+    assert uniform_loss > peaked_loss, "Uniform adjacency should receive a higher sparsity penalty"
+    assert peaked_loss.item() < 1e-6, "One-hot adjacency should have near-zero entropy penalty"
+    print("  [PASS] Edge entropy sparsity loss direction verified.")
+
+
 def test_attentive_scn_with_graph_gradient_flow():
     print("Testing AttentiveSCNFER with Latent Dynamic Graph & Gradient Flow...")
     B = 4
@@ -122,6 +136,7 @@ def test_toggle_latent_graph_off():
 
 if __name__ == "__main__":
     test_latent_graph_reasoner_standalone()
+    test_sparsity_loss_penalizes_diffuse_edges()
     test_attentive_scn_with_graph_gradient_flow()
     test_tta_and_eval_mode()
     test_toggle_latent_graph_off()

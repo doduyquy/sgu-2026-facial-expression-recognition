@@ -11,6 +11,44 @@ from ..evaluation.evaluator import evaluate_model, plot_confusion_matrix
 from ..data.dataset import EMOTION_NAMES
 
 
+def build_adamw_param_groups(model: nn.Module, weight_decay: float):
+    """Apply weight decay only to regular matrix/conv weights, not norm or bias terms."""
+    norm_types = (
+        nn.BatchNorm1d,
+        nn.BatchNorm2d,
+        nn.BatchNorm3d,
+        nn.SyncBatchNorm,
+        nn.LayerNorm,
+        nn.GroupNorm,
+        nn.InstanceNorm1d,
+        nn.InstanceNorm2d,
+        nn.InstanceNorm3d,
+    )
+
+    no_decay_ids = set()
+    for module in model.modules():
+        if isinstance(module, norm_types):
+            for param in module.parameters(recurse=False):
+                no_decay_ids.add(id(param))
+
+    decay_params = []
+    no_decay_params = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if id(param) in no_decay_ids or name.endswith(".bias") or param.ndim <= 1:
+            no_decay_params.append(param)
+        else:
+            decay_params.append(param)
+
+    groups = []
+    if decay_params:
+        groups.append({"params": decay_params, "weight_decay": weight_decay})
+    if no_decay_params:
+        groups.append({"params": no_decay_params, "weight_decay": 0.0})
+    return groups
+
+
 class ModelEMA:
     """Exponential Moving Average of model parameters with BN buffer synchronization."""
 
@@ -66,6 +104,7 @@ class AttentiveSCNTrainer:
         self.weight_decay = train_cfg.get("weight_decay", 0.001)
         self.clip_grad_norm = train_cfg.get("clip_grad_norm", 2.0)
         self.patience = train_cfg.get("patience", 35)
+        self.eval_test_on_best_epoch = train_cfg.get("eval_test_on_best_epoch", False)
 
         # SCN parameters
         scn_cfg = self.cfg.get("scn", {})
@@ -86,10 +125,16 @@ class AttentiveSCNTrainer:
         self.mixup_prob = data_cfg.get("mixup_prob", 0.5)
 
         # Optimizer & Scheduler
+        optimizer_params = self.model.parameters()
+        if train_cfg.get("no_weight_decay_norm_bias", True):
+            optimizer_params = build_adamw_param_groups(self.model, self.weight_decay)
+            optimizer_weight_decay = 0.0
+        else:
+            optimizer_weight_decay = self.weight_decay
         self.optimizer = AdamW(
-            self.model.parameters(),
+            optimizer_params,
             lr=self.lr,
-            weight_decay=self.weight_decay,
+            weight_decay=optimizer_weight_decay,
         )
         scheduler_type = train_cfg.get("scheduler", "cosine_annealing")
         eta_min = train_cfg.get("eta_min", 1e-6)
@@ -146,6 +191,7 @@ class AttentiveSCNTrainer:
                 mixed_images = images
                 targets_b = None
                 lam = 1.0
+            mixup_active = targets_b is not None and lam < 1.0
 
             self.optimizer.zero_grad()
 
@@ -175,7 +221,7 @@ class AttentiveSCNTrainer:
                 self.ema.update(self.model)
 
             # SCN Dynamic Relabeling (safe mode: only when enable_relabel is True)
-            if self.enable_relabel and epoch >= self.relabel_epoch:
+            if self.enable_relabel and not mixup_active and epoch >= self.relabel_epoch:
                 with torch.no_grad():
                     probs = torch.softmax(outputs["logits"], dim=-1)
                     max_probs, pred_classes = torch.max(probs, dim=-1)
@@ -258,8 +304,7 @@ class AttentiveSCNTrainer:
                 )
                 print(f"  [BEST] New best model saved! Val Loss: {val_loss:.4f}, Val Acc: {val_acc*100:.2f}%, F1: {val_f1*100:.2f}% -> {best_path}")
 
-                # Optional: evaluate test set immediately on best checkpoint
-                if self.test_loader is not None:
+                if self.eval_test_on_best_epoch and self.test_loader is not None:
                     test_metrics = evaluate_model(eval_model, self.test_loader, self.device, use_tta=True, criterion=self.criterion)
                     test_loss = test_metrics["loss"]
                     print(

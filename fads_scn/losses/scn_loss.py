@@ -64,9 +64,10 @@ class SCNLoss(nn.Module):
         alpha = outputs["alpha"].view(-1)  # [B]
         div_loss = outputs.get("diversity_loss", torch.tensor(0.0, device=logits.device))
         B = logits.shape[0]
+        mixup_active = targets_b is not None and lam < 1.0
 
         # 1. Per-sample Cross-Entropy Loss with Label Smoothing & Mixup
-        if targets_b is not None and lam < 1.0:
+        if mixup_active:
             ce_a = F.cross_entropy(
                 logits,
                 targets,
@@ -95,15 +96,21 @@ class SCNLoss(nn.Module):
         # 2. SCN Weighted Cross-Entropy Loss
         # CRITICAL: Detach alpha so that minimizing classification loss does NOT pull alpha -> 0.
         # Alpha is exclusively trained by the Rank Regularization Loss.
-        alpha_weights = alpha.detach()
-        weighted_ce = (alpha_weights * ce_loss_per_sample).sum() / (alpha_weights.sum() + 1e-6)
+        if mixup_active:
+            # Mixup samples are synthetic labels; do not let them drive SCN confidence ranking.
+            weighted_ce = base_ce
+            cls_loss = base_ce
+        else:
+            alpha_weights = alpha.detach()
+            weighted_ce = (alpha_weights * ce_loss_per_sample).sum() / (alpha_weights.sum() + 1e-6)
 
-        # Dual-anchor classification loss (base CE ensures constant gradient flow for all classes)
-        cls_loss = 0.5 * base_ce + 0.5 * weighted_ce
+            # Dual-anchor classification loss (base CE ensures constant gradient flow for all classes)
+            cls_loss = 0.5 * base_ce + 0.5 * weighted_ce
 
         # 3. Rank Regularization Loss
         # Enforces that clean samples (low CE loss) have higher alpha than noisy samples (high CE loss)
-        if B > 4:
+        rank_is_active = (not mixup_active) and current_epoch >= rank_warmup_epochs and B > 4
+        if rank_is_active:
             sorted_indices = torch.argsort(ce_loss_per_sample.detach())
             k_clean = max(1, int(B * self.clean_ratio))
             k_noisy = B - k_clean
@@ -132,5 +139,7 @@ class SCNLoss(nn.Module):
             "div_loss": div_loss.item() if isinstance(div_loss, torch.Tensor) else float(div_loss),
             "sparsity_loss": sparsity_loss.item() if isinstance(sparsity_loss, torch.Tensor) and sparsity_loss is not None else 0.0,
             "mean_alpha": alpha.mean().item(),
+            "rank_active": bool(rank_is_active),
+            "mixup_active": bool(mixup_active),
             "ce_per_sample": ce_loss_per_sample.detach(),
         }

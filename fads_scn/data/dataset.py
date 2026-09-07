@@ -1,4 +1,5 @@
 import os
+import random
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -17,6 +18,12 @@ EMOTION_NAMES = [
     "surprise",   # 5
     "neutral",    # 6
 ]
+
+
+def seed_worker(worker_id: int):
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 
 def build_transforms(split: str = "train", input_size: int = 48, use_random_erasing: bool = True, erasing_prob: float = 0.3):
@@ -120,6 +127,13 @@ def build_dataloaders(cfg: dict):
     num_workers = data_cfg.get("num_workers", 2)
     use_random_erasing = data_cfg.get("use_random_erasing", True)
     erasing_prob = data_cfg.get("erasing_prob", 0.3)
+    seed = cfg.get("seed", {}).get("random_seed", None)
+    generator = None
+    worker_init_fn = None
+    if seed is not None:
+        generator = torch.Generator()
+        generator.manual_seed(int(seed))
+        worker_init_fn = seed_worker
 
     train_tf = build_transforms("train", use_random_erasing=use_random_erasing, erasing_prob=erasing_prob)
     val_tf = build_transforms("val")
@@ -137,6 +151,8 @@ def build_dataloaders(cfg: dict):
         num_workers=num_workers,
         pin_memory=pin_mem,
         drop_last=True,
+        worker_init_fn=worker_init_fn,
+        generator=generator,
     )
     val_loader = DataLoader(
         val_ds,
@@ -145,6 +161,8 @@ def build_dataloaders(cfg: dict):
         num_workers=num_workers,
         pin_memory=pin_mem,
         drop_last=False,
+        worker_init_fn=worker_init_fn,
+        generator=generator,
     )
     test_loader = DataLoader(
         test_ds,
@@ -153,6 +171,8 @@ def build_dataloaders(cfg: dict):
         num_workers=num_workers,
         pin_memory=pin_mem,
         drop_last=False,
+        worker_init_fn=worker_init_fn,
+        generator=generator,
     )
 
     return train_loader, val_loader, test_loader
