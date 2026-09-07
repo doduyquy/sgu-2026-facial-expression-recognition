@@ -141,35 +141,63 @@ class AttentiveSCNFER(nn.Module):
             "features": f_fused,
         }
 
-    def forward(self, x: torch.Tensor, use_tta: bool = None):
+    def forward(self, x: torch.Tensor, use_tta=None):
         """
-        Forward pass with automatic Horizontal Flip Test-Time Augmentation (TTA).
-        When in eval mode (and use_tta is not explicitly False), automatically
-        computes the average of logits from the original image and horizontally flipped image.
+        Forward pass with Test-Time Augmentation (TTA).
+        Modes for use_tta:
+          - False / None during training: Single image standard forward
+          - True / 'flip': 2-crop Horizontal Flip TTA (average original + flipped)
+          - 'multiscale' / 'multi_scale': 4-crop Multi-Scale TTA (original, flipped, zoom 1.05x, zoom flipped)
         """
         if use_tta is None:
             use_tta = not self.training
 
         if not self.training and use_tta:
-            # Forward original
-            out_orig = self._forward_single(x)
-            # Forward flipped
-            x_flipped = torch.flip(x, dims=[-1])
-            out_flipped = self._forward_single(x_flipped)
+            if use_tta in ("multiscale", "multi_scale"):
+                # 4-crop Multi-Scale TTA
+                x_orig = x
+                x_flip = torch.flip(x, dims=[-1])
+                # Zoom 1.05x: interpolate to 50x50, center-crop to 48x48
+                x_zoom = torch.nn.functional.interpolate(
+                    x, size=(50, 50), mode="bilinear", align_corners=False
+                )[:, :, 1:49, 1:49]
+                x_zoom_flip = torch.flip(x_zoom, dims=[-1])
 
-            # Average logits for superior generalization
-            avg_logits = 0.5 * (out_orig["logits"] + out_flipped["logits"])
-            avg_alpha = 0.5 * (out_orig["alpha"] + out_flipped["alpha"])
+                out1 = self._forward_single(x_orig)
+                out2 = self._forward_single(x_flip)
+                out3 = self._forward_single(x_zoom)
+                out4 = self._forward_single(x_zoom_flip)
 
-            return {
-                "logits": avg_logits,
-                "alpha": avg_alpha,
-                "attn_maps": out_orig["attn_maps"],
-                "diversity_loss": out_orig["diversity_loss"],
-                "adj_matrix": out_orig["adj_matrix"],
-                "sparsity_loss": out_orig["sparsity_loss"],
-                "features": out_orig["features"],
-            }
+                avg_logits = 0.25 * (out1["logits"] + out2["logits"] + out3["logits"] + out4["logits"])
+                avg_alpha = 0.25 * (out1["alpha"] + out2["alpha"] + out3["alpha"] + out4["alpha"])
+
+                return {
+                    "logits": avg_logits,
+                    "alpha": avg_alpha,
+                    "attn_maps": out1["attn_maps"],
+                    "diversity_loss": out1["diversity_loss"],
+                    "adj_matrix": out1["adj_matrix"],
+                    "sparsity_loss": out1["sparsity_loss"],
+                    "features": out1["features"],
+                }
+            else:
+                # 2-crop Horizontal Flip TTA
+                out_orig = self._forward_single(x)
+                x_flipped = torch.flip(x, dims=[-1])
+                out_flipped = self._forward_single(x_flipped)
+
+                avg_logits = 0.5 * (out_orig["logits"] + out_flipped["logits"])
+                avg_alpha = 0.5 * (out_orig["alpha"] + out_flipped["alpha"])
+
+                return {
+                    "logits": avg_logits,
+                    "alpha": avg_alpha,
+                    "attn_maps": out_orig["attn_maps"],
+                    "diversity_loss": out_orig["diversity_loss"],
+                    "adj_matrix": out_orig["adj_matrix"],
+                    "sparsity_loss": out_orig["sparsity_loss"],
+                    "features": out_orig["features"],
+                }
         else:
             return self._forward_single(x)
 

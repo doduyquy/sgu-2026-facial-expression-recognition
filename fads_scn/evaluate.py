@@ -107,20 +107,44 @@ def main():
     print(f"Macro F1:    {metrics_standard['macro_f1'] * 100:.2f}%")
     print(f"Mean Alpha:  {metrics_standard['mean_alpha']:.3f}\n")
 
-    # 2. Horizontal Flip TTA Evaluation
+    # 2. Horizontal Flip TTA Evaluation (2-crop)
     metrics_tta = evaluate_model(model, loader, device, use_tta=True)
-    diff = (metrics_tta['accuracy'] - metrics_standard['accuracy']) * 100
-    print(f"--- Horizontal Flip TTA Evaluation (Standard SOTA) ---")
-    print(f"Accuracy:    {metrics_tta['accuracy'] * 100:.2f}%  (diff: {diff:+.2f}%)")
+    diff_flip = (metrics_tta['accuracy'] - metrics_standard['accuracy']) * 100
+    print(f"--- Horizontal Flip TTA Evaluation (2-Crop) ---")
+    print(f"Accuracy:    {metrics_tta['accuracy'] * 100:.2f}%  (diff: {diff_flip:+.2f}%)")
     print(f"Macro F1:    {metrics_tta['macro_f1'] * 100:.2f}%")
     print(f"Hybrid Score:{metrics_tta['hybrid_score']:.4f}\n")
 
-    print("--- Per-Class Accuracies (with TTA) ---")
-    for cls_name, cls_acc in metrics_tta["per_class_acc"].items():
+    # 3. Multi-Scale Zoom TTA Evaluation (4-crop)
+    metrics_ms = evaluate_model(model, loader, device, use_tta="multiscale")
+    diff_ms = (metrics_ms['accuracy'] - metrics_standard['accuracy']) * 100
+    print(f"--- Multi-Scale Zoom TTA Evaluation (4-Crop: Orig, Flip, Zoom 1.05x, Zoom Flip) ---")
+    print(f"Accuracy:    {metrics_ms['accuracy'] * 100:.2f}%  (diff vs standard: {diff_ms:+.2f}%)")
+    print(f"Macro F1:    {metrics_ms['macro_f1'] * 100:.2f}%")
+    print(f"Hybrid Score:{metrics_ms['hybrid_score']:.4f}\n")
+
+    best_eval = metrics_ms if metrics_ms['accuracy'] >= metrics_tta['accuracy'] else metrics_tta
+    best_mode = "Multi-Scale TTA" if metrics_ms['accuracy'] >= metrics_tta['accuracy'] else "Flip TTA"
+
+    print(f"--- Per-Class Accuracies ({best_mode}) ---")
+    for cls_name, cls_acc in best_eval["per_class_acc"].items():
         print(f"  {cls_name.ljust(10)}: {cls_acc:.2f}%")
 
-    print("\n--- Confusion Matrix ---")
-    print(metrics_tta["confusion_matrix"])
+    print(f"\n--- Confusion Matrix ({best_mode}) ---")
+    print(best_eval["confusion_matrix"])
+
+    # Optional: Save high-res confusion matrix if output dir is specified
+    output_dir = Path(cfg.get("training", {}).get("output_dir", "outputs/fads_scn"))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cm_path = output_dir / f"confusion_matrix_{args.split}_{best_mode.lower().replace(' ', '_')}.png"
+    from fads_scn.evaluation.evaluator import plot_confusion_matrix
+    plot_confusion_matrix(
+        best_eval["confusion_matrix"],
+        class_names=EMOTION_NAMES,
+        save_path=cm_path,
+        title=f"FER2013 {args.split.upper()} Confusion Matrix ({best_mode} Acc: {best_eval['accuracy']*100:.2f}%)",
+    )
+    print(f"\n[SAVE] Confusion matrix saved -> {cm_path}\n")
 
 
 if __name__ == "__main__":
