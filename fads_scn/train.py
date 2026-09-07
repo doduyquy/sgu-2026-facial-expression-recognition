@@ -113,6 +113,9 @@ def main():
         num_attn_heads=m_cfg.get("num_attn_heads", 8),
         use_latent_graph=m_cfg.get("use_latent_graph", True),
         dropout=m_cfg.get("dropout", 0.25),
+        classifier_type=m_cfg.get("classifier_type", "cosface"),
+        cosface_scale=m_cfg.get("cosface_scale", 30.0),
+        cosface_margin=m_cfg.get("cosface_margin", 0.20),
         use_pretrained=m_cfg.get("use_pretrained", True),
         pretrained_weights_path=m_cfg.get("pretrained_weights_path", ""),
     )

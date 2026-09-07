@@ -45,6 +45,9 @@ class AttentiveSCNFER(nn.Module):
         num_attn_heads: int = 8,
         use_latent_graph: bool = True,
         dropout: float = 0.25,
+        classifier_type: str = "cosface",
+        cosface_scale: float = 30.0,
+        cosface_margin: float = 0.20,
         use_pretrained: bool = True,
         pretrained_weights_path: str = "",
     ):
@@ -98,15 +101,18 @@ class AttentiveSCNFER(nn.Module):
         self.fusion_norm = nn.LayerNorm(embed_dim)
         self.fusion_gate = nn.Parameter(torch.tensor([0.5], dtype=torch.float32))
 
-        # 6. SCN Head (Classifier + Confidence Weight)
+        # 6. SCN Head (Classifier with CosFace Angular Margin + Confidence Weight)
         self.scn_head = SCNHead(
             embed_dim=embed_dim,
             num_classes=num_classes,
             dropout=dropout,
+            classifier_type=classifier_type,
+            cosface_scale=cosface_scale,
+            cosface_margin=cosface_margin,
             init_confidence_bias=1.5,
         )
 
-    def _forward_single(self, x: torch.Tensor):
+    def _forward_single(self, x: torch.Tensor, targets=None, targets_b=None, lam=1.0):
         # Feature map: [B, C, 12, 12]
         feat_map = self.backbone(x)
 
@@ -118,7 +124,8 @@ class AttentiveSCNFER(nn.Module):
 
         # Latent Dynamic Graph Reasoning over soft tokens
         if self.use_latent_graph and self.latent_graph is not None:
-            f_rep, adj_matrix, sparsity_loss = self.latent_graph(head_feats, attn_maps)
+            graph_feats, adj_matrix, sparsity_loss = self.latent_graph(head_feats, attn_maps)
+            f_rep = f_local + graph_feats
         else:
             f_rep = f_local
             adj_matrix = None
@@ -128,8 +135,8 @@ class AttentiveSCNFER(nn.Module):
         gate = torch.sigmoid(self.fusion_gate)
         f_fused = self.fusion_norm(f_global + gate * f_rep)
 
-        # SCN Head
-        logits, alpha = self.scn_head(f_fused)
+        # SCN Head with optional CosFace margin
+        logits, alpha = self.scn_head(f_fused, targets=targets, targets_b=targets_b, lam=lam)
 
         return {
             "logits": logits,
@@ -141,7 +148,8 @@ class AttentiveSCNFER(nn.Module):
             "features": f_fused,
         }
 
-    def forward(self, x: torch.Tensor, use_tta=None):
+    def forward(self, x: torch.Tensor, targets=None, targets_b=None, lam=1.0, use_tta=None):
+
         """
         Forward pass with Test-Time Augmentation (TTA).
         Modes for use_tta:
@@ -199,5 +207,5 @@ class AttentiveSCNFER(nn.Module):
                     "features": out_orig["features"],
                 }
         else:
-            return self._forward_single(x)
+            return self._forward_single(x, targets=targets, targets_b=targets_b, lam=lam)
 

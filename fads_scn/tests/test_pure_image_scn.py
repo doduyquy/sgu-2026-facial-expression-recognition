@@ -35,7 +35,7 @@ def test_pure_image_forward_backward():
     print(f"Input shape: {imgs.shape} (Pure Images: Batch={B}, Channels=1, 48x48)")
 
     # 3. Forward Pass
-    outputs = model(imgs, use_tta=False)
+    outputs = model(imgs, targets=labels, use_tta=False)
     logits = outputs["logits"]
     alpha = outputs["alpha"]
     attn_maps = outputs["attn_maps"]
@@ -55,9 +55,9 @@ def test_pure_image_forward_backward():
     criterion = SCNLoss(
         num_classes=7,
         label_smoothing=0.05,
-        margin=0.15,
+        margin=0.50,
         clean_ratio=0.70,
-        rank_loss_weight=0.10,
+        rank_loss_weight=0.50,
     )
 
     loss_dict = criterion(outputs, labels, current_epoch=10, rank_warmup_epochs=5)

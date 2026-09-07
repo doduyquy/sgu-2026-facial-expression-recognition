@@ -149,7 +149,13 @@ class AttentiveSCNTrainer:
 
             self.optimizer.zero_grad()
 
-            outputs = self.model(mixed_images, use_tta=False)
+            outputs = self.model(
+                mixed_images,
+                targets=targets,
+                targets_b=targets_b,
+                lam=lam,
+                use_tta=False,
+            )
             loss_dict = self.criterion(
                 outputs,
                 targets,
