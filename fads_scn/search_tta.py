@@ -228,7 +228,7 @@ def main():
         embed_dim=m_cfg.get("embed_dim", 256),
         num_attn_heads=m_cfg.get("num_attn_heads", 4),
         dropout=0.0,
-        classifier_type=m_cfg.get("classifier_type", "cosface"),
+        classifier_type=m_cfg.get("classifier_type", "linear"),
         cosface_scale=m_cfg.get("cosface_scale", 30.0),
         cosface_margin=m_cfg.get("cosface_margin", 0.20),
         use_pretrained=False,

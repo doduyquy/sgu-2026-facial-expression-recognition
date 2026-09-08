@@ -45,7 +45,7 @@ class AttentiveSCNFER(nn.Module):
         num_attn_heads: int = 8,
         use_latent_graph: bool = True,
         dropout: float = 0.25,
-        classifier_type: str = "cosface",
+        classifier_type: str = "linear",
         cosface_scale: float = 30.0,
         cosface_margin: float = 0.20,
         use_pretrained: bool = True,
@@ -103,7 +103,7 @@ class AttentiveSCNFER(nn.Module):
         self.fusion_norm = nn.LayerNorm(embed_dim)
         self.fusion_gate = nn.Parameter(torch.tensor([0.5], dtype=torch.float32))
 
-        # 6. SCN Head (Classifier with CosFace Angular Margin + Confidence Weight)
+        # 6. SCN Head (classifier + confidence weight)
         self.scn_head = SCNHead(
             embed_dim=embed_dim,
             num_classes=num_classes,
@@ -137,7 +137,7 @@ class AttentiveSCNFER(nn.Module):
         gate = torch.sigmoid(self.fusion_gate)
         f_fused = self.fusion_norm(f_global + gate * f_rep)
 
-        # SCN Head with optional CosFace margin
+        # SCN Head classifier
         logits, alpha = self.scn_head(f_fused, targets=targets, targets_b=targets_b, lam=lam)
 
         return {

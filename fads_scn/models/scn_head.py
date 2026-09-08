@@ -85,9 +85,9 @@ class LinearClassifier(nn.Module):
 
 class SCNHead(nn.Module):
     """
-    Self-Cure Network Head (SCN, CVPR 2020 style) with CosFace Angular Margin support.
+    Self-Cure Network Head (SCN, CVPR 2020 style).
     Simultaneously produces:
-    1. Emotion classification logits z in R^7 (CosFace angular margin or Linear)
+    1. Emotion classification logits z in R^7 (Linear by default, CosFace optional)
     2. Sample confidence / importance weight alpha in [0.10, 1.00]
     """
 
@@ -96,7 +96,7 @@ class SCNHead(nn.Module):
         embed_dim: int = 256,
         num_classes: int = 7,
         dropout: float = 0.25,
-        classifier_type: str = "cosface",
+        classifier_type: str = "linear",
         cosface_scale: float = 30.0,
         cosface_margin: float = 0.20,
         init_confidence_bias: float = 1.5,
@@ -144,7 +144,7 @@ class SCNHead(nn.Module):
         """
         Args:
             features: [B, embed_dim]
-            targets: ground truth class indices [B] (optional, used for CosFace margin in training)
+            targets: ground truth class indices [B] (optional, used by margin-based classifiers)
             targets_b: second targets for Mixup [B] (optional)
             lam: Mixup ratio in [0, 1]
         Returns:

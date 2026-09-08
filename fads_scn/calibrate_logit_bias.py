@@ -130,7 +130,7 @@ def build_model(cfg: dict, weights_path: str, device: torch.device):
         num_attn_heads=m_cfg.get("num_attn_heads", 8),
         use_latent_graph=m_cfg.get("use_latent_graph", True),
         dropout=0.0,
-        classifier_type=m_cfg.get("classifier_type", "cosface"),
+        classifier_type=m_cfg.get("classifier_type", "linear"),
         cosface_scale=m_cfg.get("cosface_scale", 30.0),
         cosface_margin=m_cfg.get("cosface_margin", 0.20),
         use_pretrained=False,
