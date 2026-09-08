@@ -1,5 +1,4 @@
 import os
-from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -24,11 +23,20 @@ class FacialBackbone(nn.Module):
         pretrained_weights_path: str = "",
         target_feat_size: int = 12,
         stem_init: str = "mean",
+        backbone_mode: str = "adapted",
+        preserve_pretrained_norm: bool = False,
     ):
         super().__init__()
         self.backbone_name = backbone_name.lower()
         self.in_channels = in_channels
         self.stem_init = stem_init.lower()
+        if self.stem_init not in ("mean", "sum", "mean_scaled", "scaled_mean", "mean_x3"):
+            raise ValueError("stem_init must be mean or mean_scaled/sum")
+        if in_channels not in (1, 3):
+            raise ValueError("Expected 1 or 3 input channels")
+        self.pretrained_norm = None
+        if backbone_mode not in ("adapted", "native"):
+            raise ValueError("backbone_mode must be adapted or native")
 
         if "convnext_tiny" in self.backbone_name or "convnext_t" in self.backbone_name:
             weights = models.ConvNeXt_Tiny_Weights.DEFAULT if use_pretrained else None
@@ -71,11 +79,35 @@ class FacialBackbone(nn.Module):
             self.out_channels = 512
             self.backbone_type = "resnet"
         else:
-            # Default fallback to densenet121
-            weights = models.DenseNet121_Weights.DEFAULT if use_pretrained else None
-            base = models.densenet121(weights=weights)
-            self.out_channels = 1024
-            self.backbone_type = "densenet"
+            raise ValueError(f"Unsupported backbone: {backbone_name}")
+
+        if backbone_mode == "native" and self.backbone_type != "convnext":
+            raise ValueError("native mode currently supports ConvNeXt only")
+        if preserve_pretrained_norm:
+            if self.backbone_type != "convnext":
+                raise ValueError("preserve_pretrained_norm requires ConvNeXt")
+            self.pretrained_norm = base.classifier[0]
+
+        if backbone_mode == "native":
+            self.features = base.features
+            if in_channels != 3:
+                orig = self.features[0][0]
+                conv = nn.Conv2d(in_channels, orig.out_channels, 4, stride=4, bias=True)
+                if in_channels != 1:
+                    raise ValueError("native ConvNeXt accepts 1 or 3 channels")
+                if use_pretrained:
+                    with torch.no_grad():
+                        kernel = orig.weight.sum(1, keepdim=True)
+                        if self.stem_init == "mean":
+                            kernel = kernel / 3
+                        conv.weight.copy_(kernel)
+                        conv.bias.copy_(orig.bias)
+                self.features[0][0] = conv
+            if pretrained_weights_path:
+                if not os.path.isfile(pretrained_weights_path):
+                    raise FileNotFoundError(pretrained_weights_path)
+                self._load_custom_weights(pretrained_weights_path)
+            return
 
         if self.backbone_type == "convnext":
             # Adapt ConvNeXt for small 48x48 facial images
@@ -192,7 +224,9 @@ class FacialBackbone(nn.Module):
                 self._set_layer_stride1(self.layer4)
 
         # Load custom facial pre-trained weights if provided
-        if pretrained_weights_path and os.path.exists(pretrained_weights_path):
+        if pretrained_weights_path:
+            if not os.path.isfile(pretrained_weights_path):
+                raise FileNotFoundError(pretrained_weights_path)
             self._load_custom_weights(pretrained_weights_path)
 
     def _set_layer_stride1(self, layer):
@@ -208,15 +242,20 @@ class FacialBackbone(nn.Module):
 
     def _load_custom_weights(self, path: str):
         try:
-            state = torch.load(path, map_location="cpu")
+            state = torch.load(path, map_location="cpu", weights_only=True)
             if "state_dict" in state:
                 state = state["state_dict"]
             elif "model" in state:
                 state = state["model"]
+            # Allow a full FER checkpoint while validating that something matches.
+            if any(k.startswith("backbone.") for k in state):
+                state = {k.removeprefix("backbone."): v for k, v in state.items() if k.startswith("backbone.")}
+            if not set(state).intersection(self.state_dict()):
+                raise ValueError("No backbone keys match the supplied weights")
             msg = self.load_state_dict(state, strict=False)
             print(f"[FacialBackbone] Loaded custom facial weights from {path}: {msg}")
         except Exception as e:
-            print(f"[FacialBackbone] Warning: Could not load custom weights from {path}: {e}")
+            raise RuntimeError(f"Could not load custom backbone weights from {path}") from e
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

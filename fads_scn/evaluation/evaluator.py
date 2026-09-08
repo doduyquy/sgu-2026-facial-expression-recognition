@@ -6,7 +6,7 @@ from ..data.dataset import EMOTION_NAMES
 
 
 @torch.no_grad()
-def evaluate_model(model, dataloader, device, use_tta: bool = True, criterion=None):
+def evaluate_model(model, dataloader, device, use_tta: bool = True, criterion=None, class_bias=None):
     """
     Evaluate model on a dataloader.
     Returns:
@@ -30,16 +30,16 @@ def evaluate_model(model, dataloader, device, use_tta: bool = True, criterion=No
         B = targets.size(0)
 
         outputs = model(images, use_tta=use_tta)
-        logits = outputs["logits"]
+        logits = outputs["logits"].float()
+        if class_bias is not None:
+            bias = torch.as_tensor(class_bias, device=device, dtype=torch.float32)
+            if bias.shape != (logits.size(1),) or not torch.isfinite(bias).all():
+                raise ValueError("Expected one finite bias value per class")
+            logits = logits + bias
         preds = torch.argmax(logits, dim=-1)
 
-        if criterion is not None:
-            loss_dict = criterion(outputs, targets)
-            batch_loss = loss_dict["loss"].item() if isinstance(loss_dict, dict) else loss_dict.item()
-        else:
-            batch_loss = F.cross_entropy(logits, targets).item()
-
-        total_loss += batch_loss * B
+        # criterion is accepted for old callers; validation always reports plain NLL.
+        total_loss += F.cross_entropy(logits, targets, reduction="sum").item()
         total_samples += B
 
         all_preds.extend(preds.cpu().numpy().tolist())
@@ -49,10 +49,12 @@ def evaluate_model(model, dataloader, device, use_tta: bool = True, criterion=No
 
     all_preds = np.array(all_preds)
     all_targets = np.array(all_targets)
+    if total_samples == 0:
+        raise ValueError("Evaluation loader is empty")
 
     avg_loss = float(total_loss / max(1, total_samples))
     acc = float(accuracy_score(all_targets, all_preds))
-    macro_f1 = float(f1_score(all_targets, all_preds, average="macro", zero_division=0))
+    macro_f1 = float(f1_score(all_targets, all_preds, labels=list(range(len(EMOTION_NAMES))), average="macro", zero_division=0))
     hybrid_score = float(acc * macro_f1)
 
     cm = confusion_matrix(all_targets, all_preds, labels=list(range(len(EMOTION_NAMES))))
@@ -78,6 +80,7 @@ def evaluate_model(model, dataloader, device, use_tta: bool = True, criterion=No
 
     return {
         "loss": avg_loss,
+        "nll": avg_loss,
         "accuracy": acc,
         "macro_f1": macro_f1,
         "hybrid_score": hybrid_score,
@@ -85,6 +88,11 @@ def evaluate_model(model, dataloader, device, use_tta: bool = True, criterion=No
         "confusion_matrix": cm,
         "report": report,
         "mean_alpha": float(np.mean(all_alphas)) if len(all_alphas) > 0 else 1.0,
+        "alpha_by_class": {
+            name: float(np.asarray(all_alphas)[all_targets == index].mean())
+            if len(all_alphas) == len(all_targets) and np.any(all_targets == index) else None
+            for index, name in enumerate(EMOTION_NAMES)
+        },
     }
 
 
@@ -148,4 +156,3 @@ def plot_confusion_matrix(
     fig.tight_layout()
     plt.savefig(save_path, bbox_inches="tight")
     plt.close(fig)
-

@@ -1,156 +1,65 @@
-import os
+"""Evaluate one checkpoint using a fixed TTA mode, with optional explicit logit bias."""
+import argparse
+import json
 import sys
 from pathlib import Path
-import argparse
-import yaml
-import torch
-import numpy as np
 
-# Ensure repository root is in sys.path
+import torch
+from torch.utils.data import DataLoader
+
 repo_root = Path(__file__).resolve().parent.parent
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from fads_scn.data.dataset import PureImageFER2013, build_transforms, EMOTION_NAMES
-from fads_scn.models.attentive_scn_model import AttentiveSCNFER
-from fads_scn.evaluation.evaluator import evaluate_model
-from torch.utils.data import DataLoader
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="Evaluate Attentive-SCN on FER2013")
-    parser.add_argument(
-        "--config",
-        type=str,
-        default="fads_scn/configs/scn_pure_image.yaml",
-        help="Path to YAML configuration file",
-    )
-    parser.add_argument(
-        "--weights",
-        type=str,
-        required=True,
-        help="Path to trained checkpoint (.pth)",
-    )
-    parser.add_argument(
-        "--split",
-        type=str,
-        default="test",
-        choices=["train", "val", "test"],
-        help="Data split to evaluate",
-    )
-    parser.add_argument("--batch_size", type=int, default=64, help="Batch size")
-    parser.add_argument("--device", type=str, default=None, help="Device (cuda or cpu)")
-    parser.add_argument("--data_path", type=str, default=None, help="Explicit path to fer13-split dataset folder")
-    return parser.parse_args()
+from fads_scn.runtime import load_config, load_checkpoint_model, resolve_data_path, tta_mode, checkpoint_hash
+from fads_scn.data.dataset import PureImageFER2013, transforms_from_config, EMOTION_NAMES, seed_worker
+from fads_scn.evaluation.evaluator import evaluate_model, plot_confusion_matrix
+from fads_scn.training.trainer import serializable_metrics
 
 
 def main():
-    args = parse_args()
-
-    # Load config
-    config_path = Path(args.config)
-    if not config_path.exists():
-        config_path = repo_root / args.config
-    with open(config_path, "r") as f:
-        cfg = yaml.safe_load(f)
-
-    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Build dataset
-    data_path = args.data_path or cfg["data"].get("data_path", "dataset/fer13-split")
-    kaggle_candidate_paths = [
-        "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split",
-        "/kaggle/input/datasets/doduyquynii/fer13-split",
-        "/kaggle/input/fer13-split/fer13-split",
-        "/kaggle/input/fer13-split",
-        "/kaggle/input/sgu-2026-facial-expression-recognition/dataset/fer13-split",
-        "/kaggle/input/sgu-2026-facial-expression-recognition/fer13-split",
-        "/kaggle/input/fer2013/dataset/fer13-split",
-        "/kaggle/input/fer2013",
-    ]
-    if args.data_path is None:
-        for p in kaggle_candidate_paths:
-            if os.path.exists(p):
-                data_path = p
-                break
-    tf = build_transforms(args.split)
-    ds = PureImageFER2013(data_path=data_path, split=args.split, transform=tf)
-    loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=2)
-
-    # Initialize model
-    m_cfg = cfg["model"]
-    model = AttentiveSCNFER(
-        backbone_name=m_cfg.get("backbone", "resnet50"),
-        num_classes=m_cfg.get("num_classes", 7),
-        in_channels=m_cfg.get("in_channels", 1),
-        embed_dim=m_cfg.get("embed_dim", 256),
-        num_attn_heads=m_cfg.get("num_attn_heads", 4),
-        dropout=0.0,
-        use_pretrained=False,
-    )
-
-    # Load weights
-    ckpt_path = Path(args.weights)
-    if not ckpt_path.exists():
-        raise FileNotFoundError(f"Checkpoint not found at: {ckpt_path}")
-
-    checkpoint = torch.load(ckpt_path, map_location="cpu")
-    state_dict = checkpoint.get("state_dict", checkpoint)
-    model.load_state_dict(state_dict)
-    model = model.to(device)
-    model.eval()
-
-    print(f"\n=======================================================")
-    print(f"[EVAL] EVALUATING ATTENTIVE-SCN ON FER2013 ({args.split.upper()} SET)")
-    print(f"Weights: {ckpt_path}")
-    print(f"Total Samples: {len(ds)} | Device: {device}")
-    print(f"=======================================================\n")
-
-    # 1. Standard Forward Evaluation
-    metrics_standard = evaluate_model(model, loader, device, use_tta=False)
-    print(f"--- Standard Evaluation (Single Image) ---")
-    print(f"Accuracy:    {metrics_standard['accuracy'] * 100:.2f}%")
-    print(f"Macro F1:    {metrics_standard['macro_f1'] * 100:.2f}%")
-    print(f"Mean Alpha:  {metrics_standard['mean_alpha']:.3f}\n")
-
-    # 2. Horizontal Flip TTA Evaluation (2-crop)
-    metrics_tta = evaluate_model(model, loader, device, use_tta=True)
-    diff_flip = (metrics_tta['accuracy'] - metrics_standard['accuracy']) * 100
-    print(f"--- Horizontal Flip TTA Evaluation (2-Crop) ---")
-    print(f"Accuracy:    {metrics_tta['accuracy'] * 100:.2f}%  (diff: {diff_flip:+.2f}%)")
-    print(f"Macro F1:    {metrics_tta['macro_f1'] * 100:.2f}%")
-    print(f"Hybrid Score:{metrics_tta['hybrid_score']:.4f}\n")
-
-    # 3. Multi-Scale Zoom TTA Evaluation (4-crop)
-    metrics_ms = evaluate_model(model, loader, device, use_tta="multiscale")
-    diff_ms = (metrics_ms['accuracy'] - metrics_standard['accuracy']) * 100
-    print(f"--- Multi-Scale Zoom TTA Evaluation (4-Crop: Orig, Flip, Zoom 1.05x, Zoom Flip) ---")
-    print(f"Accuracy:    {metrics_ms['accuracy'] * 100:.2f}%  (diff vs standard: {diff_ms:+.2f}%)")
-    print(f"Macro F1:    {metrics_ms['macro_f1'] * 100:.2f}%")
-    print(f"Hybrid Score:{metrics_ms['hybrid_score']:.4f}\n")
-
-    best_eval = metrics_ms if metrics_ms['accuracy'] >= metrics_tta['accuracy'] else metrics_tta
-    best_mode = "Multi-Scale TTA" if metrics_ms['accuracy'] >= metrics_tta['accuracy'] else "Flip TTA"
-
-    print(f"--- Per-Class Accuracies ({best_mode}) ---")
-    for cls_name, cls_acc in best_eval["per_class_acc"].items():
-        print(f"  {cls_name.ljust(10)}: {cls_acc:.2f}%")
-
-    print(f"\n--- Confusion Matrix ({best_mode}) ---")
-    print(best_eval["confusion_matrix"])
-
-    # Optional: Save high-res confusion matrix if output dir is specified
-    output_dir = Path(cfg.get("training", {}).get("output_dir", "outputs/fads_scn"))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--weights", required=True)
+    parser.add_argument("--config", help="Fallback only for legacy checkpoints without embedded config")
+    parser.add_argument("--split", choices=["train", "val", "test"], default="test")
+    parser.add_argument("--env", choices=["local", "kaggle"], default="local")
+    parser.add_argument("--data_path")
+    parser.add_argument("--device")
+    parser.add_argument("--batch_size", type=int)
+    parser.add_argument("--tta", "--use_tta", choices=["none", "flip", "multiscale"], default=None)
+    parser.add_argument("--bias", help="Calibration JSON; applied explicitly, never auto-selected using test")
+    parser.add_argument("--output_dir")
+    args = parser.parse_args()
+    fallback = load_config(args.config)[0] if args.config else None
+    device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    model, cfg, checkpoint = load_checkpoint_model(args.weights, device, fallback)
+    mode = tta_mode(args.tta if args.tta is not None else checkpoint.get("tta", cfg.get("training", {}).get("val_tta", "flip")))
+    data_path = resolve_data_path(cfg, args.env, args.data_path, (args.split,))
+    # Even --split train must use deterministic evaluation transforms.
+    dataset = PureImageFER2013(data_path, args.split, transforms_from_config(cfg, "val"))
+    loader = DataLoader(dataset, batch_size=args.batch_size or cfg.get("data", {}).get("batch_size", 64),
+                        shuffle=False, num_workers=cfg.get("data", {}).get("num_workers", 2),
+                        worker_init_fn=seed_worker, generator=torch.Generator().manual_seed(42))
+    bias = None
+    if args.bias:
+        with open(args.bias, encoding="utf-8") as stream:
+            result = json.load(stream)
+        if result.get("search_split") != "val" or result.get("class_names") != EMOTION_NAMES:
+            raise ValueError("Bias artifact must record validation search and matching class names")
+        if tta_mode(result.get("tta")) != mode:
+            raise ValueError("Bias artifact TTA does not match evaluation TTA")
+        if result.get("checkpoint_sha256") != checkpoint_hash(args.weights):
+            raise ValueError("Bias artifact belongs to a different checkpoint")
+        bias = result["best_bias"]
+    metrics = evaluate_model(model, loader, device, use_tta=mode, class_bias=bias)
+    print(f"{args.split.upper()} | {cfg['model']['backbone']} | TTA={mode} | Acc={metrics['accuracy']:.2%} | F1={metrics['macro_f1']:.2%} | NLL={metrics['nll']:.4f}")
+    output_dir = Path(args.output_dir) if args.output_dir else Path(args.weights).resolve().parent / "evaluation"
     output_dir.mkdir(parents=True, exist_ok=True)
-    cm_path = output_dir / f"confusion_matrix_{args.split}_{best_mode.lower().replace(' ', '_')}.png"
-    from fads_scn.evaluation.evaluator import plot_confusion_matrix
-    plot_confusion_matrix(
-        best_eval["confusion_matrix"],
-        class_names=EMOTION_NAMES,
-        save_path=cm_path,
-        title=f"FER2013 {args.split.upper()} Confusion Matrix ({best_mode} Acc: {best_eval['accuracy']*100:.2f}%)",
-    )
-    print(f"\n[SAVE] Confusion matrix saved -> {cm_path}\n")
+    tag = f"{args.split}_{mode or 'none'}{'_bias' if bias is not None else ''}"
+    with (output_dir / f"metrics_{tag}.json").open("w", encoding="utf-8") as stream:
+        json.dump(serializable_metrics(metrics), stream, indent=2, allow_nan=False)
+    plot_confusion_matrix(metrics["confusion_matrix"], EMOTION_NAMES, output_dir / f"confusion_matrix_{tag}.png",
+                          title=f"FER2013 {args.split.upper()} | TTA={mode} | Acc={metrics['accuracy']:.2%}")
 
 
 if __name__ == "__main__":

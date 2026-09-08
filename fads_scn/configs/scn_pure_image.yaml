@@ -7,9 +7,6 @@ model:
   num_attn_heads: 8              # 8 soft semantic tokens acting as dynamic graph nodes
   use_latent_graph: true         # Latent Dynamic Graph reasoning over soft tokens
   dropout: 0.30
-  classifier_type: "cosface"     # Large Margin Cosine Loss (CosFace) to separate confused negative emotions
-  cosface_scale: 30.0            # Hypersphere scale factor s = 30.0
-  cosface_margin: 0.20           # Additive angular margin m = 0.20
   use_pretrained: true
   pretrained_weights_path: ""    # Optional: path to facial-pretrained weights (.pth)
 

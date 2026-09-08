@@ -45,19 +45,23 @@ class AttentiveSCNFER(nn.Module):
         num_attn_heads: int = 8,
         use_latent_graph: bool = True,
         dropout: float = 0.25,
-        classifier_type: str = "linear",
-        cosface_scale: float = 30.0,
-        cosface_margin: float = 0.20,
         use_pretrained: bool = True,
         pretrained_weights_path: str = "",
         stem_init: str = "mean",
+        use_spatial_attention: bool = True,
+        attention_type: str = "dense",
+        attention_norm: str = "batch",
+        backbone_mode: str = "adapted",
+        preserve_pretrained_norm: bool = False,
+        fusion_gate_init: float = 0.5,
     ):
         super().__init__()
         self.num_classes = num_classes
         self.in_channels = in_channels
         self.embed_dim = embed_dim
         self.num_attn_heads = num_attn_heads
-        self.use_latent_graph = use_latent_graph
+        self.use_spatial_attention = use_spatial_attention
+        self.use_latent_graph = use_latent_graph and use_spatial_attention
 
         # 1. Backbone adapted for 48x48
         self.backbone = FacialBackbone(
@@ -67,6 +71,8 @@ class AttentiveSCNFER(nn.Module):
             pretrained_weights_path=pretrained_weights_path,
             target_feat_size=12,
             stem_init=stem_init,
+            backbone_mode=backbone_mode,
+            preserve_pretrained_norm=preserve_pretrained_norm,
         )
 
         backbone_out_ch = self.backbone.out_channels
@@ -87,7 +93,9 @@ class AttentiveSCNFER(nn.Module):
             embed_dim=embed_dim,
             num_heads=num_attn_heads,
             dropout=dropout,
-        )
+            attention_type=attention_type,
+            norm=attention_norm,
+        ) if use_spatial_attention else None
 
         # 4. Latent Dynamic Graph Reasoner (Message passing between soft semantic nodes)
         if self.use_latent_graph:
@@ -101,16 +109,14 @@ class AttentiveSCNFER(nn.Module):
 
         # 5. Fusion Layer
         self.fusion_norm = nn.LayerNorm(embed_dim)
-        self.fusion_gate = nn.Parameter(torch.tensor([0.5], dtype=torch.float32))
+        self.fusion_gate = (nn.Parameter(torch.tensor([fusion_gate_init], dtype=torch.float32))
+                            if use_spatial_attention else None)
 
         # 6. SCN Head (classifier + confidence weight)
         self.scn_head = SCNHead(
             embed_dim=embed_dim,
             num_classes=num_classes,
             dropout=dropout,
-            classifier_type=classifier_type,
-            cosface_scale=cosface_scale,
-            cosface_margin=cosface_margin,
             init_confidence_bias=1.5,
         )
 
@@ -119,10 +125,18 @@ class AttentiveSCNFER(nn.Module):
         feat_map = self.backbone(x)
 
         # Global feature: [B, D]
-        f_global = self.global_proj(feat_map)
+        global_input = feat_map
+        if self.backbone.pretrained_norm is not None:
+            global_input = self.backbone.pretrained_norm(torch.nn.functional.adaptive_avg_pool2d(feat_map, 1))
+        f_global = self.global_proj(global_input)
 
         # Local spatial feature & attention maps & soft node tokens: [B, M, D]
-        f_local, attn_maps, div_loss, head_feats = self.spatial_attention(feat_map)
+        if self.spatial_attention is not None:
+            f_local, attn_maps, div_loss, head_feats = self.spatial_attention(feat_map)
+        else:
+            f_local = torch.zeros_like(f_global)
+            attn_maps, head_feats = None, None
+            div_loss = x.new_zeros(())
 
         # Latent Dynamic Graph Reasoning over soft tokens
         if self.use_latent_graph and self.latent_graph is not None:
@@ -134,7 +148,7 @@ class AttentiveSCNFER(nn.Module):
             sparsity_loss = torch.tensor(0.0, device=x.device)
 
         # Gated residual fusion
-        gate = torch.sigmoid(self.fusion_gate)
+        gate = torch.sigmoid(self.fusion_gate) if self.fusion_gate is not None else 0.0
         f_fused = self.fusion_norm(f_global + gate * f_rep)
 
         # SCN Head classifier
@@ -167,10 +181,12 @@ class AttentiveSCNFER(nn.Module):
                 # 4-crop Multi-Scale TTA
                 x_orig = x
                 x_flip = torch.flip(x, dims=[-1])
-                # Zoom 1.05x: interpolate to 50x50, center-crop to 48x48
+                height, width = x.shape[-2:]
+                zoom_h, zoom_w = max(height + 2, round(height * 1.05)), max(width + 2, round(width * 1.05))
+                top, left = (zoom_h - height) // 2, (zoom_w - width) // 2
                 x_zoom = torch.nn.functional.interpolate(
-                    x, size=(50, 50), mode="bilinear", align_corners=False
-                )[:, :, 1:49, 1:49]
+                    x, size=(zoom_h, zoom_w), mode="bilinear", align_corners=False
+                )[:, :, top:top + height, left:left + width]
                 x_zoom_flip = torch.flip(x_zoom, dims=[-1])
 
                 out1 = self._forward_single(x_orig)

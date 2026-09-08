@@ -22,27 +22,40 @@ class MultiHeadSpatialAttention(nn.Module):
         embed_dim: int = 256,
         num_heads: int = 4,
         dropout: float = 0.2,
+        attention_type: str = "dense",
+        norm: str = "batch",
     ):
         super().__init__()
         self.in_channels = in_channels
         self.embed_dim = embed_dim
         self.num_heads = num_heads
+        if attention_type not in ("dense", "depthwise") or norm not in ("batch", "group"):
+            raise ValueError("Expected attention_type=dense/depthwise and norm=batch/group")
+        norm_layer = nn.BatchNorm2d if norm == "batch" else lambda c: nn.GroupNorm(1, c)
 
         # 1. Feature value projector V: [B, C, H, W] -> [B, embed_dim, H, W]
         self.value_proj = nn.Sequential(
             nn.Conv2d(in_channels, embed_dim, kernel_size=1, bias=False),
-            nn.BatchNorm2d(embed_dim),
+            norm_layer(embed_dim),
             nn.GELU(),
         )
 
         # 2. Attention map generator: [B, C, H, W] -> [B, num_heads, H, W]
-        # Uses a depthwise-separable conv block for expressive spatial receptive field
+        # Keep dense mode for old checkpoints; depthwise mode is an explicit ablation.
         self.attn_conv = nn.Sequential(
             nn.Conv2d(in_channels, in_channels // 2, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(in_channels // 2),
+            norm_layer(in_channels // 2),
             nn.GELU(),
             nn.Conv2d(in_channels // 2, num_heads, kernel_size=1, bias=True),
         )
+        if attention_type == "depthwise":
+            self.attn_conv = nn.Sequential(
+                nn.Conv2d(in_channels, embed_dim, 1, bias=False),
+                norm_layer(embed_dim), nn.GELU(),
+                nn.Conv2d(embed_dim, embed_dim, 3, padding=1, groups=embed_dim, bias=False),
+                norm_layer(embed_dim), nn.GELU(),
+                nn.Conv2d(embed_dim, num_heads, 1),
+            )
 
         # 3. Aggregation projector
         self.out_proj = nn.Sequential(
@@ -71,7 +84,7 @@ class MultiHeadSpatialAttention(nn.Module):
 
         # Spatial softmax: normalize over H * W for each head
         raw_flat = raw_attn.view(B, self.num_heads, H * W)
-        attn_weights = F.softmax(raw_flat, dim=-1)  # [B, num_heads, H * W]
+        attn_weights = F.softmax(raw_flat.float(), dim=-1)  # Stable under AMP
         attn_maps = attn_weights.view(B, self.num_heads, H, W)
 
         # Weighted spatial pooling per head
@@ -80,7 +93,7 @@ class MultiHeadSpatialAttention(nn.Module):
         
         # head_feats: [B, num_heads, embed_dim]
         # einsum: b m s, b d s -> b m d (m = num_heads, d = embed_dim, s = H*W)
-        head_feats = torch.einsum("bms,bds->bmd", attn_weights, values_flat)
+        head_feats = torch.einsum("bms,bds->bmd", attn_weights.to(values_flat.dtype), values_flat)
         
         # Flatten across heads: [B, num_heads * embed_dim]
         f_concat = head_feats.view(B, self.num_heads * self.embed_dim)

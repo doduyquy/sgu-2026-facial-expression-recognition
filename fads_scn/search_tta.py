@@ -17,6 +17,8 @@ if str(repo_root) not in sys.path:
 from fads_scn.data.dataset import PureImageFER2013, build_transforms, EMOTION_NAMES
 from fads_scn.models.attentive_scn_model import AttentiveSCNFER
 from fads_scn.evaluation.evaluator import plot_confusion_matrix
+from fads_scn.runtime import load_config, load_checkpoint_model, resolve_data_path
+from fads_scn.data.dataset import transforms_from_config
 
 
 def parse_args():
@@ -36,12 +38,14 @@ def parse_args():
     parser.add_argument(
         "--split",
         type=str,
-        default="test",
-        choices=["train", "val", "test"],
-        help="Data split to evaluate (default: test)",
+        default="val",
+        choices=["val"],
+        help="Select TTA on validation only; evaluate the fixed mode separately on test",
     )
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size")
     parser.add_argument("--device", type=str, default=None, help="Device (cuda or cpu)")
+    parser.add_argument("--data_path", default=None)
+    parser.add_argument("--env", choices=["local", "kaggle"], default="local")
     parser.add_argument(
         "--output_dir",
         type=str,
@@ -58,21 +62,17 @@ def tta_flip(x):
     return torch.flip(x, dims=[-1])
 
 def tta_shift_1px(x):
-    # Reflection pad 1px: [B, 1, 50, 50]
-    p = F.pad(x, (1, 1, 1, 1), mode="reflect")
-    c_left = p[:, :, 1:49, 0:48]
-    c_right = p[:, :, 1:49, 2:50]
-    c_up = p[:, :, 0:48, 1:49]
-    c_down = p[:, :, 2:50, 1:49]
-    return c_left, c_right, c_up, c_down
+    return _shift_views(x, 1)
 
 def tta_shift_2px(x):
-    p = F.pad(x, (2, 2, 2, 2), mode="reflect")
-    c_left = p[:, :, 2:50, 0:48]
-    c_right = p[:, :, 2:50, 4:52]
-    c_up = p[:, :, 0:48, 2:50]
-    c_down = p[:, :, 4:52, 2:50]
-    return c_left, c_right, c_up, c_down
+    return _shift_views(x, 2)
+
+
+def _shift_views(x, n):
+    h, w = x.shape[-2:]
+    p = F.pad(x, (n, n, n, n), mode="reflect")
+    return (p[:, :, n:n+h, :w], p[:, :, n:n+h, 2*n:2*n+w],
+            p[:, :, :h, n:n+w], p[:, :, 2*n:2*n+h, n:n+w])
 
 def tta_brightness(x, delta=0.06):
     return torch.clamp(x + delta, -2.0, 2.0), torch.clamp(x - delta, -2.0, 2.0)
@@ -196,50 +196,16 @@ def main():
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Prepare Data
-    data_path = "dataset/fer13-split"
-    kaggle_candidate_paths = [
-        "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split",
-        "/kaggle/input/datasets/doduyquynii/fer13-split",
-        "/kaggle/input/fer13-split/fer13-split",
-        "/kaggle/input/fer13-split",
-    ]
-    for p in kaggle_candidate_paths:
-        if os.path.exists(p):
-            data_path = p
-            break
-
-    tf = build_transforms(args.split)
-    ds = PureImageFER2013(data_path=data_path, split=args.split, transform=tf)
-    loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=2)
-
-    # 2. Load Model
-    config_path = Path(args.config)
-    if not config_path.exists():
-        config_path = repo_root / args.config
-    with open(config_path, "r") as f:
-        cfg = yaml.safe_load(f)
-
+    fallback = load_config(args.config)[0]
+    model, cfg, _ = load_checkpoint_model(args.weights, device, fallback)
     m_cfg = cfg["model"]
-    model = AttentiveSCNFER(
-        backbone_name=m_cfg.get("backbone", "resnet50"),
-        num_classes=m_cfg.get("num_classes", 7),
-        in_channels=m_cfg.get("in_channels", 1),
-        embed_dim=m_cfg.get("embed_dim", 256),
-        num_attn_heads=m_cfg.get("num_attn_heads", 4),
-        dropout=0.0,
-        classifier_type=m_cfg.get("classifier_type", "linear"),
-        cosface_scale=m_cfg.get("cosface_scale", 30.0),
-        cosface_margin=m_cfg.get("cosface_margin", 0.20),
-        use_pretrained=False,
-    )
-
+    data_path = resolve_data_path(cfg, args.env, args.data_path, ("val",))
+    tf = transforms_from_config(cfg, "val")
+    ds = PureImageFER2013(data_path=data_path, split="val", transform=tf)
+    loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False,
+                        num_workers=cfg.get("data", {}).get("num_workers", 2),
+                        generator=torch.Generator().manual_seed(43))
     ckpt_path = Path(args.weights)
-    checkpoint = torch.load(ckpt_path, map_location="cpu")
-    state_dict = checkpoint.get("state_dict", checkpoint)
-    model.load_state_dict(state_dict)
-    model = model.to(device)
-    model.eval()
 
     print(f"\n=======================================================")
     print(f"[TTA SEARCH] SYSTEMATIC SEARCH FOR BEST TTA ON FER2013")
@@ -347,13 +313,7 @@ def main():
     ) / 8.0
     record("Hybrid: 1px Shift + Contrast + Flip (6-Crop)", 6, p_hybrid_6c)
 
-    # Strategy 11: Temperature Scaled Flip TTA (T=0.90)
-    p_temp09 = F.softmax(0.5 * (get_logits("orig") + get_logits("flip")) / 0.90, dim=-1)
-    record("Flip TTA + Temperature T=0.90", 2, p_temp09)
-
-    # Strategy 12: Temperature Scaled Flip TTA (T=1.10)
-    p_temp11 = F.softmax(0.5 * (get_logits("orig") + get_logits("flip")) / 1.10, dim=-1)
-    record("Flip TTA + Temperature T=1.10", 2, p_temp11)
+    # Scalar temperature after logits averaging cannot change argmax/accuracy.
 
     # ------------------------------------------------------------------
     # 5. Print Leaderboard Table

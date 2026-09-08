@@ -9,19 +9,26 @@ model:
   embed_dim: 256
   num_attn_heads: 8              # 8 soft semantic tokens acting as dynamic graph nodes
   use_latent_graph: true         # Latent Dynamic Graph reasoning over soft tokens
+  use_spatial_attention: true
+  attention_type: "dense"       # Keep the existing architecture as a reference
+  attention_norm: "batch"       # Alternative: group (requires retraining)
+  backbone_mode: "adapted"      # Alternative native recipe is provided separately
+  preserve_pretrained_norm: false
+  fusion_gate_init: 0.5         # Parameter before sigmoid; unchanged for this reference
   dropout: 0.30
-  classifier_type: "linear"      # Standard classifier head; CosFace disabled for ConvNeXt
   use_pretrained: true
   stem_init: "mean"              # Try "mean_scaled" to preserve RGB pretrained activation scale
   pretrained_weights_path: ""    # Optional: path to facial-pretrained weights (.pth)
 
 scn:
+  use_scn: true                 # false disables BOTH weighting and ranking
+  rank_mode: "global"           # Rank by unweighted CE; classwise is an optional ablation
   margin: 0.15                   # Margin gamma for rank regularization
   clean_ratio: 0.70              # Top 70% lowest loss treated as confident/clean
   rank_loss_weight: 0.10         # Weight lambda for rank regularization loss
   div_loss_weight: 0.05          # Spatial head diversity regularizer
   sparsity_loss_weight: 0.0      # Edge sparsity regularizer
-  rank_warmup_epochs: 0          # Active from epoch 0
+  rank_warmup_epochs: 8          # Plain CE during warmup, then activate SCN
   enable_relabel: false          # Safe mode: Disable permanent label rewriting to prevent label drift / confirmation bias
   relabel_epoch: 25              # (If enabled) Start dynamic relabeling after epoch 25
   relabel_threshold: 0.90        # (If enabled) Ultra-high confidence threshold (>= 90%)
@@ -32,6 +39,13 @@ data:
   batch_size: 64
   num_workers: 2
   input_size: 48
+  normalization: "symmetric"
+  affine_degrees: 10
+  affine_translate: 0.08
+  affine_scale: [0.92, 1.08]
+  affine_interpolation: "bilinear"
+  affine_fill: 128
+  erasing_scale: [0.02, 0.20]
   use_random_erasing: true       # Mask small random patches to force multi-region focus
   erasing_prob: 0.30
   use_mixup: true             # Mixup Data Augmentation (alpha=0.2) to prevent memorization
@@ -39,27 +53,39 @@ data:
   mixup_prob: 0.5                # Apply mixup on 50% of training batches
 
 training:
-  epochs: 200
+  epochs: 60
   lr: 0.0003
+  backbone_lr: 0.00005
+  head_lr: 0.0003
   weight_decay: 0.002
   label_smoothing: 0.05
-  scheduler: "cosine_annealing"  # Smooth CosineAnnealingLR (decay 0.0003 -> 1e-6 without shock restart)
+  scheduler: "warmup_cosine"
+  warmup_epochs: 3
+  warmup_start_factor: 0.1
   eta_min: 0.000001
-  patience: 30
+  patience: 12
   use_ema: true
   ema_decay: 0.999
+  ema_warmup_updates: 2000
+  ema_bn_mode: "average"        # Average buffers too; optional train-only recalibrate mode
+  bn_calibration_batches: 0     # 0 = all clean training batches if recalibrating
+  compare_raw_and_ema: true     # Select ONE checkpoint; predictions are never ensembled
+  selection_metric: "accuracy"
+  val_tta: "none"
+  use_amp: true                 # CUDA only; CPU automatically runs float32
+  amp_dtype: "float16"
   clip_grad_norm: 2.0
   no_weight_decay_norm_bias: true
-  eval_test_on_best_epoch: false
+  evaluate_test_at_end: false   # Test is evaluated explicitly after recipe/TTA selection
   use_class_weights: true
   class_weight_mode: "sqrt_inverse"
   output_dir: "outputs/fads_scn_convnext"
 
 calibration:
-  enable_logit_bias: true
-  metric: "hybrid"               # Search objective: acc, macro_f1, balanced_acc, or hybrid
+  enable_logit_bias: false        # Explicit opt-in through --enable in calibration script
+  metric: "acc"
   search_on: "val"               # Search bias on validation, then apply to test
-  use_tta: "flip"                # none, flip, or multiscale
+  use_tta: "none"                # Must match the final inference mode
   class_names: ["angry", "disgust", "fear", "happy", "sad", "surprise", "neutral"]
   bias_grid:
     fear: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
@@ -70,7 +96,7 @@ calibration:
     surprise: [0.0]
     happy: [0.0]
   tune_classes: ["fear", "sad", "neutral", "angry"]
-  save_path: "outputs/fads_scn_convnext/calibration_logit_bias.json"
+  save_path: null                # Default: next to the checkpoint; refuses to overwrite
 
 logging:
   wandb_project: "fer2013-fads-scn"

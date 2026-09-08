@@ -1,0 +1,4 @@
+_base_: scn_convnext.yaml
+model:
+  attention_type: depthwise
+# Other settings unchanged; tests the lighter attention independently.
