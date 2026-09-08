@@ -40,6 +40,7 @@ def parse_args():
     )
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size")
     parser.add_argument("--device", type=str, default=None, help="Device (cuda or cpu)")
+    parser.add_argument("--data_path", type=str, default=None, help="Explicit path to fer13-split dataset folder")
     return parser.parse_args()
 
 
@@ -56,17 +57,22 @@ def main():
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
     # Build dataset
-    data_path = cfg["data"].get("data_path", "dataset/fer13-split")
+    data_path = args.data_path or cfg["data"].get("data_path", "dataset/fer13-split")
     kaggle_candidate_paths = [
         "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split",
         "/kaggle/input/datasets/doduyquynii/fer13-split",
         "/kaggle/input/fer13-split/fer13-split",
         "/kaggle/input/fer13-split",
+        "/kaggle/input/sgu-2026-facial-expression-recognition/dataset/fer13-split",
+        "/kaggle/input/sgu-2026-facial-expression-recognition/fer13-split",
+        "/kaggle/input/fer2013/dataset/fer13-split",
+        "/kaggle/input/fer2013",
     ]
-    for p in kaggle_candidate_paths:
-        if os.path.exists(p):
-            data_path = p
-            break
+    if args.data_path is None:
+        for p in kaggle_candidate_paths:
+            if os.path.exists(p):
+                data_path = p
+                break
     tf = build_transforms(args.split)
     ds = PureImageFER2013(data_path=data_path, split=args.split, transform=tf)
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=2)
@@ -80,9 +86,6 @@ def main():
         embed_dim=m_cfg.get("embed_dim", 256),
         num_attn_heads=m_cfg.get("num_attn_heads", 4),
         dropout=0.0,
-        classifier_type=m_cfg.get("classifier_type", "linear"),
-        cosface_scale=m_cfg.get("cosface_scale", 30.0),
-        cosface_margin=m_cfg.get("cosface_margin", 0.20),
         use_pretrained=False,
     )
 
