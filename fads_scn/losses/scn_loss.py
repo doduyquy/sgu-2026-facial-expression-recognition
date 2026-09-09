@@ -69,7 +69,7 @@ class SCNLoss(nn.Module):
         mixup_active = targets_b is not None and lam < 1.0
 
         # 1. Per-sample Cross-Entropy Loss with Label Smoothing & Mixup
-        if mixup_active or not self.use_scn:
+        if mixup_active:
             ce_a = F.cross_entropy(
                 logits,
                 targets,
