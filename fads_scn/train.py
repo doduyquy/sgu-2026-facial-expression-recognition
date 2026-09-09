@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 import argparse
 import random
+import yaml
 import numpy as np
 import torch
 
@@ -12,9 +13,9 @@ if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
 from fads_scn.data.dataset import build_dataloaders
+from fads_scn.models.attentive_scn_model import AttentiveSCNFER
 from fads_scn.losses.scn_loss import SCNLoss
 from fads_scn.training.trainer import AttentiveSCNTrainer
-from fads_scn.runtime import load_config, apply_overrides, resolve_data_path, build_model
 
 
 def set_seed(seed: int):
@@ -52,7 +53,7 @@ def parse_args():
     parser.add_argument(
         "--config",
         type=str,
-        default="fads_scn/configs/scn_convnext.yaml",
+        default="fads_scn/configs/scn_pure_image.yaml",
         help="Path to YAML configuration file",
     )
     parser.add_argument(
@@ -68,11 +69,6 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=None, help="Override learning rate")
     parser.add_argument("--seed", type=int, default=None, help="Override random seed")
     parser.add_argument("--device", type=str, default=None, help="Device (cuda or cpu)")
-    parser.add_argument("--data_path", default=None)
-    parser.add_argument("--output_dir", default=None, help="Base directory; each run gets a unique subdirectory")
-    parser.add_argument("--backbone_lr", type=float, default=None)
-    parser.add_argument("--head_lr", type=float, default=None)
-    parser.add_argument("--set", action="append", default=[], metavar="SECTION.KEY=VALUE")
     return parser.parse_args()
 
 
@@ -80,8 +76,12 @@ def main():
     args = parse_args()
 
     # 1. Load config
-    cfg, config_path = load_config(args.config)
-    apply_overrides(cfg, args.set)
+    config_path = Path(args.config)
+    if not config_path.exists():
+        # Try finding relative to repo root
+        config_path = repo_root / args.config
+    with open(config_path, "r") as f:
+        cfg = yaml.safe_load(f)
 
     # Overrides
     if args.epochs is not None:
@@ -92,22 +92,27 @@ def main():
         cfg["data"]["batch_size"] = args.batch_size
     if args.lr is not None:
         cfg["training"]["lr"] = args.lr
-        cfg["training"]["backbone_lr"] = args.lr
-        cfg["training"]["head_lr"] = args.lr
-    if args.backbone_lr is not None:
-        cfg["training"]["backbone_lr"] = args.backbone_lr
-    if args.head_lr is not None:
-        cfg["training"]["head_lr"] = args.head_lr
     if args.seed is not None:
         cfg.setdefault("seed", {})["random_seed"] = args.seed
 
     # Environment-specific path resolution
-    required = ("train", "val", "test") if cfg["training"].get("evaluate_test_at_end", False) else ("train", "val")
-    cfg["data"]["data_path"] = resolve_data_path(cfg, args.env, args.data_path, required)
-    if args.output_dir:
-        cfg["training"]["output_dir"] = args.output_dir
-    elif args.env == "kaggle":
-        cfg["training"]["output_dir"] = f"/kaggle/working/outputs/{cfg['model']['backbone']}"
+    if args.env == "kaggle":
+        kaggle_candidate_paths = [
+            "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split",
+            "/kaggle/input/datasets/doduyquynii/fer13-split",
+            "/kaggle/input/fer13-split/fer13-split",
+            "/kaggle/input/fer13-split",
+            "/kaggle/input/sgu-2026-facial-expression-recognition/dataset/fer13-split",
+            "/kaggle/input/sgu-2026-facial-expression-recognition/fer13-split",
+            "/kaggle/input/fer2013/dataset/fer13-split",
+            "/kaggle/input/fer2013",
+        ]
+        for p in kaggle_candidate_paths:
+            if os.path.exists(p):
+                cfg["data"]["data_path"] = p
+                print(f"[Kaggle Env] Found data at: {p}")
+                break
+        cfg["training"]["output_dir"] = "/kaggle/working/outputs/fads_scn"
 
     # Set device
     if args.device is not None:
@@ -118,12 +123,11 @@ def main():
     print(f"=== Running Attentive-SCN on {device.upper()} ===")
     print(f"Config: {config_path}")
     seed = int(cfg.get("seed", {}).get("random_seed", 42))
-    cfg.setdefault("seed", {})["random_seed"] = seed
     set_seed(seed)
 
     # 2. Build dataloaders
     train_loader, val_loader, test_loader = build_dataloaders(cfg)
-    print(f"Train samples: {len(train_loader.dataset)} | Val: {len(val_loader.dataset)} | Test: {len(test_loader.dataset) if test_loader else 'not loaded'}")
+    print(f"Train samples: {len(train_loader.dataset)} | Val: {len(val_loader.dataset)} | Test: {len(test_loader.dataset)}")
 
     # 3. Compute class weights
     class_weights = None
@@ -136,7 +140,21 @@ def main():
 
     # 4. Initialize Model
     m_cfg = cfg["model"]
-    model = build_model(cfg)
+    model = AttentiveSCNFER(
+        backbone_name=m_cfg.get("backbone", "resnet50"),
+        num_classes=m_cfg.get("num_classes", 7),
+        in_channels=m_cfg.get("in_channels", 1),
+        embed_dim=m_cfg.get("embed_dim", 256),
+        num_attn_heads=m_cfg.get("num_attn_heads", 8),
+        use_latent_graph=m_cfg.get("use_latent_graph", True),
+        dropout=m_cfg.get("dropout", 0.25),
+        classifier_type=m_cfg.get("classifier_type", "linear"),
+        cosface_scale=m_cfg.get("cosface_scale", 30.0),
+        cosface_margin=m_cfg.get("cosface_margin", 0.20),
+        use_pretrained=m_cfg.get("use_pretrained", True),
+        pretrained_weights_path=m_cfg.get("pretrained_weights_path", ""),
+        stem_init=m_cfg.get("stem_init", "mean"),
+    )
 
     # 5. Initialize Loss
     scn_cfg = cfg.get("scn", {})
@@ -149,8 +167,6 @@ def main():
         div_loss_weight=scn_cfg.get("div_loss_weight", 0.05),
         sparsity_loss_weight=scn_cfg.get("sparsity_loss_weight", 0.0),
         class_weights=class_weights,
-        use_scn=scn_cfg.get("use_scn", True),
-        rank_mode=scn_cfg.get("rank_mode", "global"),
     )
 
     # 6. Initialize Trainer & Run

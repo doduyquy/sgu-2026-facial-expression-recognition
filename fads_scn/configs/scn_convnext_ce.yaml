@@ -1,4 +1,0 @@
-_base_: scn_convnext.yaml
-scn:
-  use_scn: false
-# Same class weights, augmentation and architecture: isolates the SCN effect.
