@@ -26,29 +26,56 @@ def seed_worker(worker_id: int):
     random.seed(worker_seed)
 
 
-def build_transforms(split: str = "train", input_size: int = 48, use_random_erasing: bool = True, erasing_prob: float = 0.3):
+def build_transforms(
+    split: str = "train",
+    input_size: int = 48,
+    use_random_erasing: bool = True,
+    erasing_prob: float = 0.3,
+    in_channels: int = 1,
+    normalization: str = "symmetric",
+):
     """
     Build data transformation pipeline for pure image FER.
     Train: Flip + Affine + ToTensor + Normalize + RandomErasing
     Val/Test: ToTensor + Normalize
     """
+    if input_size < 16:
+        raise ValueError("input_size must be at least 16")
+    if in_channels not in (1, 3):
+        raise ValueError("FER2013 supports in_channels=1 or 3")
+    if normalization not in ("symmetric", "imagenet"):
+        raise ValueError("normalization must be symmetric or imagenet")
+    if normalization == "imagenet" and in_channels != 3:
+        raise ValueError("imagenet normalization requires 3 channels")
+
+    # Defaults intentionally preserve the prior 48x48 grayscale recipe exactly.
+    transform_list = []
+    if input_size != 48:
+        transform_list.append(T.Resize((input_size, input_size), interpolation=T.InterpolationMode.BILINEAR))
+    if in_channels == 3:
+        # FER2013 is grayscale: replicate its one channel; this does not invent colour.
+        transform_list.append(T.Grayscale(num_output_channels=3))
     if split == "train":
-        transform_list = [
+        transform_list.extend([
             T.RandomHorizontalFlip(p=0.5),
             T.RandomAffine(degrees=10, translate=(0.08, 0.08), scale=(0.92, 1.08)),
             T.ToTensor(),
-            T.Normalize(mean=[0.5], std=[0.5]),
-        ]
+        ])
+    else:
+        transform_list.append(T.ToTensor())
+
+    if normalization == "imagenet":
+        transform_list.append(T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]))
+    else:
+        transform_list.append(T.Normalize(mean=[0.5] * in_channels, std=[0.5] * in_channels))
+
+    if split == "train":
         if use_random_erasing:
             transform_list.append(
                 T.RandomErasing(p=erasing_prob, scale=(0.02, 0.20), ratio=(0.3, 3.3), value=0.0)
             )
         return T.Compose(transform_list)
-    else:
-        return T.Compose([
-            T.ToTensor(),
-            T.Normalize(mean=[0.5], std=[0.5]),
-        ])
+    return T.Compose(transform_list)
 
 
 class PureImageFER2013(Dataset):
@@ -135,9 +162,12 @@ def build_dataloaders(cfg: dict):
         generator.manual_seed(int(seed))
         worker_init_fn = seed_worker
 
-    train_tf = build_transforms("train", use_random_erasing=use_random_erasing, erasing_prob=erasing_prob)
-    val_tf = build_transforms("val")
-    test_tf = build_transforms("test")
+    input_size = data_cfg.get("input_size", 48)
+    in_channels = cfg.get("model", {}).get("in_channels", 1)
+    normalization = data_cfg.get("normalization", "symmetric")
+    train_tf = build_transforms("train", input_size, use_random_erasing, erasing_prob, in_channels, normalization)
+    val_tf = build_transforms("val", input_size, in_channels=in_channels, normalization=normalization)
+    test_tf = build_transforms("test", input_size, in_channels=in_channels, normalization=normalization)
 
     train_ds = PureImageFER2013(data_path, split="train", transform=train_tf)
     val_ds = PureImageFER2013(data_path, split="val", transform=val_tf)

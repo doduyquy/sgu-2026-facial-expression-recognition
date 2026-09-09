@@ -25,6 +25,7 @@ class SCNLoss(nn.Module):
         div_loss_weight: float = 0.05,
         sparsity_loss_weight: float = 0.0,
         class_weights: torch.Tensor = None,
+        use_scn: bool = True,
     ):
         super().__init__()
         self.num_classes = num_classes
@@ -34,6 +35,7 @@ class SCNLoss(nn.Module):
         self.rank_loss_weight = rank_loss_weight
         self.div_loss_weight = div_loss_weight
         self.sparsity_loss_weight = sparsity_loss_weight
+        self.use_scn = use_scn
 
         if class_weights is not None:
             self.register_buffer("class_weights", class_weights.float())
@@ -67,7 +69,7 @@ class SCNLoss(nn.Module):
         mixup_active = targets_b is not None and lam < 1.0
 
         # 1. Per-sample Cross-Entropy Loss with Label Smoothing & Mixup
-        if mixup_active:
+        if mixup_active or not self.use_scn:
             ce_a = F.cross_entropy(
                 logits,
                 targets,
@@ -109,7 +111,7 @@ class SCNLoss(nn.Module):
 
         # 3. Rank Regularization Loss
         # Enforces that clean samples (low CE loss) have higher alpha than noisy samples (high CE loss)
-        rank_is_active = (not mixup_active) and current_epoch >= rank_warmup_epochs and B > 4
+        rank_is_active = self.use_scn and (not mixup_active) and current_epoch >= rank_warmup_epochs and B > 4
         if rank_is_active:
             sorted_indices = torch.argsort(ce_loss_per_sample.detach())
             k_clean = max(1, int(B * self.clean_ratio))

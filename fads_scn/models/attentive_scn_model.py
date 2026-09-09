@@ -44,6 +44,7 @@ class AttentiveSCNFER(nn.Module):
         embed_dim: int = 256,
         num_attn_heads: int = 8,
         use_latent_graph: bool = True,
+        use_spatial_attention: bool = True,
         dropout: float = 0.25,
         classifier_type: str = "linear",
         cosface_scale: float = 30.0,
@@ -57,6 +58,9 @@ class AttentiveSCNFER(nn.Module):
         self.in_channels = in_channels
         self.embed_dim = embed_dim
         self.num_attn_heads = num_attn_heads
+        self.use_spatial_attention = use_spatial_attention
+        if use_latent_graph and not use_spatial_attention:
+            raise ValueError("use_latent_graph requires use_spatial_attention=true")
         self.use_latent_graph = use_latent_graph
 
         # 1. Backbone adapted for 48x48
@@ -82,11 +86,13 @@ class AttentiveSCNFER(nn.Module):
         )
 
         # 3. Local Spatial Attention Stream (Unsupervised discovery of Action Units)
-        self.spatial_attention = MultiHeadSpatialAttention(
-            in_channels=backbone_out_ch,
-            embed_dim=embed_dim,
-            num_heads=num_attn_heads,
-            dropout=dropout,
+        self.spatial_attention = (
+            MultiHeadSpatialAttention(
+                in_channels=backbone_out_ch,
+                embed_dim=embed_dim,
+                num_heads=num_attn_heads,
+                dropout=dropout,
+            ) if self.use_spatial_attention else None
         )
 
         # 4. Latent Dynamic Graph Reasoner (Message passing between soft semantic nodes)
@@ -101,7 +107,8 @@ class AttentiveSCNFER(nn.Module):
 
         # 5. Fusion Layer
         self.fusion_norm = nn.LayerNorm(embed_dim)
-        self.fusion_gate = nn.Parameter(torch.tensor([0.5], dtype=torch.float32))
+        self.fusion_gate = (nn.Parameter(torch.tensor([0.5], dtype=torch.float32))
+                            if self.use_spatial_attention else None)
 
         # 6. SCN Head (classifier + confidence weight)
         self.scn_head = SCNHead(
@@ -122,7 +129,12 @@ class AttentiveSCNFER(nn.Module):
         f_global = self.global_proj(feat_map)
 
         # Local spatial feature & attention maps & soft node tokens: [B, M, D]
-        f_local, attn_maps, div_loss, head_feats = self.spatial_attention(feat_map)
+        if self.spatial_attention is not None:
+            f_local, attn_maps, div_loss, head_feats = self.spatial_attention(feat_map)
+        else:
+            f_local = torch.zeros_like(f_global)
+            attn_maps, head_feats = None, None
+            div_loss = torch.zeros((), device=x.device)
 
         # Latent Dynamic Graph Reasoning over soft tokens
         if self.use_latent_graph and self.latent_graph is not None:
@@ -134,7 +146,7 @@ class AttentiveSCNFER(nn.Module):
             sparsity_loss = torch.tensor(0.0, device=x.device)
 
         # Gated residual fusion
-        gate = torch.sigmoid(self.fusion_gate)
+        gate = torch.sigmoid(self.fusion_gate) if self.fusion_gate is not None else 0.0
         f_fused = self.fusion_norm(f_global + gate * f_rep)
 
         # SCN Head classifier
@@ -167,10 +179,14 @@ class AttentiveSCNFER(nn.Module):
                 # 4-crop Multi-Scale TTA
                 x_orig = x
                 x_flip = torch.flip(x, dims=[-1])
-                # Zoom 1.05x: interpolate to 50x50, center-crop to 48x48
+                # Zoom 1.05x and center crop back to the original resolution.
+                # Works for both the 48x48 and 96x96 ablations.
+                height, width = x.shape[-2:]
+                zoom_h, zoom_w = max(height + 2, round(height * 1.05)), max(width + 2, round(width * 1.05))
+                top, left = (zoom_h - height) // 2, (zoom_w - width) // 2
                 x_zoom = torch.nn.functional.interpolate(
-                    x, size=(50, 50), mode="bilinear", align_corners=False
-                )[:, :, 1:49, 1:49]
+                    x, size=(zoom_h, zoom_w), mode="bilinear", align_corners=False
+                )[:, :, top:top + height, left:left + width]
                 x_zoom_flip = torch.flip(x_zoom, dims=[-1])
 
                 out1 = self._forward_single(x_orig)

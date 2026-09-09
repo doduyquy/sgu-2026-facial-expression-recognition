@@ -112,7 +112,8 @@ def main():
                 cfg["data"]["data_path"] = p
                 print(f"[Kaggle Env] Found data at: {p}")
                 break
-        cfg["training"]["output_dir"] = "/kaggle/working/outputs/fads_scn"
+        configured_output = Path(cfg["training"].get("output_dir", "outputs/fads_scn"))
+        cfg["training"]["output_dir"] = str(Path("/kaggle/working/outputs") / configured_output.name)
 
     # Set device
     if args.device is not None:
@@ -147,6 +148,7 @@ def main():
         embed_dim=m_cfg.get("embed_dim", 256),
         num_attn_heads=m_cfg.get("num_attn_heads", 8),
         use_latent_graph=m_cfg.get("use_latent_graph", True),
+        use_spatial_attention=m_cfg.get("use_spatial_attention", True),
         dropout=m_cfg.get("dropout", 0.25),
         classifier_type=m_cfg.get("classifier_type", "linear"),
         cosface_scale=m_cfg.get("cosface_scale", 30.0),
@@ -167,6 +169,7 @@ def main():
         div_loss_weight=scn_cfg.get("div_loss_weight", 0.05),
         sparsity_loss_weight=scn_cfg.get("sparsity_loss_weight", 0.0),
         class_weights=class_weights,
+        use_scn=scn_cfg.get("use_scn", True),
     )
 
     # 6. Initialize Trainer & Run
