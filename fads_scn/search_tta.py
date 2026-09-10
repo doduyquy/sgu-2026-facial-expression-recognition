@@ -209,7 +209,12 @@ def main():
             data_path = p
             break
 
-    tf = build_transforms(args.split)
+    tf = build_transforms(
+        args.split,
+        input_size=cfg["data"].get("input_size", 48),
+        in_channels=cfg["model"].get("in_channels", 1),
+        normalization=cfg["data"].get("normalization", "symmetric"),
+    )
     ds = PureImageFER2013(data_path=data_path, split=args.split, transform=tf)
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=2)
 
@@ -227,6 +232,11 @@ def main():
         in_channels=m_cfg.get("in_channels", 1),
         embed_dim=m_cfg.get("embed_dim", 256),
         num_attn_heads=m_cfg.get("num_attn_heads", 4),
+        use_latent_graph=m_cfg.get("use_latent_graph", True),
+        use_spatial_attention=m_cfg.get("use_spatial_attention", True),
+        graph_mode=m_cfg.get("graph_mode", "dense"),
+        graph_topk=m_cfg.get("graph_topk", 3),
+        graph_self_loop_bias=m_cfg.get("graph_self_loop_bias", 1.0),
         dropout=0.0,
         classifier_type=m_cfg.get("classifier_type", "linear"),
         cosface_scale=m_cfg.get("cosface_scale", 30.0),

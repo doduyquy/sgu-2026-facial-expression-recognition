@@ -26,10 +26,21 @@ class LatentGraphReasoner(nn.Module):
         hidden_dim: int = 512,
         dropout: float = 0.2,
         init_geo_scale: float = 2.0,
+        graph_mode: str = "dense",
+        topk: int = 3,
+        self_loop_bias: float = 1.0,
     ):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_nodes = num_nodes
+        if graph_mode not in ("dense", "sparse", "reliability_sparse"):
+            raise ValueError("graph_mode must be dense, sparse, or reliability_sparse")
+        if graph_mode in ("sparse", "reliability_sparse") and not 1 <= topk < num_nodes:
+            raise ValueError("sparse graph modes require 1 <= topk < num_nodes")
+        self.graph_mode = graph_mode
+        self.topk = topk
+        self.self_loop_bias = self_loop_bias
+        self.last_graph_gain = None
 
         # 1. Projections for Dual-Factor Adjacency Matrix
         self.q_proj = nn.Linear(embed_dim, embed_dim, bias=False)
@@ -59,6 +70,20 @@ class LatentGraphReasoner(nn.Module):
             nn.GELU(),
             nn.Linear(64, 1),
         )
+
+        # Created only for the proposed graph mode, preserving dense-model
+        # checkpoint compatibility. It decides how much graph evidence to use
+        # for each image; SCN reliability is detached before entering this gate.
+        if self.graph_mode == "reliability_sparse":
+            self.reliability_gate = nn.Sequential(
+                nn.Linear(2 * embed_dim + 1, max(64, embed_dim // 2)),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(max(64, embed_dim // 2), 1),
+                nn.Sigmoid(),
+            )
+            with torch.no_grad():
+                self.reliability_gate[3].bias.fill_(1.0)
 
     def _compute_soft_centers(self, attn_maps: torch.Tensor) -> torch.Tensor:
         """
@@ -95,7 +120,13 @@ class LatentGraphReasoner(nn.Module):
         entropy = -entropy_terms.sum(dim=-1)
         return entropy.mean() / math.log(max(num_nodes, 2))
 
-    def forward(self, node_tokens: torch.Tensor, attn_maps: torch.Tensor):
+    def forward(
+        self,
+        node_tokens: torch.Tensor,
+        attn_maps: torch.Tensor,
+        global_features: torch.Tensor = None,
+        reliability: torch.Tensor = None,
+    ):
         """
         Args:
             node_tokens: [B, M, D] soft regional tokens from spatial attention
@@ -122,9 +153,21 @@ class LatentGraphReasoner(nn.Module):
         sem_sim = torch.bmm(Q, K.transpose(1, 2)) / math.sqrt(D)  # [B, M, M]
 
         # 3. Dual-Factor Adjacency Matrix
-        # Self-loop: add identity prior to reinforce self-features
         raw_adj = sem_sim + geo_prior
-        adj_matrix = F.softmax(raw_adj, dim=-1)  # [B, M, M], each row sums to 1.0
+        if self.graph_mode in ("sparse", "reliability_sparse"):
+            if self.graph_mode == "reliability_sparse" and (global_features is None or reliability is None):
+                raise ValueError("reliability_sparse graph requires global_features and reliability")
+            identity = torch.eye(M, dtype=torch.bool, device=node_tokens.device).unsqueeze(0).expand(B, -1, -1)
+            # A diagonal prior retains each regional feature. Dynamic top-k
+            # neighbors prevent all local regions from being indiscriminately mixed.
+            scored_adj = raw_adj + self.self_loop_bias * identity.to(raw_adj.dtype)
+            neighbor_scores = scored_adj.masked_fill(identity, torch.finfo(raw_adj.dtype).min)
+            neighbor_indices = neighbor_scores.topk(self.topk, dim=-1).indices
+            edge_mask = identity.clone()
+            edge_mask.scatter_(2, neighbor_indices, True)
+            adj_matrix = F.softmax(scored_adj.masked_fill(~edge_mask, torch.finfo(raw_adj.dtype).min), dim=-1)
+        else:
+            adj_matrix = F.softmax(raw_adj, dim=-1)  # [B, M, M], each row sums to 1.0
 
         # 4. Graph Message Passing
         V = self.v_proj(node_tokens)  # [B, M, D]
@@ -138,6 +181,17 @@ class LatentGraphReasoner(nn.Module):
         readout_logits = self.readout_gate(h2)  # [B, M, 1]
         beta = F.softmax(readout_logits, dim=1)  # [B, M, 1]
         f_graph = (beta * h2).sum(dim=1)  # [B, D]
+
+        if self.graph_mode == "reliability_sparse":
+            # Alpha remains trained by SCN rank regularization, not by a shortcut
+            # through classification. The learnable gate can still use visual context.
+            alpha = reliability.detach().view(B, 1).to(node_tokens.dtype)
+            gate_input = torch.cat([global_features, node_tokens.mean(dim=1), alpha], dim=-1)
+            graph_gain = alpha * self.reliability_gate(gate_input)
+            f_graph = f_graph * graph_gain
+            self.last_graph_gain = graph_gain
+        else:
+            self.last_graph_gain = node_tokens.new_ones((B, 1))
 
         # 7. Sparsity regularizer (penalizes overly uniform/diffuse edges)
         sparsity_loss = self.edge_entropy_loss(adj_matrix)

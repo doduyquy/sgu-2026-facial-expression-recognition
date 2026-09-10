@@ -45,6 +45,9 @@ class AttentiveSCNFER(nn.Module):
         num_attn_heads: int = 8,
         use_latent_graph: bool = True,
         use_spatial_attention: bool = True,
+        graph_mode: str = "dense",
+        graph_topk: int = 3,
+        graph_self_loop_bias: float = 1.0,
         dropout: float = 0.25,
         classifier_type: str = "linear",
         cosface_scale: float = 30.0,
@@ -62,6 +65,7 @@ class AttentiveSCNFER(nn.Module):
         if use_latent_graph and not use_spatial_attention:
             raise ValueError("use_latent_graph requires use_spatial_attention=true")
         self.use_latent_graph = use_latent_graph
+        self.graph_mode = graph_mode
 
         # 1. Backbone adapted for 48x48
         self.backbone = FacialBackbone(
@@ -101,6 +105,9 @@ class AttentiveSCNFER(nn.Module):
                 embed_dim=embed_dim,
                 num_nodes=num_attn_heads,
                 dropout=dropout,
+                graph_mode=graph_mode,
+                topk=graph_topk,
+                self_loop_bias=graph_self_loop_bias,
             )
         else:
             self.latent_graph = None
@@ -138,12 +145,24 @@ class AttentiveSCNFER(nn.Module):
 
         # Latent Dynamic Graph Reasoning over soft tokens
         if self.use_latent_graph and self.latent_graph is not None:
-            graph_feats, adj_matrix, sparsity_loss = self.latent_graph(head_feats, attn_maps)
+            # Proposed reliability-sparse graph obtains alpha from global features
+            # before graph fusion, avoiding a circular dependence on graph output.
+            graph_alpha = (self.scn_head.predict_alpha(f_global)
+                           if self.graph_mode == "reliability_sparse" else None)
+            graph_feats, adj_matrix, sparsity_loss = self.latent_graph(
+                head_feats,
+                attn_maps,
+                global_features=f_global,
+                reliability=graph_alpha,
+            )
+            graph_gain = self.latent_graph.last_graph_gain
             f_rep = f_local + graph_feats
         else:
             f_rep = f_local
             adj_matrix = None
             sparsity_loss = torch.tensor(0.0, device=x.device)
+            graph_alpha = None
+            graph_gain = torch.ones((x.size(0), 1), device=x.device)
 
         # Gated residual fusion
         gate = torch.sigmoid(self.fusion_gate) if self.fusion_gate is not None else 0.0
@@ -151,6 +170,10 @@ class AttentiveSCNFER(nn.Module):
 
         # SCN Head classifier
         logits, alpha = self.scn_head(f_fused, targets=targets, targets_b=targets_b, lam=lam)
+        # The sparse graph's alpha must be available before graph propagation;
+        # expose that same reliability estimate to SCN loss.
+        if graph_alpha is not None:
+            alpha = graph_alpha
 
         return {
             "logits": logits,
@@ -159,6 +182,7 @@ class AttentiveSCNFER(nn.Module):
             "diversity_loss": div_loss,
             "adj_matrix": adj_matrix,
             "sparsity_loss": sparsity_loss,
+            "graph_gain": graph_gain,
             "features": f_fused,
         }
 
@@ -196,6 +220,9 @@ class AttentiveSCNFER(nn.Module):
 
                 avg_logits = 0.25 * (out1["logits"] + out2["logits"] + out3["logits"] + out4["logits"])
                 avg_alpha = 0.25 * (out1["alpha"] + out2["alpha"] + out3["alpha"] + out4["alpha"])
+                avg_graph_gain = 0.25 * (
+                    out1["graph_gain"] + out2["graph_gain"] + out3["graph_gain"] + out4["graph_gain"]
+                )
 
                 return {
                     "logits": avg_logits,
@@ -204,6 +231,7 @@ class AttentiveSCNFER(nn.Module):
                     "diversity_loss": out1["diversity_loss"],
                     "adj_matrix": out1["adj_matrix"],
                     "sparsity_loss": out1["sparsity_loss"],
+                    "graph_gain": avg_graph_gain,
                     "features": out1["features"],
                 }
             else:
@@ -214,6 +242,7 @@ class AttentiveSCNFER(nn.Module):
 
                 avg_logits = 0.5 * (out_orig["logits"] + out_flipped["logits"])
                 avg_alpha = 0.5 * (out_orig["alpha"] + out_flipped["alpha"])
+                avg_graph_gain = 0.5 * (out_orig["graph_gain"] + out_flipped["graph_gain"])
 
                 return {
                     "logits": avg_logits,
@@ -222,6 +251,7 @@ class AttentiveSCNFER(nn.Module):
                     "diversity_loss": out_orig["diversity_loss"],
                     "adj_matrix": out_orig["adj_matrix"],
                     "sparsity_loss": out_orig["sparsity_loss"],
+                    "graph_gain": avg_graph_gain,
                     "features": out_orig["features"],
                 }
         else:

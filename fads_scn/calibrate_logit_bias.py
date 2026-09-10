@@ -99,7 +99,12 @@ def tta_mode(value: str):
 
 
 def build_loader(cfg: dict, data_path: str, split: str, batch_size: int):
-    transform = build_transforms(split)
+    transform = build_transforms(
+        split,
+        input_size=cfg.get("data", {}).get("input_size", 48),
+        in_channels=cfg.get("model", {}).get("in_channels", 1),
+        normalization=cfg.get("data", {}).get("normalization", "symmetric"),
+    )
     dataset = PureImageFER2013(data_path=data_path, split=split, transform=transform)
     seed = cfg.get("seed", {}).get("random_seed", None)
     generator = None
@@ -129,6 +134,10 @@ def build_model(cfg: dict, weights_path: str, device: torch.device):
         embed_dim=m_cfg.get("embed_dim", 256),
         num_attn_heads=m_cfg.get("num_attn_heads", 8),
         use_latent_graph=m_cfg.get("use_latent_graph", True),
+        use_spatial_attention=m_cfg.get("use_spatial_attention", True),
+        graph_mode=m_cfg.get("graph_mode", "dense"),
+        graph_topk=m_cfg.get("graph_topk", 3),
+        graph_self_loop_bias=m_cfg.get("graph_self_loop_bias", 1.0),
         dropout=0.0,
         classifier_type=m_cfg.get("classifier_type", "linear"),
         cosface_scale=m_cfg.get("cosface_scale", 30.0),

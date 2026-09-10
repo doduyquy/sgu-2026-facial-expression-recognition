@@ -134,6 +134,11 @@ class SCNHead(nn.Module):
         with torch.no_grad():
             self.importance_gate[2].bias.fill_(init_confidence_bias)
 
+    def predict_alpha(self, features: torch.Tensor) -> torch.Tensor:
+        """Return a bounded reliability estimate without computing classification logits."""
+        raw_alpha = self.importance_gate(features)
+        return 0.10 + 0.90 * raw_alpha
+
     def forward(
         self,
         features: torch.Tensor,
@@ -152,7 +157,6 @@ class SCNHead(nn.Module):
             alpha: [B, 1] sample confidence weights in safe range [0.10, 1.00]
         """
         logits = self.classifier(features, targets=targets, targets_b=targets_b, lam=lam)
-        raw_alpha = self.importance_gate(features)
-        # Bounded in [0.10, 1.00] to strictly prevent gradient vanishing or mode collapse
-        alpha = 0.10 + 0.90 * raw_alpha
+        # Bounded in [0.10, 1.00] to strictly prevent gradient vanishing or mode collapse.
+        alpha = self.predict_alpha(features)
         return logits, alpha

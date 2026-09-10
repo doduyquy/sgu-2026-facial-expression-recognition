@@ -45,6 +45,64 @@ def test_sparsity_loss_penalizes_diffuse_edges():
     print("  [PASS] Edge entropy sparsity loss direction verified.")
 
 
+def test_reliability_sparse_graph_is_topk_and_reliability_gated():
+    """The proposed graph retains self plus exactly at most k dynamic neighbours."""
+    B, M, D, H, W = 3, 5, 16, 4, 4
+    topk = 2
+    reasoner = LatentGraphReasoner(
+        embed_dim=D,
+        num_nodes=M,
+        hidden_dim=32,
+        dropout=0.0,
+        graph_mode="reliability_sparse",
+        topk=topk,
+        self_loop_bias=1.0,
+    )
+    node_tokens = torch.randn(B, M, D)
+    attn_maps = torch.softmax(torch.randn(B, M, H * W), dim=-1).view(B, M, H, W)
+    global_features = torch.randn(B, D)
+    reliability = torch.tensor([[0.10], [0.50], [0.90]])
+
+    f_graph, adj_matrix, sparsity_loss = reasoner(
+        node_tokens,
+        attn_maps,
+        global_features=global_features,
+        reliability=reliability,
+    )
+
+    assert f_graph.shape == (B, D)
+    assert torch.isfinite(sparsity_loss)
+    assert torch.allclose(adj_matrix.sum(dim=-1), torch.ones(B, M), atol=1e-6)
+    assert torch.all(torch.diagonal(adj_matrix, dim1=-2, dim2=-1) > 0)
+    active_edges = (adj_matrix > 1e-12).sum(dim=-1)
+    assert torch.all(active_edges <= topk + 1), "Each node may use only self plus top-k neighbours"
+    assert reasoner.last_graph_gain.shape == (B, 1)
+    assert torch.all((reasoner.last_graph_gain > 0) & (reasoner.last_graph_gain < 1))
+
+    f_graph.mean().backward()
+    assert reasoner.reliability_gate[0].weight.grad is not None
+    assert reasoner.q_proj.weight.grad is not None
+    print("  [PASS] Reliability-gated sparse top-k graph verified.")
+
+
+def test_sparse_graph_is_a_valid_ablation_without_reliability_inputs():
+    reasoner = LatentGraphReasoner(
+        embed_dim=8,
+        num_nodes=4,
+        hidden_dim=16,
+        dropout=0.0,
+        graph_mode="sparse",
+        topk=1,
+    )
+    tokens = torch.randn(2, 4, 8)
+    maps = torch.softmax(torch.randn(2, 4, 9), dim=-1).view(2, 4, 3, 3)
+    _, adjacency, _ = reasoner(tokens, maps)
+
+    assert torch.allclose(adjacency.sum(dim=-1), torch.ones(2, 4), atol=1e-6)
+    assert torch.all((adjacency > 1e-12).sum(dim=-1) <= 2)
+    assert torch.allclose(reasoner.last_graph_gain, torch.ones(2, 1))
+
+
 def test_attentive_scn_with_graph_gradient_flow():
     print("Testing AttentiveSCNFER with Latent Dynamic Graph & Gradient Flow...")
     B = 4
