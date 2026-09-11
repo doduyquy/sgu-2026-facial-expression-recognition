@@ -33,8 +33,8 @@ class LatentGraphReasoner(nn.Module):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_nodes = num_nodes
-        if graph_mode not in ("dense", "sparse", "reliability_sparse"):
-            raise ValueError("graph_mode must be dense, sparse, or reliability_sparse")
+        if graph_mode not in ("dense", "sparse", "reliability_sparse", "contextual_delta"):
+            raise ValueError("graph_mode must be dense, sparse, reliability_sparse, or contextual_delta")
         if graph_mode in ("sparse", "reliability_sparse") and not 1 <= topk < num_nodes:
             raise ValueError("sparse graph modes require 1 <= topk < num_nodes")
         self.graph_mode = graph_mode
@@ -84,6 +84,20 @@ class LatentGraphReasoner(nn.Module):
             )
             with torch.no_grad():
                 self.reliability_gate[3].bias.fill_(1.0)
+
+        # The proposed contextual-delta graph uses the pre-graph global facial
+        # representation to condition *which* regional relations are useful.
+        # Zero initialization starts from the original semantic adjacency.
+        if self.graph_mode == "contextual_delta":
+            self.context_edge_gate = nn.Sequential(
+                nn.Linear(embed_dim, embed_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(embed_dim, embed_dim),
+            )
+            with torch.no_grad():
+                self.context_edge_gate[3].weight.zero_()
+                self.context_edge_gate[3].bias.zero_()
 
     def _compute_soft_centers(self, attn_maps: torch.Tensor) -> torch.Tensor:
         """
@@ -150,6 +164,13 @@ class LatentGraphReasoner(nn.Module):
         # 2. Semantic Co-activation Similarity
         Q = self.q_proj(node_tokens)  # [B, M, D]
         K = self.k_proj(node_tokens)  # [B, M, D]
+        if self.graph_mode == "contextual_delta":
+            if global_features is None:
+                raise ValueError("contextual_delta graph requires global_features")
+            # In [0.75, 1.25] at every feature dimension; it begins at exactly
+            # 1.0 so the new mode does not start from a saturated graph.
+            context_scale = 1.0 + 0.25 * torch.tanh(self.context_edge_gate(global_features)).unsqueeze(1)
+            Q = Q * context_scale
         sem_sim = torch.bmm(Q, K.transpose(1, 2)) / math.sqrt(D)  # [B, M, M]
 
         # 3. Dual-Factor Adjacency Matrix
@@ -171,7 +192,14 @@ class LatentGraphReasoner(nn.Module):
 
         # 4. Graph Message Passing
         V = self.v_proj(node_tokens)  # [B, M, D]
-        message = torch.bmm(adj_matrix, V)  # [B, M, D]
+        if self.graph_mode == "contextual_delta":
+            # Relation-aware propagation: a node receives how its neighbors
+            # differ from itself, avoiding the redundant A @ V smoothing used
+            # by the original dense graph and local attention pooling.
+            relative_values = V.unsqueeze(1) - V.unsqueeze(2)  # [B, i, j, D] = V_j - V_i
+            message = (adj_matrix.unsqueeze(-1) * relative_values).sum(dim=2)
+        else:
+            message = torch.bmm(adj_matrix, V)  # [B, M, D]
         h1 = self.norm1(node_tokens + self.dropout1(message))
 
         # 5. FFN with Skip-Connection

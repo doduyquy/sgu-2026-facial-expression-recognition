@@ -103,6 +103,35 @@ def test_sparse_graph_is_a_valid_ablation_without_reliability_inputs():
     assert torch.allclose(reasoner.last_graph_gain, torch.ones(2, 1))
 
 
+def test_contextual_delta_graph_uses_global_context_and_relative_messages():
+    B, M, D = 3, 4, 12
+    reasoner = LatentGraphReasoner(
+        embed_dim=D,
+        num_nodes=M,
+        hidden_dim=24,
+        dropout=0.0,
+        graph_mode="contextual_delta",
+    )
+    tokens = torch.randn(B, M, D)
+    maps = torch.softmax(torch.randn(B, M, 9), dim=-1).view(B, M, 3, 3)
+    context = torch.randn(B, D)
+
+    features, adjacency, loss = reasoner(tokens, maps, global_features=context)
+    assert features.shape == (B, D)
+    assert torch.isfinite(loss)
+    assert torch.allclose(adjacency.sum(dim=-1), torch.ones(B, M), atol=1e-6)
+
+    features.mean().backward()
+    assert reasoner.context_edge_gate[3].weight.grad is not None
+    assert reasoner.v_proj.weight.grad is not None
+
+    try:
+        reasoner(tokens, maps)
+        assert False, "contextual_delta should reject absent global features"
+    except ValueError as error:
+        assert "global_features" in str(error)
+
+
 def test_attentive_scn_with_graph_gradient_flow():
     print("Testing AttentiveSCNFER with Latent Dynamic Graph & Gradient Flow...")
     B = 4

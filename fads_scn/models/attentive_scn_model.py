@@ -149,10 +149,11 @@ class AttentiveSCNFER(nn.Module):
             # before graph fusion, avoiding a circular dependence on graph output.
             graph_alpha = (self.scn_head.predict_alpha(f_global)
                            if self.graph_mode == "reliability_sparse" else None)
+            graph_context = f_global if self.graph_mode == "contextual_delta" else None
             graph_feats, adj_matrix, sparsity_loss = self.latent_graph(
                 head_feats,
                 attn_maps,
-                global_features=f_global,
+                global_features=graph_context if graph_context is not None else f_global,
                 reliability=graph_alpha,
             )
             graph_gain = self.latent_graph.last_graph_gain
