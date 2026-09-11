@@ -55,6 +55,12 @@ training:
   class_weight_mode: "sqrt_inverse"
   output_dir: "outputs/fads_scn_convnext"
 
+evaluation:
+  validation_tta: false              # Select training checkpoint from raw validation only
+  post_train_weighted_flip_tta_sweep: true
+  weighted_flip_weights: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+  tta_selection_metric: "accuracy"  # Sweep validation only; test receives the frozen winner
+
 calibration:
   enable_logit_bias: true
   metric: "hybrid"               # Search objective: acc, macro_f1, balanced_acc, or hybrid
