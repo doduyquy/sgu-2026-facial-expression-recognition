@@ -175,7 +175,136 @@ class AttentiveSCNTrainer:
         self.best_val_acc = 0.0
         self.best_macro_f1 = 0.0
         self.best_epoch = 0
+        self.best_val_loss = float("inf")
+        self.best_val_loss_epoch = 0
         self.patience_counter = 0
+
+    def _save_checkpoint(self, path: Path, epoch: int, eval_model, val_loss: float, val_acc: float, val_f1: float, hybrid_score: float, selection_criterion: str):
+        torch.save(
+            {
+                "epoch": epoch + 1,
+                "state_dict": eval_model.state_dict(),
+                "val_loss": val_loss,
+                "val_acc": val_acc,
+                "macro_f1": val_f1,
+                "hybrid_score": hybrid_score,
+                "selection_criterion": selection_criterion,
+                "config": self.cfg,
+            },
+            path,
+        )
+
+    def _evaluate_saved_checkpoint(self, checkpoint_path: Path, checkpoint_label: str):
+        """Sweep TTA on validation and evaluate one frozen checkpoint on test."""
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        eval_model = self.model
+        eval_model.load_state_dict(checkpoint["state_dict"])
+        eval_model.eval()
+        epoch = checkpoint.get("epoch", "?")
+
+        val_metrics = evaluate_model(
+            eval_model,
+            self.val_loader,
+            self.device,
+            use_tta=self.validation_tta,
+            criterion=self.criterion,
+        )
+        cm_val_path = self.output_dir / f"confusion_matrix_val_{checkpoint_label}.png"
+        try:
+            plot_confusion_matrix(
+                val_metrics["confusion_matrix"],
+                EMOTION_NAMES,
+                cm_val_path,
+                title=(
+                    f"Val CM ({checkpoint_label}, Ep {epoch} | Loss: {val_metrics['loss']:.4f} | "
+                    f"Acc: {val_metrics['accuracy']*100:.2f}% | F1: {val_metrics['macro_f1']*100:.2f}%)"
+                ),
+            )
+            print(f"  [{checkpoint_label}] Exported val CM -> {cm_val_path.name}")
+        except Exception as error:
+            print(f"  [{checkpoint_label}] Warning: could not export val CM: {error}")
+
+        cm_test_path = None
+        tta_sweep_path = None
+        test_metrics = None
+        if self.test_loader is not None:
+            if self.post_train_weighted_flip_tta_sweep:
+                sweep = WeightedHorizontalFlipTTASweep.sweep_and_apply(
+                    eval_model,
+                    self.val_loader,
+                    self.test_loader,
+                    self.device,
+                    flip_weights=self.weighted_flip_weights,
+                    selection_metric=self.tta_selection_metric,
+                )
+                for result in sweep["validation_results"]:
+                    print(
+                        f"  [{checkpoint_label} VAL TTA] orig={result['original_weight']:.1f} "
+                        f"flip={result['flip_weight']:.1f} | Acc={result['accuracy']*100:.2f}% "
+                        f"F1={result['macro_f1']*100:.2f}% Score={result['hybrid_score']:.4f}"
+                    )
+                print(
+                    f"  [{checkpoint_label} SELECTED TTA] metric={sweep['selection_metric']} | "
+                    f"orig={sweep['selected_original_weight']:.1f}, flip={sweep['selected_flip_weight']:.1f}"
+                )
+                test_metrics = sweep["test_metrics"]
+                tta_sweep_path = self.output_dir / f"weighted_flip_tta_selection_{checkpoint_label}.json"
+                serializable_results = [
+                    {
+                        key: result[key]
+                        for key in ("original_weight", "flip_weight", "loss", "accuracy", "macro_f1", "hybrid_score")
+                    }
+                    for result in sweep["validation_results"]
+                ]
+                with open(tta_sweep_path, "w", encoding="utf-8") as handle:
+                    json.dump(
+                        {
+                            "checkpoint": checkpoint_path.name,
+                            "checkpoint_epoch": epoch,
+                            "selection_split": "val",
+                            "selection_metric": sweep["selection_metric"],
+                            "selected_original_weight": sweep["selected_original_weight"],
+                            "selected_flip_weight": sweep["selected_flip_weight"],
+                            "validation_results": serializable_results,
+                            "test_metrics": {
+                                key: test_metrics[key]
+                                for key in ("loss", "accuracy", "macro_f1", "hybrid_score", "per_class_acc")
+                            },
+                        },
+                        handle,
+                        indent=2,
+                    )
+            else:
+                test_metrics = evaluate_model(
+                    eval_model,
+                    self.test_loader,
+                    self.device,
+                    use_tta=self.validation_tta,
+                    criterion=self.criterion,
+                )
+
+            cm_test_path = self.output_dir / f"confusion_matrix_test_{checkpoint_label}.png"
+            try:
+                plot_confusion_matrix(
+                    test_metrics["confusion_matrix"],
+                    EMOTION_NAMES,
+                    cm_test_path,
+                    title=(
+                        f"Test CM ({checkpoint_label}, Ep {epoch} | Loss: {test_metrics['loss']:.4f} | "
+                        f"Acc: {test_metrics['accuracy']*100:.2f}% | F1: {test_metrics['macro_f1']*100:.2f}%)"
+                    ),
+                )
+                print(f"  [{checkpoint_label}] Exported test CM -> {cm_test_path.name}")
+            except Exception as error:
+                print(f"  [{checkpoint_label}] Warning: could not export test CM: {error}")
+
+        return {
+            "checkpoint": checkpoint_path,
+            "val_cm": cm_val_path,
+            "test_cm": cm_test_path,
+            "tta_selection": tta_sweep_path,
+            "test_metrics": test_metrics,
+        }
 
     def train_one_epoch(self, epoch: int):
         self.model.train()
@@ -298,8 +427,10 @@ class AttentiveSCNTrainer:
                 + (f" | Relabelled: {relabelled}" if relabelled > 0 else "")
             )
 
-            # Check for best model
-            if hybrid_score > self.best_score:
+            # Score controls early stopping; lowest validation loss is tracked
+            # independently and never changes the stopping criterion.
+            score_improved = hybrid_score > self.best_score
+            if score_improved:
                 self.best_score = hybrid_score
                 self.best_val_acc = val_acc
                 self.best_macro_f1 = val_f1
@@ -307,19 +438,17 @@ class AttentiveSCNTrainer:
                 self.patience_counter = 0
 
                 best_path = self.output_dir / "attentive_scn_best.pth"
-                torch.save(
-                    {
-                        "epoch": epoch + 1,
-                        "state_dict": eval_model.state_dict(),
-                        "val_loss": val_loss,
-                        "val_acc": val_acc,
-                        "macro_f1": val_f1,
-                        "hybrid_score": hybrid_score,
-                        "config": self.cfg,
-                    },
+                self._save_checkpoint(
                     best_path,
+                    epoch,
+                    eval_model,
+                    val_loss,
+                    val_acc,
+                    val_f1,
+                    hybrid_score,
+                    selection_criterion="hybrid_score",
                 )
-                print(f"  [BEST] New best model saved! Val Loss: {val_loss:.4f}, Val Acc: {val_acc*100:.2f}%, F1: {val_f1*100:.2f}% -> {best_path}")
+                print(f"  [BEST SCORE] Val Loss: {val_loss:.4f}, Val Acc: {val_acc*100:.2f}%, F1: {val_f1*100:.2f}% -> {best_path}")
 
                 if self.eval_test_on_best_epoch and self.test_loader is not None:
                     test_metrics = evaluate_model(
@@ -334,128 +463,58 @@ class AttentiveSCNTrainer:
                         f"  [Test Set @ Ep {epoch+1}] Loss: {test_loss:.4f} | Acc: {test_metrics['accuracy']*100:.2f}% "
                         f"| F1: {test_metrics['macro_f1']*100:.2f}%"
                     )
-            else:
+
+            if val_loss < self.best_val_loss:
+                self.best_val_loss = val_loss
+                self.best_val_loss_epoch = epoch + 1
+                best_loss_path = self.output_dir / "attentive_scn_best_val_loss.pth"
+                self._save_checkpoint(
+                    best_loss_path,
+                    epoch,
+                    eval_model,
+                    val_loss,
+                    val_acc,
+                    val_f1,
+                    hybrid_score,
+                    selection_criterion="val_loss",
+                )
+                print(
+                    f"  [BEST VAL LOSS] Loss: {val_loss:.4f}, Val Acc: {val_acc*100:.2f}%, "
+                    f"F1: {val_f1*100:.2f}% -> {best_loss_path}"
+                )
+            if not score_improved:
                 self.patience_counter += 1
                 if self.patience_counter >= self.patience:
                     print(f"\nEarly stopping triggered after {self.patience} epochs without improvement.")
                     break
 
-        # ============================================================
-        # Post-Training: Load Best Checkpoint & Export Confusion Matrices
-        # ============================================================
-        best_path = self.output_dir / "attentive_scn_best.pth"
-        if best_path.exists():
-            print(f"\n[EVALUATION] Training finished. Loading best model from {best_path} to export confusion matrices...")
-            checkpoint = torch.load(best_path, map_location=self.device)
-            eval_model = self.model
-            eval_model.load_state_dict(checkpoint["state_dict"])
-            eval_model.eval()
-
-            # 1. Export Best Validation Confusion Matrix
-            val_metrics = evaluate_model(
-                eval_model,
-                self.val_loader,
-                self.device,
-                use_tta=self.validation_tta,
-                criterion=self.criterion,
-            )
-            cm_val_path = self.output_dir / "confusion_matrix_val_best.png"
-            try:
-                plot_confusion_matrix(
-                    val_metrics["confusion_matrix"],
-                    EMOTION_NAMES,
-                    cm_val_path,
-                    title=f"Val Confusion Matrix (Best Ep {self.best_epoch} | Loss: {val_metrics['loss']:.4f} | Acc: {val_metrics['accuracy']*100:.2f}% | F1: {val_metrics['macro_f1']*100:.2f}%)",
-                )
-                print(f"  [Exported] Val Confusion Matrix -> {cm_val_path.name}")
-            except Exception as e:
-                print(f"  [Warning] Could not export Val confusion matrix: {e}")
-
-            # 2. Select original/horizontal-flip ratio only on validation, then
-            # evaluate the test set once with that frozen choice.
-            cm_test_path = None
-            tta_sweep_path = None
-            if self.test_loader is not None:
-                if self.post_train_weighted_flip_tta_sweep:
-                    sweep = WeightedHorizontalFlipTTASweep.sweep_and_apply(
-                        eval_model,
-                        self.val_loader,
-                        self.test_loader,
-                        self.device,
-                        flip_weights=self.weighted_flip_weights,
-                        selection_metric=self.tta_selection_metric,
-                    )
-                    for result in sweep["validation_results"]:
-                        print(
-                            f"  [VAL TTA] orig={result['original_weight']:.1f} flip={result['flip_weight']:.1f} | "
-                            f"Acc={result['accuracy']*100:.2f}% F1={result['macro_f1']*100:.2f}% "
-                            f"Score={result['hybrid_score']:.4f}"
-                        )
-                    print(
-                        f"  [SELECTED TTA] metric={sweep['selection_metric']} | "
-                        f"orig={sweep['selected_original_weight']:.1f}, flip={sweep['selected_flip_weight']:.1f}"
-                    )
-                    test_metrics = sweep["test_metrics"]
-                    tta_sweep_path = self.output_dir / "weighted_flip_tta_selection.json"
-                    serializable_results = [
-                        {
-                            "original_weight": result["original_weight"],
-                            "flip_weight": result["flip_weight"],
-                            "loss": result["loss"],
-                            "accuracy": result["accuracy"],
-                            "macro_f1": result["macro_f1"],
-                            "hybrid_score": result["hybrid_score"],
-                        }
-                        for result in sweep["validation_results"]
-                    ]
-                    with open(tta_sweep_path, "w", encoding="utf-8") as handle:
-                        json.dump(
-                            {
-                                "selection_split": "val",
-                                "selection_metric": sweep["selection_metric"],
-                                "selected_original_weight": sweep["selected_original_weight"],
-                                "selected_flip_weight": sweep["selected_flip_weight"],
-                                "validation_results": serializable_results,
-                                "test_metrics": {
-                                    key: test_metrics[key]
-                                    for key in ("loss", "accuracy", "macro_f1", "hybrid_score", "per_class_acc")
-                                },
-                            },
-                            handle,
-                            indent=2,
-                        )
-                else:
-                    test_metrics = evaluate_model(
-                        eval_model,
-                        self.test_loader,
-                        self.device,
-                        use_tta=self.validation_tta,
-                        criterion=self.criterion,
-                    )
-                cm_test_path = self.output_dir / "confusion_matrix_test_best.png"
-                try:
-                    plot_confusion_matrix(
-                        test_metrics["confusion_matrix"],
-                        EMOTION_NAMES,
-                        cm_test_path,
-                    title=(
-                        f"Test Confusion Matrix (Best Ep {self.best_epoch} | Loss: {test_metrics['loss']:.4f} | "
-                        f"Acc: {test_metrics['accuracy']*100:.2f}% | F1: {test_metrics['macro_f1']*100:.2f}%)"
-                    ),
-                    )
-                    print(f"  [Exported] Test Confusion Matrix -> {cm_test_path.name}")
-                except Exception as e:
-                    print(f"  [Warning] Could not export Test confusion matrix: {e}")
+        # Evaluate both frozen checkpoint-selection rules independently. The
+        # test metrics are reported side by side; do not use test to choose one.
+        checkpoint_specs = [
+            ("best_score", self.output_dir / "attentive_scn_best.pth"),
+            ("best_val_loss", self.output_dir / "attentive_scn_best_val_loss.pth"),
+        ]
+        available_specs = [(label, path) for label, path in checkpoint_specs if path.exists()]
+        if available_specs:
+            print("\n[EVALUATION] Sweeping validation TTA for each frozen checkpoint...")
+            artifacts = []
+            for label, path in available_specs:
+                print(f"\n[{label}] Loading {path.name}")
+                artifacts.append(self._evaluate_saved_checkpoint(path, label))
 
             print(
-                f"\n[DONE] Training Complete! Best Epoch: {self.best_epoch} | "
-                f"Best Val Acc: {self.best_val_acc*100:.2f}% | Best Macro F1: {self.best_macro_f1*100:.2f}%\n"
-                f"Saved Artifacts in {self.output_dir}:\n"
-                f"  - Best Weights: {best_path.name}\n"
-                f"  - Val CM: {cm_val_path.name}\n"
-                + (f"  - Test CM: {cm_test_path.name}\n" if cm_test_path is not None else "")
-                + (f"  - TTA selection: {tta_sweep_path.name}\n" if tta_sweep_path is not None else "")
+                f"\n[DONE] Training Complete! Best-score epoch: {self.best_epoch} | "
+                f"Best-score Val Acc: {self.best_val_acc*100:.2f}% | Best-score Macro F1: {self.best_macro_f1*100:.2f}%\n"
+                f"Best-loss epoch: {self.best_val_loss_epoch} | Best Val Loss: {self.best_val_loss:.4f}\n"
+                f"Saved Artifacts in {self.output_dir}:"
             )
+            for artifact in artifacts:
+                print(f"  - {artifact['checkpoint'].name}")
+                print(f"  - {artifact['val_cm'].name}")
+                if artifact["test_cm"] is not None:
+                    print(f"  - {artifact['test_cm'].name}")
+                if artifact["tta_selection"] is not None:
+                    print(f"  - {artifact['tta_selection'].name}")
         else:
             print(
                 f"\n[DONE] Training Complete! Best Epoch: {self.best_epoch} | "

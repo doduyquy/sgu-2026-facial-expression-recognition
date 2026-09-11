@@ -29,7 +29,11 @@ def parse_args():
     parser.add_argument("--env", choices=["local", "kaggle"], default="local")
     parser.add_argument("--data_path", default=None, help="Override FER split directory")
     parser.add_argument("--batch_size", type=int, default=None)
-    parser.add_argument("--output_dir", default=None, help="Defaults to the checkpoint directory")
+    parser.add_argument(
+        "--output_dir",
+        default=None,
+        help="Result directory; on Kaggle the default is under /kaggle/working/outputs",
+    )
     parser.add_argument("--device", default=None, help="cuda or cpu")
     return parser.parse_args()
 
@@ -137,7 +141,13 @@ def main():
     )
     print(f"[TEST] Acc={test_metrics['accuracy']*100:.2f}% | F1={test_metrics['macro_f1']*100:.2f}%")
 
-    output_dir = Path(args.output_dir) if args.output_dir else checkpoint_path.parent
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+    elif args.env == "kaggle":
+        # Checkpoints attached through /kaggle/input are read-only.
+        output_dir = Path("/kaggle/working/outputs") / f"{checkpoint_path.stem}_weighted_flip_tta"
+    else:
+        output_dir = checkpoint_path.parent
     output_dir.mkdir(parents=True, exist_ok=True)
     result_path = output_dir / "weighted_flip_tta_selection_existing_checkpoint.json"
     with open(result_path, "w", encoding="utf-8") as handle:
