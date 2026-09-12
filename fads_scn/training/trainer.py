@@ -133,6 +133,12 @@ class AttentiveSCNTrainer:
         self.use_mixup = data_cfg.get("use_mixup", True)
         self.mixup_alpha = data_cfg.get("mixup_alpha", 0.2)
         self.mixup_prob = data_cfg.get("mixup_prob", 0.5)
+        self.mix_mode = data_cfg.get("mix_mode", "standard")
+        self.mixaugment_real_weight = data_cfg.get("mixaugment_real_weight", 0.5)
+        if self.mix_mode not in ("standard", "mixaugment"):
+            raise ValueError("data.mix_mode must be standard or mixaugment")
+        if not 0.0 <= self.mixaugment_real_weight <= 1.0:
+            raise ValueError("data.mixaugment_real_weight must be in [0, 1]")
 
         # Optimizer & Scheduler
         optimizer_params = self.model.parameters()
@@ -175,8 +181,6 @@ class AttentiveSCNTrainer:
         self.best_val_acc = 0.0
         self.best_macro_f1 = 0.0
         self.best_epoch = 0
-        self.best_val_loss = float("inf")
-        self.best_val_loss_epoch = 0
         self.patience_counter = 0
 
     def _save_checkpoint(self, path: Path, epoch: int, eval_model, val_loss: float, val_acc: float, val_f1: float, hybrid_score: float, selection_criterion: str):
@@ -334,22 +338,56 @@ class AttentiveSCNTrainer:
 
             self.optimizer.zero_grad()
 
-            outputs = self.model(
-                mixed_images,
-                targets=targets,
-                targets_b=targets_b,
-                lam=lam,
-                use_tta=False,
-            )
-            loss_dict = self.criterion(
-                outputs,
-                targets,
-                targets_b=targets_b,
-                lam=lam,
-                current_epoch=epoch,
-                rank_warmup_epochs=self.rank_warmup_epochs,
-            )
-            loss = loss_dict["loss"]
+            if mixup_active and self.mix_mode == "mixaugment":
+                # MixAugment keeps the supervised signal of real facial images
+                # while also learning from virtual Mixup examples. In contrast,
+                # standard Mixup replaces the real-image loss for this batch.
+                real_outputs = self.model(images, targets=targets, use_tta=False)
+                real_loss_dict = self.criterion(
+                    real_outputs,
+                    targets,
+                    current_epoch=epoch,
+                    rank_warmup_epochs=self.rank_warmup_epochs,
+                )
+                mix_outputs = self.model(
+                    mixed_images,
+                    targets=targets,
+                    targets_b=targets_b,
+                    lam=lam,
+                    use_tta=False,
+                )
+                mix_loss_dict = self.criterion(
+                    mix_outputs,
+                    targets,
+                    targets_b=targets_b,
+                    lam=lam,
+                    current_epoch=epoch,
+                    rank_warmup_epochs=self.rank_warmup_epochs,
+                )
+                loss = (
+                    self.mixaugment_real_weight * real_loss_dict["loss"]
+                    + (1.0 - self.mixaugment_real_weight) * mix_loss_dict["loss"]
+                )
+                # All training metrics and any optional relabeling use real
+                # images only; virtual Mixup images have no single hard label.
+                outputs = real_outputs
+            else:
+                outputs = self.model(
+                    mixed_images,
+                    targets=targets,
+                    targets_b=targets_b,
+                    lam=lam,
+                    use_tta=False,
+                )
+                loss_dict = self.criterion(
+                    outputs,
+                    targets,
+                    targets_b=targets_b,
+                    lam=lam,
+                    current_epoch=epoch,
+                    rank_warmup_epochs=self.rank_warmup_epochs,
+                )
+                loss = loss_dict["loss"]
 
             loss.backward()
             if self.clip_grad_norm > 0:
@@ -360,7 +398,8 @@ class AttentiveSCNTrainer:
                 self.ema.update(self.model)
 
             # SCN Dynamic Relabeling (safe mode: only when enable_relabel is True)
-            if self.enable_relabel and not mixup_active and epoch >= self.relabel_epoch:
+            real_labels_available = not mixup_active or self.mix_mode == "mixaugment"
+            if self.enable_relabel and real_labels_available and epoch >= self.relabel_epoch:
                 with torch.no_grad():
                     probs = torch.softmax(outputs["logits"], dim=-1)
                     max_probs, pred_classes = torch.max(probs, dim=-1)
@@ -379,7 +418,7 @@ class AttentiveSCNTrainer:
                                 relabelled_this_epoch += 1
 
             preds = torch.argmax(outputs["logits"], dim=-1)
-            if targets_b is not None and lam < 1.0:
+            if targets_b is not None and lam < 1.0 and self.mix_mode != "mixaugment":
                 correct_step = (lam * (preds == targets).float() + (1.0 - lam) * (preds == targets_b).float()).sum().item()
             else:
                 correct_step = (preds == targets).sum().item()
@@ -397,7 +436,10 @@ class AttentiveSCNTrainer:
         print(f"Total Epochs: {self.epochs} | Batch Size: {self.train_loader.batch_size} | LR: {self.lr}")
         print(f"Validation TTA during training: {self.validation_tta}")
         if self.use_mixup:
-            print(f"Data Augmentation: Mixup enabled (alpha={self.mixup_alpha}, prob={self.mixup_prob})")
+            print(
+                f"Data Augmentation: {self.mix_mode} enabled "
+                f"(alpha={self.mixup_alpha}, prob={self.mixup_prob})"
+            )
         print(f"Output Directory: {self.output_dir}\n")
 
         for epoch in range(self.epochs):
@@ -464,57 +506,27 @@ class AttentiveSCNTrainer:
                         f"| F1: {test_metrics['macro_f1']*100:.2f}%"
                     )
 
-            if val_loss < self.best_val_loss:
-                self.best_val_loss = val_loss
-                self.best_val_loss_epoch = epoch + 1
-                best_loss_path = self.output_dir / "attentive_scn_best_val_loss.pth"
-                self._save_checkpoint(
-                    best_loss_path,
-                    epoch,
-                    eval_model,
-                    val_loss,
-                    val_acc,
-                    val_f1,
-                    hybrid_score,
-                    selection_criterion="val_loss",
-                )
-                print(
-                    f"  [BEST VAL LOSS] Loss: {val_loss:.4f}, Val Acc: {val_acc*100:.2f}%, "
-                    f"F1: {val_f1*100:.2f}% -> {best_loss_path}"
-                )
             if not score_improved:
                 self.patience_counter += 1
                 if self.patience_counter >= self.patience:
                     print(f"\nEarly stopping triggered after {self.patience} epochs without improvement.")
                     break
 
-        # Evaluate both frozen checkpoint-selection rules independently. The
-        # test metrics are reported side by side; do not use test to choose one.
-        checkpoint_specs = [
-            ("best_score", self.output_dir / "attentive_scn_best.pth"),
-            ("best_val_loss", self.output_dir / "attentive_scn_best_val_loss.pth"),
-        ]
-        available_specs = [(label, path) for label, path in checkpoint_specs if path.exists()]
-        if available_specs:
-            print("\n[EVALUATION] Sweeping validation TTA for each frozen checkpoint...")
-            artifacts = []
-            for label, path in available_specs:
-                print(f"\n[{label}] Loading {path.name}")
-                artifacts.append(self._evaluate_saved_checkpoint(path, label))
-
+        best_path = self.output_dir / "attentive_scn_best.pth"
+        if best_path.exists():
+            print("\n[EVALUATION] Sweeping validation TTA for the best-score checkpoint...")
+            artifact = self._evaluate_saved_checkpoint(best_path, "best_score")
             print(
                 f"\n[DONE] Training Complete! Best-score epoch: {self.best_epoch} | "
                 f"Best-score Val Acc: {self.best_val_acc*100:.2f}% | Best-score Macro F1: {self.best_macro_f1*100:.2f}%\n"
-                f"Best-loss epoch: {self.best_val_loss_epoch} | Best Val Loss: {self.best_val_loss:.4f}\n"
                 f"Saved Artifacts in {self.output_dir}:"
             )
-            for artifact in artifacts:
-                print(f"  - {artifact['checkpoint'].name}")
-                print(f"  - {artifact['val_cm'].name}")
-                if artifact["test_cm"] is not None:
-                    print(f"  - {artifact['test_cm'].name}")
-                if artifact["tta_selection"] is not None:
-                    print(f"  - {artifact['tta_selection'].name}")
+            print(f"  - {artifact['checkpoint'].name}")
+            print(f"  - {artifact['val_cm'].name}")
+            if artifact["test_cm"] is not None:
+                print(f"  - {artifact['test_cm'].name}")
+            if artifact["tta_selection"] is not None:
+                print(f"  - {artifact['tta_selection'].name}")
         else:
             print(
                 f"\n[DONE] Training Complete! Best Epoch: {self.best_epoch} | "

@@ -37,6 +37,7 @@ data:
   use_mixup: true             # Mixup Data Augmentation (alpha=0.2) to prevent memorization
   mixup_alpha: 0.2
   mixup_prob: 0.5                # Apply mixup on 50% of training batches
+  mix_mode: "standard"           # Baseline: Mixup replaces the real-image loss in mixed batches
 
 training:
   epochs: 200
