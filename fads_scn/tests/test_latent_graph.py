@@ -132,6 +132,55 @@ def test_contextual_delta_graph_uses_global_context_and_relative_messages():
         assert "global_features" in str(error)
 
 
+def test_residual_delta_fusion_has_an_independent_small_graph_gate():
+    model = AttentiveSCNFER(
+        backbone_name="resnet18",
+        num_classes=7,
+        in_channels=1,
+        embed_dim=32,
+        num_attn_heads=4,
+        use_latent_graph=True,
+        graph_mode="dense",
+        graph_fusion_mode="residual_delta",
+        graph_gate_init=0.01,
+        dropout=0.0,
+        use_pretrained=False,
+    )
+    model.train()
+    outputs = model(torch.randn(3, 1, 48, 48), use_tta=False)
+
+    assert torch.allclose(outputs["graph_gate"], torch.full((3,), 0.01))
+    assert torch.isfinite(outputs["graph_delta_ratio"]).all()
+    assert torch.isfinite(outputs["graph_contribution_ratio"]).all()
+    assert torch.all((outputs["adjacency_entropy"] >= 0) & (outputs["adjacency_entropy"] <= 1.0 + 1e-5))
+    assert outputs["node_cosine_similarity"].shape == (3,)
+
+    outputs["logits"].sum().backward()
+    assert model.graph_residual_gate.grad is not None
+    assert model.latent_graph.v_proj.weight.grad is not None
+
+
+def test_legacy_graph_checkpoint_structure_is_unchanged():
+    legacy = AttentiveSCNFER(
+        backbone_name="resnet18",
+        embed_dim=32,
+        num_attn_heads=4,
+        use_latent_graph=True,
+        use_pretrained=False,
+    )
+    residual = AttentiveSCNFER(
+        backbone_name="resnet18",
+        embed_dim=32,
+        num_attn_heads=4,
+        use_latent_graph=True,
+        graph_fusion_mode="residual_delta",
+        use_pretrained=False,
+    )
+
+    assert "graph_residual_gate" not in legacy.state_dict()
+    assert "graph_residual_gate" in residual.state_dict()
+
+
 def test_attentive_scn_with_graph_gradient_flow():
     print("Testing AttentiveSCNFER with Latent Dynamic Graph & Gradient Flow...")
     B = 4

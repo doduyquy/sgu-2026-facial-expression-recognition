@@ -183,7 +183,18 @@ class AttentiveSCNTrainer:
         self.best_epoch = 0
         self.patience_counter = 0
 
-    def _save_checkpoint(self, path: Path, epoch: int, eval_model, val_loss: float, val_acc: float, val_f1: float, hybrid_score: float, selection_criterion: str):
+    def _save_checkpoint(
+        self,
+        path: Path,
+        epoch: int,
+        eval_model,
+        val_loss: float,
+        val_acc: float,
+        val_f1: float,
+        hybrid_score: float,
+        selection_criterion: str,
+        graph_diagnostics: dict = None,
+    ):
         torch.save(
             {
                 "epoch": epoch + 1,
@@ -193,6 +204,7 @@ class AttentiveSCNTrainer:
                 "macro_f1": val_f1,
                 "hybrid_score": hybrid_score,
                 "selection_criterion": selection_criterion,
+                "graph_diagnostics": graph_diagnostics or {},
                 "config": self.cfg,
             },
             path,
@@ -213,6 +225,15 @@ class AttentiveSCNTrainer:
             use_tta=self.validation_tta,
             criterion=self.criterion,
         )
+        graph_diag = val_metrics.get("graph_diagnostics", {})
+        if graph_diag:
+            print(
+                f"  [{checkpoint_label} GRAPH] gate={graph_diag['graph_gate']:.4f} "
+                f"delta/local={graph_diag['graph_delta_ratio']:.3f} "
+                f"contribution={graph_diag['graph_contribution_ratio']:.3f} "
+                f"adj_entropy={graph_diag['adjacency_entropy']:.3f} "
+                f"node_cosine={graph_diag['node_cosine_similarity']:.3f}"
+            )
         cm_val_path = self.output_dir / f"confusion_matrix_val_{checkpoint_label}.png"
         try:
             plot_confusion_matrix(
@@ -269,6 +290,7 @@ class AttentiveSCNTrainer:
                             "selection_metric": sweep["selection_metric"],
                             "selected_original_weight": sweep["selected_original_weight"],
                             "selected_flip_weight": sweep["selected_flip_weight"],
+                            "graph_diagnostics": graph_diag,
                             "validation_results": serializable_results,
                             "test_metrics": {
                                 key: test_metrics[key]
@@ -461,11 +483,22 @@ class AttentiveSCNTrainer:
             val_acc = val_metrics["accuracy"]
             val_f1 = val_metrics["macro_f1"]
             hybrid_score = val_metrics["hybrid_score"]
+            graph_diag = val_metrics.get("graph_diagnostics", {})
+            graph_log = ""
+            if graph_diag:
+                graph_log = (
+                    f" | GraphGate={graph_diag['graph_gate']:.4f}"
+                    f" Delta/Local={graph_diag['graph_delta_ratio']:.3f}"
+                    f" Contribution={graph_diag['graph_contribution_ratio']:.3f}"
+                    f" AdjH={graph_diag['adjacency_entropy']:.3f}"
+                    f" NodeCos={graph_diag['node_cosine_similarity']:.3f}"
+                )
 
             print(
                 f"Ep {epoch+1:03d}/{self.epochs} | "
                 f"Train Loss: {train_loss:.4f} Acc: {train_acc:.4f} | "
                 f"Val Loss: {val_loss:.4f} Acc: {val_acc*100:.2f}% F1: {val_f1*100:.2f}% Score: {hybrid_score:.4f}"
+                + graph_log
                 + (f" | Relabelled: {relabelled}" if relabelled > 0 else "")
             )
 
@@ -489,6 +522,7 @@ class AttentiveSCNTrainer:
                     val_f1,
                     hybrid_score,
                     selection_criterion="hybrid_score",
+                    graph_diagnostics=graph_diag,
                 )
                 print(f"  [BEST SCORE] Val Loss: {val_loss:.4f}, Val Acc: {val_acc*100:.2f}%, F1: {val_f1*100:.2f}% -> {best_path}")
 

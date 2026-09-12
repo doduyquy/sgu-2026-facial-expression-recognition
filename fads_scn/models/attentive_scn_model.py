@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 from .backbones import FacialBackbone
@@ -48,6 +49,8 @@ class AttentiveSCNFER(nn.Module):
         graph_mode: str = "dense",
         graph_topk: int = 3,
         graph_self_loop_bias: float = 1.0,
+        graph_fusion_mode: str = "legacy_add",
+        graph_gate_init: float = 0.01,
         dropout: float = 0.25,
         classifier_type: str = "linear",
         cosface_scale: float = 30.0,
@@ -66,6 +69,11 @@ class AttentiveSCNFER(nn.Module):
             raise ValueError("use_latent_graph requires use_spatial_attention=true")
         self.use_latent_graph = use_latent_graph
         self.graph_mode = graph_mode
+        if graph_fusion_mode not in ("legacy_add", "residual_delta"):
+            raise ValueError("graph_fusion_mode must be legacy_add or residual_delta")
+        if graph_fusion_mode == "residual_delta" and not use_latent_graph:
+            raise ValueError("residual_delta graph fusion requires use_latent_graph=true")
+        self.graph_fusion_mode = graph_fusion_mode
 
         # 1. Backbone adapted for 48x48
         self.backbone = FacialBackbone(
@@ -116,6 +124,13 @@ class AttentiveSCNFER(nn.Module):
         self.fusion_norm = nn.LayerNorm(embed_dim)
         self.fusion_gate = (nn.Parameter(torch.tensor([0.5], dtype=torch.float32))
                             if self.use_spatial_attention else None)
+        # Only the experimental mode owns this parameter, preserving the
+        # state_dict of every existing legacy checkpoint.
+        self.graph_residual_gate = (
+            nn.Parameter(torch.tensor([graph_gate_init], dtype=torch.float32))
+            if self.use_latent_graph and self.graph_fusion_mode == "residual_delta"
+            else None
+        )
 
         # 6. SCN Head (classifier + confidence weight)
         self.scn_head = SCNHead(
@@ -157,17 +172,57 @@ class AttentiveSCNFER(nn.Module):
                 reliability=graph_alpha,
             )
             graph_gain = self.latent_graph.last_graph_gain
-            f_rep = f_local + graph_feats
+            graph_delta = graph_feats - head_feats.mean(dim=1)
         else:
-            f_rep = f_local
             adj_matrix = None
             sparsity_loss = torch.tensor(0.0, device=x.device)
             graph_alpha = None
             graph_gain = torch.ones((x.size(0), 1), device=x.device)
+            graph_feats = torch.zeros_like(f_local)
+            graph_delta = torch.zeros_like(f_local)
 
-        # Gated residual fusion
-        gate = torch.sigmoid(self.fusion_gate) if self.fusion_gate is not None else 0.0
-        f_fused = self.fusion_norm(f_global + gate * f_rep)
+        # The legacy formula remains unchanged. The experimental formula uses
+        # the graph only as a separately gated relational correction.
+        local_gate = torch.sigmoid(self.fusion_gate) if self.fusion_gate is not None else 0.0
+        if self.use_latent_graph and self.graph_fusion_mode == "residual_delta":
+            graph_gate = self.graph_residual_gate
+            local_term = local_gate * f_local
+            graph_term = graph_gate * graph_delta
+            f_fused = self.fusion_norm(f_global + local_term + graph_term)
+        else:
+            graph_gate = local_gate if self.use_latent_graph else torch.zeros((), device=x.device)
+            local_term = local_gate * f_local
+            graph_term = local_gate * graph_feats
+            f_fused = self.fusion_norm(f_global + local_term + graph_term)
+
+        # Detached per-image diagnostics reveal node collapse and quantify how
+        # strongly graph evidence changes the fused representation.
+        eps = torch.finfo(f_global.dtype).eps
+        if self.use_latent_graph:
+            graph_delta_ratio = graph_delta.norm(dim=-1) / f_local.norm(dim=-1).clamp_min(eps)
+            graph_contribution_ratio = graph_term.norm(dim=-1) / local_term.norm(dim=-1).clamp_min(eps)
+            safe_adj = adj_matrix.clamp_min(eps)
+            adjacency_entropy = -(adj_matrix * safe_adj.log()).sum(dim=-1).mean(dim=-1)
+            adjacency_entropy = adjacency_entropy / math.log(max(self.num_attn_heads, 2))
+            normalized_nodes = torch.nn.functional.normalize(head_feats, p=2, dim=-1)
+            node_similarity_matrix = torch.bmm(normalized_nodes, normalized_nodes.transpose(1, 2))
+            off_diagonal = ~torch.eye(
+                self.num_attn_heads, dtype=torch.bool, device=x.device
+            ).unsqueeze(0)
+            node_cosine_similarity = node_similarity_matrix.masked_select(off_diagonal)
+            node_cosine_similarity = node_cosine_similarity.view(x.size(0), -1).mean(dim=-1)
+        else:
+            graph_delta_ratio = torch.zeros(x.size(0), device=x.device, dtype=f_global.dtype)
+            graph_contribution_ratio = torch.zeros_like(graph_delta_ratio)
+            adjacency_entropy = torch.zeros_like(graph_delta_ratio)
+            node_cosine_similarity = torch.zeros_like(graph_delta_ratio)
+
+        if isinstance(graph_gate, torch.Tensor):
+            graph_gate_value = graph_gate.reshape(1).expand(x.size(0))
+        else:
+            graph_gate_value = torch.full(
+                (x.size(0),), float(graph_gate), device=x.device, dtype=f_global.dtype
+            )
 
         # SCN Head classifier
         logits, alpha = self.scn_head(f_fused, targets=targets, targets_b=targets_b, lam=lam)
@@ -184,6 +239,11 @@ class AttentiveSCNFER(nn.Module):
             "adj_matrix": adj_matrix,
             "sparsity_loss": sparsity_loss,
             "graph_gain": graph_gain,
+            "graph_gate": graph_gate_value.detach(),
+            "graph_delta_ratio": graph_delta_ratio.detach(),
+            "graph_contribution_ratio": graph_contribution_ratio.detach(),
+            "adjacency_entropy": adjacency_entropy.detach(),
+            "node_cosine_similarity": node_cosine_similarity.detach(),
             "features": f_fused,
         }
 
@@ -233,6 +293,19 @@ class AttentiveSCNFER(nn.Module):
                     "adj_matrix": out1["adj_matrix"],
                     "sparsity_loss": out1["sparsity_loss"],
                     "graph_gain": avg_graph_gain,
+                    "graph_gate": out1["graph_gate"],
+                    "graph_delta_ratio": 0.25 * sum(
+                        out["graph_delta_ratio"] for out in (out1, out2, out3, out4)
+                    ),
+                    "graph_contribution_ratio": 0.25 * sum(
+                        out["graph_contribution_ratio"] for out in (out1, out2, out3, out4)
+                    ),
+                    "adjacency_entropy": 0.25 * sum(
+                        out["adjacency_entropy"] for out in (out1, out2, out3, out4)
+                    ),
+                    "node_cosine_similarity": 0.25 * sum(
+                        out["node_cosine_similarity"] for out in (out1, out2, out3, out4)
+                    ),
                     "features": out1["features"],
                 }
             else:
@@ -253,6 +326,19 @@ class AttentiveSCNFER(nn.Module):
                     "adj_matrix": out_orig["adj_matrix"],
                     "sparsity_loss": out_orig["sparsity_loss"],
                     "graph_gain": avg_graph_gain,
+                    "graph_gate": out_orig["graph_gate"],
+                    "graph_delta_ratio": 0.5 * (
+                        out_orig["graph_delta_ratio"] + out_flipped["graph_delta_ratio"]
+                    ),
+                    "graph_contribution_ratio": 0.5 * (
+                        out_orig["graph_contribution_ratio"] + out_flipped["graph_contribution_ratio"]
+                    ),
+                    "adjacency_entropy": 0.5 * (
+                        out_orig["adjacency_entropy"] + out_flipped["adjacency_entropy"]
+                    ),
+                    "node_cosine_similarity": 0.5 * (
+                        out_orig["node_cosine_similarity"] + out_flipped["node_cosine_similarity"]
+                    ),
                     "features": out_orig["features"],
                 }
         else:

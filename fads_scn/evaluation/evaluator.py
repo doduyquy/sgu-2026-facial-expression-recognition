@@ -16,6 +16,14 @@ def evaluate_model(model, dataloader, device, use_tta: bool = True, criterion=No
     all_preds = []
     all_targets = []
     all_alphas = []
+    graph_diagnostics = {
+        "graph_gate": [],
+        "graph_delta_ratio": [],
+        "graph_contribution_ratio": [],
+        "adjacency_entropy": [],
+        "node_cosine_similarity": [],
+    }
+    graph_seen = False
     total_loss = 0.0
     total_samples = 0
 
@@ -46,6 +54,12 @@ def evaluate_model(model, dataloader, device, use_tta: bool = True, criterion=No
         all_targets.extend(targets.cpu().numpy().tolist())
         if "alpha" in outputs:
             all_alphas.extend(outputs["alpha"].cpu().view(-1).numpy().tolist())
+        if outputs.get("adj_matrix") is not None:
+            graph_seen = True
+            for key in graph_diagnostics:
+                value = outputs.get(key)
+                if value is not None:
+                    graph_diagnostics[key].extend(value.detach().cpu().view(-1).numpy().tolist())
 
     all_preds = np.array(all_preds)
     all_targets = np.array(all_targets)
@@ -76,7 +90,7 @@ def evaluate_model(model, dataloader, device, use_tta: bool = True, criterion=No
         output_dict=True,
     )
 
-    return {
+    result = {
         "loss": avg_loss,
         "accuracy": acc,
         "macro_f1": macro_f1,
@@ -86,6 +100,16 @@ def evaluate_model(model, dataloader, device, use_tta: bool = True, criterion=No
         "report": report,
         "mean_alpha": float(np.mean(all_alphas)) if len(all_alphas) > 0 else 1.0,
     }
+    result["graph_diagnostics"] = (
+        {
+            key: float(np.mean(values))
+            for key, values in graph_diagnostics.items()
+            if values
+        }
+        if graph_seen
+        else {}
+    )
+    return result
 
 
 def plot_confusion_matrix(

@@ -95,6 +95,8 @@ def main():
         graph_mode=m_cfg.get("graph_mode", "dense"),
         graph_topk=m_cfg.get("graph_topk", 3),
         graph_self_loop_bias=m_cfg.get("graph_self_loop_bias", 1.0),
+        graph_fusion_mode=m_cfg.get("graph_fusion_mode", "legacy_add"),
+        graph_gate_init=m_cfg.get("graph_gate_init", 0.01),
         dropout=0.0,
         classifier_type=m_cfg.get("classifier_type", "linear"),
         cosface_scale=m_cfg.get("cosface_scale", 30.0),
