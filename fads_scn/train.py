@@ -149,6 +149,8 @@ def main():
         num_attn_heads=m_cfg.get("num_attn_heads", 8),
         use_latent_graph=m_cfg.get("use_latent_graph", True),
         use_spatial_attention=m_cfg.get("use_spatial_attention", True),
+        use_multiscale_fusion=m_cfg.get("use_multiscale_fusion", False),
+        multiscale_se_reduction=m_cfg.get("multiscale_se_reduction", 16),
         dropout=m_cfg.get("dropout", 0.25),
         classifier_type=m_cfg.get("classifier_type", "linear"),
         cosface_scale=m_cfg.get("cosface_scale", 30.0),

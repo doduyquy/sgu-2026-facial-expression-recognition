@@ -3,6 +3,7 @@ import torch.nn as nn
 from .backbones import FacialBackbone
 from .spatial_attention import MultiHeadSpatialAttention
 from .latent_graph import LatentGraphReasoner
+from .multiscale_fusion import AdaptiveBranchFusion, MultiScaleDualPooling
 from .scn_head import SCNHead
 
 
@@ -28,7 +29,10 @@ class AttentiveSCNFER(nn.Module):
                Node Importance Readout ─────────► f_graph ∈ R^{B × D}
           │
           ▼
-        Fusion: LayerNorm(f_global + gate * f_graph) ──► f_fused ∈ R^{B × D}
+        Optional M1: ConvNeXt C1-C4 + dual pooling ──► f_multi ∈ R^{B × D}
+          │
+          ▼
+        Fusion: legacy residual gate, or M1 adaptive branch/channel weights
           │
           ▼
         SCNHead:
@@ -52,6 +56,8 @@ class AttentiveSCNFER(nn.Module):
         use_pretrained: bool = True,
         pretrained_weights_path: str = "",
         stem_init: str = "mean",
+        use_multiscale_fusion: bool = False,
+        multiscale_se_reduction: int = 16,
     ):
         super().__init__()
         self.num_classes = num_classes
@@ -59,6 +65,7 @@ class AttentiveSCNFER(nn.Module):
         self.embed_dim = embed_dim
         self.num_attn_heads = num_attn_heads
         self.use_spatial_attention = use_spatial_attention
+        self.use_multiscale_fusion = use_multiscale_fusion
         if use_latent_graph and not use_spatial_attention:
             raise ValueError("use_latent_graph requires use_spatial_attention=true")
         self.use_latent_graph = use_latent_graph
@@ -74,6 +81,8 @@ class AttentiveSCNFER(nn.Module):
         )
 
         backbone_out_ch = self.backbone.out_channels
+        if self.use_multiscale_fusion and self.backbone.backbone_type != "convnext":
+            raise ValueError("use_multiscale_fusion currently requires a ConvNeXt backbone")
 
         # 2. Global Stream Projector
         self.global_proj = nn.Sequential(
@@ -105,10 +114,28 @@ class AttentiveSCNFER(nn.Module):
         else:
             self.latent_graph = None
 
-        # 5. Fusion Layer
-        self.fusion_norm = nn.LayerNorm(embed_dim)
-        self.fusion_gate = (nn.Parameter(torch.tensor([0.5], dtype=torch.float32))
-                            if self.use_spatial_attention else None)
+        # 5. Fusion Layer. The legacy path keeps its original computation and
+        # state-dict keys when multi-scale fusion is disabled.
+        if self.use_multiscale_fusion:
+            self.multiscale_pool = MultiScaleDualPooling(
+                feature_channels=self.backbone.feature_channels,
+                embed_dim=embed_dim,
+                dropout=dropout,
+                se_reduction=multiscale_se_reduction,
+            )
+            self.adaptive_fusion = AdaptiveBranchFusion(
+                embed_dim=embed_dim,
+                num_branches=3,
+                dropout=dropout,
+            )
+            self.fusion_norm = None
+            self.fusion_gate = None
+        else:
+            self.multiscale_pool = None
+            self.adaptive_fusion = None
+            self.fusion_norm = nn.LayerNorm(embed_dim)
+            self.fusion_gate = (nn.Parameter(torch.tensor([0.5], dtype=torch.float32))
+                                if self.use_spatial_attention else None)
 
         # 6. SCN Head (classifier + confidence weight)
         self.scn_head = SCNHead(
@@ -123,7 +150,12 @@ class AttentiveSCNFER(nn.Module):
 
     def _forward_single(self, x: torch.Tensor, targets=None, targets_b=None, lam=1.0):
         # Feature map: [B, C, 12, 12]
-        feat_map = self.backbone(x)
+        if self.use_multiscale_fusion:
+            stage_features = self.backbone(x, return_multiscale=True)
+            feat_map = stage_features[-1]
+        else:
+            stage_features = None
+            feat_map = self.backbone(x)
 
         # Global feature: [B, D]
         f_global = self.global_proj(feat_map)
@@ -145,9 +177,18 @@ class AttentiveSCNFER(nn.Module):
             adj_matrix = None
             sparsity_loss = torch.tensor(0.0, device=x.device)
 
-        # Gated residual fusion
-        gate = torch.sigmoid(self.fusion_gate) if self.fusion_gate is not None else 0.0
-        f_fused = self.fusion_norm(f_global + gate * f_rep)
+        # M1: adaptive per-image/per-channel fusion across global,
+        # local/graph, and multi-scale descriptors.
+        if self.use_multiscale_fusion:
+            f_multi, scale_weights = self.multiscale_pool(stage_features)
+            f_fused, fusion_weights = self.adaptive_fusion(
+                (f_global, f_rep, f_multi)
+            )
+        else:
+            scale_weights = None
+            fusion_weights = None
+            gate = torch.sigmoid(self.fusion_gate) if self.fusion_gate is not None else 0.0
+            f_fused = self.fusion_norm(f_global + gate * f_rep)
 
         # SCN Head classifier
         logits, alpha = self.scn_head(f_fused, targets=targets, targets_b=targets_b, lam=lam)
@@ -160,6 +201,8 @@ class AttentiveSCNFER(nn.Module):
             "adj_matrix": adj_matrix,
             "sparsity_loss": sparsity_loss,
             "features": f_fused,
+            "scale_weights": scale_weights,
+            "fusion_weights": fusion_weights,
         }
 
     def forward(self, x: torch.Tensor, targets=None, targets_b=None, lam=1.0, use_tta=None):
@@ -205,6 +248,8 @@ class AttentiveSCNFER(nn.Module):
                     "adj_matrix": out1["adj_matrix"],
                     "sparsity_loss": out1["sparsity_loss"],
                     "features": out1["features"],
+                    "scale_weights": out1["scale_weights"],
+                    "fusion_weights": out1["fusion_weights"],
                 }
             else:
                 # 2-crop Horizontal Flip TTA
@@ -223,6 +268,8 @@ class AttentiveSCNFER(nn.Module):
                     "adj_matrix": out_orig["adj_matrix"],
                     "sparsity_loss": out_orig["sparsity_loss"],
                     "features": out_orig["features"],
+                    "scale_weights": out_orig["scale_weights"],
+                    "fusion_weights": out_orig["fusion_weights"],
                 }
         else:
             return self._forward_single(x, targets=targets, targets_b=targets_b, lam=lam)

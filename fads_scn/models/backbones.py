@@ -35,11 +35,13 @@ class FacialBackbone(nn.Module):
             base = models.convnext_tiny(weights=weights)
             self.out_channels = 768
             self.backbone_type = "convnext"
+            self.feature_channels = (96, 192, 384, 768)
         elif "convnext_small" in self.backbone_name or "convnext_s" in self.backbone_name:
             weights = models.ConvNeXt_Small_Weights.DEFAULT if use_pretrained else None
             base = models.convnext_small(weights=weights)
             self.out_channels = 768
             self.backbone_type = "convnext"
+            self.feature_channels = (96, 192, 384, 768)
         elif "densenet121" in self.backbone_name:
             weights = models.DenseNet121_Weights.DEFAULT if use_pretrained else None
             base = models.densenet121(weights=weights)
@@ -218,18 +220,31 @@ class FacialBackbone(nn.Module):
         except Exception as e:
             print(f"[FacialBackbone] Warning: Could not load custom weights from {path}: {e}")
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, return_multiscale: bool = False):
         """
         Input: [B, in_channels, 48, 48]
         Output: Feature Map F of shape [B, out_channels, 12, 12]
+        If return_multiscale=True, return ConvNeXt stage maps (C1, C2, C3, C4).
         """
         if self.backbone_type == "convnext":
-            return self.features(x)
+            if not return_multiscale:
+                return self.features(x)
+
+            stage_features = []
+            for index, layer in enumerate(self.features):
+                x = layer(x)
+                if index in (1, 3, 5, 7):
+                    stage_features.append(x)
+            return tuple(stage_features)
         elif self.backbone_type == "densenet":
+            if return_multiscale:
+                raise ValueError("Multi-scale stage outputs currently require a ConvNeXt backbone")
             out = self.features(x)
             out = F.relu(out, inplace=True)
             return out
         else:
+            if return_multiscale:
+                raise ValueError("Multi-scale stage outputs currently require a ConvNeXt backbone")
             x = self.conv1(x)
             x = self.bn1(x)
             x = self.relu(x)
