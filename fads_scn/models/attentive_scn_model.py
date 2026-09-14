@@ -1,9 +1,12 @@
+import math
+
 import torch
 import torch.nn as nn
 from .backbones import FacialBackbone
 from .spatial_attention import MultiHeadSpatialAttention
 from .latent_graph import LatentGraphReasoner
 from .multiscale_fusion import AdaptiveBranchFusion, MultiScaleDualPooling
+from .region_cross_attention import TopKRegionCrossAttention
 from .scn_head import SCNHead
 
 
@@ -27,12 +30,12 @@ class AttentiveSCNFER(nn.Module):
                  │
                  ▼
                Node Importance Readout ─────────► f_graph ∈ R^{B × D}
+          └──► M2: spaced C3 regions cross-attend to semantic C4 tokens
           │
           ▼
         Optional M1: ConvNeXt C1-C4 + dual pooling ──► f_multi ∈ R^{B × D}
-          │
-          ▼
         Fusion: legacy residual gate, or M1 adaptive branch/channel weights
+        M2 fusion: baseline representation + near-zero gated region residual
           │
           ▼
         SCNHead:
@@ -58,6 +61,11 @@ class AttentiveSCNFER(nn.Module):
         stem_init: str = "mean",
         use_multiscale_fusion: bool = False,
         multiscale_se_reduction: int = 16,
+        use_region_cross_attention: bool = False,
+        num_regions: int = 6,
+        region_attn_heads: int = 4,
+        region_suppression_radius: int = 1,
+        region_gate_init: float = 0.05,
     ):
         super().__init__()
         self.num_classes = num_classes
@@ -66,8 +74,15 @@ class AttentiveSCNFER(nn.Module):
         self.num_attn_heads = num_attn_heads
         self.use_spatial_attention = use_spatial_attention
         self.use_multiscale_fusion = use_multiscale_fusion
+        self.use_region_cross_attention = use_region_cross_attention
         if use_latent_graph and not use_spatial_attention:
             raise ValueError("use_latent_graph requires use_spatial_attention=true")
+        if use_multiscale_fusion and use_region_cross_attention:
+            raise ValueError(
+                "use_multiscale_fusion and use_region_cross_attention are separate ablations"
+            )
+        if use_region_cross_attention and not 0.0 < region_gate_init < 1.0:
+            raise ValueError("region_gate_init must be between 0 and 1")
         self.use_latent_graph = use_latent_graph
 
         # 1. Backbone adapted for 48x48
@@ -83,6 +98,8 @@ class AttentiveSCNFER(nn.Module):
         backbone_out_ch = self.backbone.out_channels
         if self.use_multiscale_fusion and self.backbone.backbone_type != "convnext":
             raise ValueError("use_multiscale_fusion currently requires a ConvNeXt backbone")
+        if self.use_region_cross_attention and self.backbone.backbone_type != "convnext":
+            raise ValueError("use_region_cross_attention currently requires ConvNeXt")
 
         # 2. Global Stream Projector
         self.global_proj = nn.Sequential(
@@ -137,7 +154,27 @@ class AttentiveSCNFER(nn.Module):
             self.fusion_gate = (nn.Parameter(torch.tensor([0.5], dtype=torch.float32))
                                 if self.use_spatial_attention else None)
 
-        # 6. SCN Head (classifier + confidence weight)
+        # 6. Fine-detail C3 regions query the semantic C4 feature map. The
+        # residual gate starts near zero so the strong baseline path is intact.
+        if self.use_region_cross_attention:
+            self.region_cross_attention = TopKRegionCrossAttention(
+                detail_channels=384,
+                context_channels=backbone_out_ch,
+                embed_dim=embed_dim,
+                num_regions=num_regions,
+                num_heads=region_attn_heads,
+                suppression_radius=region_suppression_radius,
+                dropout=dropout,
+            )
+            gate_logit = math.log(region_gate_init / (1.0 - region_gate_init))
+            self.region_gate = nn.Parameter(
+                torch.full((embed_dim,), gate_logit, dtype=torch.float32)
+            )
+        else:
+            self.region_cross_attention = None
+            self.region_gate = None
+
+        # 7. SCN Head (classifier + confidence weight)
         self.scn_head = SCNHead(
             embed_dim=embed_dim,
             num_classes=num_classes,
@@ -149,12 +186,14 @@ class AttentiveSCNFER(nn.Module):
         )
 
     def _forward_single(self, x: torch.Tensor, targets=None, targets_b=None, lam=1.0):
-        # Feature map: [B, C, 12, 12]
+        stage_features = None
+        detail_map = None
         if self.use_multiscale_fusion:
             stage_features = self.backbone(x, return_multiscale=True)
             feat_map = stage_features[-1]
+        elif self.use_region_cross_attention:
+            detail_map, feat_map = self.backbone(x, return_region_features=True)
         else:
-            stage_features = None
             feat_map = self.backbone(x)
 
         # Global feature: [B, D]
@@ -179,6 +218,8 @@ class AttentiveSCNFER(nn.Module):
 
         # M1: adaptive per-image/per-channel fusion across global,
         # local/graph, and multi-scale descriptors.
+        region_output = None
+        active_region_gate = None
         if self.use_multiscale_fusion:
             f_multi, scale_weights = self.multiscale_pool(stage_features)
             f_fused, fusion_weights = self.adaptive_fusion(
@@ -187,8 +228,19 @@ class AttentiveSCNFER(nn.Module):
         else:
             scale_weights = None
             fusion_weights = None
+
+            # Preserve the exact baseline global/local/graph path.
             gate = torch.sigmoid(self.fusion_gate) if self.fusion_gate is not None else 0.0
-            f_fused = self.fusion_norm(f_global + gate * f_rep)
+            base_features = f_global + gate * f_rep
+
+            # M2 adds selected region evidence through a small residual gate.
+            if self.region_cross_attention is not None:
+                region_output = self.region_cross_attention(detail_map, feat_map)
+                active_region_gate = torch.sigmoid(self.region_gate)
+                base_features = (
+                    base_features + active_region_gate * region_output["features"]
+                )
+            f_fused = self.fusion_norm(base_features)
 
         # SCN Head classifier
         logits, alpha = self.scn_head(f_fused, targets=targets, targets_b=targets_b, lam=lam)
@@ -203,6 +255,12 @@ class AttentiveSCNFER(nn.Module):
             "features": f_fused,
             "scale_weights": scale_weights,
             "fusion_weights": fusion_weights,
+            "region_indices": None if region_output is None else region_output["indices"],
+            "region_locations": None if region_output is None else region_output["locations"],
+            "region_weights": None if region_output is None else region_output["weights"],
+            "region_attention_maps": None if region_output is None else region_output["attention_maps"],
+            "region_saliency_map": None if region_output is None else region_output["saliency_map"],
+            "region_gate": active_region_gate,
         }
 
     def forward(self, x: torch.Tensor, targets=None, targets_b=None, lam=1.0, use_tta=None):
@@ -250,6 +308,12 @@ class AttentiveSCNFER(nn.Module):
                     "features": out1["features"],
                     "scale_weights": out1["scale_weights"],
                     "fusion_weights": out1["fusion_weights"],
+                    "region_indices": out1["region_indices"],
+                    "region_locations": out1["region_locations"],
+                    "region_weights": out1["region_weights"],
+                    "region_attention_maps": out1["region_attention_maps"],
+                    "region_saliency_map": out1["region_saliency_map"],
+                    "region_gate": out1["region_gate"],
                 }
             else:
                 # 2-crop Horizontal Flip TTA
@@ -270,6 +334,12 @@ class AttentiveSCNFER(nn.Module):
                     "features": out_orig["features"],
                     "scale_weights": out_orig["scale_weights"],
                     "fusion_weights": out_orig["fusion_weights"],
+                    "region_indices": out_orig["region_indices"],
+                    "region_locations": out_orig["region_locations"],
+                    "region_weights": out_orig["region_weights"],
+                    "region_attention_maps": out_orig["region_attention_maps"],
+                    "region_saliency_map": out_orig["region_saliency_map"],
+                    "region_gate": out_orig["region_gate"],
                 }
         else:
             return self._forward_single(x, targets=targets, targets_b=targets_b, lam=lam)

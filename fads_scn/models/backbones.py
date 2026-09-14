@@ -220,14 +220,22 @@ class FacialBackbone(nn.Module):
         except Exception as e:
             print(f"[FacialBackbone] Warning: Could not load custom weights from {path}: {e}")
 
-    def forward(self, x: torch.Tensor, return_multiscale: bool = False):
+    def forward(
+        self,
+        x: torch.Tensor,
+        return_multiscale: bool = False,
+        return_region_features: bool = False,
+    ):
         """
         Input: [B, in_channels, 48, 48]
         Output: Feature Map F of shape [B, out_channels, 12, 12]
-        If return_multiscale=True, return ConvNeXt stage maps (C1, C2, C3, C4).
+        Optionally return ConvNeXt C1-C4 maps or the (C3, C4) region pair.
         """
+        if return_multiscale and return_region_features:
+            raise ValueError("Request either multi-scale or region features, not both")
+
         if self.backbone_type == "convnext":
-            if not return_multiscale:
+            if not return_multiscale and not return_region_features:
                 return self.features(x)
 
             stage_features = []
@@ -235,16 +243,18 @@ class FacialBackbone(nn.Module):
                 x = layer(x)
                 if index in (1, 3, 5, 7):
                     stage_features.append(x)
-            return tuple(stage_features)
-        elif self.backbone_type == "densenet":
             if return_multiscale:
-                raise ValueError("Multi-scale stage outputs currently require a ConvNeXt backbone")
+                return tuple(stage_features)
+            return stage_features[2], stage_features[3]
+        elif self.backbone_type == "densenet":
+            if return_multiscale or return_region_features:
+                raise ValueError("Intermediate feature extraction currently requires ConvNeXt")
             out = self.features(x)
             out = F.relu(out, inplace=True)
             return out
         else:
-            if return_multiscale:
-                raise ValueError("Multi-scale stage outputs currently require a ConvNeXt backbone")
+            if return_multiscale or return_region_features:
+                raise ValueError("Intermediate feature extraction currently requires ConvNeXt")
             x = self.conv1(x)
             x = self.bn1(x)
             x = self.relu(x)
