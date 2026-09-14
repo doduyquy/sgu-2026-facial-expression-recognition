@@ -218,18 +218,31 @@ class FacialBackbone(nn.Module):
         except Exception as e:
             print(f"[FacialBackbone] Warning: Could not load custom weights from {path}: {e}")
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, return_region_features: bool = False):
         """
         Input: [B, in_channels, 48, 48]
         Output: Feature Map F of shape [B, out_channels, 12, 12]
+        If return_region_features=True, return ConvNeXt (C3, C4) maps.
         """
         if self.backbone_type == "convnext":
-            return self.features(x)
+            if not return_region_features:
+                return self.features(x)
+
+            detail_map = None
+            for index, layer in enumerate(self.features):
+                x = layer(x)
+                if index == 5:
+                    detail_map = x
+            return detail_map, x
         elif self.backbone_type == "densenet":
+            if return_region_features:
+                raise ValueError("Region feature extraction currently requires ConvNeXt")
             out = self.features(x)
             out = F.relu(out, inplace=True)
             return out
         else:
+            if return_region_features:
+                raise ValueError("Region feature extraction currently requires ConvNeXt")
             x = self.conv1(x)
             x = self.bn1(x)
             x = self.relu(x)

@@ -1,8 +1,11 @@
+import math
+
 import torch
 import torch.nn as nn
 from .backbones import FacialBackbone
 from .spatial_attention import MultiHeadSpatialAttention
 from .latent_graph import LatentGraphReasoner
+from .region_cross_attention import TopKRegionCrossAttention
 from .scn_head import SCNHead
 
 
@@ -26,9 +29,10 @@ class AttentiveSCNFER(nn.Module):
                  │
                  ▼
                Node Importance Readout ─────────► f_graph ∈ R^{B × D}
+          └──► M2: spaced C3 regions cross-attend to semantic C4 tokens
           │
           ▼
-        Fusion: LayerNorm(f_global + gate * f_graph) ──► f_fused ∈ R^{B × D}
+        Fusion: baseline representation + near-zero gated M2 residual
           │
           ▼
         SCNHead:
@@ -52,6 +56,11 @@ class AttentiveSCNFER(nn.Module):
         use_pretrained: bool = True,
         pretrained_weights_path: str = "",
         stem_init: str = "mean",
+        use_region_cross_attention: bool = False,
+        num_regions: int = 6,
+        region_attn_heads: int = 4,
+        region_suppression_radius: int = 1,
+        region_gate_init: float = 0.05,
     ):
         super().__init__()
         self.num_classes = num_classes
@@ -59,8 +68,11 @@ class AttentiveSCNFER(nn.Module):
         self.embed_dim = embed_dim
         self.num_attn_heads = num_attn_heads
         self.use_spatial_attention = use_spatial_attention
+        self.use_region_cross_attention = use_region_cross_attention
         if use_latent_graph and not use_spatial_attention:
             raise ValueError("use_latent_graph requires use_spatial_attention=true")
+        if use_region_cross_attention and not 0.0 < region_gate_init < 1.0:
+            raise ValueError("region_gate_init must be between 0 and 1")
         self.use_latent_graph = use_latent_graph
 
         # 1. Backbone adapted for 48x48
@@ -74,6 +86,8 @@ class AttentiveSCNFER(nn.Module):
         )
 
         backbone_out_ch = self.backbone.out_channels
+        if self.use_region_cross_attention and self.backbone.backbone_type != "convnext":
+            raise ValueError("use_region_cross_attention currently requires ConvNeXt")
 
         # 2. Global Stream Projector
         self.global_proj = nn.Sequential(
@@ -105,12 +119,32 @@ class AttentiveSCNFER(nn.Module):
         else:
             self.latent_graph = None
 
-        # 5. Fusion Layer
+        # 5. Fine-detail C3 regions query the semantic C4 feature map. The
+        # residual gate starts near zero so the strong baseline path is intact.
+        if self.use_region_cross_attention:
+            self.region_cross_attention = TopKRegionCrossAttention(
+                detail_channels=384,
+                context_channels=backbone_out_ch,
+                embed_dim=embed_dim,
+                num_regions=num_regions,
+                num_heads=region_attn_heads,
+                suppression_radius=region_suppression_radius,
+                dropout=dropout,
+            )
+            gate_logit = math.log(region_gate_init / (1.0 - region_gate_init))
+            self.region_gate = nn.Parameter(
+                torch.full((embed_dim,), gate_logit, dtype=torch.float32)
+            )
+        else:
+            self.region_cross_attention = None
+            self.region_gate = None
+
+        # 6. Fusion Layer
         self.fusion_norm = nn.LayerNorm(embed_dim)
         self.fusion_gate = (nn.Parameter(torch.tensor([0.5], dtype=torch.float32))
                             if self.use_spatial_attention else None)
 
-        # 6. SCN Head (classifier + confidence weight)
+        # 7. SCN Head (classifier + confidence weight)
         self.scn_head = SCNHead(
             embed_dim=embed_dim,
             num_classes=num_classes,
@@ -122,8 +156,12 @@ class AttentiveSCNFER(nn.Module):
         )
 
     def _forward_single(self, x: torch.Tensor, targets=None, targets_b=None, lam=1.0):
-        # Feature map: [B, C, 12, 12]
-        feat_map = self.backbone(x)
+        # Feature maps: C3 retains detail; C4 is the baseline semantic map.
+        if self.use_region_cross_attention:
+            detail_map, feat_map = self.backbone(x, return_region_features=True)
+        else:
+            detail_map = None
+            feat_map = self.backbone(x)
 
         # Global feature: [B, D]
         f_global = self.global_proj(feat_map)
@@ -145,9 +183,21 @@ class AttentiveSCNFER(nn.Module):
             adj_matrix = None
             sparsity_loss = torch.tensor(0.0, device=x.device)
 
-        # Gated residual fusion
+        # Preserve the exact baseline global/local/graph path.
         gate = torch.sigmoid(self.fusion_gate) if self.fusion_gate is not None else 0.0
-        f_fused = self.fusion_norm(f_global + gate * f_rep)
+        base_features = f_global + gate * f_rep
+
+        # Add only the selected region evidence through a near-zero residual gate.
+        if self.region_cross_attention is not None:
+            region_output = self.region_cross_attention(detail_map, feat_map)
+            active_region_gate = torch.sigmoid(self.region_gate)
+            f_fused = self.fusion_norm(
+                base_features + active_region_gate * region_output["features"]
+            )
+        else:
+            region_output = None
+            active_region_gate = None
+            f_fused = self.fusion_norm(base_features)
 
         # SCN Head classifier
         logits, alpha = self.scn_head(f_fused, targets=targets, targets_b=targets_b, lam=lam)
@@ -160,6 +210,12 @@ class AttentiveSCNFER(nn.Module):
             "adj_matrix": adj_matrix,
             "sparsity_loss": sparsity_loss,
             "features": f_fused,
+            "region_indices": None if region_output is None else region_output["indices"],
+            "region_locations": None if region_output is None else region_output["locations"],
+            "region_weights": None if region_output is None else region_output["weights"],
+            "region_attention_maps": None if region_output is None else region_output["attention_maps"],
+            "region_saliency_map": None if region_output is None else region_output["saliency_map"],
+            "region_gate": active_region_gate,
         }
 
     def forward(self, x: torch.Tensor, targets=None, targets_b=None, lam=1.0, use_tta=None):
@@ -205,6 +261,12 @@ class AttentiveSCNFER(nn.Module):
                     "adj_matrix": out1["adj_matrix"],
                     "sparsity_loss": out1["sparsity_loss"],
                     "features": out1["features"],
+                    "region_indices": out1["region_indices"],
+                    "region_locations": out1["region_locations"],
+                    "region_weights": out1["region_weights"],
+                    "region_attention_maps": out1["region_attention_maps"],
+                    "region_saliency_map": out1["region_saliency_map"],
+                    "region_gate": out1["region_gate"],
                 }
             else:
                 # 2-crop Horizontal Flip TTA
@@ -223,6 +285,12 @@ class AttentiveSCNFER(nn.Module):
                     "adj_matrix": out_orig["adj_matrix"],
                     "sparsity_loss": out_orig["sparsity_loss"],
                     "features": out_orig["features"],
+                    "region_indices": out_orig["region_indices"],
+                    "region_locations": out_orig["region_locations"],
+                    "region_weights": out_orig["region_weights"],
+                    "region_attention_maps": out_orig["region_attention_maps"],
+                    "region_saliency_map": out_orig["region_saliency_map"],
+                    "region_gate": out_orig["region_gate"],
                 }
         else:
             return self._forward_single(x, targets=targets, targets_b=targets_b, lam=lam)
