@@ -1,0 +1,85 @@
+seed:
+  random_seed: 1
+
+model:
+  name: "m4_mask_guided_dynamic_region_graph"
+  backbone: "convnext_tiny"
+  num_classes: 7
+  in_channels: 1
+  embed_dim: 256
+  dropout: 0.30
+  classifier_type: "linear"
+  use_pretrained: true           # ImageNet pretrained backbone; all M4 modules start fresh
+  stem_init: "mean"
+  pretrained_weights_path: ""
+
+  # M4 replaces the legacy spatial-attention + one-layer latent graph path.
+  use_m4_graph: true
+  use_spatial_attention: false
+  use_latent_graph: false
+  m4_num_nodes: 8
+  m4_graph_depth: 3
+  m4_top_k: 3
+  m4_edge_heads: 4
+  m4_gate_init: 0.0              # sigmoid(0) = 0.5: fresh graph branch receives useful gradients
+
+scn:
+  margin: 0.15
+  clean_ratio: 0.70
+  rank_loss_weight: 0.10
+  div_loss_weight: 0.05
+  sparsity_loss_weight: 0.0      # M4 already enforces a sparse top-k graph
+  rank_warmup_epochs: 5
+  enable_relabel: false
+  relabel_epoch: 25
+  relabel_threshold: 0.90
+  relabel_max_alpha: 0.20
+
+data:
+  data_path: "dataset/fer13-split"
+  batch_size: 64
+  num_workers: 2
+  input_size: 48
+  use_random_erasing: true
+  erasing_prob: 0.30
+  use_mixup: true
+  mixup_alpha: 0.2
+  mixup_prob: 0.5
+
+training:
+  epochs: 200
+  lr: 0.0003
+  weight_decay: 0.002
+  label_smoothing: 0.05
+  scheduler: "cosine_annealing"
+  eta_min: 0.000001
+  patience: 30
+  use_ema: true
+  ema_decay: 0.999
+  clip_grad_norm: 2.0
+  no_weight_decay_norm_bias: true
+  eval_test_on_best_epoch: false
+  use_class_weights: true
+  class_weight_mode: "sqrt_inverse"
+  output_dir: "outputs/fads_scn_convnext_m4"
+
+calibration:
+  enable_logit_bias: true
+  metric: "hybrid"
+  search_on: "val"
+  use_tta: "flip"
+  class_names: ["angry", "disgust", "fear", "happy", "sad", "surprise", "neutral"]
+  bias_grid:
+    fear: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    sad: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    neutral: [-0.8, -0.6, -0.4, -0.2, 0.0]
+    angry: [0.0, 0.2, 0.4]
+    disgust: [0.0, 0.2, 0.4]
+    surprise: [0.0]
+    happy: [0.0]
+  tune_classes: ["fear", "sad", "neutral", "angry"]
+  save_path: "outputs/fads_scn_convnext_m4/calibration_logit_bias.json"
+
+logging:
+  wandb_project: "fer2013-fads-scn-m4"
+  wandb_mode: "disabled"

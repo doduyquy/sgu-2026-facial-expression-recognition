@@ -4,12 +4,20 @@ from .backbones import FacialBackbone
 from .spatial_attention import MultiHeadSpatialAttention
 from .latent_graph import LatentGraphReasoner
 from .scn_head import SCNHead
+from .mask_guided_dynamic_graph import (
+    ClasswiseResidualGate,
+    MaskGuidedDynamicRegionGraph,
+)
 
 
 class AttentiveSCNFER(nn.Module):
     """
     Pure Image-Based Attentive Self-Cure Network with Latent Dynamic Graph Reasoning for FER.
     Zero dependency on bounding boxes, landmarks, or pre-extracted masks.
+
+    When ``use_m4_graph`` is enabled, the legacy spatial-attention/latent-graph
+    path is replaced by a mask-guided competitive tokenizer, a stack of sparse
+    dynamic edge-aware graph blocks, and class-conditioned residual logits.
     
     Architecture Pipeline:
         Input: Raw grayscale images [B, 1, 48, 48]
@@ -45,6 +53,12 @@ class AttentiveSCNFER(nn.Module):
         num_attn_heads: int = 8,
         use_latent_graph: bool = True,
         use_spatial_attention: bool = True,
+        use_m4_graph: bool = False,
+        m4_num_nodes: int = 8,
+        m4_graph_depth: int = 3,
+        m4_top_k: int = 3,
+        m4_edge_heads: int = 4,
+        m4_gate_init: float = 0.0,
         dropout: float = 0.25,
         classifier_type: str = "linear",
         cosface_scale: float = 30.0,
@@ -58,10 +72,11 @@ class AttentiveSCNFER(nn.Module):
         self.in_channels = in_channels
         self.embed_dim = embed_dim
         self.num_attn_heads = num_attn_heads
-        self.use_spatial_attention = use_spatial_attention
-        if use_latent_graph and not use_spatial_attention:
+        self.use_m4_graph = use_m4_graph
+        self.use_spatial_attention = use_spatial_attention and not use_m4_graph
+        self.use_latent_graph = use_latent_graph and not use_m4_graph
+        if self.use_latent_graph and not self.use_spatial_attention:
             raise ValueError("use_latent_graph requires use_spatial_attention=true")
-        self.use_latent_graph = use_latent_graph
 
         # 1. Backbone adapted for 48x48
         self.backbone = FacialBackbone(
@@ -85,30 +100,54 @@ class AttentiveSCNFER(nn.Module):
             nn.Dropout(dropout),
         )
 
-        # 3. Local Spatial Attention Stream (Unsupervised discovery of Action Units)
-        self.spatial_attention = (
-            MultiHeadSpatialAttention(
+        # 3. Regional reasoning branch.  M4 replaces the original attention and
+        # single-layer graph when enabled; legacy configurations remain intact.
+        if self.use_m4_graph:
+            self.spatial_attention = None
+            self.latent_graph = None
+            self.m4_graph = MaskGuidedDynamicRegionGraph(
                 in_channels=backbone_out_ch,
                 embed_dim=embed_dim,
-                num_heads=num_attn_heads,
-                dropout=dropout,
-            ) if self.use_spatial_attention else None
-        )
-
-        # 4. Latent Dynamic Graph Reasoner (Message passing between soft semantic nodes)
-        if self.use_latent_graph:
-            self.latent_graph = LatentGraphReasoner(
-                embed_dim=embed_dim,
-                num_nodes=num_attn_heads,
+                num_nodes=m4_num_nodes,
+                num_classes=num_classes,
+                graph_depth=m4_graph_depth,
+                top_k=m4_top_k,
+                edge_heads=m4_edge_heads,
                 dropout=dropout,
             )
+            self.m4_gate = ClasswiseResidualGate(
+                embed_dim=embed_dim,
+                num_classes=num_classes,
+                dropout=dropout,
+                init_bias=m4_gate_init,
+            )
         else:
-            self.latent_graph = None
+            self.m4_graph = None
+            self.m4_gate = None
+            self.spatial_attention = (
+                MultiHeadSpatialAttention(
+                    in_channels=backbone_out_ch,
+                    embed_dim=embed_dim,
+                    num_heads=num_attn_heads,
+                    dropout=dropout,
+                ) if self.use_spatial_attention else None
+            )
+            self.latent_graph = (
+                LatentGraphReasoner(
+                    embed_dim=embed_dim,
+                    num_nodes=num_attn_heads,
+                    dropout=dropout,
+                ) if self.use_latent_graph else None
+            )
 
-        # 5. Fusion Layer
-        self.fusion_norm = nn.LayerNorm(embed_dim)
-        self.fusion_gate = (nn.Parameter(torch.tensor([0.5], dtype=torch.float32))
-                            if self.use_spatial_attention else None)
+        # 4. Legacy feature fusion.  M4 instead performs class-wise residual
+        # fusion after the SCN base classifier.
+        self.fusion_norm = nn.LayerNorm(embed_dim) if not self.use_m4_graph else None
+        self.fusion_gate = (
+            nn.Parameter(torch.tensor([0.5], dtype=torch.float32))
+            if self.use_spatial_attention and not self.use_m4_graph
+            else None
+        )
 
         # 6. SCN Head (classifier + confidence weight)
         self.scn_head = SCNHead(
@@ -127,6 +166,35 @@ class AttentiveSCNFER(nn.Module):
 
         # Global feature: [B, D]
         f_global = self.global_proj(feat_map)
+
+        if self.use_m4_graph:
+            graph_outputs = self.m4_graph(feat_map)
+            base_logits, alpha = self.scn_head(
+                f_global, targets=targets, targets_b=targets_b, lam=lam
+            )
+            graph_gate = self.m4_gate(
+                f_global, graph_outputs["graph_feature"]
+            )
+            residual_logits = graph_outputs["residual_logits"]
+            logits = base_logits + graph_gate * residual_logits
+
+            return {
+                "logits": logits,
+                "base_logits": base_logits,
+                "residual_logits": residual_logits,
+                "graph_gate": graph_gate,
+                "alpha": alpha,
+                "attn_maps": graph_outputs["attn_maps"],
+                "mask_map": graph_outputs["mask_map"],
+                "diversity_loss": graph_outputs["diversity_loss"],
+                "adj_matrix": graph_outputs["adj_matrix"],
+                "adj_matrices": graph_outputs["adj_matrices"],
+                "sparsity_loss": graph_outputs["sparsity_loss"],
+                "class_attention": graph_outputs["class_attention"],
+                "region_geometry": graph_outputs["region_geometry"],
+                "features": f_global,
+                "graph_features": graph_outputs["graph_feature"],
+            }
 
         # Local spatial feature & attention maps & soft node tokens: [B, M, D]
         if self.spatial_attention is not None:
@@ -162,6 +230,22 @@ class AttentiveSCNFER(nn.Module):
             "features": f_fused,
         }
 
+    @staticmethod
+    def _average_view_outputs(view_outputs):
+        """Average predictions while retaining first-view graph diagnostics."""
+        averaged = dict(view_outputs[0])
+        for key in (
+            "logits",
+            "alpha",
+            "base_logits",
+            "residual_logits",
+            "graph_gate",
+        ):
+            values = [output.get(key) for output in view_outputs]
+            if all(isinstance(value, torch.Tensor) for value in values):
+                averaged[key] = torch.stack(values, dim=0).mean(dim=0)
+        return averaged
+
     def forward(self, x: torch.Tensor, targets=None, targets_b=None, lam=1.0, use_tta=None):
 
         """
@@ -194,35 +278,13 @@ class AttentiveSCNFER(nn.Module):
                 out3 = self._forward_single(x_zoom)
                 out4 = self._forward_single(x_zoom_flip)
 
-                avg_logits = 0.25 * (out1["logits"] + out2["logits"] + out3["logits"] + out4["logits"])
-                avg_alpha = 0.25 * (out1["alpha"] + out2["alpha"] + out3["alpha"] + out4["alpha"])
-
-                return {
-                    "logits": avg_logits,
-                    "alpha": avg_alpha,
-                    "attn_maps": out1["attn_maps"],
-                    "diversity_loss": out1["diversity_loss"],
-                    "adj_matrix": out1["adj_matrix"],
-                    "sparsity_loss": out1["sparsity_loss"],
-                    "features": out1["features"],
-                }
+                return self._average_view_outputs([out1, out2, out3, out4])
             else:
                 # 2-crop Horizontal Flip TTA
                 out_orig = self._forward_single(x)
                 x_flipped = torch.flip(x, dims=[-1])
                 out_flipped = self._forward_single(x_flipped)
 
-                avg_logits = 0.5 * (out_orig["logits"] + out_flipped["logits"])
-                avg_alpha = 0.5 * (out_orig["alpha"] + out_flipped["alpha"])
-
-                return {
-                    "logits": avg_logits,
-                    "alpha": avg_alpha,
-                    "attn_maps": out_orig["attn_maps"],
-                    "diversity_loss": out_orig["diversity_loss"],
-                    "adj_matrix": out_orig["adj_matrix"],
-                    "sparsity_loss": out_orig["sparsity_loss"],
-                    "features": out_orig["features"],
-                }
+                return self._average_view_outputs([out_orig, out_flipped])
         else:
             return self._forward_single(x, targets=targets, targets_b=targets_b, lam=lam)
