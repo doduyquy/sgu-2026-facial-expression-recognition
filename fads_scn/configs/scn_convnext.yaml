@@ -45,7 +45,7 @@ training:
   label_smoothing: 0.05
   scheduler: "cosine_annealing"  # Smooth CosineAnnealingLR (decay 0.0003 -> 1e-6 without shock restart)
   eta_min: 0.000001
-  patience: 30
+  patience: 25
   use_ema: true
   ema_decay: 0.999
   clip_grad_norm: 2.0
