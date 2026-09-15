@@ -1,5 +1,5 @@
 seed:
-  random_seed: 1
+  random_seed: 43
 
 model:
   name: "attentive_scn_fer"
