@@ -12,7 +12,7 @@ repo_root = Path(__file__).resolve().parent.parent
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from fads_scn.data.dataset import build_dataloaders
+from fads_scn.data.dataset import build_dataloaders, find_rafdb_root, resolve_rafdb_root
 from fads_scn.models.attentive_scn_model import AttentiveSCNFER
 from fads_scn.losses.scn_loss import SCNLoss
 from fads_scn.training.trainer import AttentiveSCNTrainer
@@ -48,8 +48,50 @@ def compute_class_weights(counts: np.ndarray, train_cfg: dict) -> torch.Tensor:
     return torch.tensor(weights, dtype=torch.float32)
 
 
+def resolve_kaggle_data_path(cfg: dict):
+    """Resolve either FER2013 or RAF-DB from mounted Kaggle datasets."""
+    data_cfg = cfg.setdefault("data", {})
+    dataset_name = str(data_cfg.get("dataset", "fer2013")).lower().replace("-", "")
+
+    if dataset_name in ("rafdb", "rafdbbasic"):
+        configured_path = data_cfg.get("data_path", "")
+        if configured_path:
+            try:
+                return str(resolve_rafdb_root(configured_path))
+            except FileNotFoundError:
+                pass
+
+        rafdb_candidates = [
+            "/kaggle/input/raf-db-dataset/DATASET",
+            "/kaggle/input/raf-db-dataset/RAF-DB DATASET/DATASET",
+            "/kaggle/input/rafdb/DATASET",
+            "/kaggle/input/raf-db/DATASET",
+        ]
+        for candidate in rafdb_candidates:
+            try:
+                return str(resolve_rafdb_root(candidate))
+            except FileNotFoundError:
+                continue
+        return str(find_rafdb_root("/kaggle/input"))
+
+    kaggle_candidate_paths = [
+        "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split",
+        "/kaggle/input/datasets/doduyquynii/fer13-split",
+        "/kaggle/input/fer13-split/fer13-split",
+        "/kaggle/input/fer13-split",
+        "/kaggle/input/sgu-2026-facial-expression-recognition/dataset/fer13-split",
+        "/kaggle/input/sgu-2026-facial-expression-recognition/fer13-split",
+        "/kaggle/input/fer2013/dataset/fer13-split",
+        "/kaggle/input/fer2013",
+    ]
+    for candidate in kaggle_candidate_paths:
+        if os.path.exists(candidate):
+            return candidate
+    return data_cfg.get("data_path", "dataset/fer13-split")
+
+
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train Pure Image-Based Attentive-SCN on FER2013")
+    parser = argparse.ArgumentParser(description="Train Pure Image-Based Attentive-SCN on FER2013 or RAF-DB")
     parser.add_argument(
         "--config",
         type=str,
@@ -97,21 +139,8 @@ def main():
 
     # Environment-specific path resolution
     if args.env == "kaggle":
-        kaggle_candidate_paths = [
-            "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split",
-            "/kaggle/input/datasets/doduyquynii/fer13-split",
-            "/kaggle/input/fer13-split/fer13-split",
-            "/kaggle/input/fer13-split",
-            "/kaggle/input/sgu-2026-facial-expression-recognition/dataset/fer13-split",
-            "/kaggle/input/sgu-2026-facial-expression-recognition/fer13-split",
-            "/kaggle/input/fer2013/dataset/fer13-split",
-            "/kaggle/input/fer2013",
-        ]
-        for p in kaggle_candidate_paths:
-            if os.path.exists(p):
-                cfg["data"]["data_path"] = p
-                print(f"[Kaggle Env] Found data at: {p}")
-                break
+        cfg["data"]["data_path"] = resolve_kaggle_data_path(cfg)
+        print(f"[Kaggle Env] Found data at: {cfg['data']['data_path']}")
         configured_output = Path(cfg["training"].get("output_dir", "outputs/fads_scn"))
         cfg["training"]["output_dir"] = str(Path("/kaggle/working/outputs") / configured_output.name)
 

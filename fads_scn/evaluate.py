@@ -11,14 +11,20 @@ repo_root = Path(__file__).resolve().parent.parent
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from fads_scn.data.dataset import PureImageFER2013, build_transforms, EMOTION_NAMES
+from fads_scn.data.dataset import (
+    EMOTION_NAMES,
+    build_dataset,
+    build_transforms,
+    find_rafdb_root,
+    resolve_rafdb_root,
+)
 from fads_scn.models.attentive_scn_model import AttentiveSCNFER
 from fads_scn.evaluation.evaluator import evaluate_model
 from torch.utils.data import DataLoader
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Evaluate Attentive-SCN on FER2013")
+    parser = argparse.ArgumentParser(description="Evaluate Attentive-SCN on FER2013 or RAF-DB")
     parser.add_argument(
         "--config",
         type=str,
@@ -40,7 +46,7 @@ def parse_args():
     )
     parser.add_argument("--batch_size", type=int, default=64, help="Batch size")
     parser.add_argument("--device", type=str, default=None, help="Device (cuda or cpu)")
-    parser.add_argument("--data_path", type=str, default=None, help="Explicit path to fer13-split dataset folder")
+    parser.add_argument("--data_path", type=str, default=None, help="Explicit dataset root")
     return parser.parse_args()
 
 
@@ -57,29 +63,41 @@ def main():
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
     # Build dataset
-    data_path = args.data_path or cfg["data"].get("data_path", "dataset/fer13-split")
-    kaggle_candidate_paths = [
-        "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split",
-        "/kaggle/input/datasets/doduyquynii/fer13-split",
-        "/kaggle/input/fer13-split/fer13-split",
-        "/kaggle/input/fer13-split",
-        "/kaggle/input/sgu-2026-facial-expression-recognition/dataset/fer13-split",
-        "/kaggle/input/sgu-2026-facial-expression-recognition/fer13-split",
-        "/kaggle/input/fer2013/dataset/fer13-split",
-        "/kaggle/input/fer2013",
-    ]
-    if args.data_path is None:
-        for p in kaggle_candidate_paths:
-            if os.path.exists(p):
-                data_path = p
+    data_cfg = cfg.setdefault("data", {})
+    dataset_name = str(data_cfg.get("dataset", "fer2013")).lower().replace("-", "")
+    data_path = args.data_path or data_cfg.get("data_path", "dataset/fer13-split")
+    if dataset_name in ("rafdb", "rafdbbasic"):
+        try:
+            data_path = str(resolve_rafdb_root(data_path))
+        except FileNotFoundError:
+            if args.data_path is not None:
+                raise
+            data_path = str(find_rafdb_root("/kaggle/input"))
+    elif args.data_path is None:
+        kaggle_candidate_paths = [
+            "/kaggle/input/datasets/doduyquynii/fer13-split/fer13-split",
+            "/kaggle/input/datasets/doduyquynii/fer13-split",
+            "/kaggle/input/fer13-split/fer13-split",
+            "/kaggle/input/fer13-split",
+            "/kaggle/input/sgu-2026-facial-expression-recognition/dataset/fer13-split",
+            "/kaggle/input/sgu-2026-facial-expression-recognition/fer13-split",
+            "/kaggle/input/fer2013/dataset/fer13-split",
+            "/kaggle/input/fer2013",
+        ]
+        for path in kaggle_candidate_paths:
+            if os.path.exists(path):
+                data_path = path
                 break
+    data_cfg["data_path"] = data_path
     tf = build_transforms(
         args.split,
-        input_size=cfg["data"].get("input_size", 48),
+        input_size=data_cfg.get("input_size", 48),
         in_channels=cfg["model"].get("in_channels", 1),
-        normalization=cfg["data"].get("normalization", "symmetric"),
+        normalization=data_cfg.get("normalization", "symmetric"),
+        color_mode=data_cfg.get("color_mode", "grayscale"),
+        augmentation_profile=data_cfg.get("augmentation_profile", "fer2013"),
     )
-    ds = PureImageFER2013(data_path=data_path, split=args.split, transform=tf)
+    ds = build_dataset(cfg, split=args.split, transform=tf)
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=2)
 
     # Initialize model
@@ -111,7 +129,8 @@ def main():
     model.eval()
 
     print(f"\n=======================================================")
-    print(f"[EVAL] EVALUATING ATTENTIVE-SCN ON FER2013 ({args.split.upper()} SET)")
+    display_dataset_name = "RAF-DB" if dataset_name in ("rafdb", "rafdbbasic") else "FER2013"
+    print(f"[EVAL] EVALUATING ATTENTIVE-SCN ON {display_dataset_name} ({args.split.upper()} SET)")
     print(f"Weights: {ckpt_path}")
     print(f"Total Samples: {len(ds)} | Device: {device}")
     print(f"=======================================================\n")
@@ -158,7 +177,7 @@ def main():
         best_eval["confusion_matrix"],
         class_names=EMOTION_NAMES,
         save_path=cm_path,
-        title=f"FER2013 {args.split.upper()} Confusion Matrix ({best_mode} Acc: {best_eval['accuracy']*100:.2f}%)",
+        title=f"{display_dataset_name} {args.split.upper()} Confusion Matrix ({best_mode} Acc: {best_eval['accuracy']*100:.2f}%)",
     )
     print(f"\n[SAVE] Confusion matrix saved -> {cm_path}\n")
 
