@@ -108,3 +108,19 @@ def test_rafdb_root_resolves_screenshot_directory_layout(tmp_path):
     dataset_root = _write_rafdb_fixture(tmp_path)
     assert resolve_rafdb_root(tmp_path) == dataset_root
     assert find_rafdb_root(tmp_path) == dataset_root
+
+
+def test_rafdb_kaggle_split_layout_csvs_above_dataset_folder(tmp_path):
+    image_root = _write_rafdb_fixture(tmp_path)
+    label_root = image_root.parent
+    (image_root / "train_labels.csv").replace(label_root / "train_labels.csv")
+    (image_root / "test_labels.csv").replace(label_root / "test_labels.csv")
+
+    assert resolve_rafdb_root(label_root) == label_root
+    assert resolve_rafdb_root(image_root) == label_root
+    assert find_rafdb_root(tmp_path) == label_root
+
+    train_loader, val_loader, test_loader = build_dataloaders(_rafdb_config(label_root))
+    assert len(train_loader.dataset) == 28
+    assert len(val_loader.dataset) == 7
+    assert len(test_loader.dataset) == 14

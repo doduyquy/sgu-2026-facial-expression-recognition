@@ -249,31 +249,42 @@ def _map_rafdb_labels(raw_labels, label_encoding: str) -> np.ndarray:
     return np.asarray([EMOTION_NAMES.index(order[index]) for index in raw_indices], dtype=np.int64)
 
 
-def _is_rafdb_root(candidate: Path) -> bool:
-    return (
-        (candidate / "train").is_dir()
-        and (candidate / "test").is_dir()
-        and (candidate / "train_labels.csv").is_file()
-        and (candidate / "test_labels.csv").is_file()
-    )
-
-
-def resolve_rafdb_root(data_path) -> Path:
-    """Resolve the directory containing train/test folders and label CSV files."""
+def _resolve_rafdb_layout(data_path):
+    """Return (label_root, image_root), which may differ on Kaggle mounts."""
     root = Path(data_path)
-    candidates = [
+    image_candidates = [
         root,
         root / "DATASET",
         root / "RAF-DB DATASET" / "DATASET",
         root / "RAF-DB_DATASET" / "DATASET",
     ]
-    for candidate in candidates:
-        if _is_rafdb_root(candidate):
-            return candidate
+    seen = set()
+    for image_root in image_candidates:
+        image_root_key = str(image_root)
+        if image_root_key in seen:
+            continue
+        seen.add(image_root_key)
+        if not (image_root / "train").is_dir() or not (image_root / "test").is_dir():
+            continue
+
+        label_candidates = [image_root, root, image_root.parent]
+        for label_root in label_candidates:
+            if (
+                (label_root / "train_labels.csv").is_file()
+                and (label_root / "test_labels.csv").is_file()
+            ):
+                return label_root, image_root
     raise FileNotFoundError(
-        "RAF-DB root must contain train/, test/, train_labels.csv and test_labels.csv. "
+        "RAF-DB layout requires train/ and test/ image folders plus "
+        "train_labels.csv and test_labels.csv (the CSV files may be one level above DATASET). "
         f"Checked under: {root}"
     )
+
+
+def resolve_rafdb_root(data_path) -> Path:
+    """Resolve the stable root for either compact or split RAF-DB layouts."""
+    label_root, image_root = _resolve_rafdb_layout(data_path)
+    return label_root if label_root != image_root else image_root
 
 
 def find_rafdb_root(search_root) -> Path:
@@ -295,13 +306,13 @@ def find_rafdb_root(search_root) -> Path:
 
         lower_dirs = {name.lower() for name in dir_names}
         lower_files = {name.lower() for name in file_names}
-        if (
-            {"train", "test"}.issubset(lower_dirs)
-            and {"train_labels.csv", "test_labels.csv"}.issubset(lower_files)
-        ):
-            candidate = Path(current_dir)
-            if _is_rafdb_root(candidate):
-                return candidate
+        has_image_dirs = {"train", "test"}.issubset(lower_dirs)
+        has_label_csvs = {"train_labels.csv", "test_labels.csv"}.issubset(lower_files)
+        if has_image_dirs or has_label_csvs:
+            try:
+                return resolve_rafdb_root(current_dir)
+            except FileNotFoundError:
+                continue
 
     mounted_inputs = []
     try:
@@ -404,9 +415,10 @@ class RAFDBDataset(Dataset):
         self.split = split
         self.transform = transform
         self.root = resolve_rafdb_root(data_path)
+        label_root, image_root = _resolve_rafdb_layout(self.root)
         source_split = "test" if split == "test" else "train"
-        image_dir = self.root / source_split
-        csv_path = self.root / f"{source_split}_labels.csv"
+        image_dir = image_root / source_split
+        csv_path = label_root / f"{source_split}_labels.csv"
 
         dataframe, image_column, label_column = _load_rafdb_label_table(csv_path)
         labels = _map_rafdb_labels(dataframe[label_column].tolist(), label_encoding)
