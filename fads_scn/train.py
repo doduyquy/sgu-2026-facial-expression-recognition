@@ -111,6 +111,7 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=None, help="Override learning rate")
     parser.add_argument("--seed", type=int, default=None, help="Override random seed")
     parser.add_argument("--device", type=str, default=None, help="Device (cuda or cpu)")
+    parser.add_argument("--data_path", type=str, default=None, help="Override dataset root")
     return parser.parse_args()
 
 
@@ -136,6 +137,8 @@ def main():
         cfg["training"]["lr"] = args.lr
     if args.seed is not None:
         cfg.setdefault("seed", {})["random_seed"] = args.seed
+    if args.data_path is not None:
+        cfg.setdefault("data", {})["data_path"] = args.data_path
 
     # Environment-specific path resolution
     if args.env == "kaggle":

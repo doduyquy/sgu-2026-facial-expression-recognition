@@ -249,6 +249,15 @@ def _map_rafdb_labels(raw_labels, label_encoding: str) -> np.ndarray:
     return np.asarray([EMOTION_NAMES.index(order[index]) for index in raw_indices], dtype=np.int64)
 
 
+def _is_rafdb_root(candidate: Path) -> bool:
+    return (
+        (candidate / "train").is_dir()
+        and (candidate / "test").is_dir()
+        and (candidate / "train_labels.csv").is_file()
+        and (candidate / "test_labels.csv").is_file()
+    )
+
+
 def resolve_rafdb_root(data_path) -> Path:
     """Resolve the directory containing train/test folders and label CSV files."""
     root = Path(data_path)
@@ -259,12 +268,7 @@ def resolve_rafdb_root(data_path) -> Path:
         root / "RAF-DB_DATASET" / "DATASET",
     ]
     for candidate in candidates:
-        if (
-            (candidate / "train").is_dir()
-            and (candidate / "test").is_dir()
-            and (candidate / "train_labels.csv").is_file()
-            and (candidate / "test_labels.csv").is_file()
-        ):
+        if _is_rafdb_root(candidate):
             return candidate
     raise FileNotFoundError(
         "RAF-DB root must contain train/, test/, train_labels.csv and test_labels.csv. "
@@ -273,16 +277,42 @@ def resolve_rafdb_root(data_path) -> Path:
 
 
 def find_rafdb_root(search_root) -> Path:
-    """Find a RAF-DB root below a directory such as /kaggle/input."""
+    """Find a RAF-DB root below a directory, following Kaggle input symlinks."""
     search_root = Path(search_root)
     if not search_root.exists():
         raise FileNotFoundError(f"Search root does not exist: {search_root}")
-    for train_csv in search_root.rglob("train_labels.csv"):
-        try:
-            return resolve_rafdb_root(train_csv.parent)
-        except FileNotFoundError:
+
+    # pathlib.rglob does not recurse through directory symlinks on all Python
+    # versions. Kaggle inputs may be exposed that way, so use os.walk with
+    # followlinks=True and identify the dataset from its structure, not slug.
+    visited = set()
+    for current_dir, dir_names, file_names in os.walk(search_root, followlinks=True):
+        real_dir = os.path.realpath(current_dir)
+        if real_dir in visited:
+            dir_names[:] = []
             continue
-    raise FileNotFoundError(f"Could not find RAF-DB below {search_root}")
+        visited.add(real_dir)
+
+        lower_dirs = {name.lower() for name in dir_names}
+        lower_files = {name.lower() for name in file_names}
+        if (
+            {"train", "test"}.issubset(lower_dirs)
+            and {"train_labels.csv", "test_labels.csv"}.issubset(lower_files)
+        ):
+            candidate = Path(current_dir)
+            if _is_rafdb_root(candidate):
+                return candidate
+
+    mounted_inputs = []
+    try:
+        mounted_inputs = sorted(path.name for path in search_root.iterdir())
+    except OSError:
+        pass
+    mounted_text = ", ".join(mounted_inputs[:20]) if mounted_inputs else "<none>"
+    raise FileNotFoundError(
+        f"Could not find RAF-DB below {search_root}. Mounted inputs: {mounted_text}. "
+        "Expected a folder containing train/, test/, train_labels.csv and test_labels.csv."
+    )
 
 
 class PureImageFER2013(Dataset):

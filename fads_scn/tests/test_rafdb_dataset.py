@@ -7,6 +7,7 @@ from PIL import Image
 from fads_scn.data.dataset import (
     RAFDBDataset,
     build_dataloaders,
+    find_rafdb_root,
     resolve_rafdb_root,
 )
 
@@ -106,3 +107,4 @@ def test_rafdb_loader_uses_stratified_train_val_and_rgb_transforms(tmp_path):
 def test_rafdb_root_resolves_screenshot_directory_layout(tmp_path):
     dataset_root = _write_rafdb_fixture(tmp_path)
     assert resolve_rafdb_root(tmp_path) == dataset_root
+    assert find_rafdb_root(tmp_path) == dataset_root
