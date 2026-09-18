@@ -89,6 +89,7 @@ class AttentiveSCNTrainer:
         test_loader=None,
         cfg: dict = None,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        resume_path: str = None,
     ):
         self.cfg = cfg or {}
         self.device = torch.device(device)
@@ -166,6 +167,45 @@ class AttentiveSCNTrainer:
         self.best_macro_f1 = 0.0
         self.best_epoch = 0
         self.patience_counter = 0
+        self.start_epoch = 0
+
+        # Resume from checkpoint if provided
+        if resume_path is not None:
+            self._resume_from_checkpoint(resume_path)
+
+    def _resume_from_checkpoint(self, resume_path: str):
+        """Restore full training state from a resume checkpoint."""
+        print(f"\n[RESUME] Loading checkpoint from {resume_path}")
+        checkpoint = torch.load(resume_path, map_location=self.device)
+
+        # Load model weights
+        self.model.load_state_dict(checkpoint["state_dict"])
+
+        # Load optimizer state
+        if "optimizer_state_dict" in checkpoint:
+            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            print(f"  [RESUME] Optimizer state restored")
+
+        # Load scheduler state
+        if "scheduler_state_dict" in checkpoint:
+            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            print(f"  [RESUME] Scheduler state restored")
+
+        # Load EMA state
+        if self.ema is not None and "ema_state_dict" in checkpoint:
+            self.ema.module.load_state_dict(checkpoint["ema_state_dict"])
+            print(f"  [RESUME] EMA state restored")
+
+        # Restore tracking state
+        self.start_epoch = checkpoint.get("epoch", 0)
+        self.best_score = checkpoint.get("hybrid_score", 0.0)
+        self.best_val_acc = checkpoint.get("val_acc", 0.0)
+        self.best_macro_f1 = checkpoint.get("macro_f1", 0.0)
+        self.best_epoch = checkpoint.get("epoch", 0)
+        self.patience_counter = checkpoint.get("patience_counter", 0)
+
+        print(f"  [RESUME] Resuming from epoch {self.start_epoch + 1}")
+        print(f"  [RESUME] Best score so far: {self.best_score:.4f} (Val Acc: {self.best_val_acc*100:.2f}%)")
 
     def train_one_epoch(self, epoch: int):
         self.model.train()
@@ -258,9 +298,11 @@ class AttentiveSCNTrainer:
         print(f"Total Epochs: {self.epochs} | Batch Size: {self.train_loader.batch_size} | LR: {self.lr}")
         if self.use_mixup:
             print(f"Data Augmentation: Mixup enabled (alpha={self.mixup_alpha}, prob={self.mixup_prob})")
+        if self.start_epoch > 0:
+            print(f"Resuming from epoch {self.start_epoch + 1}/{self.epochs}")
         print(f"Output Directory: {self.output_dir}\n")
 
-        for epoch in range(self.epochs):
+        for epoch in range(self.start_epoch, self.epochs):
             train_loss, train_acc, relabelled = self.train_one_epoch(epoch)
 
             # Evaluate with EMA model
@@ -281,6 +323,26 @@ class AttentiveSCNTrainer:
                 + (f" | Relabelled: {relabelled}" if relabelled > 0 else "")
             )
 
+            # Build full resume state dict
+            resume_state = {
+                "epoch": epoch + 1,
+                "state_dict": eval_model.state_dict(),
+                "optimizer_state_dict": self.optimizer.state_dict(),
+                "scheduler_state_dict": self.scheduler.state_dict(),
+                "val_loss": val_loss,
+                "val_acc": val_acc,
+                "macro_f1": val_f1,
+                "hybrid_score": hybrid_score,
+                "patience_counter": self.patience_counter,
+                "config": self.cfg,
+            }
+            if self.ema is not None:
+                resume_state["ema_state_dict"] = self.ema.module.state_dict()
+
+            # Always save resume checkpoint (overwrite each epoch)
+            resume_path = self.output_dir / "attentive_scn_resume.pth"
+            torch.save(resume_state, resume_path)
+
             # Check for best model
             if hybrid_score > self.best_score:
                 self.best_score = hybrid_score
@@ -290,18 +352,7 @@ class AttentiveSCNTrainer:
                 self.patience_counter = 0
 
                 best_path = self.output_dir / "attentive_scn_best.pth"
-                torch.save(
-                    {
-                        "epoch": epoch + 1,
-                        "state_dict": eval_model.state_dict(),
-                        "val_loss": val_loss,
-                        "val_acc": val_acc,
-                        "macro_f1": val_f1,
-                        "hybrid_score": hybrid_score,
-                        "config": self.cfg,
-                    },
-                    best_path,
-                )
+                torch.save(resume_state, best_path)
                 print(f"  [BEST] New best model saved! Val Loss: {val_loss:.4f}, Val Acc: {val_acc*100:.2f}%, F1: {val_f1*100:.2f}% -> {best_path}")
 
                 if self.eval_test_on_best_epoch and self.test_loader is not None:

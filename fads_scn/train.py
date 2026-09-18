@@ -112,6 +112,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=None, help="Override random seed")
     parser.add_argument("--device", type=str, default=None, help="Device (cuda or cpu)")
     parser.add_argument("--data_path", type=str, default=None, help="Override dataset root")
+    parser.add_argument("--resume", type=str, default=None, help="Path to resume checkpoint (.pth) to continue training")
     return parser.parse_args()
 
 
@@ -213,6 +214,7 @@ def main():
         test_loader=test_loader,
         cfg=cfg,
         device=device,
+        resume_path=args.resume,
     )
     trainer.fit()
 
